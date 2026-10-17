@@ -9,12 +9,12 @@
 
 ## 入口
 
-- `router.js` → `#/workbench`=`WorkbenchView`；`#/p/:pid` 与 `:pid/prepare`=`PrepareView`；
-  `:pid/slices`=`ProjectSlicesView`；`:pid/polish[/:clip]`=`PolishView`；`:pid/settings`=`ProjectSettingsView`；
-  `#/settings/<key>`=`SettingsView`；`#/ingest`=`IngestView`；`#/login`/`#/register`=`LoginView`/`RegisterView`。
-- 共用子组件：`components/ProjectClipsSection.vue`（props 模式下 `load()` 只照抄父页面快照）、
-  `components/FragmentList.vue`、`MaterialList.vue`、`ModelList.vue`（`/models` → `/settings/account`）。
-- 接口：`api/projectData.js` / `polish.js` / `models.js` / `auth.js` / `/api/health`；查询串只经 `scopeQ(pid)`。
+- `router.js` → `#/workbench`=`WorkbenchView`；`#/p/:pid[/prepare]`=`PrepareView`；`:pid/slices`=`ProjectSlicesView`；
+  `:pid/polish[/:clip]`=`PolishView`；`:pid/settings`=`ProjectSettingsView`；`#/settings/<key>`=`SettingsView`；
+  `#/ingest`=`IngestView`；`#/login|register`=`LoginView`/`RegisterView`。
+- 共用子组件：`ProjectClipsSection.vue` / `FragmentList.vue` /
+  `MaterialList.vue` / `ModelList.vue`（`/models` → `/settings/account`）；接口层 `api/{projectData,polish,models,auth}.js`
+  与 `/api/health`，查询串只经 `scopeQ(pid)`。
 
 ## 边界
 

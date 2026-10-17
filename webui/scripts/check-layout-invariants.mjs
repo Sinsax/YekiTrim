@@ -1802,5 +1802,457 @@ console.log('\n㉚ 切片总览搜索（按需拉取 + 弹幕正文可读化）'
   }
 }
 
+// ---------------------------------------------------------------------------
+// ㉛ **控件契约**（2026-10-15，P2）—— "加字段 = 改词汇表一行"这句话的判据
+//
+// 背景：`autoFields` 已经能从 `spec/effects.json` 的 `fields[]` 派生控件（P1，2026-10）。
+// 但那条路**没有门禁**，于是它随时可能退化成"面板里手写控件 + 词汇表字段没人接"——
+// 而那正是它被做出来要解决的那个问题（"加了字段但面板没有控件"，零报错）。
+//
+// 五条硬规矩，**每一条都对应一种静默失败**：
+//  ① 字段只许来自词汇表（面板手写 `<input>` 绑事件字段 = 绕过 `fields[]`）
+//  ② 专用块漏掉的字段必须自动补（兜底块被删 ⇒ 那一整类字段消失）
+//  ③ 排除清单不许吃掉词汇表里的字段（两控件写同一字段 = 写回时后者赢）
+//  ④ 每个 `ui` 类型必须真的有控件（认不出 ⇒ 静默退化成文本框）
+//  ⑤ 空串写 `undefined`（写 `''` ⇒ serde 读成 `Some("")` ⇒ 解析报"无法识别"）
+// ---------------------------------------------------------------------------
+{
+  console.log('\n㉛ 控件契约（加字段 = 改词汇表一行；每条带变异自证）')
+
+  const spec = JSON.parse(await read('spec/effects.json'))
+  const vocabFields = new Set()
+  for (const e of spec.effects) for (const f of (e.fields || [])) vocabFields.add(f.name)
+
+  const autoFieldsCalls = (timelineEditor.match(/autoFields\(/g) || []).length
+  check('㉛ 属性面板有 >=4 处 autoFields（专用块 + 兜底），字段由词汇表派生', autoFieldsCalls >= 4, true)
+
+  const hasCatchAll = /autoFields\(selItem\.type\)/.test(timelineEditor)
+  check('㉛ 兜底块 autoFields(selItem.type) 存在（专用块没覆盖的字段靠它露出）', hasCatchAll, true)
+
+  const dedMatch = timelineEditor.match(/const DEDICATED_FIELDS = new Set\(\[([\s\S]*?)\]\)/)
+  const ded = dedMatch ? [...dedMatch[1].matchAll(/'([a-z_0-9]+)'/g)].map((m) => m[1]) : []
+  const STRUCTURAL = new Set(['kind', 'text', 'sticker_tag', 'keyword', 'name', 'source', 'x', 'y', 'color', 'sfx', 'sfx_volume', 'intensity', 'manual', 'end', 'volume'])
+  const overreach = ded.filter((f) => vocabFields.has(f) && !STRUCTURAL.has(f))
+  check('㉛ DEDICATED_FIELDS 没有吃掉词汇表里的标量字段', overreach, [])
+
+  // ⚠️ `ui` 有两个消费者，缺一不可：① 专用块（`DEDICATED_FIELDS`，如 color/intensity/volume）
+  //    ② `autoFields` 的 `controlKind`（switch/select/number/text）。
+  //    判据是"**至少被一个认领**"——只查 controlKind 会把专用块那批误判成缺陷。
+  const uiValues = new Map()
+  for (const e of spec.effects) for (const f of (e.fields || [])) if (f.ui) uiValues.set(f.ui, f.name)
+  const knownUi = new Set(['switch', 'select', 'number', 'text'])
+  // 专用块认领的 ui（它们由各专用块自己渲染，不走 controlKind）
+  const dedicatedUi = new Set(['color', 'color_list', 'slider', 'intensity'])
+  const unknownUi = [...uiValues.keys()].filter((u) => !knownUi.has(u) && !dedicatedUi.has(u))
+  check('㉛ 词汇表每个 ui 都被某个消费者认领（专用块或 controlKind）', unknownUi, [])
+
+  const nullishWrite = /props\.ev\[props\.f\.name\] = v === '' \? undefined : v/.test(timelineEditor)
+  check('㉛ FieldControl 空串写 undefined（不写空串 —— serde 会读成 Some(空串)）', nullishWrite, true)
+
+  const MUT31 = [
+    ['专用块不再派生（字段名换成不存在的函数）', timelineEditor,
+      (s) => s.replace(/autoFields\(/g, 'legacyFields('),
+      (s) => (s.match(/autoFields\(/g) || []).length >= 4],
+    // ⚠️ 这里原先变异的是 `autoFields(selItem.type)` 的**调用形态**；现在兜底块多了
+    //    `hasDedicatedBranch` 那道门，把"新字段还能自动冒出来吗"表达成**门被拆掉**更准 ——
+    //    门一拆，有专用支的类型就会重复渲染（症状是重复，不是"新字段不出现"）。
+    ['兜底块的门被拆掉（有专用支的类型会每个字段出两遍）', timelineEditor,
+      (s) => s.replace('v-if="!hasDedicatedBranch(selItem.type)"', 'v-if="true"'),
+      (s) => /v-if="!hasDedicatedBranch\(selItem\.type\)"/.test(s)],
+    ['DEDICATED_FIELDS 吃掉标量字段 opacity', timelineEditor,
+      (s) => s.replace("'color', 'intensity'", "'color', 'intensity', 'opacity'"),
+      (s) => {
+        const m = s.match(/const DEDICATED_FIELDS = new Set\(\[([\s\S]*?)\]\)/)
+        const d = m ? [...m[1].matchAll(/'([a-z_0-9]+)'/g)].map((x) => x[1]) : []
+        return d.filter((f) => vocabFields.has(f) && !STRUCTURAL.has(f)).length === 0
+      }],
+    ['空串写回退化成空串（serde 读成 Some(空串)）', timelineEditor,
+      (s) => s.replace("v === '' ? undefined : v", 'v'),
+      (s) => /props\.ev\[props\.f\.name\] = v === '' \? undefined : v/.test(s)]
+  ]
+  for (const [what, src, mutate, still] of MUT31) {
+    const m = mutate(src)
+    check(`[变异] ㉛ ${what} → 源码确实被改了`, m !== src, true)
+    check(`[变异] ㉛ ${what} → 判据翻面`, still(m), false)
+  }
+}
+
+// ㉜ **一个字段只许出一个控件**（2026-10-15，用户报「一长串重复」）
+//
+// 背景：`element` 支既有**自己的** skip 表派生的控件（专用块那几行），
+// 又会被**兜底块** `autoFields(selItem.type)` 再派生一遍 —— 于是
+// `style / anim / style_anim / effect_anim / transition_anim / layout_angle_deg / pos`
+// **每个都出两遍**，面板上看就是"一长串重复的属性"，而且**零报错**。
+//
+// 根因是兜底块的**存在理由**没被写下来：它服务的是"这个类型**没有**专用支"，
+// 而 `element` **有**。⇒ 判据 = 兜底块必须显式跳过 element。
+//
+// ⚠️ 这条一旦退化，用户看到的是"每个属性都有两遍"，而构建、两条门禁、九条前端判据**全绿**。
+// ---------------------------------------------------------------------------
+{
+  console.log('\n㉜ 属性面板不重复渲染（每条带变异自证）')
+
+  // ⚠️ 兜底块必须**按"有没有专用支"门控**（2026-10-15 二次修）。
+  //    第一版这里钉的是字面量 `!== 'element'` —— 那条判据**只保住了 element**，
+  //    而 `camera` / `overlay` 照旧重复（用户贴图就是那次）。
+  //    现在钉的是**机制**：`hasDedicatedBranch` + 那张表（表与模板的差集由 ㉞ 算）。
+  const catchAllGuarded = /v-if="!hasDedicatedBranch\(selItem\.type\)"/.test(timelineEditor)
+  check('㉜ 兜底块按 hasDedicatedBranch 门控（有专用支的一律跳过）', catchAllGuarded, true)
+
+  // 真·重复检测：把两处 skip 表取出来求交集，交集必须为空。
+  // ⚠️ 判据是**算出来的**，不是"某个字符串还在不在"—— 改 skip 表也能被抓到。
+  // skip 表现在是具名常量 `ELEMENT_DEDICATED`（漏字段就是出两遍，所以它得能被机器读）。
+  const elSkipMatch = timelineEditor.match(/const ELEMENT_DEDICATED = \[([\s\S]*?)\n\]/)
+  const elSkip = elSkipMatch ? new Set([...elSkipMatch[1].matchAll(/'([a-z_0-9]+)'/g)].map((m) => m[1])) : null
+  const dedMatch2 = timelineEditor.match(/const DEDICATED_FIELDS = new Set\(\[([\s\S]*?)\]\)/)
+  const ded2 = dedMatch2 ? new Set([...dedMatch2[1].matchAll(/'([a-z_0-9]+)'/g)].map((m) => m[1])) : null
+  check('㉜ 能取到 element 的 skip 表与 DEDICATED_FIELDS', !!(elSkip && ded2), true)
+  // ⚠️ 常量必须**真的被用**：写了个常量却还在模板里内联旧数组 = 声明与实现分叉。
+  check('㉜ element 支用 ELEMENT_DEDICATED（不是内联数组）',
+    /autoFields\(selItem\.type, ELEMENT_DEDICATED\)/.test(timelineEditor), true)
+  // ⚠️⚠️ **专用块真正渲染过的那四个必须都在表里** —— 这是本轮漏掉的那四个，
+  //     逐个点名钉住：漏任一个，面板上就是"那个属性出两遍"。
+  for (const must of ['style_anim', 'transition_anim', 'effect_anim', 'layout_angle_deg']) {
+    check(`㉜ 专用块渲染的 ${must} 已在 skip 表里（否则出两遍）`, elSkip.has(must), true)
+  }
+
+  // element 的**词表字段**里，既没被专用块吃掉、也没被 element skip 点名的 = 真正会渲染的那些。
+  const specEl = JSON.parse(await read('spec/effects.json')).effects.find((e) => e.id === 'element')
+  const elFields = (specEl?.fields || []).map((f) => f.name)
+  // 上一支实际渲染的 = 词表字段 − DEDICATED − elementSkip。
+  const renderedByFirst = elFields.filter((f) => !ded2.has(f) && !elSkip.has(f))
+  // 兜底块**只有当它没跳过 element 时**才会再渲染一遍 —— 判据必须**跟着那道门走**，
+  // 否则它会一直报"重复"（因为算术上两块本来就覆盖同一批字段，是那道门在挡）。
+  const catchAllAppliesToElement = !catchAllGuarded
+  const renderedByCatchAll = catchAllAppliesToElement ? elFields.filter((f) => !ded2.has(f)) : []
+  const dup = renderedByFirst.filter((f) => renderedByCatchAll.includes(f))
+  check('㉜ element 字段在两支里的重复集合为空（算出来的，不是抄的）', dup, [])
+  // 反向自证：把门去掉，**这套算术必须真的报出那 7 个重复字段** ——
+  // 否则这条判据只是"恒过"，抓不到任何东西。
+  // ⚠️ **[自证] 这套算术不能是恒空的**：去掉兜底块那道门之后，`dup` 必须真的报出
+  //    "两支都会渲染"的那批 —— 它是 `element 词表 − DEDICATED − skip 表`（本波 = style/anim/pos）。
+  //    算出来是空集的话，上面那条"重复集合为空"就什么都证明不了。
+  const mutDup = elFields.filter((f) => !ded2.has(f) && !elSkip.has(f))
+  check('㉜ [自证] 去掉兜底块的门后，算术必须报出非空重复集（否则判据恒过）', mutDup.length > 0, true)
+  // ⚠️ 再钉一层：**skip 表里不能有 element 词表之外的字段**（写错了没人发现，
+  //    而它会让上面那条自证的数字对不上 —— 本轮 `keyword` 就是这样多出来的）。
+  check('㉜ skip 表里没有 element 词表之外的字段（错字会让判据数字对不上）',
+    [...elSkip].filter((f) => !elFields.includes(f)), [])
+
+  // XY 位置控件（用户口径：仅贴纸与文字层，保留一对）
+  const hasPosRow = /\.pos-row\s*\{/.test(timelineEditor) && /function setElementPos/.test(timelineEditor)
+  // ⚠️⚠️ **兜底块对 element 的产出必须是空集**（2026-10-15）：element 支自己声明了它渲染的
+  //     每一个字段（`ELEMENT_DEDICATED`），所以自动派生**一个都不该再出**。
+  //     非空 ⇒ 面板上多出一个没有专用控件、也没人声明过的字段（用户看到的"冗余参数"）。
+  const leaked = elFields.filter(
+    (f) => f && !ded2.has(f) && !elSkip.has(f) &&
+      (specEl.fields.find((x) => x.name === f) || {}).panel !== false,
+  )
+  check('㉜ element 的自动派生产出为空（每个字段都有归属，没有漏网的）', leaked, [])
+
+  // ⚠️⚠️ **全类型版**（2026-10-15 用户口径：「所有所有所有所有」）：不止 element，
+  //    **每一个**类型的自动派生都必须为空 —— 面板上不该出现任何"没人认领、自己冒出来"的字段。
+  //    非空 = 用户看到的那串没标签、没条件、不知道干什么的裸控件。
+  //    ⇒ 留一个入口字段就得先在专用块里手写它的控件（并加进那张 skip 表）。
+  const allSkips = {}
+  for (const m of timelineEditor.matchAll(/autoFields\(([^)]*)\)/g)) {
+    const c = m[1]
+    const idm = c.match(/'([a-z_0-9]+)'\s*,/)
+    const arr = c.match(/\[([^\]]*)\]/)
+    if (idm) allSkips[idm[1]] = new Set(arr ? [...arr[1].matchAll(/'([a-z_0-9]+)'/g)].map((x) => x[1]) : [])
+    else if (/ELEMENT_DEDICATED/.test(c)) allSkips.element = elSkip
+  }
+  const leakEverywhere = []
+  const specAll = JSON.parse(await read('spec/effects.json')).effects
+  for (const e of specAll) {
+    const skip = allSkips[e.id] || new Set()
+    for (const f of (e.fields || [])) {
+      if (f.panel === false || ded2.has(f.name) || skip.has(f.name)) continue
+      leakEverywhere.push(`${e.id}.${f.name}`)
+    }
+  }
+  check('㉜ 所有类型的自动派生产出都为空（没有裸控件冒出来）', leakEverywhere, [])
+  // ⚠️ [自证] 拿掉某个类型的 skip 表，这套算术必须**真的报出残留** ——
+  //    否则"全类型为空"只是一句恒真的话（比如循环写错了、字段名字段名对不上）。
+  check('㉜ [自证] camera 的 skip 表非空（自证要有东西可拿掉）',
+    (allSkips.camera || new Set()).size > 0, true)
+  const camLeakWithoutSkip = specAll
+    .find((e) => e.id === 'camera').fields
+    .filter((f) => f.panel !== false && !ded2.has(f.name)).map((f) => f.name)
+  check('㉜ [自证] 去掉 camera 的 skip 表后，算术必须报出残留（否则判据恒过）',
+    camLeakWithoutSkip.length > 0, true)
+
+  check('㉜ 元素位置 X/Y 控件存在（贴纸 + 文字，可手动钉住单个事件）', hasPosRow, true)
+  // ⚠️ 三态：清空必须写 undefined（写 0 就变成"钉在左上角"，与"没设"混为一谈）
+  const posTriState = /selItem\.value\[axis\] = undefined/.test(timelineEditor)
+  check('㉜ 位置清空写 undefined 而不是 0（三态：没设 / 钉住）', posTriState, true)
+
+  const MUT32 = [
+    ['兜底块不再按专用支门控（每个字段出两遍）', timelineEditor,
+      (s) => s.replace(/v-if="!hasDedicatedBranch\(selItem\.type\)"/, 'v-if="true"'),
+      (s) => /v-if="!hasDedicatedBranch\(selItem\.type\)"/.test(s)],
+    ['位置清空退回写 0（丢掉"没设"这一态）', timelineEditor,
+      (s) => s.replace(/selItem\.value\[axis\] = undefined/g, 'selItem.value[axis] = \'0%\''),
+      (s) => /selItem\.value\[axis\] = undefined/.test(s)]
+  ]
+  for (const [what, src, mutate, still] of MUT32) {
+    const m = mutate(src)
+    check(`[变异] ㉜ ${what} → 源码确实被改了`, m !== src, true)
+    check(`[变异] ㉜ ${what} → 判据翻面`, still(m), false)
+  }
+}
+
+// ㉝ **冗余/无效字段不许进面板**（2026-10-15 用户报「一堆冗余参数，这些应该都是后处理
+//   自动处理的或者不该有的」）
+//
+// 背景：面板控件由 `spec/effects.json` 的 `fields[]` **自动派生**（㉛）。
+// 派生是对的，但词汇表里有两类字段**不该有入口**：
+//   · `anim` —— **只读迁移**字段：转译器只在三根轴都空时读它，写回是 no-op。
+//     给了控件 = 用户改完"看着生效"、成片一个字都不动（**静默无效控件**）。
+//   · `pos`  —— 2026-10-12 用户口径已把「纵向位置」下架，默认 `Auto`。
+//     重新暴露 = 把已撤销的能力偷偷带回来。
+// ⇒ 口径 = 字段上标 `panel: false`，`autoFields` 一律不给控件。
+//   ⚠️ 字段本身**仍留在词汇表**（转译器读、老工程写），删掉会砸老工程 —— 藏的是**入口**，不是字段。
+// ---------------------------------------------------------------------------
+{
+  console.log('\n㉝ 冗余字段不进面板（每条带变异自证）')
+
+  const spec2 = JSON.parse(await read('spec/effects.json'))
+  const hidden = []
+  for (const e of spec2.effects) for (const f of (e.fields || [])) if (f.panel === false) hidden.push(f.name)
+  // 目前已知的两个：anim（只读迁移）与 pos（已下架）。多一个少一个都要有人说话。
+  // `style` 是第三类：那套四档 2026-10-13 被用户否决、下拉已删，但字段还在词汇表里
+  // （字幕层仍用它）。它同样只能靠 `panel:false` 挡住 —— 否则自动派生会把它挂回来，
+  // 而代码注释里明写着"别把它加回来"。
+  // `camera.origin` / `camera.to_origin` 是第四类：**后端算出来的结果坐标**，
+  // `resolve_camera_anchors`（Step 2d）每跑一次 process 就覆写一遍（源码里 `*origin = o`）。
+  // 给控件 = 用户改完下一次后处理就被冲掉（静默无效）。真正的输入是 `anchor`/`anchor_to`
+  // —— 面板上那对「聚焦 / 移到」。
+  check('㉝ 已知的冗余字段恰好是 anim / pos / style / camera.origin / camera.to_origin',
+    hidden.sort(),
+    ['anim', 'origin', 'pos', 'style', 'to_origin'])
+
+  // 派生器必须真的认这个标记（否则标了也白标 —— 这正是"看着做了、实际没做"的形状）。
+  const honorsPanel = /f\.panel !== false/.test(timelineEditor)
+  check('㉝ autoFields 认 `panel:false`（标了就要真的不渲染）', honorsPanel, true)
+
+  // ⚠️ 反向：被藏的字段**必须仍然是合法词汇表字段**（藏入口 ≠ 删字段）。
+  const allNames = new Set()
+  for (const e of spec2.effects) for (const f of (e.fields || [])) allNames.add(f.name)
+  check('㉝ 被藏的字段仍在词汇表里（老工程与转译器还要用）', hidden.every((h) => allNames.has(h)), true)
+
+  const MUT33 = [
+    ['派生器不再认 panel:false（冗余字段全冒出来）', timelineEditor,
+      (s) => s.replace(/f\.panel !== false && /, ''),
+      (s) => /f\.panel !== false/.test(s)],
+    // ⚠️ 变异必须**逐字符对上真实排版**（`enum` 夹在 `ui` 与 `panel` 之间）——
+    //    对不上时 `replace` 是静默 no-op，这条判据就变成"永远绿"（本轮踩过）。
+    // ⚠️ 用**正则**而不是字面串：字面串对不上排版时 `replace` 是静默 no-op，
+    //    判据就变成"永远绿"（本轮先踩了一次）。正则对缩进/间距不敏感。
+    ['pos 被重新标成可见（把下架的能力带回来）', JSON.stringify(spec2),
+      // ⚠️ `JSON.stringify` 出来的串**冒号后没有空格**（`{"name":"pos"`）——
+      //    照着源文件的排版写正则必然不匹配，`replace` 静默 no-op（本轮踩过两次）。
+      (s) => s.replace(/("name":"pos"[^}]*?)"panel":false,/, '$1'),
+      (s) => {
+        const p = JSON.parse(s)
+        const el = p.effects.find((e) => e.id === 'element')
+        return (el.fields.find((f) => f.name === 'pos') || {}).panel === false
+      }]
+  ]
+  for (const [what, src, mutate, still] of MUT33) {
+    const m = mutate(src)
+    check(`[变异] ㉝ ${what} → 源码确实被改了`, m !== src, true)
+    check(`[变异] ㉝ ${what} → 判据翻面`, still(m), false)
+  }
+}
+
+// ㉞ **兜底块只给"没有专用支"的类型兜底**（2026-10-15 二次修）
+//
+// 背景：面板字段由 `fields[]` **自动派生**（㉛）。派生器有两条路：
+//   ① **专用支** —— 手写控件（运镜/元素/覆盖层/音效/贴纸各自一段）；
+//   ② **兜底块** —— `autoFields(selItem.type)`，给**还没写专用支**的类型。
+// 对一个**已经有专用支**的类型再跑②，就是**每个字段出两遍**。
+//
+// ⚠️⚠️ 这条判据是本轮的用户报障换来的：第一版只把 `element` 挡在兜底块外
+//   （我当时正在改 element），而 `camera` / `overlay` **照旧重复** —— 用户贴出运镜面板，
+//   手写的六个控件下面又原样列了一遍 `zoom / anchor / anchor_to / cut / handheld / speed / tilt`。
+//   **"还有谁有专用支"没问，就只修了手头那一个。**
+//
+// ⇒ 判据必须**从模板算**，不是照抄一张人手维护的表：
+//   模板里的分支 = 事实；`DEDICATED_BRANCH_TYPES` = 声明；两者**必须相等**。
+// ---------------------------------------------------------------------------
+{
+  console.log('\n㉞ 兜底块不重复渲染有专用支的类型（从模板算差集）')
+
+  const branchTypes = new Set()
+  for (const m of timelineEditor.matchAll(/selItem\.type === '([a-z_0-9]+)'/g)) branchTypes.add(m[1])
+  check('㉞ 模板里取到的专用支类型非空（否则这条判据恒过）', branchTypes.size > 0, true)
+
+  const declMatch = timelineEditor.match(/const DEDICATED_BRANCH_TYPES = \[([^\]]*)\]/)
+  const decl = declMatch ? [...declMatch[1].matchAll(/'([a-z_0-9]+)'/g)].map((m) => m[1]) : null
+  check('㉞ 找得到 `DEDICATED_BRANCH_TYPES`（结构变了就要改本判据）', !!decl, true)
+
+  const missing = [...branchTypes].filter((t) => !(decl || []).includes(t)).sort()
+  const extra = (decl || []).filter((t) => !branchTypes.has(t)).sort()
+  check('㉞ 有专用支的类型都登记进白名单（漏一个 ⇒ 它每个字段出两遍）', missing, [])
+  check('㉞ 白名单里没有不存在的专用支（多一个 ⇒ 那个类型失去兜底）', extra, [])
+
+  check('㉞ 兜底块用 hasDedicatedBranch 门控（不是内联长串）',
+    /v-if="!hasDedicatedBranch\(selItem\.type\)"/.test(timelineEditor), true)
+
+  const specBr = JSON.parse(await read('spec/effects.json')).effects
+  // ⚠️ `ded2` 是 ㉜ 那个块里的局部量，这里要自己取一份（跨块引用会 ReferenceError）。
+  const dedRows = (timelineEditor.match(/const DEDICATED_FIELDS = new Set\(\[([\s\S]*?)\]\)/) || [])[1] || ''
+  const ded2 = new Set([...dedRows.matchAll(/'([a-z_0-9]+)'/g)].map((m) => m[1]))
+  check('㉞ 取得到 DEDICATED_FIELDS（否则它下面的判据空转）', ded2.size > 0, true)
+  const skipByType = {}
+  for (const m of timelineEditor.matchAll(/autoFields\(([^)]*)\)/g)) {
+    const c = m[1]
+    const idm = c.match(/'([a-z_0-9]+)'\s*,/)
+    const arr = c.match(/\[([^\]]*)\]/)
+    if (idm) skipByType[idm[1]] = new Set(arr ? [...arr[1].matchAll(/'([a-z_0-9]+)'/g)].map((x) => x[1]) : [])
+    else if (/ELEMENT_DEDICATED/.test(c)) {
+      const em = timelineEditor.match(/const ELEMENT_DEDICATED = \[([\s\S]*?)\n\]/)
+      skipByType.element = new Set([...em[1].matchAll(/'([a-z_0-9]+)'/g)].map((x) => x[1]))
+    }
+  }
+  const dupEverywhere = []
+  for (const t of branchTypes) {
+    const e = specBr.find((x) => x.id === t)
+    if (!e) continue
+    const skip = skipByType[t] || new Set()
+    for (const f of (e.fields || [])) {
+      if (f.panel === false || ded2.has(f.name) || skip.has(f.name)) continue
+      dupEverywhere.push(t + '.' + f.name)
+    }
+  }
+  check('㉞ 有专用支的类型，兜底块一个字段都不再多渲染', dupEverywhere, [])
+
+  // ⚠️ [自证] 模拟的是**兜底块真的跑了**那一态 —— 那时它渲染的是
+  //    `该类型所有非 DEDICATED 字段`，**与专用支的 skip 表无关**
+  //    （skip 表管的是**兜底块自己**要不要跳过，不是"专用支没渲染"）。
+  //    ⚠️ 第一版自证又把 skip 表减了一遍 ⇒ 减掉的正是修复所做的事，
+  //       两条自证**互相抵消**、永远恒过（本轮踩到）。
+  const catchAllFields = (t) => {
+    const e = specBr.find((x) => x.id === t)
+    if (!e) return []
+    return (e.fields || [])
+      .filter((f) => f.panel !== false && !ded2.has(f.name))
+      .map((f) => t + '.' + f.name)
+  }
+  // ① 无门控（= 每条有专用支的类型都跑兜底块）：必须报出重复。
+  const noGuard = [...branchTypes].flatMap((t) => catchAllFields(t))
+  check('㉞ [自证] 无门控时算术必须报出重复（否则判据恒过）', noGuard.length > 0, true)
+
+  // ② 复现第一版"只排除 element"：必须报出**非 element** 的那批。
+  const onlyElem = [...branchTypes].filter((t) => t !== 'element').flatMap((t) => catchAllFields(t))
+  check('㉞ [自证] 第一版“只排除 element”必须报出非 element 的重复（用户报障的复现）',
+    onlyElem.length > 0, true)
+  check('㉞ [自证] 那批里必须含运镜（用户贴的就是它）',
+    onlyElem.filter((k) => k.startsWith('camera.')).length > 0, true)
+  check('㉞ [自证] 第一版“只排除 element”必须被抓到（用户报障的复现）', onlyElem.length, 12)
+}
+
+
+// ㊳ **字体库页的样例字必须真的用库里那支渲染**（2026-10-16，用户报「字体列表有点紊乱」）。
+//
+//    卡片上的 `fontFamily` 写的是**族名**（`it.stack`），而这一页**从未注册过 FontFace**
+//    ⇒ 浏览器不认识那些族名 ⇒ **每张卡片都用系统字体画样例**（三张卡看着一模一样、
+//    换样例文字也没区别）。构建绿、两条门禁绿、界面上"只是看着都差不多"，没有任何报错。
+//
+//    ⚠️ 注册名必须与样例的 `fontFamily` **同源**（都是内部族名）：注册库 id 而 CSS 用族名
+//    等于没注册 —— 同一个坑在精修预览那边也踩过（DOM 用原值、FontFace 用真族名）。
+{
+  const ml = await read('webui/src/components/MediaLibrary.vue')
+  check('㊳ 字体库页给库里每支注册 FontFace（否则样例全是系统字体）',
+    /ensureFontFace\s*\(/.test(ml), true)
+  check('㊳ 注册名与样例的 fontFamily 同源（族名），不是库 id',
+    /const name = f\.family \|\| f\.id/.test(ml), true)
+  check('㊳ 样例仍走 it.stack（这条判据的锚点）', /fontFamily: it\.stack/.test(ml), true)
+  {
+    // 变异：把注册那一句删掉 ⇒ 第一条必须翻面（不然这条判据是空转的）。
+    const bad = ml.replace(/await ensureFontFace\(null, '', name[^\n]*\n/, '')
+    check('㊳ [变异] 删掉注册 ⇒ 判据翻面', /ensureFontFace\s*\(/.test(bad), false)
+  }
+}
+
+// ㊴ **字体注册名必须与 CSS 用的名字同源**（2026-10-16，与 ㊳ 同一类）。
+//
+//    精修页有两套名字：`[style.*].font` 存的是**库 id**、而 `.cap`/`.dm` 的 `font-family` 用的是
+//    `fontFamilyFor` 换出来的**内部族名**。注册 FontFace 时用错名字 ⇒ 面名与 CSS 对不上 ⇒
+//    浏览器**静默回退系统字体**（"换字体没反应"，字号/位置/颜色全对）。
+//    实测踩过两次：换字体回调里注册的是 id；首屏则**根本没人注册**（`ensureProjectFonts` 只在
+//    底座模式下跑）。
+{
+  const pv = await read('webui/src/views/PolishView.vue')
+  check('㊴ 换字体回调里注册用的是 fontFamilyFor（族名）而不是原值',
+    /const faceName = fontFamilyFor\(fonts\.value, next\)/.test(pv), true)
+  check('㊴ 首屏也注册当前字幕/弹幕/emoji 字体（不开底座时否则没人注册）',
+    /registerPreviewFonts\(\)/.test(pv) && /watch\(\[fonts, subtitleFont, danmakuFont, fontEmoji\]/.test(pv), true)
+  {
+    // 变异：把注册名换回原值 ⇒ 第一条翻面。
+    // ⚠️ **必须 `replaceAll`**：这行在两个回调里各出现一次（字幕 / 弹幕），`replace` 只替一处
+    //    ⇒ 另一处仍然是对的 ⇒ 变异等于没改（第一版就是这样，判据当场报"实得 true 期望 false"）。
+    const bad = pv.replaceAll('const faceName = fontFamilyFor(fonts.value, next)', 'const faceName = next')
+    check('㊴ [变异] 注册名换回原值 ⇒ 判据翻面', /const faceName = fontFamilyFor\(fonts\.value, next\)/.test(bad), false)
+  }
+}
+
+// ㊵ **量宽用的字体必须与绘制同一个族**（2026-10-16，与 ㊳/㊴ 同一类）。
+//
+//    两处量宽各自吃过一次亏：
+//      · 字幕折行（`capFontSpec` → `wrapCaptionParts`）：用 `subStyle.font` **原值**（库 id）时
+//        页面没有那个面 ⇒ canvas 按**回退字体**量 ⇒ 断行与成片不一致；
+//      · 弹幕滚动时长（`buildIndex` → `measureDanmakuWidths`）：量宽走库 id、绘制走族名 ⇒
+//        **量宽 ≠ 绘制** ⇒「弹幕没滚到边就消失」。
+//    ⚠️ 变异锚点刻意**不含引号**（`+ (subFontFamily.value ?` 这种）：第一版拿一整段带引号的
+//       源码当锚点，拼进 emitted JS 之后引号互相咬合、整个门禁**语法错误跑不起来**。
+{
+  const preview = await read('webui/src/components/PolishPreview.vue')
+  const engineSrc = await read('webui/src/polish/engine.js')
+  const capUsesMapped = preview.includes('+ (subFontFamily.value ?')
+  const capHasSpec = preview.includes('const capFontSpec = computed(')
+  check('㊵ 字幕折行量宽走映射后的族名（subFontFamily，不是原值）', capHasSpec && capUsesMapped, true)
+  check('㊵ 弹幕量宽由调用方给映射后的族名（buildIndex 收 danmakuFontFamily）', + /danmakuFontFamily\b/.test(engineSrc) && engineSrc.includes(', dmFamily)') && /danmakuFontFamily: \(\) => fontFamilyFor\(props\.fonts, props\.config\?\.style\?\.danmaku\?\.font/.test(preview), true)
+  {
+    // 变异①：字幕量宽换回原值 ⇒ 第一条翻面。
+    const badCap = preview.replace('+ (subFontFamily.value ?', '+ (subStyle.value.font ?')
+    check('㊵ [变异] 字幕量宽换回原值 ⇒ 判据翻面', badCap.includes('+ (subFontFamily.value ?'), false)
+    // 变异②：量宽改回读 cfg（库 id）⇒ 第二条翻面。
+    const badDm = engineSrc.replace(', dmFamily)', ', dmFontFamily(cfg))')
+    check('㊵ [变异] 弹幕量宽改回 dmFontFamily(cfg) ⇒ 判据翻面', badDm.includes(', dmFamily)'), false)
+  }
+}
+
+// ㊶ **两层描边必须等宽**（2026-10-16，用户口径「第二层描边和第一层的宽度一致」）。
+//
+//    三处各吃过一次亏，共同形状是"第二层用了**别人**的宽度基准"：
+//      · 文字元素（`.text-el`）：第二层曾复用**字幕**那份 `outerRing`（由 `[style.subtitle].stroke` 推），
+//        而它的第一层是**元素自己的** `tx.style.strokePx` ⇒ 两个基准不同；
+//      · 字幕行（`.cap`）：第一层是 `capStrokeW * c.fontScale`（**装不下时整行缩字号**，描边跟着缩），
+//        而第二层挂在 `.captions` **容器**上、用的是**未缩放**的值 ⇒ 缩过的行两层必然不等；
+//      · 底座/成片那两条腿：环的宽度由转译器按**同一个** stroke 值算出来（`stroke_ratio` 那一套），
+//        本来就是同源的 —— 所以判据只需要钉住 DOM 这两处的**基准**。
+//
+//    `strokePx` / `stroke` 都是**全宽**（ASS 的 `Outline` 才是半宽，见 `check-text-style` ③）⇒
+//    "等宽"判据就是：环的内宽参数必须与同一层的第一层内宽参数**同一个表达式**。
+{
+  const preview = await read('webui/src/components/PolishPreview.vue')
+  check('㊶ 元素层的白环按元素自己的 strokePx 算（不许复用字幕那份 outerRing）',
+    /outerRing: outerRingShadow\(subStyle\.value\.outer_stroke, e\.style\?\.strokePx/.test(preview) &&
+    /\.\.\.\(tx\.outerRing \? \{ textShadow: tx\.outerRing \} : \{\}\)/.test(preview), true)
+  check('㊶ 字幕的白环逐行算（用这一行的 fontScale），容器那份已去掉',
+    /const ring = outerRingShadow\(subStyle\.value\.outer_stroke, capStrokeW\.value \* w\.scale\)/.test(preview) &&
+    /\.\.\.\(c\.ring \? \{ textShadow: c\.ring \} : \{\}\)/.test(preview) &&
+    !/outerRing\.value \? \{ textShadow: outerRing\.value \}/.test(preview), true)
+  {
+    // 变异①：元素层环换回字幕那份 ⇒ 第一条翻面。
+    const badEl = preview.replace('outerRing: outerRingShadow(subStyle.value.outer_stroke, e.style?.strokePx', 'outerRing: outerRingShadow(subStyle.value.outer_stroke, subStyle.value.stroke')
+    check('㊶ [变异] 元素层环改用字幕的 stroke ⇒ 判据翻面', /e\.style\?\.strokePx/.test(badEl.split('outerRing:')[1] || ''), false)
+    // 变异②：字幕环用未缩放的 capStrokeW ⇒ 第二条翻面。
+    const badRow = preview.replace('capStrokeW.value * w.scale)', 'capStrokeW.value)')
+    check('㊶ [变异] 字幕环用未缩放的值 ⇒ 判据翻面', /const ring = outerRingShadow\(subStyle\.value\.outer_stroke, capStrokeW\.value \* w\.scale\)/.test(badRow), false)
+  }
+}
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过')
 process.exit(failed ? 1 : 0)

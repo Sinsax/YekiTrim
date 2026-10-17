@@ -93,5 +93,52 @@ ok(/function onStagePause\(e\) \{\n  if \(e && e\.target === videoRef\.value\) s
 ok(/\.source-video-standby \{ position:absolute/.test(SRC),
   '缺 `.source-video-standby`：备用那块会铺满舞台（或用了 display:none —— 那样它不再解码）');
 
-console.log(`✓ 精修预览 A/B 预滚：${checks} 项全绿（含 3 处变异自证）`);
+// ---- ⑤ **P3：wasm 是主腿、DOM 是兜底**（2026-10 补） ----
+//
+// ⚠️ 为什么必须钉：P3 的形态是"**默认**进 Dhampir，失败**自动退回** DOM"，
+//    而它的实现只有**一处**（`onMounted` 里那个 `toggleDhampir()`）。
+//    那一处掉了**不会报任何错** —— 所有门禁照旧全绿，只是预览静默退回 DOM 腿，
+//    于是"`engine.js` 是模板的手工移植副本"这整类耦合**又回来了**（P3 存在的唯一理由）。
+//    ⇒ 三件事都要钉：① 默认进；② 失败退回；③ DOM 腿**仍在**（它是兜底，不许被删）。
+//
+// ⚠️ 判据刻意**不钉那个 300ms 延时值**：它是体验调参（等布局稳定），
+//    钉死会让"调成 200ms"这种无害改动报假红。钉的是**存在性**。
+const autoSwitch = /if \(!dhampirMode\.value && !dhampirError\.value\) toggleDhampir\(\)/.test(SRC);
+ok(autoSwitch, '没有"挂载后自动进 Dhampir"那一处 —— 预览会静默退回 DOM 腿（P3 归零，且不报错）');
+ok(
+  SRC.slice(SRC.indexOf('// ===== 默认进 Dhampir')).includes('toggleDhampir()'),
+  '"自动进 Dhampir"没写在 `onMounted` 段里 —— 那样它根本不会被调用',
+);
+
+// ② 失败必须**自动**退回 DOM（而不是停在白屏/黑屏上）。
+//    判据 = `toggleDhampir` 的 `catch` 里把 `dhampirMode` 翻回 false。
+{
+  const fnAt = SRC.indexOf('async function toggleDhampir()');
+  const catchAt = SRC.indexOf('} catch (e) {', fnAt);
+  ok(
+    catchAt > fnAt && SRC.slice(catchAt, catchAt + 1200).includes('dhampirMode.value = false'),
+    '`toggleDhampir` 的 catch 里没有把 `dhampirMode` 翻回 false —— 起引擎失败时**退不回 DOM**（白屏）',
+  );
+}
+
+// ③ 兜底那条腿还在（P3 的口径是"DOM **降兜底**"，**不是**删除；删除是 P3 之外的独立决策）。
+ok(/ref="stage[01]Ref"/.test(SRC), 'DOM 预览腿被删了 —— P3 要求它**降为兜底**、不是消失');
+
+// 变异自证：把"默认进"那一行摘掉，必须被识别成"不再默认进"。
+{
+  const noAuto = mutate(
+    '    if (!dhampirMode.value && !dhampirError.value) toggleDhampir()',
+    '    // 有人顺手注释掉了',
+  );
+  // ⚠️ `ok(..., true)` 的约定是"传**未变异时**该成立的条件，由它取反"（见上面的 `ok`）。
+  //    这里直接传"还找得到那句话"，变异后应当**找不到** ⇒ 取反后成立 ✓。
+  ok(
+    /if \(!dhampirMode\.value && !dhampirError\.value\) toggleDhampir\(\)/.test(noAuto),
+    '变异自证：把"自动进 Dhampir"摘掉竟然没被识别出来',
+    true,
+  );
+}
+
+console.log(`✓ 精修预览 A/B 预滚：${checks} 项全绿（含 4 处变异自证）`);
 console.log('  台上那块 = computed(activeStage) / 换台先翻 activeStage 再 pause / Dhampir 源没就绪不画 + 备用源换绑');
+console.log('  P3：wasm 主腿（挂载自动进 + 失败自动退回 DOM + DOM 兜底仍在）');

@@ -681,6 +681,27 @@ export function safeEmoji(name) {
   return /^\p{Extended_Pictographic}/u.test(s) ? s : ''
 }
 
+/** `name` → 内建 Noto **动态** emoji 的 CDN 地址（512px GIF）。
+ *
+ *  ⚠️ **与出片模板逐字同形**（`templates/index.html` 里那句
+ *  `src='https://fonts.gstatic.com/s/e/notoemoji/latest/'+en+'/512.gif'`），
+ *  也与 `emoji_search.rs::CDN_BASE` 同一个上游。三处必须是**同一个东西** ——
+ *  面板给静态字符、成片给动图 = 用户"选的是 A、看到的是 B"
+ *  （用户口径：「polish编辑器内有，但是是静态的」）。
+ *
+ *  ⚠️ **只认码点写法**（`1f62d` / `203c_fe0f`）：手填框里粘的**字符**没有 CDN 键，
+ *  那种要由调用方走 `safeEmoji` 直接画字符（`index.html` 里 `enIsChar` 那一档同口径）。
+ *  ⚠️ 多码点序列直接拼进路径即可（CDN 的路径段就是 `203c_fe0f` 这种写法）。
+ *  ⚠️ 越界（`deadbeef`）在这里**不判** —— 那是 `safeEmoji` 的职责（`fromCodePoint` 会抛）。
+ *  这里只回一个 URL，画不出来由 `<img>@error` 退回字符。
+ */
+export function emojiGifUrl(name) {
+  const s = String(name == null ? '' : name).trim()
+  return /^[0-9a-f]+(_[0-9a-f]+)*$/i.test(s)
+    ? 'https://fonts.gstatic.com/s/e/notoemoji/latest/' + s + '/512.gif'
+    : ''
+}
+
 /** §5 E4a 文字元素动效的**工程级**参数（`[elements]` 段）。
  *
  *  ⚠️ **它与事件无关**：T1/T2/T4/T6 都是"整个工程开不开、参数多少"，

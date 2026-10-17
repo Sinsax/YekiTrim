@@ -107,9 +107,19 @@ export const fetchStickerSources = (pid, dir, label = '') =>
   api(`/api/polish/sticker-sources?${qs(pid, dir)}`, { label })
 
 /** 贴纸库全量（只读）：`[{name, built, registered, description, tags:[{tag,files}], files}]`。
- *  编辑器里「keyword 一级 → 贴纸二级」选择的数据源（写操作仍只在 admin 侧）。 */
+ *  编辑器贴纸选择器（包 → 分类 → 贴纸三段行递进）的数据源（写操作在素材库那一组接口）。 */
 export const fetchStickerLibrary = (pid, dir, label = '') =>
   api(`/api/polish/sticker-library?${qs(pid, dir)}`, { label })
+
+/** 内建 emoji 目录（只读）：`[{tag, codepoints:[hex,…]}]`，**编译期内嵌、不联网**。
+ *
+ *  ⚠️ 与 `fetchStickerSources` 的分工：那条只回"有哪些**来源**"（其中一项叫 `emoji`），
+ *  回不了"emoji 里有哪些**具体表情**"。编辑器「贴纸轨」的 keyword 选中 `emoji` 之后，
+ *  表情面板要的就是这一份（见 `StickerPicker.vue`）。
+ *  ⚠️ 它**不需要作用域**：目录是编译期内嵌的、不属于任何工程，所以没有 `pid`/`dir` 参数。
+ */
+export const fetchEmojiCatalog = (label = '') =>
+  api('/api/polish/emoji-catalog', { label })
 
 /** 贴纸缩略图 URL（`<img>` 直连；服务端只读 + 路径安全校验，与 admin 预览同一个实现）。 */
 export const stickerFileUrl = (pid, dir, pack, name) => {

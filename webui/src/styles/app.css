@@ -450,3 +450,28 @@ iframe.preview { width:100%; height:75vh; border:0; border-radius:12px; backgrou
 @media (max-width:1000px) {
   .cols-main, .cols-2 { grid-template-columns:1fr; }
 }
+
+/* ⚠️⚠️ **属性面板的两列网格**（2026-10-16，纯 CSS 的排版优化）——
+   面板只有 232px 外宽（内宽 210px）、又是可滚动的停靠块，而全局的
+   `label{display:block}` + `input,select{width:100%}` 让**每个字段占两行**
+   （标签一行、控件一行）⇒ 文字元素那一屏（三轴 + 角度 + 位置 + 颜色…）要滚很久。
+   做法：把面板本身变成网格，**顶层**的 `label` 落第 1 列、`select/input` 落第 2 列，
+   其余子元素（提示、按钮行、自定义行、textarea）整行铺满 —— **一个字段一行**。
+
+   ⚠️ 只认**直接子元素**（`>`）：面板里那些已经自己包好布局的 `<div class="row">` /
+   `.pos-row` / `.angle-row` 一个字都不动（它们的 label 在内部，不受影响）。
+   ⚠️ 三列的宽度：标签列 **44px**（"排版/过渡/动效/角度/颜色"最多 2 个汉字 + 余量）+
+   6px 间距 + 控件列吃掉剩下的 **160px**（下拉里最长的"淡入淡出"够放）。
+   ⚠️ textarea 故意不在第 2 列：文字内容要的是整行宽（它继续占满一行、标签在上一行，
+   那是**期望**的样子）。 */
+.props-panel { display:grid; grid-template-columns:44px minmax(0,1fr); align-content:start; gap:4px 6px; }
+.props-panel > * { grid-column:1 / -1; }
+.props-panel > label { grid-column:1; margin:0; align-self:center; }
+.props-panel > select,
+.props-panel > input { grid-column:2; width:100%; min-width:0; }
+
+/* ⚠️ **角度那一行要待在控件列里**（2026-10-16）：`.angle-row` 是 `div`，
+   会被上面那条 `> *` 判成"整行铺满" ⇒ 掉到标签**下面**、白占一行（标签行右边空 160px）。
+   它本来就是"滑杆 + 度数 +（可选）默认"，属于控件列 ⇒ 显式钉到第 2 列。
+   实测这一条让「排版 + 角度」这块再矮一行（见 check-sticker-picker-layout 的 ③）。 */
+.props-panel > .angle-row { grid-column: 2; }
