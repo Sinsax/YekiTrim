@@ -791,6 +791,20 @@ export const ANIM_PRESETS = {
     //    ⚠ 那时判据是**绿的**（双峰个数、第二峰更弱、停顿恒 1.0 全都量到了）——
     //      又一个"判据绿 ≠ 用户看得见"的实例：**人眼感知的是节律，不是极值个数**。
     //    新值 `[0,210,320,530]` / `900`：停顿 520→370ms、两下各宽 30ms。
+    // ⚠️ **2026-10-18：底座加了周期缩放原语**（`scale_curve` + `scale_cycle_ms`）⇒
+    //    这一档现在**预览与成片同一条曲线**（逐段 `backOut3`，点列见下）。
+    //    用户口径：「放大一次缩小后跟随一个小的放大」「幅度要小，1s 脉动一下，参考心电图」。
+    //    基线 → 主峰 +5% → 回基线 → 小峰 +2% → 回基线，然后停顿到 1s 末尾。
+    //    ⚠️ 与转译器 `ANIM_PRESETS.heartbeat.scale_curve` **同一组点**（判据 ⑥ 对拍）。
+    scaleCurve: [
+      { ms: 0, scale: 1.0 },
+      { ms: 60, scale: 1.05 },
+      { ms: 140, scale: 1.0 },
+      { ms: 220, scale: 1.02 },
+      { ms: 320, scale: 1.0 },
+    ],
+    scaleCycleMs: 1000,
+    // ---- 下面是**老数据**（没有 scaleCurve 的工程）兜底 ----
     heartbeatPeaksMs: [0, 210, 320, 530],
     //    ⚠ `amp` 1.14 → **1.22**（2026-10-14）：与成片那份 `scale_in_peak` 同值。
     //      1.14 时峰值 `1+0.14×1.25 = 1.1750` 与 `pop` 的 `0.3+0.7×1.25 = 1.1750`
@@ -1066,6 +1080,8 @@ export function animMotion(cfg, animName, transitionName) {
     scaleInMs: 0,
     // ⚠ 心跳也要重置：不然"选了别的档"会**继承全局那份心跳**，
     //   两种动效叠在一起而用户以为只选了一档。
+    scaleCurve: null,
+    scaleCycleMs: 0,
     heartbeatPeaksMs: null,
     heartbeatAmp: 1.0,
     heartbeatCycleMs: 0,
@@ -1542,6 +1558,33 @@ function backOut3(p) {
  *  @param {Array<number>} peaksMs 两个峰的起点（相对周期起点）
  *  @param {number} amp 第一峰的倍率（如 1.14）
  *  @param {number} cycleMs 一个周期的毫秒数
+ */
+export function scaleCurveAt(ms, points, cycleMs) {
+  const cyc = Number(cycleMs)
+  const pts = Array.isArray(points) ? points : []
+  if (!Number.isFinite(cyc) || cyc <= 0 || pts.length < 2) return 1
+  const t = Number(ms)
+  if (!Number.isFinite(t) || t < 0) return 1
+  const inCycle = t % cyc
+  let prev = pts[0]
+  for (let i = 1; i < pts.length; i++) {
+    const p = pts[i]
+    if (inCycle <= Number(p.ms)) {
+      const span = Number(p.ms) - Number(prev.ms)
+      if (!(span > 0)) return Number(p.scale)
+      const u = (inCycle - Number(prev.ms)) / span
+      return Number(prev.scale) + (Number(p.scale) - Number(prev.scale)) * backOut3(u)
+    }
+    prev = p
+  }
+  // 末点之后 ⇒ 本周期剩余时间**停在基线**（这就是"停顿"）
+  return 1
+}
+
+/** 老的**双峰**心跳曲线（`heartbeatPeaksMs/amp/cycle`）。
+ *
+ *  ⚠️ 2026-10-18 起**新数据走 `scaleCurveAt`**（底座有了周期原语，预览与成片同一条曲线）；
+ *  这一份只给"没有 `scaleCurve` 的老数据"兜底 —— 别删，删了老工程的心跳在预览里就不动了。
  */
 export function heartbeatScaleAt(ms, peaksMs, amp, cycleMs) {
   const p = Array.isArray(peaksMs) ? peaksMs : []
@@ -2417,7 +2460,12 @@ export function getElements(idx, t) {
       // ⚠ 单峰曲线（`backOut3`）**数学上表达不了双峰**（见 `heartbeatScaleAt` 的文档），
       //   所以这档**不走** `scaleInMs` 那个窗口，而是走自己的周期函数。
       // ⚠ 边界：`local >= 0`（事件起点之前不跳）—— 与 T1 同一条。
-      if (mo && mo.heartbeatAmp > 1 && local >= 0) {
+      // ⚠️ **周期曲线优先**（2026-10-18）：底座加了 `scale_curve` 原语，预览走**同一条曲线**
+      // （逐段 `backOut3`、末点之后停在基线）⇒ 预览与成片逐值同形。
+      // 老数据（没有 `scaleCurve`）才落到下面那条老的"双峰参数"兜底。
+      if (mo && Array.isArray(mo.scaleCurve) && mo.scaleCurve.length >= 2 && mo.scaleCycleMs > 0 && local >= 0) {
+        motionScale = scaleCurveAt(local * 1000, mo.scaleCurve, mo.scaleCycleMs)
+      } else if (mo && mo.heartbeatAmp > 1 && local >= 0) {
         motionScale = heartbeatScaleAt(
           local * 1000, mo.heartbeatPeaksMs, mo.heartbeatAmp, mo.heartbeatCycleMs,
         )

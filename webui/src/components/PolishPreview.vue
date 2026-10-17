@@ -2599,7 +2599,10 @@ const ELEMENT_EDGE_MARGIN_PCT = 6
  *     是错位的那一半），比"看不见"更难查。
  *  ⚠️ `shake` 住这里的理由不同：它是**本层的动效档**（底座那条腿没有它的位置），
  *     不是"底座忘了实现"。 */
-const DHAMPIR_NO_DRAW = new Set(['heartbeat', 'shake'])
+// ⚠️ 2026-10-18：**心跳从这份名单里摘掉了** —— 底座加了 `scale_curve` 周期原语，
+// 成片真的会画它了。留着它会**双画**（底座一层 + DOM 层一层），两层相位一错开就是"抖上加抖"。
+// `shake` 仍在名单里（底座真不画它，见上面那张表）。
+const DHAMPIR_NO_DRAW = new Set(['shake'])
 function textPosTopPct(e) {
   const p = String(e.pos ?? '').trim().toLowerCase()
   if (!p) return null
