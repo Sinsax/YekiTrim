@@ -137,8 +137,9 @@
                       : '与上一段重叠 0.5s 淡化：画面跨轨叠化、原声交叉淡化'"
                     @click="edlSetTransition(edlSelBlock.index, EDL_TRANSITION_DISSOLVE)">叠化</button>
           </div>
-          <p class="mini-hint" title="叠化 = 画面把本段挪到上层、用 0.5s 不透明度淡入盖住上一段；原声在同一窗口里交叉淡化">
-            叠化：与上一段重叠 0.5s 淡化；过于短的段会退回硬切
+          <!-- ⚠️ 行内文案按仓里的预算（≤20 字）压过：28 字那条拆成"行内说是什么 + title 说条件" -->
+          <p class="mini-hint" title="叠化 = 画面把本段挪到上层、用 0.5s 不透明度淡入盖住上一段；原声在同一窗口里交叉淡化；过短的段会自动退回硬切">
+            叠化：重叠 0.5s 淡化
           </p>
           <div class="row spread mt-6 small">
             <span class="muted">来源</span>
@@ -161,13 +162,15 @@
               <input v-model.number="selEnd" type="number" step="0.01" min="0"></div>
           </div>
           <div class="row mt-6 gap-4">
-            <button class="mini-btn" title="把「开始」设为当前播放时间" @click="setInPoint">设为入点</button>
-            <button class="mini-btn" title="把「结束」设为当前播放时间" @click="setOutPoint">设为出点</button>
+            <!-- ⚠️ 标签只留两字（2026-10-15 用户口径：「整合为一行」+「设为」删去）：
+                 完整说法在 title 里。写成「设为入点/设为出点」时五颗按钮在 266px 里会折成两行。 -->
+            <button class="mini-btn" title="把「开始」设为当前播放时间" @click="setInPoint">入点</button>
+            <button class="mini-btn" title="把「结束」设为当前播放时间" @click="setOutPoint">出点</button>
             <button class="mini-btn" title="预览跳到这个块的开始" @click="seekToStart">定位</button>
             <button v-if="canSplit" class="mini-btn" title="从当前播放时间拆成两块" @click="splitSelected">拆分</button>
-            <button v-if="selected.kind === 'event'" class="mini-btn" @click="duplicateSelected">复制</button>
+            <!-- 「复制」按钮**已删**（2026-10-15 用户口径「不需要复制」）：只被它用的 duplicateSelected 一并删了。
+                 要复制一条事件的做法仍是"新建一条再改时间"（新建同样打 manual 标记、不被后处理改写）。 -->
           </div>
-          <div v-if="spanHint" class="hint mt-4">{{ spanHint }}</div>
           <!-- 贴纸/运镜的时间：手工改过之后后处理就不动它了，这里给状态与回退口 -->
           <div v-if="MANUAL_TYPES.includes(selItem.type)" class="manual-row mt-4">
             <span class="chip" :class="selItem.manual ? 'p' : 'n'">{{ selItem.manual ? '手动' : '自动对齐' }}</span>
@@ -228,22 +231,14 @@
               </button>
             </div>
 
-            <!-- 系统理由（§1）：后处理在这段上**自动**改过什么、凭什么。
-                 只读 —— 它描述"已经发生的事"，改它没有效果（要改就改上面的起止/景别）。 -->
-            <div v-if="segDecisions.length" class="seg-why mt-6">
-              <div class="row spread small">
-                <span class="muted">系统做得对吗</span>
-                <span class="chip n">{{ segDecisions.length }} 条自动决策</span>
-              </div>
-              <div v-for="(d, i) in segDecisions" :key="i" class="why-row" :title="d.detail || ''">
-                <span class="why-dot" :class="d.kind === 'boundary_sentence_end' ? 'b' : 'o'"></span>
-                <span class="why-text">{{ d.text }}</span>
-                <span v-if="d.detail" class="muted small mono why-detail">{{ d.detail }}</span>
-              </div>
-              <div class="mini-hint">
-                后处理每次重跑都会重算这些理由；要改结果请直接拖动上面的分段边界。
-              </div>
-            </div>
+            <!-- ⚠️⚠️ **「系统做得对吗」整块已删**（2026-10-15 用户口径）。
+                 它把 `polish.toml` 的 `[[decisions]]` 原样铺在分段属性里 —— 三行说明
+                 （"首段补了一条 0.5s 的黑场淡入" / "往后改/删都归你" /
+                 "后处理每次重跑都会重算这些理由"）全是**给开发者看的**，
+                 而且**只读**（改它没有任何效果）。用户的原话是这一长串要删掉。
+                 ⚠️ `[[decisions]]` 这个**数据**还在（`process` 仍写、仍是排障凭据），
+                     删的只是**界面上的展示**。要再看就走 `polish.toml` 或日志。
+                 ⚠️ 别把它挪到别处再挂出来 —— 用户的判断是"这类信息不该出现在编辑器里"。 -->
           </template>
 
           <template v-else-if="selected.kind === 'sub'">
@@ -271,14 +266,6 @@
                    ⚠️ 别改 `spec/effects.json` 的 `label` —— 那是**词汇表/文档**用的
                       （`docs/polish-events-reference.md` 等按它生成），这里只改**界面**口径。 -->
               <template v-if="selItem.type === 'element'">
-                <!-- **逐块手动落点**：点了它就在预览上点一下，这一块的**中心**落到那儿；手动之后自动落点不再影响它。 -->
-                <div class="row mt-4 gap-6">
-                  <button class="mini-btn" title="在预览上点一下，把这一块的中心放到那儿"
-                          @click="startManualPick">改落点</button>
-                  <button v-if="evManualPos" class="mini-btn" title="清掉手动落点，交回自动（安全区算法）"
-                          @click="clearManualPos">恢复自动</button>
-                  <span v-if="manualPick" class="muted small">在预览上点一下…</span>
-                </div>
                 <b>{{ elementKindOf(selItem) === 'text' ? '文字'
                      : elementKindOf(selItem) === 'sticker' ? '贴纸'
                      : '认不出的类型' }}</b>
@@ -400,7 +387,11 @@
                       而且判据 `check-*` 也钉着它的载荷切换口径）—— 只是**面板里不再暴露**。
                    ⚠️ kind 认不出时（`⚠` 那一支）**照实显示**，别默认成文字。 -->
               <template v-if="elementKindOf(selItem) === 'unknown'">
-                <label>元素种类</label>
+                <!-- ⚠️ 标签**不再叫「元素种类」**（2026-10-15）：轨道已经分家
+                     （文字轨 / 贴纸轨），"种类"由**轨道**决定、面板里根本没有这个选择器了。
+                     这一支是**数据完好性提示**（kind 认不出 ⇒ 不知道该按文字还是贴纸渲染），
+                     叫回「元素种类」会让用户去找一个不存在的下拉。 -->
+                <label>识别不了的类型</label>
                 <div class="muted small">⚠ 认不出的 kind：{{ selItem.kind || '(空)' }}（按原样保留）</div>
               </template>
 
@@ -496,17 +487,47 @@
                   这个档名不认识。
                 </div>
 
+                <!-- 过渡轴**只有一个下拉框**（2026-10-15 用户口径，报过不止一次）。
+
+                     用户原话：「过渡只留**弹出**和**淡入淡出**」「过渡：过渡：弹出，不觉得很蠢吗」。
+
+                     病根：这里原先照抄了**排版轴**那套「种类 + 细分」两级结构
+                     （种类框走 `kindsOnAxis('transition')`、细分框走 `transitionVariants`）。
+                     而两级是给排版轴设计的 —— 那里一个种类下辖多档（倾斜 → 标准 / 小角度…），
+                     种类栏说"这一类是什么"、细分栏说"哪一支"，**两级各有信息**。
+
+                     过渡轴只有 `pop` / `fade` **两档、没有细分维度** ⇒ 硬套两级之后：
+                       · 种类框：属于这条轴的只有 `transition` 这个**种类本身**与 `none`（不设）
+                         ⇒ 它只能把自己重复一遍，显示成「过渡」；
+                       · 细分框：`transitionVariants` 恰好 `length > 1` ⇒ 渲染出来显示「弹出」。
+                     于是面板上就是「过渡 / 弹出」—— **一个框什么都没选，另一个框才是真正的值**。
+
+                     ⇒ 过渡轴直接**一个下拉**，选项就是两档本身。
+                     ⚠️ 值仍然写 `transition_anim`，**取值一个字都不变**（`pop` / `fade` /
+                        空串 = 不设）—— 这是**纯界面重排**，老工程产物逐字节不变（R4）。
+                     ⚠️ 别再把 `kindsOnAxis('transition')` / `transitionVariants` 用回来 ——
+                        那两个计算属性还在（排版/动效支仍在用），但**过渡支不许再走两级**。 -->
                 <label>过渡</label>
-                <select :value="transitionKind" @change="setKindOnAxis('transition', $event.target.value)"
+                <select :value="selItem.transition_anim || ''" @change="setVariantOnAxis('transition', $event.target.value)"
                   title="管字**怎么进来、怎么出去**（入场/出场效果）。与动效可以同时设。">
-                  <option v-for="k in kindsOnAxis('transition')" :key="k.kind" :value="k.kind">{{ kindLabelOn('transition', k) }}</option>
-                  <option v-if="transitionKind === ''" value="">未知档（{{ selItem.transition_anim }}）</option>
+                  <option v-for="a in TRANSITION_OPTIONS" :key="a.value" :value="a.value">{{ a.label }}</option>
+                  <!-- ⚠️⚠️ 这一项**不是第三个选项**，是"磁盘上的值认不出/为空"时的**兜底显示**
+                       （2026-10-15 用户口径：过渡只留 `弹出` + `淡入淡出` 两项）。
+
+                       为什么必须有它：老工程与后处理生成的事件**大多没有 `transition_anim`**
+                       （空串），而 `<select>` 的 `:value` 匹配不上任何一项时**浏览器会显示第一项** ——
+                       表现就是"这条我从来没设过，面板却写着弹出"。那是撒谎，
+                       用户会以为自己设过（本仓对这类"静默伪装"零容忍）。
+                       ⇒ 兜底项照实说"没设过"：**只在磁盘值认不出/为空时出现**，
+                          用户一旦选任一项就固化成 `pop` / `fade`，它自己消失。
+
+                       ⚠️ 文案**不许写"未知档"**：空串是**正常状态**（没设过），不是坏数据 ——
+                          写成"未知档"会让用户以为工程坏了。真正的**认不出的档名**
+                          （既不是空、也不在 `ANIM_KNOWN` 里）由下面那行 `.hint` 单独报。 -->
+                  <option v-if="transitionKind === ''" value="">
+                    {{ selItem.transition_anim ? '未知档（' + selItem.transition_anim + '）' : '未设置' }}
+                  </option>
                 </select>
-                <template v-if="transitionVariants.length > 1">
-                  <select :value="selItem.transition_anim || ''" @change="setVariantOnAxis('transition', $event.target.value)">
-                    <option v-for="a in transitionVariants" :key="a.value" :value="a.value">{{ a.label }}</option>
-                  </select>
-                </template>
                 <div v-if="selItem.transition_anim && !ANIM_KNOWN.includes(selItem.transition_anim)" class="hint">
                   这个档名不认识。
                 </div>
@@ -627,6 +648,23 @@
                   <option value="linear">线性（左上 → 右下）</option>
                   <option value="radial">径向（中心实、边缘淡出）</option>
                 </select>
+                <!-- 渐变角度：**只对线性有意义**（径向没有方向）。
+                     它此前是"自动派生"冒出来的裸控件（没有标签、没有条件），
+                     与 `形状` 的关系看不出来 —— 现在是它的下一行、并只在 linear 时出现。
+                     ⚠️ 单位口径：界面 0=向上、顺时针（CSS 约定）；转译器按 `base = css − 90` 换算，
+                        别在这里自己减 90（那会减两遍）。 -->
+                <template v-if="selItem.shape !== 'radial'">
+                  <label>角度</label>
+                  <div class="pos-row">
+                    <input class="pos-range" type="range" min="0" max="360" step="1"
+                           :value="Number(selItem.angle ?? 135)"
+                           title="渐变方向：0=向上，顺时针"
+                           @input="selItem.angle = Number($event.target.value)">
+                    <input class="pos-num" type="number" min="0" max="360" step="1"
+                           :value="Number(selItem.angle ?? 135)"
+                           @change="selItem.angle = Number($event.target.value)">
+                  </div>
+                </template>
               </template>
               <!-- 淡入 / 淡出：整块就是过渡本身（遮罩由全遮线性化到全透，反向同理），
                    所以这一档没有形状，颜色缺省就是黑色 -->
@@ -641,6 +679,9 @@
               </template>
               <label>不透明度（{{ selItem.opacity ?? 1 }}）</label>
               <input v-model.number="selItem.opacity" type="number" step="0.05" min="0" max="1">
+              <template v-for="f in autoFields('overlay', ['overlay_type', 'shape', 'color', 'colors', 'opacity', 'angle'])" :key="f.name">
+                <FieldControl :ev="selItem" :f="f" />
+              </template>
             </template>
 
             <!-- 纯音效 -->
@@ -671,6 +712,34 @@
               <label>配声音量（{{ selItem.sfx_volume ?? 0.2 }}）</label>
               <input v-model.number="selItem.sfx_volume" type="number" step="0.05" min="0" max="2">
             </template>
+
+            <!-- ⚠️⚠️ **兜底块**：上面每个专用块都只渲染它自己那几个字段，
+                 而「这个类型在词汇表里还有哪些字段没人渲染」**只有这里知道**。
+                 删掉它 = 那些字段从界面上**整类消失**（用户看不见、也改不了），
+                 而且**不报错** —— 判据 ㉛ ② 钉着这一块。
+                 ⚠️ 只传 type、**不传 skip**：专用块已渲染的字段由 `DEDICATED_FIELDS`
+                    与各自的 skip 表挡掉（两者的并集 = 面板真正手写的那些）。 -->
+            <!-- ⚠️⚠️⚠️ **兜底块只许给"没有专用支"的类型兜底**（2026-10-15 二次修）
+
+                 它存在的**唯一理由**是：新加的字段类型若还没有专用块，也不至于在面板上消失。
+                 而**有任何专用支的类型**，上面那支已经把它的字段渲染过了 —— 再跑一遍 `autoFields`
+                 就是**每个字段出两遍**。
+
+                 ⚠️ 第一版只排除了 `element`（那是我当时在改的那个类型），于是**别的类型照旧重复**。
+                    用户当场贴出运镜面板：手写的「方式/推进速度/景别/手持摇摆/聚焦/移到」
+                    下面又原样列出 `zoom 中 / anchor liver / anchor_to / cut / handheld / speed / tilt` ——
+                    **每个都是一遍**。实测同病的还有 `overlay`（5 个字段）。
+                    ⚠️ 教训：**"这个类型有专用支吗"要按全集判，不是按手头这一个判** ——
+                       当时我要是问一句"还有谁有专用支"，就不会只修 element。
+
+                 ⚠️ 判别依据 = `hasDedicatedBranch`（有专用支的类型**必须**与模板里的
+                    `selItem.type === '…'` 分支逐一对应，判据 ㉞ 会算差集）。
+                 ⚠️ 别退回去写成 `!== 'element' && !== 'camera' && …` 的硬编码长串：
+                    下次加一个专用支的人**必然忘记同步它**，而症状是静默的重复渲染。 -->
+            <template v-if="!hasDedicatedBranch(selItem.type)"
+                      v-for="f in autoFields(selItem.type)" :key="'auto-' + f.name">
+              <FieldControl :ev="selItem" :f="f" />
+            </template>
           </template>
 
           <div class="row mt-8">
@@ -695,19 +764,23 @@
                （`_lanes`，见 PolishView 的 laneEnabled）：竖屏素材/画布下运镜与视觉特效默认灭。
                ⚠️ 「分段 / 屏蔽」是结构轨（分段是容器、屏蔽是剪切标记），没有"整类不渲染"这种语义，
                所以它没有眼睛 —— 别给它补一个假装有作用的按钮。 -->
-          <!-- ⚠️⚠️ **眼睛只给"贴纸"那一条**（2026-10-14 分家之后）。
-               `文字` 与 `贴纸` 在**磁盘上是同一条轨**（`lane: 'sticker'`）⇒
-               两条都画眼睛就是**两枚眼睛管同一个开关**：点哪一枚另一枚都跟着变，
-               而用户看到的是"我只关了文字，贴纸怎么也没了"。
-               ⇒ 眼睛留在贴纸轨（开关的名字本来就是 `sticker`），
-                 文字轨放一枚**说明性占位**（不可点），点它去贴纸轨那颗眼睛。
-               ⚠️ 别把占位改成按钮：那就又变成两枚眼睛了。 -->
-          <button v-if="lane.lane && !lane.sharedEye" class="lane-eye" :class="{ off: !laneEnabled(lane.lane) }"
+          <!-- ⚠️ 眼睛的键是**轨道名**（`lane.lane`），不是界面 id。
+               「文字」与「贴纸」磁盘上是同一条轨（都写 `sticker`）⇒ 两枚眼睛**读同一个开关**：
+               点任一枚两枚一起变。这是**对的**（"文字不渲染"与"贴纸不渲染"本就是同一件事，
+               落盘也只有一个 `[stage.lanes].sticker`）；别为"两条能分别开关"去造第二个落盘键。 -->
+          <button v-if="lane.lane" class="lane-eye" :class="{ off: !laneEnabled(lane.lane) }"
                   :title="laneEyeTitle(lane)" @click.stop="emit('toggle-lane', lane.lane)">
             <Icon :name="laneEnabled(lane.lane) ? 'eye' : 'eye-off'" :size="12" />
           </button>
-          <span v-else-if="lane.sharedEye" class="lane-eye lane-eye-none"
-                :title="`「文字」与「贴纸」在磁盘上是同一条轨道（${lane.lane}）—— 开/关去旁边的「贴纸」轨，那枚眼睛对两条同时生效`">⇄</span>
+          <!-- ⚠️⚠️ **「文字」轨也要一枚真的眼睛**（2026-10-15 用户口径）。
+               之前这里是一枚**说明性占位**（`⇄` / `type` 图标，不可点），理由写的是
+               "两条泳道磁盘上是同一条轨 ⇒ 两枚眼睛管同一个开关，点哪枚另一枚都变"。
+               **那个理由站不住**：`laneEnabled` 的键就是轨道名 `lane.lane`（两条都是
+               `'sticker'`），共用同一个开关**恰恰意味着两枚眼睛读数一致、谁点都生效** ——
+               那正是用户要的（"文字不渲染"和"贴纸不渲染"本来就是同一件事）。
+               占位符带来的真实体验是"文字轨前面有个坏掉的符号、还点不动"。
+               ⇒ 与其余轨道走**同一条** `<button class="lane-eye">` 分支。
+               ⚠️ 别再加回 `sharedEye` 占位支（那个字段也已随之删除）。 -->
           <span v-else class="lane-eye lane-eye-none"
                 title="分段 / 屏蔽是结构轨：分段是容器、屏蔽是剪切标记，没有「整类不渲染」这种语义">·</span>
           <!-- 轨道名可点 = **这一条轨道的设置**（与时间轴上的块共用同一个属性面板） -->
@@ -733,7 +806,15 @@
                     @click.stop="openEdlMenu($event)"><Icon name="plus" :size="11" /></button>
           </div>
         </div>
-        <div class="lane-label ruler-label">时间</div>
+        <!-- 时间（标尺）：**没有轨道设置面板**（点名字没得开），但热度曲线有自己那枚眼睛 ——
+             与其他轨道同一形状、同一位置，**默认常显**（用户口径 2026-10）。 -->
+        <div class="lane-label ruler-label" :class="{ 'heat-on': heatOn }">
+          <button class="lane-eye" :class="{ off: !heatOn }" :title="heatEyeTitle" @click.stop="toggleHeat">
+            <Icon :name="heatOn ? 'eye' : 'eye-off'" :size="12" />
+          </button>
+          <span class="ruler-name">时间</span>
+          <span v-if="heatOn" class="ruler-readout" :title="heatTip">{{ heatReadout }}</span>
+        </div>
     </div>
     <div ref="tracksRef" class="timeline-tracks">
       <div v-for="lane in lanes" :key="'track-' + laneKey(lane)" class="lane">
@@ -809,9 +890,18 @@
           </div>
         </div>
       </div>
-      <div class="lane ruler-lane">
-        <div ref="rulerTrackRef" class="lane-track ruler-track" :style="{ width: trackWidth + 'px' }"
-             @pointerdown="onRulerPointerDown">
+      <div class="lane ruler-lane" :class="{ 'heat-on': heatOn }">
+        <div ref="rulerTrackRef" class="lane-track ruler-track" :class="{ 'heat-on': heatOn }"
+             :style="{ width: trackWidth + 'px' }"
+             @pointerdown="onRulerPointerDown" @pointermove="onRulerHover" @pointerleave="onRulerLeave">
+          <!-- 热度曲线：**叠在标尺带里**（不是第 8 条泳道）。
+               ⚠️ `pointer-events:none` 不能去掉 —— 标尺的 pointerdown 是 seek / 拖播放头，
+                  曲线挡一下就是"点不中"（同 `.wave-layer` 那条纪律）。
+               ⚠️ 纵轴是**相对本片最热那一刻**（见 `heatPath` 的注释），读数因此也说"相对"。 -->
+          <svg v-if="heatOn && heatPath" class="heat-layer" :width="trackWidth" :height="HEAT_H">
+            <path class="heat-halo" :d="heatPath" />
+            <path class="heat-core" :d="heatPath" />
+          </svg>
           <div v-for="(tk, i) in timeTicks" :key="'tick' + i" class="ruler-tick" :style="{ left: tk.left + 'px' }">
             <span class="ruler-time">{{ tk.label }}</span>
           </div>
@@ -824,14 +914,14 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, nextTick, h, defineComponent } from 'vue'
 import { confirmDialog } from '../stores/dialog'
 import { addClient } from '../stores/log'
 import { toast } from '../stores/toast'
 import Icon from './Icon.vue'
 import StickerPicker from './polish/StickerPicker.vue'
 import SfxPicker from './polish/SfxPicker.vue'
-import { TIMELINE_COLORS, isEditableKeyEvent } from '../utils'
+import { TIMELINE_COLORS, isEditableKeyEvent, clipMediaUrl } from '../utils'
 import {
   fetchProject, fetchSubtitles, fetchEmotion, fetchSfxCatalog, fetchStickerLibrary,
   saveProjectPatch, saveSubtitles, runSilence,
@@ -880,7 +970,7 @@ const props = defineProps({
 //                页面据此跑一次后处理；它保证**已在 `saved` 之后**（见 `commitEdit`）。
 // ⚠️ `saved` 与 `done` **不是**"落盘成功就算完成"：落盘了你还可能在改这个事件，
 //    所以后处理仍要等 `done`。两个信号各自服务一个消费者。
-const emit = defineEmits(['seek', 'toggle', 'preview', 'saved', 'done', 'reprocess', 'retried', 'redo-segment', 'lane-open', 'toggle-lane'])
+const emit = defineEmits(['point-pick', 'seek', 'toggle', 'preview', 'saved', 'done', 'reprocess', 'retried', 'redo-segment', 'lane-open', 'toggle-lane'])
 const rootRef = ref(null)
 /**
  * 属性面板的 Teleport 目标。**必须等 onMounted 才设值**：本组件挂载时整棵编辑器子树
@@ -908,13 +998,8 @@ const segments = ref([])
 /** 最近一次 LLM 生成的结果快照（`polish_project_get?preview=1` 注入的 `_llm_status`）：
  *  哪一段成功/失败、失败原因、生成时间。用于给分段上警示色 + 面板里显示状态。 */
 const llmStatus = ref(null)
-/**
- * 系统理由（§1）：后处理在**整片**上自动做过的决策，来自 `polish.toml` 的 `[[decisions]]`。
- *
- * ⚠️ 它是**只读回执**，不是配置 —— 改它没有任何效果（后端每趟 process 重算覆盖）。
- * 面板里那条提示（"要改结果请拖动分段边界"）就是防用户以为这里能改。
- */
-const decisions = ref([])
+// ⚠️ **`decisions` ref 已删**（2026-10-15）：它只服务「系统做得对吗」那块，那块已下架。
+//    数据本身照旧在 `polish.toml` 的 `[[decisions]]` 里（`process` 每趟重算覆盖）。
 const subtitles = ref([])
 /** §10 情绪轨道的**原始**响应（`{window_secs, windows}`）；`null` = 没有这个产物。
  *  ⚠️ 存原始值而不是算好的块：`trackWidth` 会随窗口宽度变化，块的像素位置必须在
@@ -1006,6 +1091,134 @@ const wavePath = computed(() => {
   return parts.length > 1 ? parts.join('') : ''
 })
 
+// ── 热度曲线（标尺带）──────────────────────────────────────────
+/**
+ * 曲线叠在**底部「时间」标尺带**里 —— **不是第 8 条泳道**（"不要新增泳道"是硬口径，
+ * 见 `docs/webui-components.md` ①.1）。标尺带因此长高 `HEAT_H`(16px)，关掉曲线就缩回去。
+ *
+ * ⚠️ **算一次就冻住**：用户口径 2026-10「实时只是说视频的实时，按 `polish init` 时的数据计算即可，
+ *    不做随编辑即时重算」。所以 `heatRaw` **只在 `loadData()` 里建一次** ——
+ *    拖动字幕块**不该**让它变。想"跟着编辑变"就得把 `subtitles` 接进 computed，
+ *    那正是这条口径明确不要的东西（也顺带省掉每次拖拽重算全片桶的开销）。
+ * ⚠️ 口径（按字 / 按条 / 自基准归一 / 权重 / 桶宽）**只在 `polish/heat.js` 一份**，
+ *    连带与 `process/punch.rs` 的对拍一起钉在 `scripts/check-heat-curve.mjs`。
+ */
+const heatRaw = ref(null)
+/** 弹幕的 `start`（秒）。**只留这一个字段** —— 文本/颜色与本曲线无关。
+ *  来源 = `data/danmaku.json`（`polish init`/`parse` 解析出来的那份，与 `process` 的爆点判据同源）。 */
+const heatDanmaku = ref([])
+/** 热度带高度。用户口径 2026-10：先是「参考响度曲线，小点没关系」（初值 12），
+ *  随后要「起伏大一点」⇒ **12 → 16**（振幅的像素数直接翻三成）。
+ *  ⚠️ 改这个数要**三处一起改**：这里、三条 `.heat-on` 高度（= 20 + `HEAT_H`）、刻度下移量。 */
+const HEAT_H = 16
+const HEAT_PAD = 1
+/** 每列多少像素（列数 = 轨道宽度 ÷ 这个值）—— 与波形同一条做法，理由见 `wavePath`。 */
+const HEAT_COL_STEP = 2
+const HEAT_PREF_KEY = 'yekitrim.ui.heatCurve'
+/** 默认**常显**（用户口径 2026-10：参考其他轨道那枚眼睛，默认开）。 */
+function readHeatPref() {
+  try { return localStorage.getItem(HEAT_PREF_KEY) !== '0' } catch { return true }
+}
+function saveHeatPref(on) {
+  try { localStorage.setItem(HEAT_PREF_KEY, on ? '1' : '0') } catch {}
+}
+const heatOn = ref(readHeatPref())
+/** 鼠标停在标尺上的时刻（`null` = 没停，读数跟播放头走）。 */
+const heatHoverT = ref(null)
+/** 读数取哪一桶：优先鼠标处，否则**播放头**（"视频的实时热度"就是这一档）。 */
+const heatProbe = computed(() => heatBucketAt(
+  heatRaw.value,
+  heatHoverT.value == null ? props.currentTime : heatHoverT.value,
+))
+const heatPeak = computed(() => {
+  const p = Number(heatRaw.value && heatRaw.value.peak)
+  return Number.isFinite(p) && p > 0 ? p : 0
+})
+/**
+ * 曲线路径（`M…L…`，未闭合、只描边）—— 与波形同一套做法：**按像素列取该列的峰值**，
+ * 顶点位置永远跟着缩放走（柱状图缩小糊成一片、放大出缝）。
+ *
+ * ⚠️ 纵轴是**相对本片最热那一刻**（`heat / peak` ⇒ 峰值顶格）。理由：合成值要两路同时在峰值才
+ * 到 1.0，用绝对刻度会让整条线常年压在带子下半截、看着像"一直不热"。读数因此也说"相对"
+ * （`heatTip` 里写明 100% = 本片最热的那一桶）。
+ */
+const heatPath = computed(() => {
+  const s = heatRaw.value
+  if (!s || !heatOn.value) return ''
+  const peak = heatPeak.value
+  const win = Number(s.windowSecs) || 0
+  if (peak <= 0 || win <= 0) return ''
+  const sc = scale.value || 1
+  // 只画到内容结束为止：`trackWidth` 有 600px 下限，片段很短时轨道比内容宽，那一段没有数据
+  const width = Math.min(trackWidth.value, Math.ceil((duration.value || 0) * sc) + HEAT_COL_STEP)
+  const yOf = (v) => (HEAT_H - HEAT_PAD) - Math.max(0, Math.min(1, v)) * (HEAT_H - HEAT_PAD * 2)
+  const parts = []
+  let firstY = null
+  for (let x = 0; x <= width; x += HEAT_COL_STEP) {
+    const i0 = Math.max(0, Math.floor(x / sc / win))
+    if (i0 > s.count - 1) break
+    let i1 = Math.floor((x + HEAT_COL_STEP) / sc / win)
+    if (i1 < i0) i1 = i0
+    if (i1 > s.count - 1) i1 = s.count - 1
+    let v = 0
+    for (let i = i0; i <= i1; i++) if (s.heat[i] > v) v = s.heat[i]
+    // 纵轴 = 自基准归一 → **显示对比拉伸**（读数走同一个映射，见 heat.js 的 HEAT_DISPLAY_GAMMA）
+    const y = yOf(heatDisplay(v / peak))
+    if (!parts.length) {
+      firstY = y
+      parts.push('M' + x.toFixed(0) + ' ' + y.toFixed(2))
+    } else {
+      parts.push('L' + x.toFixed(0) + ' ' + y.toFixed(2))
+    }
+  }
+  if (parts.length === 1) parts.push('L' + HEAT_COL_STEP + ' ' + firstY.toFixed(2))
+  return parts.length > 1 ? parts.join('') : ''
+})
+
+function toggleHeat() {
+  heatOn.value = !heatOn.value
+  saveHeatPref(heatOn.value)
+  if (!heatOn.value) heatHoverT.value = null
+}
+/** 标尺上的悬停 → 读数。⚠️ 别在这里 seek：seek 是 `pointerdown`（`onRulerPointerDown`）独占的事。 */
+function onRulerHover(e) {
+  if (!heatOn.value || !heatRaw.value) return
+  const el = rulerTrackRef.value
+  if (!el) return
+  heatHoverT.value = (e.clientX - el.getBoundingClientRect().left) / (scale.value || 1)
+}
+function onRulerLeave() {
+  heatHoverT.value = null
+}
+/** `m:ss`（读数里只放得下这一种） */
+function heatClock(t) {
+  const v = Math.max(0, Number(t) || 0)
+  return Math.floor(v / 60) + ':' + String(Math.floor(v % 60)).padStart(2, '0')
+}
+/** 标签列里的那个数：**相对本片峰值**的百分比（与曲线同一映射 ⇒ 读数 = 曲线的高度）。 */
+const heatReadout = computed(() => {
+  if (!heatOn.value) return ''
+  const b = heatProbe.value
+  if (!b || heatPeak.value <= 0) return '—'
+  return Math.round(heatDisplay(b.heat / heatPeak.value) * 100) + '%'
+})
+const heatTip = computed(() => {
+  const s = heatRaw.value
+  if (!s) return '热度曲线：这一段还没有解析数据（没有字幕也没有弹幕）'
+  const base = '弹幕按条（×0.6）+ 字幕按字量（×0.4），各自按本片段最大值归一；按解析时的数据算一次，不随编辑变。'
+  if (heatPeak.value <= 0) return '热度曲线：这一段没有字幕也没有弹幕 —— 算不出热度。' + base
+  const b = heatProbe.value
+  const where = heatHoverT.value == null ? '播放头' : '鼠标处'
+  const noDm = s.hasDanmaku ? '' : '（本片段没有弹幕 ⇒ 只按字幕算）'
+  return where + ' ' + heatClock(b.start) + '：热度 ' + Math.round(heatDisplay(b.heat / heatPeak.value) * 100)
+    + '%（相对本片峰值；纵轴做过 x² 对比拉伸，100% = 最热的那一桶） · 弹幕 ' + b.dm + ' 条 · 字幕 '
+    + b.sub.toFixed(1) + ' 字/秒 ' + noDm
+    + '\n桶宽 ' + s.windowSecs + 's，共 ' + s.count + ' 桶。' + base
+})
+const heatEyeTitle = computed(() => (heatOn.value
+  ? '热度曲线：当前显示（弹幕按条 + 字幕按字量）。点一下隐藏，标尺带跟着缩回 20px'
+  : '热度曲线：当前隐藏。点一下显示'))
+
 // ── 选中态：`{ kind: 'seg'|'event'|'sub'|'mute', si?, ei?, subIndex?, muteIndex?, lane }` ──
 const selected = ref(null)
 const selectedSeg = computed(() => {
@@ -1037,7 +1250,7 @@ const selItem = computed(() => selectedSeg.value || selectedEv.value || selected
 const ROLE_TEXT = {
   hook: {
     label: 'hook · 钩子',
-    hint: '片头最抓人的一段：允许大字元素 + 强音效 + 硬切运镜，但整段只放 1~2 个亮点。'
+    hint: '片头最抓人的一段：允许大字 + 强音效 + 硬切运镜，但整段只放 1~2 个亮点。'
       + '守卫：全片至多一段 hook（多余会被降级）。',
   },
   punch: {
@@ -1100,8 +1313,8 @@ const TYPE_LABELS = Object.fromEntries(EFFECTS.map((e) => [e.id, e.label]))
 const ANIM_KINDS = [
   // ---- 不设 / 清除：单一状态，没有细分 ----
   //  ⚠️ 每一栏的"空"语义**不一样**，所以显示名也不一样（见 `kindLabelOn`）：
-  //     排版栏 = 「默认」（回到没有任何排版变换）；过渡栏 = 「默认弹出」；
-  //     动效栏 = 「不设」（不额外加动效）。
+  //     排版栏 = 「默认」（回到没有任何排版变换）；过渡栏 / 动效栏 = 「不设」。
+  //     ⚠️ 过渡栏 2026-10-15 之前叫「默认弹出」—— 那个叫法随它那套两级结构一起删了。
   //  ⚠️ 三栏的"空"落盘时**都写空串** —— 差别只在显示。
   {
     kind: 'none',
@@ -1208,6 +1421,32 @@ const ANIM_KINDS = [
     axis: 'effect',
     variants: [{ value: 'heartbeat', label: '标准' }]
   }
+]
+
+/** **过渡轴的选项** —— 就这两档（2026-10-15 用户口径，反复强调过）。
+
+ *  ⚠️⚠️ **这一轴只有一个下拉框，盒子就是这两项**（见模板里过渡那段的注释）：
+ *    「过渡 / 弹出」那种"一个框什么都没选、另一个框才是值"的两级结构已被删除。
+ *
+ *  ⚠️⚠️ **`value` 必须与 `ANIM_KINDS` 里 `transition` 那一支的 `variants[].value`
+ *     逐字相同**（`pop` / `fade`）—— 它们就是 `transition_anim` 的落盘值。
+ *     `scripts/check-anim-presets-parity.mjs` 用正则从源码里扒档名与转译器
+ *     `ANIM_PRESETS`（权威）对拍；改形状会让那条对拍**静默失效**（扒不到 ⇒ 两侧都空 ⇒ 全绿）。
+ *
+ *  ⚠️ **空串 = 不设**，仍然是一个**合法且必要**的选项：
+ *    老工程与后处理生成的事件都没有这个键，用户也必须能把设过的档**清掉**
+ *  ⚠️⚠️ **只有两项**（2026-10-15 用户口径，两次强调：「过渡只留两个」`弹出` + `淡入淡出`）。
+ *    下拉里**没有**「不设」那一项 —— 那一栏是三选一，不是"清掉某个效果"的地方。
+ *
+ *  ⚠️ 老工程/别处写进来的空串（= 没设过）**不在这份清单里**，由紧随其后的那条
+ *     `v-if="transitionKind === ''"` 的兜底分支负责显示（文案见模板里那段注释：
+ *     空值显示「未设置」、认不出的档名才显示那个带原值的提示）。
+ *     它**只在磁盘上的值认不出/为空时**渲染，用来照实显示"这条没设过"，
+ *     用户一选任一项就固化成 pop / fade。`kindLabelOn` 里过渡栏那条「默认弹出」
+ *     说法已随两级结构一起删除。 */
+const TRANSITION_OPTIONS = [
+  { value: 'pop', label: '弹出' },
+  { value: 'fade', label: '淡入淡出' }
 ]
 
 /** **排版角度的允许区间**（2026-10-14）。
@@ -1318,8 +1557,10 @@ const kindsOnAxis = (axis) => ANIM_KINDS
 /** 某一栏里，一个种类**显示**成什么。
  *
  *  · “空”那一项按轴分开叫法：**排版栏 → 「默认」**（回到没有任何排版变换，是一个**状态**）；
- *    **过渡栏 → 「默认弹出」**（用户口径：「默认为弹出」）；**动效栏 → 「不设」**（不额外加，一个有意为之的选择）。
- *    ⚠️ 别把三栏写成同一个词：排版栏写「不设」会让人以为“有一个排版叫不作排版”。
+ *    **过渡栏 / 动效栏 → 「不设」**（不额外加，一个有意为之的选择）。
+ *    ⚠️ 过渡栏原先叫「默认弹出」（"缺省 = 弹出"）—— 2026-10-15 收敛成单框后已删，
+ *       缺省由 `defaultEvent` 落盘 `transition_anim='pop'` 表达，不靠标签暗示。
+ *    ⚠️ 别把排版栏也写成同一个词：排版栏写「不设」会让人以为“有一个排版叫不作排版”。
  *    （⚠ 旧叫法里排版栏叫「清除」 —— 已改为「默认」：它是一个**状态**，不是一个**操作**。）
  *
  *  · ⚠️⚠️ **`axis === 'both'` 的那几档，两栏都出现 ⇒ 必须带轴后缀**（2026-10-14）。
@@ -1350,14 +1591,16 @@ const kindsOnAxis = (axis) => ANIM_KINDS
 // ⚠️ 别把它当"有用的保险"留着：一旦留着，下一个人会以为"档可以属于两轴"，
 //    而那正是用户报的「样式和动效内容过于重复」的根源。
 const kindLabelOn = (axis, k) => {
-  // ⚠️ "空"那一项三栏的**语义不同、叫法也不同**：
+  // ⚠️ "空"那一项三栏的**语义不同**，叫法上排版栏独一份：
   //    · 排版栏 = 「默认」（回到没有任何排版变换 —— 它是一个**状态**）
-  //    · 过渡栏 = 「默认弹出」（用户口径：「默认为弹出」—— 这也是一个状态）
+  //    · 过渡栏 = 「不设」（不额外加过渡 —— 一个有意为之的选择）
   //    · 动效栏 = 「不设」（不额外加动效 —— 一个有意为之的选择）
-  //    ⚠️ 别把三栏写成同一个词：排版栏写「不设」会让人以为"有一个排版叫不作排版"。
+  //    ⚠️ 别把排版栏写成「不设」：会让人以为"有一个排版叫不作排版"。
   if (k.kind === 'none') {
     if (axis === 'style') return '默认'
-    if (axis === 'transition') return '默认弹出'
+    // 过渡栏在 2026-10-15 之前叫「默认弹出」，已改回「不设」：过渡轴不再走
+    // 种类/细分两级（见模板里过渡那段），标签不必再暗示缺省是弹出 —— 那件事
+    // 由 "defaultEvent" 落盘的 transition_anim = 'pop' 表达（用户口径：弹出为默认）。
     return '不设'
   }
   return k.label
@@ -1428,6 +1671,65 @@ function setLayoutAngle(v) {
 function resetLayoutAngle() {
   if (!selItem.value) return
   selItem.value.layout_angle_deg = null
+}
+
+
+// ---- 单个元素的位置（X / Y 百分比，2026-10-15）----------------------------
+//
+// 用户口径：「保留一个 xy 位置滑块，方便手动修改**单个事件**的位置（仅限贴纸和文字层）」。
+//
+// ⚠️ 语义是**三态**，别退化成两态：
+//    · `undefined`/`null`/空串 = **没设** ⇒ 后处理按安全落点算（贴纸 Step 2b / 文字 Step 1d3）；
+//    · `"76%"`                  = **手动钉住** ⇒ 自动落点不再管它。
+//    所以「清空输入框」必须写 `undefined`（键消失），**不能写成 `0`** ——
+//    `0` 是一个合法的用户选择（"贴左上角"），和"没设"完全不是一回事。
+//
+// ⚠️ 两个载体的字段类型不同：`Element` 的 `x`/`y` 是 `Option<String>`、
+//    `Sticker` 的是 `String`。本控件**只在 element 支**出现，写值统一走 `setElementPos`。
+
+/** 输入框里显示的数字（去掉 `%`）。没设过 ⇒ 空串（占位符「自动」会显示出来）。 */
+function pctOf(v) {
+  if (v === null || v === undefined || v === '') return ''
+  const n = parseFloat(String(v).replace(/%$/, ''))
+  return Number.isFinite(n) ? String(Math.round(n * 10) / 10) : ''
+}
+
+/** 滑杆的位置：没设过时**停在 50**（画面中心），而不是 0 ——
+ *  0 是"贴左上角"这个真实选择，用 0 表示"没设"会让用户以为元素已经钉在角上了。
+ *  ⚠️ 这里**只读不写**：滑杆显示 50 ≠ 落盘 50（R4：没配的键一个都不多写）。 */
+function posSlider(v) {
+  const s = pctOf(v)
+  return s === '' ? 50 : s
+}
+
+/** 这个元素有没有被手动钉过位置（决定要不要给「自动」按钮）。 */
+function hasElementPos(ev) {
+  const on = (v) => v !== null && v !== undefined && v !== ''
+  return !!(ev && (on(ev.x) || on(ev.y)))
+}
+
+/** 写一格位置。**空/非数字 ⇒ 删键**（回到自动落点），夹到 [0,100]。 */
+function setElementPos(axis, raw) {
+  if (!selItem.value) return
+  const s = String(raw ?? '').trim()
+  if (s === '') {
+    selItem.value[axis] = undefined
+    return
+  }
+  const n = parseFloat(s)
+  if (!Number.isFinite(n)) {
+    selItem.value[axis] = undefined
+    return
+  }
+  const clamped = Math.min(100, Math.max(0, n))
+  selItem.value[axis] = `${clamped}%`
+}
+
+/** 「自动」= 把两轴都删掉（后处理重新接管落点）。 */
+function clearElementPos() {
+  if (!selItem.value) return
+  selItem.value.x = undefined
+  selItem.value.y = undefined
 }
 
 // ⚠️ **`hintOnAxis` / `styleHint` / `effectHint` 已删**（用户口径 2026-10-13）：
@@ -1543,7 +1845,7 @@ const LANE_DEFS = [
   //    分开它们的只有 `kinds`。所以**别的按 `lane.type` 找轨道的代码会同时命中两条**
   //    （`lane.type` 不再唯一）。凡是"按 type 索引泳道"的地方都要用 `lane.id`：
   //    `id` 是**界面专用**的唯一键，与磁盘无关（见下面 `laneOpen` / `:key` 的用法）。
-  { id: 'text', type: 'sticker', kinds: ['text', ''], sharedEye: true,
+  { id: 'text', type: 'sticker', kinds: ['text', ''],
     label: '文字', lane: 'sticker', color: TIMELINE_COLORS.sticker, types: LANE_TYPES('sticker'), resizable: true },
   { id: 'sticker', type: 'sticker', kinds: ['sticker'],
     label: '贴纸', lane: 'sticker', color: TIMELINE_COLORS.sticker, types: LANE_TYPES('sticker'), resizable: true },
@@ -1651,6 +1953,145 @@ const COLOR_TYPES = uiGroup('color')
 /** 时间会被后处理吸附/延长的类型（有 `manual` 字段的那两类）。 */
 const MANUAL_TYPES = ['sticker', 'camera']
 
+// ────────────── 属性面板的**字段控件**（全部由词汇表派生，2026-10-15）──────────────
+//
+// 口径（与 `scripts/check-layout-invariants.mjs` ㉛ 逐条对应，改之前先读那段注释）：
+// **加一个字段 = 改 `spec/effects.json` 的 `fields[]` 一行** —— 这里不再出现字段名清单。
+//
+// ⚠️ `DEDICATED_FIELDS` 是**排除清单**：那几类字段由属性面板的**专用块**亲自渲染
+//    （色板 / 素材选择器 / 类型下拉…），走自动派生反而是两个控件写同一个键
+//    （写回时后者赢，静默丢设置）。⚠️ **别把词汇表里的标量字段加进来** —— ㉛ 钉着。
+//
+// ⚠️ 反过来：**专用块没覆盖到的字段必须靠 `autoFields` 兜底露出来**。
+//    兜底块被删 = 那一整类字段从界面上**整类消失**，而且不报错。
+
+/** 类型 → 该类型的**词汇表字段**（`effects[].fields` 原样）。 */
+const TYPE_FIELDS = Object.fromEntries(
+  EFFECTS.map((e) => [e.id, Array.isArray(e.fields) ? e.fields : []])
+)
+
+/** 专用块自己渲染的字段名（不进自动派生）。 */
+const DEDICATED_FIELDS = new Set([
+  'sfx', 'sfx_volume', 'color', 'intensity', 'manual', 'end',
+  'keyword', 'name', 'source', 'sticker_tag', 'x', 'y', 'text', 'kind', 'volume'
+])
+
+/** 字段该用哪种控件。显式 `ui` 优先，其次按类型串猜（`Option<f64>` → number）。 */
+function controlKind(f) {
+  const t = String(f.type || '')
+  if (f.ui === 'switch' || t === 'bool') return 'switch'
+  if (f.ui === 'select' || Array.isArray(f.enum)) return 'select'
+  if (t.includes('f64')) return 'number'
+  return 'text'
+}
+
+/** 哪些事件类型在属性面板里有**专用支**（= 手写了控件的那几支）。
+ *
+ *  ⚠️⚠️ **这张表是"兜底块该不该跑"的唯一判据**（2026-10-15 二次修）。
+ *  兜底块（`autoFields(selItem.type)`）只该给**没有专用支**的类型用；
+ *  对有专用支的类型再跑一遍 = **每个字段出两遍**。
+ *
+ *  ⚠️ 症状是**静默的**：没有报错，只是面板上同一组控件原样列两遍。
+ *     实测踩过两次 —— 第一版只排除了当时正在改的 `element`，
+ *     而 `camera`（7 个字段）与 `overlay`（5 个）照旧重复，用户当场贴图。
+ *
+ *  ⚠️ **加了新的专用支，必须往这里加一行** —— 判据 ㉞ 会拿它对模板里
+ *     真实的 `selItem.type === '…'` 分支算差集，漏了当场红（别再靠人眼）。 */
+const DEDICATED_BRANCH_TYPES = ['camera', 'element', 'overlay', 'sfx', 'sticker']
+
+/** 这个类型在面板里有没有专用支（有 ⇒ 兜底块**不许**再渲染它的字段）。 */
+const hasDedicatedBranch = (type) => DEDICATED_BRANCH_TYPES.includes(type)
+
+/** `element` 支**已经手写渲染**的字段（那支的 skip 表，**唯一一份**）。
+ *
+ *  ⚠️⚠️ 这张表是"专用块渲染了什么"的**声明**，漏一个字段的症状就是**它出两遍**
+ *  （2026-10-15 用户报的「一堆冗余参数」正是 `style_anim` / `transition_anim` /
+ *  `effect_anim` / `layout_angle_deg` 四个漏在表外）。
+ *  ⚠️ 加/删专用块里的控件时**必须同时改这张表** —— 判据 ㉜ 会算差集，漏了当场红。
+ *  ⚠️ 别把它并进 `DEDICATED_FIELDS`：那个是**全局**排除清单（color/intensity/volume 等
+ *     专用块字段），而这张是 **element 专属**的（`text`/`sticker_tag` 在别的类型里是自动字段）。 */
+const ELEMENT_DEDICATED = [
+  'kind',            // 类型由轨道决定，面板只在认不出时给提示
+  'text',            // 文字支的正文输入框
+  'sticker_tag',     // StickerPicker 的「分类」那一级
+  'name',            // ↑
+  'source',          // ↑
+  'color',           // 文字颜色下拉
+  'style_anim',      // 「排版」下拉
+  'transition_anim', // 「过渡」下拉
+  'effect_anim',     // 「动效」下拉
+  'layout_angle_deg',// 倾斜/弧形角度滑杆
+  'x', 'y',          // 位置控件（下面那一对）
+]
+
+/** 该类型**没被专用块吃掉、也没被 `skip` 点名**的字段（= 应该自动生控件的那些）。
+ *
+ *  ⚠️⚠️ **`panel: false` 的字段一律不给控件**（2026-10-15 用户口径：「一堆冗余参数」，
+ *  这些应该是后处理自动处理的、或者不该有的）。标记在 `spec/effects.json` 的字段上，
+ *  与它是不是"合法字段"是两件事 —— 这些字段**权威仍在词汇表里**（转译器读、老工程写），
+ *  只是**编辑器不提供入口**。给它们控件比没有更糟：
+ *    · `anim` —— **只读迁移**字段，写回是 no-op ⇒ 用户改完看着生效、成片一个字都不动；
+ *    · `pos`  —— 2026-10-12 已被用户从界面撤掉，默认 Auto，重新暴露 = 把撤掉的能力带回来。
+ *  判据：`webui/scripts/check-layout-invariants.mjs` ㉝。 */
+const autoFields = (type, skip = []) => {
+  const s = new Set(skip)
+  return (TYPE_FIELDS[type] ?? []).filter(
+    (f) => f && f.name && f.panel !== false && !DEDICATED_FIELDS.has(f.name) && !s.has(f.name),
+  )
+}
+
+// ⚠️ 用 `defineComponent` + 渲染函数写：同一字段要在两种布局里出（bool 走紧排行、
+//    其余走 label+控件），写成模板会散成十几个 `v-if` 分支。
+const FieldControl = defineComponent({
+  name: 'FieldControl',
+  props: { ev: { type: Object, required: true }, f: { type: Object, required: true } },
+  setup(props) {
+    // ⚠️ **空串要写 `undefined` 而不是 `''`**：字段多是 `Option<...>` + `skip_serializing_if`，
+    //    写空串会被 serde 读成 `Some("")`，而那正是「无法识别」那个报错的源头。
+    const write = (v) => { props.ev[props.f.name] = v === '' ? undefined : v }
+    return () => {
+      const f = props.f
+      const cur = props.ev[f.name]
+      const kind = controlKind(f)
+      const label = h('label', f.label || f.name)
+      if (kind === 'switch') {
+        return h('label', { class: 'fld-bool' }, [
+          h('input', {
+            type: 'checkbox',
+            checked: cur === true,
+            onChange: (e) => { props.ev[f.name] = e.target.checked }
+          }),
+          ' ' + f.name
+        ])
+      }
+      if (kind === 'select') {
+        return [label, h('select', {
+          value: cur ?? f.default ?? '',
+          onChange: (e) => write(e.target.value)
+        }, [
+          h('option', { value: '' }, '（缺省）'),
+          ...(f.enum || []).map((v) => h('option', { value: v }, v))
+        ])]
+      }
+      if (kind === 'number') {
+        const shown = cur ?? f.default ?? '缺省'
+        return [
+          h('label', `${f.name}（${shown}）`),
+          h('input', {
+            type: 'number',
+            value: cur ?? '',
+            min: f.min ?? undefined,
+            max: f.max ?? undefined,
+            step: f.step ?? 0.05,
+            onInput: (e) => write(e.target.value === '' ? '' : Number(e.target.value))
+          })
+        ]
+      }
+      return [label, h('input', { type: 'text', value: cur ?? '', onChange: (e) => write(e.target.value) })]
+    }
+  }
+})
+
 const round2 = (v) => Math.round((Number(v) || 0) * 100) / 100
 const span0 = (type) => DEFAULT_SPAN[type] ?? 0.5
 
@@ -1671,12 +2112,20 @@ function getDuration() { return duration.value || 60 }
 
 // ── 贴纸库 / 音效目录（属性面板的列表数据）──
 const stickerLib = ref([])
+/** 贴纸库读取失败的原因（非空 ⇒ 选择器里出错误条）。
+ *  ⚠️ 与贴纸来源 / 素材清单同一条纪律：读失败**不许**退化成「库是空的」那个假空态 ——
+ *  写 `stickerLib.value = []` 会让「接口挂了」与「一张贴纸都没放」长得一模一样。 */
+const stickerLibError = ref('')
 const sfxEntries = ref([])
 async function loadPickers() {
   try {
     const r = await fetchStickerLibrary(props.pid, props.dir, '读取贴纸库')
     stickerLib.value = r?.packs || []
-  } catch { stickerLib.value = [] }
+    stickerLibError.value = ''
+  } catch (e) {
+    // 列表保留上一次那份，只把原因挂出去（失败时清空 = 用户以为自己的贴纸库被清空了）
+    stickerLibError.value = (e && e.message) || String(e)
+  }
   try {
     const r = await fetchSfxCatalog(props.pid, props.dir, '读取音效目录')
     sfxEntries.value = r?.entries || []
@@ -1798,25 +2247,9 @@ function segGen(si) {
   return list.find((s) => Number(s.index) === Number(si)) || null
 }
 
-/**
- * 当前选中分段**相关的**系统理由（§1）。
- *
- * 归属判据分两种（理由自己不带"属于哪一段" —— 后处理是按整片算的）：
- * - **带 `at` 的**（边界类）：切点落在这一段的 `[start, end]` 里就算它的；
- * - **不带 `at` 的**（整片级，如片头淡入 / 画中画降级）：只挂在**首段**上 ——
- *   否则用户点每一段都会看到同一句"补了片头淡入"，很快就不看了。
- */
-const segDecisions = computed(() => {
-  if (selected.value?.kind !== 'seg') return []
-  const seg = segments.value[selected.value.si]
-  if (!seg) return []
-  const isFirst = selected.value.si === 0
-  return decisions.value.filter((d) => {
-    if (d.at === null || d.at === undefined) return isFirst
-    const t = Number(d.at)
-    return Number.isFinite(t) && t >= seg.start - 0.001 && t <= seg.end + 0.001
-  })
-})
+// ⚠️ **`segDecisions` 已删**（2026-10-15）：它是「系统做得对吗」那块的数据源，
+//    随那块一起下架。`[[decisions]]` 数据仍在 `polish.toml` 里（process 仍写），
+//    只是编辑器不再展示 —— 別为了"信息别浪费"把它换个地方挂回来。
 
 /** unix 秒 → `MM-DD HH:MM`（本地时区），用于"整片最近一次生成"那行。 */function fmtTs(ts) {
   const d = new Date(Number(ts) * 1000)
@@ -2399,6 +2832,11 @@ function resetTimelineState() {
   edlSelected.value = -1
   edlDraftSpan.value = null
   loudness.value = []
+  // ⚠️ 热度曲线同样是"属于上一个片段"的东西：弹幕数组与已算好的序列一起清，
+  //    否则新片段的曲线会**照旧用旧片段的弹幕**画出来（跨片段串写，且不报错）。
+  heatRaw.value = null
+  heatDanmaku.value = []
+  heatHoverT.value = null
   duration.value = 60
   dirty.segments = dirty.subtitles = dirty.mute = false
   saveState.value = ''
@@ -2564,13 +3002,8 @@ function followSubtitles() {
   touch('segments')
 }
 const canSplit = computed(() => selected.value && (selected.value.kind === 'sub' || selected.value.kind === 'mute'))
-const spanHint = computed(() => {
-  const ev = selectedEv.value
-  if (!ev) return ''
-  if (ev.type === 'sticker') return '贴纸会在「结束」之后再淡出 0.3s；入场 0.35s / 浮起 0.4s 也另计。'
-  if (SFX_CAPABLE.includes(ev.type) && ev.type !== 'overlay') return '瞬时特效只表现爆发瞬间（后处理会把跨度夹到 0.1~0.6s）。'
-  return ''
-})
+// ⚠️ `spanHint` **整块已删**（2026-10-15 用户口径）：贴纸那句（"淡出 0.3s / 入场 0.35s / 浮起 0.4s"）与
+// 瞬时特效那句（"跨度夹到 0.1~0.6s"）用户都不要。面板里不再有任何跨类型的时间说明行。
 
 function setInPoint() {
   const it = selItem.value
@@ -2601,7 +3034,33 @@ function defaultEvent(type, t) {
   //    而 `kind = "text"` 且 `text` 为空时，转译器会 `drop('文字元素没有 text')` ——
   //    也就是用户"新建了一个元素，界面上什么都没有、成片里也什么都没有"。
   //    默认给 `text`：它是最常用的一支，且空文本会在属性面板里立刻被看见。
-  else if (type === 'element') { ev.kind = 'text'; ev.text = ''; ev.style = 'comment'; ev.pos = 'bottom' }
+  //
+  // ⚠️⚠️ **`transition_anim` 必须显式写 `'pop'`**（2026-10-15，用户口径：
+  //    「过渡只有弹出和淡入淡出这两个选项，其中**弹出为默认也就是初始化时的参数**」）。
+  //
+  //    以前这里**不写**这个键 ⇒ 新建的文字层过渡是**空串** ⇒ 落到转译器
+  //    `motionFields` 里 `on = !!preset || !!stylePreset || !!transitionPreset` 为 **false**
+  //    ⇒ 走 `pick()` 的**回落全局**那一支。后果有两个，且都不报错：
+  //      · 工程**没有** `[elements]` 段（最常见）⇒ `popInOn` 为假 ⇒ 三个 `scale_in_*`
+  //        一个都不写 ⇒ **字根本不弹**，而面板上那一栏写着「默认弹出」（见 `kindLabelOn`）——
+  //        界面在撒谎；
+  //      · 工程**有** `[elements]` ⇒ 这条字**静默继承**全局那份（可能是抖动、可能是心跳、
+  //        也可能什么都不加），面板上照样写着「默认弹出」。
+  //
+  //    ⇒ 初始化就把 `'pop'` **写实**：`on` 变 true ⇒ 不再回落全局，
+  //      而 `ANIM_PRESETS.pop` 那一组（0.3 → 1.0 / 350ms）就是「弹出」本身。
+  //    ⚠️ 这与 R4 **不冲突**：`defaultEvent` 只在**新建**（`addEventAt`）与**改类型**
+  //       （`changeEventType`）两条路上跑，**存量工程的事件一个字都不碰** ——
+  //       R4 判据钉的是"老工程序列化回来不许多键"
+  //       （`yekitrim-render-core/src/types.rs::element_axes_roundtrip`），那条仍然绿。
+  //    ⚠️ 别改成"新建时不写、只在显示时假装是弹出"：那正是上面那两个静默后果的来源。
+  else if (type === 'element') {
+    ev.kind = 'text'
+    ev.text = ''
+    ev.style = 'comment'
+    ev.pos = 'bottom'
+    ev.transition_anim = 'pop'
+  }
   else if (type === 'overlay') { ev.overlay_type = 'color'; ev.color = '#ff3232'; ev.opacity = 0.3 }
   else if (type === 'sfx') { ev.name = ''; ev.volume = 0.3 }
   else if (INTENSITY_TYPES.includes(type)) ev.intensity = type === 'shake' ? 14 : 30
@@ -2956,20 +3415,6 @@ function edlBlockTitle(b) {
   ].filter(Boolean).join('\n')
 }
 
-function duplicateSelected() {
-  const ev = selectedEv.value
-  if (!ev) return
-  const seg = segments.value[selected.value.si]
-  if (!seg) return
-  const copy = JSON.parse(JSON.stringify(ev))
-  markManual(copy) // 复制是手工动作 → 同样是"用户的东西"，不被后处理抽稀/吸附
-  const span = evDur(copy)
-  setEvSpan(copy, (Number(copy.time) || 0) + 0.1, (Number(copy.time) || 0) + 0.1 + span)
-  seg.events.push(copy)
-  selected.value = { kind: 'event', lane: selected.value.lane, si: selected.value.si, ei: seg.events.length - 1 }
-  touch('segments')
-}
-
 // ── 单级撤销删除 ────────────────────────────────────────────────
 // 删除是"双击即生效 → 700ms 落盘 → 随后自动后处理"，误删点完就已经不可逆了（后处理还会按
 // 新状态重算，删掉的事件不会自己回来）。所以保留**最近一次删除**给一枚「撤销删除」兜底。
@@ -3278,8 +3723,6 @@ async function loadData() {
   loadError.value = ''
   segments.value = cfg?.segments || []
   llmStatus.value = cfg?._llm_status && Array.isArray(cfg._llm_status.segments) ? cfg._llm_status : null
-  // §1 系统理由：缺这个键 = 老工程 / 没跑过后处理 ⇒ 空数组（不是错误）。
-  decisions.value = Array.isArray(cfg?.decisions) ? cfg.decisions : []
   muteRanges.value = Array.isArray(cfg?.mute_ranges) ? cfg.mute_ranges.map(m => ({ start: Number(m.start) || 0, end: Number(m.end) || 0 })) : []
   // 成片时间线：**缺 `[edl]` 段 = 老工程 = 空数组**（后端 `serde(default)`）。
   // ⚠️ 空数组在这里读成"这条路没开"，**不是**"什么都不播" —— 补集兜底住 `resolve_edl` 一处。
@@ -3308,6 +3751,43 @@ async function loadData() {
       addClient('warn', '字幕读取失败，已暂停保存：' + loadError.value, 'timeline')
       return false
     }
+  }
+
+  // 热度曲线的**弹幕那一路**：`data/danmaku.json`（`polish init`/`parse` 写的那份，与 `process`
+  // 的爆点判据同源）。三条纪律与下面那条情绪轨道同规格：
+  //   ① 404 = **正常空态**（老工程的片段目录里根本没有这份文件），不是错误；
+  //   ② 其它失败**只 warn、不打断**，也**不进 `loadError`** —— 它不参与任何写路径；
+  //   ③ 不许静默降级：读不到弹幕时曲线只按字幕算，这件事写在 `heatTip` 里（不是悄悄变一条线）。
+  // ⚠️ 走 `clipMediaUrl` + 裸 `fetch`（与 `PolishView`/`PolishPreview` 同一条既有做法）：
+  //    这是媒体文件、不是 `api()` 那条 JSON 通道。`/api/media/*` 带 ETag，
+  //    预览那条腿已经拉过同一份，这里通常是一次 304。
+  heatDanmaku.value = []
+  try {
+    const dmUrl = clipMediaUrl(props.pid, props.dir, 'data/danmaku.json')
+    if (dmUrl) {
+      const dmRes = await fetch(dmUrl)
+      if (dmRes.ok) {
+        const rows = await dmRes.json()
+        // **只留 `start`**：文本/颜色与本曲线无关，没必要把一份几百 KB 的弹幕整份留在内存里
+        heatDanmaku.value = (Array.isArray(rows) ? rows : [])
+          .map((d) => Number(d && d.start))
+          .filter((v) => Number.isFinite(v))
+      } else if (dmRes.status !== 404) {
+        addClient('warn', '弹幕读取失败（热度曲线只用字幕）：HTTP ' + dmRes.status, 'timeline')
+      }
+    }
+  } catch (e) {
+    addClient('warn', '弹幕读取失败（热度曲线只用字幕）：' + (e.message || e), 'timeline')
+  }
+  // 曲线 = **这一趟装载时的快照**（用户口径 2026-10：不随编辑重算，见 `heatRaw` 的注释）。
+  // 放在字幕读完之后：它吃的就是刚读进来的那份字幕。
+  heatRaw.value = heatSeries({
+    subtitles: subtitles.value,
+    danmakuStarts: heatDanmaku.value,
+    duration: duration.value,
+  })
+  if (!heatRaw.value.hasDanmaku) {
+    addClient('debug', '热度曲线：本片段没有弹幕，只按字幕算', 'timeline')
   }
 
   // §10 情绪轨道：**404 同样是正常空态**（没有弹幕 / 没跑过 process 的工程就没有这个产物）。
@@ -3422,10 +3902,30 @@ async function loadData() {
  .resize { position:absolute; right:0; top:0; width:8px; height:100%; cursor:ew-resize; background:rgba(255,255,255,0.35); border-radius:0 4px 4px 0; }
 .resize-l { left:0; right:auto; border-radius:4px 0 0 4px; }
 .ruler-label { height:20px; font-size:10px; }
+/* 热度曲线开着时标尺带长高 `HEAT_H`(16px)：上 16px 是曲线，下 20px 是原来的刻度与时间标签。
+   ⚠️ 关掉曲线要**缩回 20px**（不留空槽）⇒ 下面这三条 `.heat-on` 必须成对，少一条就与轨道列错位。 */
+.ruler-label.heat-on { height:36px; }
 .ruler-lane { height:20px; border-bottom:none; }
+.ruler-lane.heat-on { height:36px; }
 .ruler-track { height:20px; cursor:col-resize; }
+.ruler-track.heat-on { height:36px; }
+/* 曲线：带子刻意**不高**（用户口径 2026-10：参考字幕泳道上那条响度曲线），但"小"指的是它是条窄带、
+   **不是起伏看不出来** —— 所以要幅度时先动 `HEAT_H` 与显示对比拉伸（`heat.js`），别加泳道。
+   色值一律走 tokens（两套主题成对）；halo 用 `--card` 把曲线从刻度线上「抠」出来
+   —— 标尺底色就是卡片色，单色线压着刻度容易在竖线附近糊掉。 */
+.heat-layer { position:absolute; left:0; top:0; pointer-events:none; z-index:3; }
+.heat-core { fill:none; stroke:var(--main); stroke-width:1.4; stroke-linejoin:round; stroke-linecap:round; }
+.heat-halo { fill:none; stroke:var(--card); stroke-width:3; stroke-linejoin:round; stroke-linecap:round; }
 .ruler-tick { position:absolute; top:0; bottom:0; width:1px; background:rgba(0,0,0,0.14); }
+.ruler-track.heat-on .ruler-tick { top:16px; }
 .ruler-time { position:absolute; top:1px; left:4px; font-size:9px; color:var(--ink-dim); white-space:nowrap; pointer-events:none; }
+/* ⚠️ **标签不许再叠一次位移**：`.ruler-time` 的 containing block 就是 `.ruler-tick`（Span 在绝对定位的
+   Div 里）—— 刻度已经整体下移 16px，标签保持原来那个 `top:1px` 就正好落在曲线下面那 20px 里。
+   再补一条 `top:13px` 就是 16 + 13 + 字号 9 ≈ 38px > 36px 带高 ⇒ **标签被裁掉半行**（2026-10 实测，
+   静态判据和"刻度下移了 16px"的读数都拦不住它，是截图放大才看出来的）。 */
+.ruler-name { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* 读数：悬停时 = 鼠标处那一桶，否则 = **播放头**那一桶（"视频的实时热度"就是这一档）。 */
+.ruler-readout { flex:none; margin-left:auto; font-size:10px; color:var(--ink-dim); font-variant-numeric:tabular-nums; }
 .ruler-playhead { position:absolute; top:0; bottom:0; width:2px; background:var(--main); z-index:5; pointer-events:none; }
 .block.type-subtitles { background:rgba(59,130,246,0.35) !important; color:#0f172a; font-weight:700; opacity:1; text-shadow:0 0 2px #fff, 0 0 2px #fff; }
 .block.type-mutes { background:rgba(239,68,68,0.42) !important; color:#7f1d1d; font-weight:700; }
@@ -3440,21 +3940,13 @@ async function loadData() {
 /* 覆盖层未设色档时的退化说明（终色此刻实为 transparent，取色器只能显示黑，必须解释一句） */
 .mini-hint { margin:6px 0 0; padding:5px 7px; background:var(--bg-soft); border-radius:6px;
   font-size:11px; line-height:1.5; color:var(--ink-faint); }
-/* §1 系统理由：只读回执。左缘一道竖线把它与"可编辑的字段"在视觉上分开 ——
-   用户点进来的第一反应是"这能不能改"，答案是不能（改结果请拖边界）。 */
-.seg-why { border-left: 2px solid var(--line, var(--bg-soft)); padding-left: 8px; }
-.seg-why .chip { font-size: 10px; padding: 1px 6px; }
-.why-row { display:flex; align-items:baseline; gap:6px; margin-top:5px; }
-/* 圆点：边界类（品牌橙）与其它（金发调）—— 让用户扫一眼就分得出是哪一类决策。
-   ⚠️ 只用 tokens 里**存在**的变量：本仓没有 `--warn`（写过一次，静默拿到 fallback）。 */
-.why-dot { flex:none; width:6px; height:6px; border-radius:50%; margin-top:1px;
-  background: var(--ink-faint); }
-.why-dot.b { background: var(--main); }
-.why-dot.o { background: var(--tan-deep); }
-/* ⚠️ 文案是**人话**、可能比较长，必须允许折行（右栏内容宽只有 266px） */
-.why-text { flex:1 1 auto; min-width:0; font-size: 11px; line-height:1.5; color: var(--ink); }
-.why-detail { flex:none; font-size:10px; white-space:nowrap; }
-.props-panel label { margin-top:6px; }
+/* 「系统做得对吗」那块的 `.seg-why` / `.why-*` 样式已随之删除（2026-10-15）。 */
+/* ⚠️ **标签不再要上外边距**（2026-10-16）：面板已是两列网格（`app.css` 里 `.props-panel`），
+   控件就在标签右边 ⇒ 那 6px 只会把每一行推高、还和 app.css 的 `margin:0` **同优先级打擂台**
+   （scoped 注入更晚 ⇒ 实际生效的是这 6px，而几何夹具只加载 app.css、量不到 ⇒ 夹具比现实乐观）。 */
+/* ⚠️ 只认**直接子元素**（与 `app.css` 的网格规则同口径）：包在 `.row` / `.pos-row` 这类
+   自己排好布局的 div 里的标签**不动**（它们的 6px 本来就不该被这条规则连带清零）。 */
+.props-panel > label { margin:0; }
 .props-panel .row { margin-top:4px; }
 .props-panel input[type="color"] { height: 26px; padding: 0 2px; }
 .props-panel input, .props-panel select, .props-panel textarea { font-size: 12px; }
@@ -3463,6 +3955,15 @@ async function loadData() {
 .type-ro b { font-size: 12.5px; }
 /* 手工时间状态行（贴纸/运镜）：chip + 说明 +「跟随字幕」 */
 .manual-row { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+/* 元素位置 X/Y 滑杆（2026-10-15）：`[X] ——o———— [ 76 ]` 一行。
+   ⚠️ `min-width:0` 必须给：滑杆是 `flex:1 1 0`，父容器不让它收缩时
+   数字框会被挤出右栏（右栏内容宽只有 266px，实测就够放这三格）。 */
+.pos-lbl { margin-top:0 !important; }
+.pos-row { display:flex; align-items:center; gap:6px; margin-top:5px; }
+.pos-tag { flex:none; width:11px; font-size:11px; color:var(--ink-dim); text-align:center; }
+.pos-range { flex:1 1 0; min-width:0; height:16px; margin:0; accent-color:var(--main); }
+.pos-num { flex:none; width:52px; text-align:center; padding:2px 4px; }
+.pos-row .mini-btn { flex:none; }
 /* 运镜「手持摇摆」开关行：紧跟景别下拉，禁用态表示当前景别不满足门槛 */
 .ck-row { display:flex; align-items:center; gap:5px; margin-top:8px; font-size:12px;
   color:var(--ink); cursor:pointer; }
