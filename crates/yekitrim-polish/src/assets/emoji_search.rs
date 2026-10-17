@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 use std::collections::HashMap;
 use serde::Deserialize;
 
+use super::emoji_taxonomy;
+
 const API_URL: &str = "https://googlefonts.github.io/noto-emoji-animation/data/api.json";
 const CDN_BASE: &str = "https://fonts.gstatic.com/s/e/notoemoji/latest";
 
@@ -20,6 +22,11 @@ struct CatalogEntry {
     url: String,
     shortcodes: Vec<String>,
     tag: Vec<String>,
+    /// **六维分类**（2026-10-17）：`{emotion:[…], intensity:[…], action:[…], object:[…], usage:[…], tone:[…]}`。
+    /// 维度键与取值由 `assets/emoji_taxonomy.json` 定义（**词表真源**），这里只做形状校验。
+    /// 老数据（没有 `dim`）照样能读 —— 那时 `search_dims` 空转、`grouped()` 走 tag 老路。
+    #[serde(default)]
+    dim: HashMap<String, Vec<String>>,
 }
 
 /// API 返回的单个 emoji 条目（远端 fallback 用）
@@ -154,6 +161,8 @@ pub struct EmojiCatalog {
     index: HashMap<String, Vec<String>>,
     /// 所有 codepoint 集合（用于无关键词时 fallback）
     all_codepoints: Vec<String>,
+    /// codepoint → 维度 → 取值（`search_dims` 打分用）。空 = 老数据（没有 `dim`）。
+    dims: HashMap<String, HashMap<String, Vec<String>>>,
 }
 
 impl EmojiCatalog {
@@ -185,6 +194,7 @@ impl EmojiCatalog {
         let mut tag_index: HashMap<String, Vec<String>> = HashMap::new();
         let mut index: HashMap<String, Vec<String>> = HashMap::new();
         let mut all_codepoints = Vec::new();
+        let mut dims: HashMap<String, HashMap<String, Vec<String>>> = HashMap::new();
 
         for entry in &entries {
             let cp = entry.codepoint.clone();
@@ -203,9 +213,29 @@ impl EmojiCatalog {
                     index.entry(kw).or_default().push(cp.clone());
                 }
             }
+
+            // 六维分类（`search_dims` 用）。⚠️ **只收词表里的取值** ——
+            // 数据是构建工具写进来的，但"词表改了、JSON 没重跑"是常态，
+            // 收下词表外的值只会让查询悄悄命中一个谁也没定义过的维度。
+            if !entry.dim.is_empty() {
+                let mut kept: HashMap<String, Vec<String>> = HashMap::new();
+                for (dim, values) in &entry.dim {
+                    let vals: Vec<String> = values
+                        .iter()
+                        .map(|v| v.trim().to_ascii_lowercase())
+                        .filter(|v| !v.is_empty() && emoji_taxonomy::is_valid_value(dim, v))
+                        .collect();
+                    if !vals.is_empty() {
+                        kept.insert(dim.trim().to_ascii_lowercase(), vals);
+                    }
+                }
+                if !kept.is_empty() {
+                    dims.insert(cp.clone(), kept);
+                }
+            }
         }
 
-        Ok(EmojiCatalog { tag_index, index, all_codepoints })
+        Ok(EmojiCatalog { tag_index, index, all_codepoints, dims })
     }
 
     /// 从远端 API 构建索引（fallback）
@@ -228,8 +258,14 @@ impl EmojiCatalog {
             }
         }
 
-        // 远端 API 没有 LLM 标签 ⇒ 直接给空表（`grouped()` 会回退到 `index`）
-        Ok(EmojiCatalog { tag_index: HashMap::new(), index, all_codepoints })
+        // 远端 API 既没有 LLM 标签、也没有六维分类 ⇒ 三张表都给空
+        // （`grouped()` 回退到 `index`、`search_dims` 空转、`search` 照旧）
+        Ok(EmojiCatalog {
+            tag_index: HashMap::new(),
+            index,
+            all_codepoints,
+            dims: HashMap::new(),
+        })
     }
 
     /// 搜索匹配关键词的 emoji codepoint 列表
@@ -273,6 +309,68 @@ impl EmojiCatalog {
         &self.all_codepoints
     }
 
+    /// **按维度查询**打分排序，返回最贴合的 `max` 个 codepoint。
+    ///
+    /// `query` 来自 `emoji_taxonomy::parse_query`（如 `emotion:joy,usage:punchline`）——
+    /// **只含词表内的取值**，所以打分不会碰上"谁也没定义过的维度"。
+    /// 打分 = 命中的每个 (维度, 取值) 加**该维度的权重**；0 分的直接淘汰。
+    /// 同分按**目录顺序**（稳定：同一份数据、同一条查询，结果永远一样）。
+    pub fn search_dims(&self, query: &[(String, String)], max: usize) -> Vec<String> {
+        if query.is_empty() || max == 0 || self.dims.is_empty() {
+            return Vec::new();
+        }
+        let mut scored: Vec<(f32, usize, String)> = Vec::new();
+        for (i, cp) in self.all_codepoints.iter().enumerate() {
+            let Some(d) = self.dims.get(cp) else { continue };
+            let mut score = 0.0f32;
+            for (dim, value) in query {
+                if d.get(dim).is_some_and(|vs| vs.iter().any(|v| v == value)) {
+                    score += emoji_taxonomy::find_dim(dim).map(|s| s.weight).unwrap_or(1.0);
+                }
+            }
+            if score > 0.0 {
+                scored.push((score, i, cp.clone()));
+            }
+        }
+        scored.sort_by(|a, b| {
+            b.0.partial_cmp(&a.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.1.cmp(&b.1))
+        });
+        scored.into_iter().take(max).map(|(_, _, cp)| cp).collect()
+    }
+
+    /// **选取入口**（`process` Step 2 调它）：把 LLM 写的关键词变成候选表情。
+    ///
+    /// 三级，从"最准"到"最宽"：
+    /// ① **分维查询** —— 关键词是 `emotion:joy,usage:punchline` 这种紧凑串，
+    ///    或者是一个能对上词表的自由词（`joy`/`game`，走 `guess_dims`）⇒ `search_dims` 打分排序；
+    /// ② 旧的**精确 + 子串**匹配（`search`）—— 老工程与词表外的新词都靠它兜底；
+    /// ③ 都没有 ⇒ 空（调用方去试下一个来源）。
+    ///
+    /// ⚠️ ①**不吞掉**②：即使分维查询有结果也不再走 ②（打分已经排过序了），
+    /// 但分维查询**没结果**时必须落回 ② —— 否则一条老工程的 `keyword = "angry"`
+    /// （词表里只有 `anger`/`annoyance`）会解析不出表情。
+    pub fn search_best(&self, keyword: &str, max: usize) -> Vec<String> {
+        let mut q = emoji_taxonomy::parse_query(keyword);
+        if q.is_empty() {
+            q = emoji_taxonomy::guess_dims(keyword);
+        }
+        if !q.is_empty() {
+            let hits = self.search_dims(&q, max);
+            if !hits.is_empty() {
+                return hits;
+            }
+        }
+        self.search(keyword, max)
+    }
+
+    /// 目录里**有没有**六维分类（构建工具 `polish emoji build` 跑过没有）。
+    /// 老数据 / 远端 API 都是 `false` ⇒ 面板走 tag 老路、`search_dims` 空转。
+    pub fn has_dims(&self) -> bool {
+        !self.dims.is_empty()
+    }
+
     /// **给编辑器的表情面板用**：整份目录，按 `tag` 分组。
     ///
     /// 返回 `(tag, [codepoint, …])`，组内保持 catalog 的原始顺序、组间按 tag 字典序。
@@ -284,6 +382,34 @@ impl EmojiCatalog {
     /// ⚠️ 组是**tag 不是分类**：同一条 emoji 会落在多个 tag 下（`happy` + `emotion`），
     /// 所以各组加起来会多于 `all().len()` —— 这是有意的（用户按情绪找，不按树找）。
     pub fn grouped(&self) -> Vec<(String, Vec<String>)> {
+        // ⚠️ **有六维分类时按「主维度」分区**（2026-10-17）：这才是"分类"该有的形状 ——
+        //    一个维度、每组几十条。按"所有 tag 的并集"分区会退回"几十个标签、三成只有 1 条"
+        //    （用户口径：「当前 emoji 包的类型有几十个，这根本不对」）。
+        //    没有 dim（老数据 / 远端 API）⇒ 走下面的 tag 老路（零迁移）。
+        if !self.dims.is_empty() && emoji_taxonomy::primary_dim().is_some() {
+            let primary = emoji_taxonomy::primary_dim().expect("上面刚判过").key.clone();
+            let mut grouped: std::collections::BTreeMap<String, Vec<String>> =
+                std::collections::BTreeMap::new();
+            let mut ungrouped: Vec<String> = Vec::new();
+            for cp in &self.all_codepoints {
+                match self
+                    .dims
+                    .get(cp)
+                    .and_then(|d| d.get(&primary))
+                    .and_then(|vs| vs.first())
+                {
+                    Some(v) => grouped.entry(v.clone()).or_default().push(cp.clone()),
+                    // ⚠️ **没分到组的一个都不许丢**：面板的「全部（不限）」是从各组拼出来的，
+                    //    丢掉它们 = 这些表情在面板上永远看不见（静默消失）。
+                    None => ungrouped.push(cp.clone()),
+                }
+            }
+            let mut out: Vec<(String, Vec<String>)> = grouped.into_iter().collect();
+            if !ungrouped.is_empty() {
+                out.push(("uncategorized".to_string(), ungrouped));
+            }
+            return out;
+        }
         let mut groups: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
         // ⚠️ **只按 tag 分组**（用户/LLM 的分类）。`index` 里还有 shortcodes（`:smile:`）——
         //    混进去会让「分类」多出 2000 多个官方短名（`1st-place-medal` / `!!` / `+1`…，2026-10-17 真 bug）。
@@ -493,13 +619,27 @@ mod tests {
             "一个多码点序列都没有？目录里应当有三百多条（这条在防分组被改写）"
         );
 
-        // ③ 同一条出现在多个 tag 下（分组是 tag 视图、不是互斥分区）
+        // ③ **分组口径两档**（2026-10-17 改）：
+        //    有六维分类 ⇒ 按**主维度**分区，主维度是单选 ⇒ 每组互斥、**各组之和 == 目录条数**；
+        //    没有 dim（老数据 / 远端 API）⇒ 走 tag 老路，那才是重叠视图（同一条落在多个 tag 下）。
+        //
+        //    ⚠️ 这里原先写死的是「各组之和 > 目录条数」—— 那是旧口径，而**重叠正是**
+        //    「几十个标签、三成只有 1 条」的来源（用户口径：「类型有几十个，这根本不对」）。
+        //    两档都钉住：谁把分区改回重叠、或把老路改成互斥，都会红。
         let total: usize = groups.iter().map(|(_, cps)| cps.len()).sum();
-        assert!(
-            total > cat.all().len(),
-            "各组之和({total})应当多于目录条数({})—— 同一条会落在多个 tag 下",
-            cat.all().len()
-        );
+        if cat.has_dims() {
+            assert_eq!(
+                total,
+                cat.all().len(),
+                "主维度是单选 ⇒ 分组必须是分区（各组之和必须等于目录条数）"
+            );
+        } else {
+            assert!(
+                total > cat.all().len(),
+                "没有 dim 时走 tag 老路，那时才是重叠视图（和为 {total}、条数 {}）",
+                cat.all().len()
+            );
+        }
     }
 
     /// **面板的「分类」页必须是用户的 LLM 分类标签，不是官方短名**（2026-10-17 修）。
@@ -542,6 +682,164 @@ mod tests {
             cat.all().len(),
             &names[..names.len().min(10)]
         );
+    }
+
+/// 造一份**合成目录**。
+    ///
+    /// ⚠️ 刻意不依赖 include_str! 那份真实数据：它有没有 dim 取决于构建工具跑没跑过，
+    /// 用它当判据 = 用例会随数据状态时红时绿。这里的形状与真实数据同构即可。
+    ///
+    /// all_codepoints 有意把 1f622 排在 1f602 **前面** —— 这样"同分按目录顺序"
+    /// 与"高分优先"两条断言会给出**不同**的顺序，两条都不空转。
+    fn synthetic() -> EmojiCatalog {
+        let mut dims: HashMap<String, HashMap<String, Vec<String>>> = HashMap::new();
+        dims.insert(
+            "1f602".to_string(),
+            HashMap::from([
+                ("emotion".to_string(), vec!["joy".to_string()]),
+                ("usage".to_string(), vec!["punchline".to_string(), "reaction".to_string()]),
+                ("tone".to_string(), vec!["positive".to_string()]),
+            ]),
+        );
+        dims.insert(
+            "1f622".to_string(),
+            HashMap::from([
+                ("emotion".to_string(), vec!["sadness".to_string()]),
+                ("usage".to_string(), vec!["reaction".to_string()]),
+            ]),
+        );
+        dims.insert(
+            "1f621".to_string(),
+            HashMap::from([
+                ("emotion".to_string(), vec!["anger".to_string()]),
+                ("intensity".to_string(), vec!["3".to_string()]),
+            ]),
+        );
+        EmojiCatalog {
+            tag_index: HashMap::new(),
+            // 老工程那条兜底路（词表外的自由词）要有东西可命中
+            index: HashMap::from([("lol".to_string(), vec!["1f621".to_string()])]),
+            all_codepoints: vec![
+                "1f622".to_string(),
+                "1f602".to_string(),
+                "1f621".to_string(),
+                "1f600".to_string(),
+            ],
+            dims,
+        }
+    }
+
+    /// 打分按**维度权重**排、同分按**目录顺序**（稳定）。
+    ///
+    /// 变异自证：把权重加成改成固定的 +1.0 → 第一条断言红（两个候选会变成同分）。
+    #[test]
+    fn search_dims_ranks_by_weight_then_directory_order() {
+        let cat = synthetic();
+        let hits = cat.search_dims(
+            &[
+                ("emotion".to_string(), "joy".to_string()),
+                ("usage".to_string(), "reaction".to_string()),
+            ],
+            8,
+        );
+        assert_eq!(hits, vec!["1f602", "1f622"], "分高的必须排前面");
+        let tie = cat.search_dims(&[("usage".to_string(), "reaction".to_string())], 8);
+        assert_eq!(tie, vec!["1f622", "1f602"], "同分要按目录顺序，保证稳定");
+        assert!(cat.search_dims(&[("emotion".to_string(), "fear".to_string())], 8).is_empty());
+        assert!(cat.search_dims(&[], 8).is_empty());
+        assert!(cat.search_dims(&[("emotion".to_string(), "joy".to_string())], 0).is_empty());
+    }
+
+    /// 选取入口三级：紧凑查询 → 词表自由词 → 旧的自由词兜底。
+    ///
+    /// 变异自证：把最后那句 self.search(keyword, max) 去掉 → 第三条断言红
+    /// （老工程那条 keyword = lol 会解析不出表情）。
+    #[test]
+    fn search_best_takes_query_then_vocabulary_then_legacy() {
+        let cat = synthetic();
+        assert_eq!(cat.search_best("emotion:joy", 8), vec!["1f602"]);
+        assert_eq!(cat.search_best("joy", 8), vec!["1f602"]);
+        assert_eq!(cat.search_best("lol", 8), vec!["1f621"], "旧工程的 keyword 必须还能命中");
+        assert!(cat.search_best("zzzz", 8).is_empty());
+    }
+
+    /// 面板按**主维度**分区，且**一个 codepoint 都不许丢**（没分到组的进 uncategorized）。
+    ///
+    /// 变异自证：删掉 ungrouped 那一段 → 第二条断言红
+    /// （那个没分类的表情会在面板上永远看不见 —— 静默消失）。
+    #[test]
+    fn grouped_by_primary_dim_never_drops_a_codepoint() {
+        let cat = synthetic();
+        let groups = cat.grouped();
+        let names: Vec<&String> = groups.iter().map(|(t, _)| t).collect();
+        assert!(
+            names.contains(&&"joy".to_string()),
+            "分组键应当是主维度的取值: {names:?}"
+        );
+        assert!(
+            names.contains(&&"uncategorized".to_string()),
+            "没有 dim 的 codepoint 必须落到 uncategorized: {names:?}"
+        );
+        let total: usize = groups.iter().map(|(_, c)| c.len()).sum();
+        assert_eq!(total, cat.all().len(), "分组不许丢 codepoint（面板的全部靠它拼）");
+        let mut seen = std::collections::HashSet::new();
+        for (_, cps) in &groups {
+            for cp in cps {
+                assert!(seen.insert(cp.clone()), "{cp} 出现在多个组里 —— 主维度应当是单选");
+            }
+        }
+    }
+
+/// **数据质量门禁**：六维分类真的落进目录了吗、词表是不是"闭合"的。
+    ///
+    /// 与上面几条用**合成目录**的用例相反，这条读的是 include_str! 那份**真实数据** ——
+    /// 它就是"构建工具跑完之后的验收判据"。
+    ///
+    /// 变异自证：把目录里的 dim 字段删掉 ⇒ 第一条红；
+    /// 把某个维度的取值砍掉大半 ⇒ 第三条红（零覆盖超标）。
+    #[test]
+    fn embedded_catalog_is_multi_dimensional_and_closed() {
+        let cat = EmojiCatalog::fetch_embedded().expect("内嵌目录");
+        assert!(
+            cat.has_dims(),
+            "目录里没有 dim —— 构建工具没跑过（polish emoji build）"
+        );
+        let missing = cat.all().iter().filter(|cp| !cat.dims.contains_key(*cp)).count();
+        assert_eq!(missing, 0, "有 {missing} 条没分类（面板上它们只会落进 uncategorized）");
+
+        let mut zero: Vec<String> = Vec::new();
+        let mut total = 0usize;
+        for d in &emoji_taxonomy::taxonomy().dims {
+            for v in &d.values {
+                total += 1;
+                let hit = cat
+                    .dims
+                    .values()
+                    .any(|m| m.get(&d.key).is_some_and(|vs| vs.iter().any(|x| x == v)));
+                if !hit {
+                    zero.push(format!("{}.{}", d.key, v));
+                }
+            }
+        }
+        // 允许极少数取值在本目录里没有成员（实测 1/85：action.salute —— 🫡 其实在目录里，
+        // 是模型没给），但**不许成片为零**：那些词写进 prompt 就是"能写、永远选不到"。
+        assert!(
+            zero.len() * 20 <= total,
+            "零覆盖的取值太多（{} / {total}）：{zero:?}",
+            zero.len()
+        );
+        // 主维度是面板的分区维度：它的取值数决定面板有几组，太少就是"分类退化"。
+        let primary = emoji_taxonomy::primary_dim().expect("词表必须有主维度");
+        let groups = primary
+            .values
+            .iter()
+            .filter(|v| {
+                cat.dims
+                    .values()
+                    .any(|m| m.get(&primary.key).is_some_and(|vs| vs.iter().any(|x| x == *v)))
+            })
+            .count();
+        assert!(groups >= 10, "{} 只有 {groups} 组有成员 —— 分类退化了", primary.key);
     }
 
     /// 面板上点一个码点 → `name` 就是这个字符串 ⇒ 它必须能被 `search()` 反查回来。
