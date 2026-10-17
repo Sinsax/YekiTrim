@@ -64,9 +64,16 @@
                          opacity: tx.opacity,
                          fontSize: tx.style.fontPx + 'px',
                          fontWeight: tx.style.weight,
+                         // ⚠️ **元素层以前一个 font-family 都没写**（2026-10-16 实测）：它继承的是
+                         //    `app.css` 的 `*{font-family:var(--font)}`（**界面字体**），与成片用的
+                         //    项目字体无关 ⇒ 用户看到的正是「文字元素换字体不生效、字幕那层却变了」。
+                         //    元素与字幕**同源**（转译器：元素那三样直接复用字幕那份值）⇒ 用同一个。
+                         ...(subFontFamily ? { fontFamily: subFontFamily } : {}),
                          color: rgbaCss(tx.style.fill),
                          WebkitTextStrokeWidth: tx.style.strokePx + 'px',
                          WebkitTextStrokeColor: rgbaCss(tx.style.stroke),
+                         // ⚠️ 用**元素自己**那份（`tx.outerRing`），不是字幕那份 —— 见 `texts` 里的推导。
+                         ...(tx.outerRing ? { textShadow: tx.outerRing } : {}),
                          background: tx.plate ? rgbaCss(tx.plate) : 'transparent',
                          padding: tx.plate ? '0.06em 0.18em' : '0',
                          ...tx.formStyle }">
@@ -108,7 +115,9 @@
                                                  style: subStyle, animName: c.styleAnimName || c.animName })
                            : 'translateY(' + c.yOff + 'px) scale(' + c.scale + ')',
                          fontSize: (subStyle.size || 72) * c.fontScale + 'px',
-                         WebkitTextStrokeWidth: capStrokeW * c.fontScale + 'px' }">
+                         WebkitTextStrokeWidth: capStrokeW * c.fontScale + 'px',
+                         // ⚠️ 白环**逐行**（按这一行的 fontScale）—— 见 `capRowsWrapped` 里的推导。
+                         ...(c.ring ? { textShadow: c.ring } : {}) }">
             <span v-for="(line, li) in c.lines" :key="li" class="cap-line">
               <template v-if="c.spans">
                 <span v-for="(sp, j) in line" :key="j" :class="{ hl: sp.hl }"><template
@@ -209,7 +218,7 @@ import { clipMediaUrl, mediaUrl } from '../utils'
 import { api } from '../api/client'
 // §4「转译报告可见」：DROP/CLAMP 的播报只有 `api/polish.js` 那一份实现，三处调用点共用。
 import { logTranslateReport } from '../api/polish'
-import { invertCameraPoint, nearestGridCenter, buildIndex, videoFxAt, handheldSway, getFlash, getHueShiftFlash, getNoiseOpacity, getVignette, getOverlayState, gradientCss, subsAt, danmakuAt, stickersAt, getElements, wrapCaptionParts, capMeasure, noiseTile, textTiltTransform, perCharSpans, animPreset } from '../polish/engine'
+import { invertCameraPoint, buildIndex, videoFxAt, handheldSway, getFlash, getHueShiftFlash, getNoiseOpacity, getVignette, getOverlayState, gradientCss, subsAt, danmakuAt, stickersAt, getElements, wrapCaptionParts, capMeasure, noiseTile, textTiltTransform, perCharSpans, animPreset } from '../polish/engine'
 import { canvasOf, stickerScale } from '../polish/canvas.js'
 import { createSfxPlayer } from '../polish/audio'
 import { ensureFontFace, fontFamilyFor } from '../polish/fonts'
@@ -254,6 +263,10 @@ const props = defineProps({
   // 首项随字体库里"设为默认"的那支走 —— 与成片（`server.rs::fallback_stack`）同一份计算。
   // 缺省 = 老的字面量栈（库里没有可用中文时服务端算出来的回落态就是它，不回归）。
   fontFallback: { type: String, default: '"Noto Sans SC","Microsoft YaHei",sans-serif' },
+  // ⚠️ **字体库清单**（2026-10-16）：`[style.*].font` 里存的是**库 id**，而 CSS / canvas 只认
+  //    **内部族名** —— 中间的换算要有一份名单（`fontFamilyFor`）。页面从 `fetchFonts()` 拿到，
+  //    这里只读。不传（老调用点）时退化成"原值直接用"= 改造前的行为。
+  fonts: { type: Array, default: () => [] },
   // ⚠️ **emoji 补充槽位**（2026-10-02 字体职责分离）：库里那支负责表情的字体（服务端自动选、
   // 至多一支），空串 = 库里没有 ⇒ 不追加（浏览器自带系统 emoji）。
   // 它是**独立 prop**、不并进 fontFallback —— 服务端就是这么分的（见 api/polish.js 的说明）。
@@ -842,10 +855,18 @@ async function ensureProjectFonts(project) {
     if (f) families.add(f)
   }
   for (const family of families) {
+    // ⚠️ **必须看返回值**（2026-10-16 修）：`ensureFontFace` 内部把失败**吞了**（`catch` 里
+    //    只调 `onDebug` 并 `return false`）⇒ 外面这个 `try/catch` **永远不会触发**。
+    //    于是"字体没装上、预览静默用回退字形"这件事**只有调试日志里一行**，用户看不到。
+    //    这正是本仓最恨的那类：字号/位置/颜色全对，只有字形不对，而且不报错。
+    let okFace = false
     try {
-      await ensureFontFace(null, props.dir, family, { onDebug: (m) => addClient('debug', m, 'dhampir') })
+      okFace = await ensureFontFace(null, props.dir, family, { onDebug: (m) => addClient('debug', m, 'dhampir') })
     } catch (e) {
-      dhampirStatus.value = '字体 ' + family + ' 没装上（预览会用回退字体）'
+      okFace = false
+    }
+    if (!okFace) {
+      dhampirStatus.value = '字体「' + family + '」没装上 —— 预览用的是回退字体（成片不受影响）'
     }
   }
   // 字体是异步到位的；不等它的话第一屏会是回退字形。
@@ -2245,11 +2266,52 @@ const idx = computed(() => buildIndex({
   //    见本文件 `dhampirFps.value = tb.num / tb.den`）。
   // ⚠️ 不传 ⇒ `swayDegAt` 拿不到 fps ⇒ 返回 0（**不摆**）——
   //    而那正是"配了摇摆、预览里不动"的旧症状，所以由 `check-sway-parity.mjs` 钉住。
-  fps: dhampirFps.value
+  fps: dhampirFps.value,
+  // ⚠️ **弹幕量宽要跟绘制同一个族**（2026-10-16）：`.dm` 的 `font-family` 走 `fontFamilyFor`
+  //    （库 id → 内部族名），量宽这一层以前拿的是**库 id** ⇒ 页面没有那个面 ⇒ 按回退字体量
+  //    ⇒ 滚动时长错 ⇒「弹幕没滚到边就消失」。
+  //    ⚠️ 这里**直接读 `props.config`**（不走 `idx`/`dmStyleCfg`）—— 那条链会与 `idx` 形成
+  //    computed 循环依赖（`idx` → 族名 → `dmStyleCfg` → `idx`）。
+  danmakuFontFamily: () => fontFamilyFor(props.fonts, props.config?.style?.danmaku?.font || ''),
 }))
 
 // ---- 逐帧状态（rAF 更新 current 触发重算）----
 const vfx = computed(() => videoFxAt(idx.value, current.value))
+
+/**
+ * **底座求值出来的主画面变换**（P1，2026-10-15）—— `null` = 底座没在跑 / 没给这一层。
+ *
+ * 底座（wasm，**出片同源**）每个帧号都算好了一份 `layers[].transform`：
+ * `{ x, y, scale, rotation_deg }`（运镜缩放、荷兰角都在里面，实测逐帧跟随 keyframe 插值）。
+ * 本组件原先**不读它**，自己在 `engine.js::cameraAt` + `handheldSway` 里再算一遍 ——
+ * 同一件事两份实现，漂了就是"预览里镜头 1.6、成片里 1.5"，而两边各自看都正常。
+ *
+ * ⚠️ **只在底座真的给了这一层时才返回**：没有工程（DOM-only 模式）时返回 `null`，
+ *    调用方**必须**回落自算 —— 不然纯 DOM 模式下运镜会整块失效。
+ *
+ * ⚠️ 阈值不设：底座给的就是**权威值**，不做"差得不多就用旧的"那种软化
+ *    （那会让漂移永远藏在阈值里，正是这条要治的病）。
+ */
+const dhampirBaseCamera = computed(() => {
+  if (!dhampirMode.value || dhampirFrameShown < 0) return null
+  // ⚠️ **必须走 `dhampirPkgNs`（wasm 模块命名空间）而不是 `dhampirEngine`（`Engine` 包装对象）**：
+  //    包装对象上没有 `dhampir_project_frame` 这个导出 —— 写成 `dhampirEngine.xxx` 恒等于
+  //    "没有这个导出"，于是这条腿**永远静默回落到自算**（正是本改动要消除的那件事）。
+  //    这条纪律与上面 `pkgNs` 那段注释（HOST_API_VERSION 的读法）是同一个坑。
+  const ns = dhampirPkgNs
+  if (!ns || typeof ns.dhampir_project_frame !== 'function') return null
+  try {
+    // 返回值是 **JSON 字符串**（不是对象）—— 底座那侧就是这个形状。
+    const payload = JSON.parse(ns.dhampir_project_frame(dhampirFrameShown))
+    const layer = (payload.layers || []).find((l) => l.clip_id === 'main-0') ?? (payload.layers || [])[0]
+    const t = layer && layer.transform
+    if (!t || typeof t.scale !== 'number') return null
+    return { scale: t.scale, rotationDeg: Number(t.rotation_deg) || 0 }
+  } catch (e) {
+    // 工程没载入 / 形状变了 —— **静默回落到自算**（不抛：读不到不该让预览白屏）
+    return null
+  }
+})
 const flash = computed(() => getFlash(idx.value, current.value))
 const hueFlash = computed(() => getHueShiftFlash(idx.value, current.value))
 const noiseOp = computed(() => getNoiseOpacity(idx.value, current.value))
@@ -2310,8 +2372,13 @@ const capFallback = computed(() => {
 })
 /** 量宽用的字体简写。⚠️ 兜底栈走 capFallback（服务端动态算、与成片同源）——
  *  这里曾写死 `"LXGW WenKai",…`，"设为默认"对预览的量宽/折行完全无效。 */
+/** 量宽用的字体简写（字幕折行按它算）。
+ *
+ *  ⚠️ **必须用映射后的族名**（`subFontFamily`），不能用 `subStyle.font` 原值：原值是**库 id**
+ *    时页面里没有那个面 ⇒ canvas 按**回退字体**量宽 ⇒ 折行位置与成片不同（"预览与成片断行不一致"），
+ *    而两条腿各自看都正常。绘制那层（`.cap`）走的也是族名 —— 量宽与绘制必须同一个族。 */
 const capFontSpec = computed(() => '700 ' + (subStyle.value.size || 72) + 'px '
-  + (subStyle.value.font ? '"' + subStyle.value.font + '",' : '') + capFallback.value)
+  + (subFontFamily.value ? '"' + subFontFamily.value + '",' : '') + capFallback.value)
 const capStrokeW = computed(() => parseFloat(subStyle.value.stroke) || 12)
 const capRowsWrapped = computed(() => capRows.value.map((c) => {
   // ---- ⚠️⚠️ 形态那半边的**实际参数**（2026-10-13 补，用户报「预览没有实现效果」）----
@@ -2364,7 +2431,14 @@ const capRowsWrapped = computed(() => capRows.value.map((c) => {
   })
   // ⚠️ `formStyle` 必须**带出去**（模板读它）—— 算出来不返回 = 白算，
   //    这正是"预览没效果"那一类空转的常见形状。
-  return { ...c, lines, fontScale: w.scale, spans, formStyle }
+  // ⚠️ **白环（第二层）必须按「这一行缩放后的第一层」算**（2026-10-16，用户口径：两层等宽）。
+  //    第一层在模板里是 `capStrokeW * c.fontScale` —— 装不下时**整行缩字号**、描边跟着缩；
+  //    而白环原先挂在 `.captions` **容器**上、用的是**未缩放**的值 ⇒ **缩过的行两层必然不等**
+  //    （长字幕缩到 0.8 ⇒ 第一层 9.6px、白环仍是 12px 那份的宽度）。
+  //    ⚠️ 所以环要**逐行**算，容器那份必须去掉（否则未缩放的那圈会盖住逐行的）。
+  //    `fontScale = 1` 时逐行算出来的串与容器那份**逐字节相同** ⇒ 老工程预览不变（R4）。
+  const ring = outerRingShadow(subStyle.value.outer_stroke, capStrokeW.value * w.scale)
+  return { ...c, lines, fontScale: w.scale, spans, formStyle, ring }
 }))
 const dmRows = computed(() => danmakuAt(idx.value, current.value))
 const stickers = computed(() => stickersAt(idx.value, current.value))
@@ -2450,6 +2524,14 @@ const texts = computed(() =>
         //
         // ⚠️ DOM 模式下 `dhampirMode` 为假 ⇒ **一律由本层画**（那时底座根本没画面）。
         // ⚠️ `shake` 那条**底座不画**（它是本层的动效档）⇒ 一并留着。
+        // ⚠️ **第二层（白环）必须按「元素自己的第一层」算**（2026-10-16 用户口径：两层等宽）。
+        //    模板里以前直接复用**字幕**那份 `outerRing`（它由 `[style.subtitle].stroke` 推出来），
+        //    而这一层的 `-webkit-text-stroke-width` 用的是**元素自己的** `tx.style.strokePx`
+        //    ⇒ 两个基准不同（CSS 字符串 vs 光栅 px）⇒ 白环粗细与它上面那层对不上，
+        //    而两边各自看都"像有那么一圈"。
+        //    `outer_stroke` 仍然**只有字幕一份**（契约里元素没有独立设置，转译器元素那三样
+        //    也复用字幕的值）⇒ 颜色与开关照旧取它，只把"跟随谁"换成元素自己的第一层。
+        outerRing: outerRingShadow(subStyle.value.outer_stroke, e.style?.strokePx ?? 12),
         byDom: !dhampirMode.value || DHAMPIR_NO_DRAW.has(e.effectAnimName || ''),
         spans: perCharSpans(e.text, {
           perChar: e.perChar,
@@ -2538,6 +2620,59 @@ function textPosApprox(e) {
 }
 
 /** `[r,g,b,a]`（0–255）→ CSS `rgba()`。`process` 写回的就是这个形状。 */
+/** **白环径向厚度 = 第一层描边宽度 × 这个系数 ÷ 2**（CSS 居中宽 → 外侧厚）。
+ *
+ *  ⚠️ 与转译器的 `OUTER_RING_FOLLOW` **必须同值**：这里决定 DOM 预览、那边决定成片与底座预览，
+ *    漂了的症状是「预览白边比成片粗/细」而两边各自看都正常。判据 `check-text-style.mjs` ⑥g。
+ *  ⚠️ 只改这里不改那边 = 三种实现里坏掉一种，**不会有任何报错**。 */
+const OUTER_RING_FOLLOW = 1
+
+/** **外圈描边环**（2026-10-16 用户口径「给字幕和文字层描边再增加一层白色描边」）：
+ *  把 `[style.subtitle].outer_stroke` 变成一圈 `text-shadow`。
+ *
+ *  两种写法（与转译器 `parseOuterStroke` **同一套**）：
+ *  * **非空 = 开着，粗细跟随第一层描边**（`auto #ffffff` 是缺键默认；`"4px #ffffff"` 这种老写法
+ *    **数字不再当宽度用** —— 见下面的⚠️）；
+ *  * **空串 = 显式关**（面板的开关写它）。
+ *  ⚠️ **数字不再是宽度**（2026-10-16 第二次更正）：老工程里的是 `"4px #ffffff"`，而按"固定宽度"
+ *    解释时它是 4px 全宽 ⇒ 径向 2px，第一层却是 12px（径向 6px）⇒ **两层必然不等**
+ *    （用户第二次报的「二层白描边宽度还是不对」就是它）。现在任何非空值都跟随第一层。
+ *
+ *  ⚠️ **宽度口径**：`outer_stroke` 与 `stroke` 同一条（CSS 居中的 px）⇒ 外侧厚 = 一半。
+ *    底座那边同源：`ratio = widthPx / 2 / 高`（转译器 `parseOuterStroke`）——
+ *    不折半的症状是「预览白边比成片粗一倍」，本仓最不想要的那种不一致。
+ *  ⚠️ **8 向而不是 4 向**（正交 4 + 对角 4，对角按 1/√2 缩）：每一条 `text-shadow` 都是
+ *    **独立的一份偏移拷贝**，不链式叠加（封面 emoji 那条「别加对角」说的是 `drop-shadow`
+ *    **链**——后一个把前一个的产物再投一次影 ⇒ 外缘被推远，两种机制不同，别照搬结论）。
+ *    只发 4 向时对角方向会缺 0.41w 的缺口，白环看着发方。
+ */
+function outerRingShadow(raw, innerStrokeCss) {
+  const s = String(raw ?? '').trim()
+  if (!s) return ''
+  const num = (v) => {
+    const mm = String(v ?? '').match(/^(-?[\d.]+)px/)
+    const n = mm ? parseFloat(mm[1]) : NaN
+    return Number.isFinite(n) ? n : null
+  }
+  const inner = num(innerStrokeCss)
+  const cssPx = (inner === null ? 12 : inner) * OUTER_RING_FOLLOW
+  // ⚠️ 颜色：`auto #ffffff` / `4px #ffffff` / 只写 `#ffffff` 三种写法都要认 —— 把开头那段
+  //    （`auto` 或 `<数字>px`）摘掉，剩下的就是颜色；空 = 白。**数字一律忽略**（见函数头注释）。
+  const color = s.replace(/^auto\b/i, '').replace(/^-?[\d.]+px/, '').trim() || '#ffffff'
+  const w = cssPx / 2
+  if (!(w > 0)) return ''
+  const d = +(w * Math.SQRT1_2).toFixed(2)
+  return [
+    `${-w}px 0 0 ${color}`, `${w}px 0 0 ${color}`,
+    `0 ${-w}px 0 ${color}`, `0 ${w}px 0 ${color}`,
+    `${-d}px ${-d}px 0 ${color}`, `${d}px ${-d}px 0 ${color}`,
+    `${-d}px ${d}px 0 ${color}`, `${d}px ${d}px 0 ${color}`,
+  ].join(', ')
+}
+/** 全片一份：外圈跟着 `[style.subtitle].outer_stroke`（文字元素与字幕**同源**）。
+ *  ⚠️ 内圈宽度也要传：`auto` 那一档靠它算厚度（12px 的内圈 ⇒ 6px 的白环）。 */
+const outerRing = computed(() => outerRingShadow(subStyle.value.outer_stroke, subStyle.value.stroke))
+
 function rgbaCss(c) {
   const a = Array.isArray(c) && c.length >= 4 ? c[3] / 255 : 1
   return `rgba(${c[0]},${c[1]},${c[2]},${Number.isFinite(a) ? a : 1})`
@@ -2589,14 +2724,26 @@ const videoStyle = computed(() => {
   // 在出片模板里是最内层（最后 apply 到画面上的那一段）。
   const sway = handheldSway(current.value, f.camera.handheld)
   if (sway.dx || sway.dy) t.push(`translate(${sway.dx}px, ${sway.dy}px)`)
+  // ---- 运镜的**缩放与倾角**（P1，2026-10-15）----
+  //
+  // **首选底座求值值**（`dhampirBaseCamera`）—— 那份是出片同源的权威值，已经把
+  // 运镜缩放 *与* keyframe 插值都算进去了。自算那条路
+  // （`f.zoom * sway.scale` / `f.camera.tilt + sway.rot`）作为**回落**保留：
+  // 底座没跑（纯 DOM 模式）时它才是唯一来源。
+  //
+  // ⚠️ 自算那条仍要留的理由：① 纯 DOM 模式没有工程 ⇒ 底座给不了值；② 出片模板那条
+  //    canvas 路径也自算，两边对拍靠 `scripts/check-dom-camera-parity.mjs` 钉着倍率表。
+  const baseCam = dhampirBaseCamera.value
   // 旋转角 = **荷兰角（§19）+ 手持摇摆的 rot**（与出片模板、转译器逐式同口径）。
   // ⚠️ 相加而不是二选一：荷兰角是"静止的持续倾斜"、手持 rot 是"微幅抖动"，
   //    同时开时两个都要有 —— 二选一会静默丢掉一个，而界面上完全看不出来。
-  const camTilt = (f.camera.tilt || 0) + sway.rot
+  // ⚠️ 底座那份的 `rotation_deg` **只含运镜**（不含手持）⇒ 有底座值时仍要叠 sway.rot。
+  const camTilt = (baseCam ? baseCam.rotationDeg : (f.camera.tilt || 0)) + sway.rot
   if (camTilt) t.push(`rotate(${camTilt}deg)`)
   // 判据是「缩放不等于 1」而不是「大于 1」：画中画档位（zoom<1）也是合法运镜
   // 摇摆的呼吸缩放与运镜缩放都是绕不动点的缩放，合成一个 scale（amp=0 时 sway.scale 恒为 1）
-  const camScale = f.zoom * sway.scale
+  // ⚠️ 底座那份的 `scale` **不含手持摇摆的呼吸缩放** ⇒ 有底座值时仍要叠 sway.scale。
+  const camScale = (baseCam ? baseCam.scale : f.zoom) * sway.scale
   if (Math.abs(camScale - 1) > 0.001) t.push(`scale(${camScale})`)
   const filter = f.blur > 0 ? `blur(${f.blur}px)` : ''
   return {
@@ -2647,10 +2794,14 @@ const capLayerStyle = computed(() => {
   return {
     // ⚠️ 兜底栈 = capFallback（服务端动态算、与成片同源，空串回落字面量）；选了库内字体时排最前。
     // 这里曾写死 `"${s.font || 'LXGW WenKai'}","Microsoft YaHei",…` —— "设为默认"对预览无效。
-    fontFamily: s.font ? `"${s.font}",${capFallback.value}` : capFallback.value,
+    // ⚠️ 走 `fontFamilyFor`（库 id → 内部族名）：直接写 `s.font` 时，id≠族名的字体（自带那支就是）
+    //    在页面里**没有对应的 FontFace** ⇒ 浏览器静默回退系统字体 ⇒「换字体没反应」。
+    fontFamily: subFontFamily.value ? `"${subFontFamily.value}",${capFallback.value}` : capFallback.value,
     fontSize: capSize + 'px',
     color: s.color || '#dcbda0',
     WebkitTextStroke: s.stroke || '12px #403c3b',
+    // ⚠️ **白环不再挂在这一层**（2026-10-16）：它是**逐行**的（按各行的 `fontScale` 算，见
+    //    `capRowsWrapped`）—— 挂容器上就是一份**未缩放**的环，缩过的行两层会不等宽。
     '--hl-color': s.highlight_color || '#f56b41',
     ...(posPct === null ? {} : { '--cap-bottom': `calc(${posPct}% + ${capAnchorFix}px)` })
   }
@@ -2662,7 +2813,7 @@ const dmLayerStyle = computed(() => {
     // （`Noto Sans SC`，与 Rust `default_font()` 同名、也与成片侧兜底栈首项同源）。
     // ⚠️ 2026-10 口径变更：**不再是"跟随字幕那条栈"**（旧口径把字幕的**族名**当弹幕字体用，
     //    弹幕看起来和字幕一模一样；而真出片通道从不实现这一档 ⇒ 预览与成片不一致且不报错）。
-    fontFamily: s.font ? `"${s.font}",${capFallback.value}` : `"Noto Sans SC",${capFallback.value}`,
+    fontFamily: dmFontFamily.value ? `"${dmFontFamily.value}",${capFallback.value}` : `"Noto Sans SC",${capFallback.value}`,
     fontSize: (s.font_size || 42) + 'px',
     color: s.color || '#ffffff',
     WebkitTextStroke: s.stroke || '2px #000000'
@@ -2670,6 +2821,19 @@ const dmLayerStyle = computed(() => {
 })
 
 function onStickerError(st) {
+  // ⚠️ 2026-10-14：**失败必须留痕**（纪律与本文件里音效那条「.mp3 加载失败」同源）。
+  //
+  // 以前这里只往 `stickerFailed` 记一笔、**一声不响**。而 `stickerFailed` 的作用是让模板
+  // 回退到 emoji 兜底 ⇒ 用户看到的是「贴纸没出现」，**日志面板里一个字都没有** ——
+  // 正是用户报的那类现象最难查的一环：分不清是
+  // 「`_assets.sticker_map` 里没有这个名字」还是「文件 404」还是「图坏了」。
+  // 记 `warn`（不是 debug）：这是**工程配置与磁盘对不上**，是要人去修的状态。
+  addClient(
+    'warn',
+    `贴纸「${st.name || '(无名)'}」加载失败：${st.src || '(没有图源)'} —— ` +
+      `预览里它不会出现（多半是 _assets.sticker_map 里没有这个名字，或文件不在 assets/stickers 下）`,
+    'preview'
+  )
   stickerFailed.value = { ...stickerFailed.value, [st.name]: true }
 }
 
@@ -3464,14 +3628,31 @@ const pointBoxStyle = computed(() => {
   return { left: x * s + 'px', top: y * s + 'px', width: size * s + 'px', height: size * s + 'px' }
 })
 
+/** 点选层：**按下即开始拖动**，拖动过程中连续上报位置，松手结束。
+ *
+ *  ⚠️ 用户口径（2026-10-17）：「应该是可以**拖动位置**，面板上确定位置，而不是点一下就确定了」。
+ *  ⇒ 这里只负责"把指针位置持续喂给页面"，**要不要生效由面板决定**（页面的草稿 +「保存落点」）。
+ *  ⚠️ **不做任何吸附**：九宫格吸附是旧版本残留，用户明确要求清除（已从 `engine.js` 删掉）。 */
 function pickPoint(e) {
   const p = pctAt(e)
   if (!p) return
-  // ⚠️ **默认吸到最近九宫格中心**（用户口径：「更简单的交互，参考区域设置那种直接选择」）；
-  //    **按住 Shift = 自由落点**（不吸）。吸附在反解**之后**做（`pctAt` 已经反解过运镜）——
-  //    顺序反过来会把"格心"也一起缩放，落点就不是格心了。
-  const q = e.shiftKey ? p : nearestGridCenter(p)
-  emit('update:point', { x: r2(q.x), y: r2(q.y) })
+  emit('update:point', { x: r2(p.x), y: r2(p.y) })
+  // 进入拖动：window 上收 move/up（与选框 `startSel` 同一套写法）
+  window.addEventListener('pointermove', onPointMove)
+  window.addEventListener('pointerup', endPointDrag)
+  window.addEventListener('pointercancel', endPointDrag)
+}
+
+function onPointMove(e) {
+  const p = pctAt(e)
+  if (!p) return
+  emit('update:point', { x: r2(p.x), y: r2(p.y) })
+}
+
+function endPointDrag() {
+  window.removeEventListener('pointermove', onPointMove)
+  window.removeEventListener('pointerup', endPointDrag)
+  window.removeEventListener('pointercancel', endPointDrag)
 }
 
 // ---- 真渲染预览：**整条已删除** ----
@@ -3747,6 +3928,16 @@ function pause() {
            /* T6 底衬：圆角随字号走，避免小字上显得方硬。 */
            border-radius:0.08em; }
 .danmaku-layer { position:absolute; top:0; left:0; width:var(--ov-w, 1920px); height:var(--dm-h, 540px); overflow:hidden; }
+/* ⚠️ **禁止合成加粗**（2026-10-16）：出片那条腿（底座 + libass）**不合成**粗体 ——
+   它按 `font_weight >= 600` 去找 `--font-bold-file`，没有就用**常规体**画；
+   而浏览器在字体没有粗体字面时**会合成**（把笔画撑粗）⇒ **预览比成片粗一圈**，
+   而两边各自的截图/单测都正常 —— 又一个"两边各自看都对"的分叉。
+   库里那支自带 `Noto Sans SC` 只有 Regular ⇒ **默认配置就命中这条**（四档预设的字重
+   在成片里本来就是空的，实测：`source` 写 900 与 400 的成片逐像素相同）。
+   ⇒ 预览这一侧显式关掉合成，让两边都显示常规体（真实观感）。
+   要真正有粗体：往字体库放一支 Bold（`find_font` 会按 `<族名> Bold` 找它），或随包内嵌。
+   ⚠️ 与封面侧同一条口径：Takumi 那边也是显式关掉合成加粗（`TAKUMI_TITLE_LAYER_CSS`）。 */
+.cap, .dm, .text-el { font-synthesis: none; }
 .dm { position:absolute; white-space:nowrap; font-weight:600; -webkit-text-stroke:2px #000; paint-order:stroke fill;
       /* ⚠️ 必须 inherit：`app.css` 的 `*{font-family:var(--font)}` 是**直接命中**本元素的声明，
          **压过**父层 `.danmaku-layer` 的内联 font-family（继承值永远输给本元素的任何声明）

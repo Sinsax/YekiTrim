@@ -157,24 +157,6 @@ const GRID_CENTERS = Object.fromEntries(
   Object.entries(GRID_RECTS).map(([k, r]) => [k, [(r[0] + r[2]) / 2, (r[1] + r[3]) / 2]])
 )
 
-/** **九宫格吸附**：把点吸到**最近那一格的中心**（入参/出参同单位 = 画布百分比）。
- *
- *  用户口径（2026-10-16）：「我想要更简单的交互，参考区域设置的那种直接选择位置的」——
- *  手点很难点到整齐的位置，而九宫格正是本仓已有的落点语言（运镜锚点 / 区域中心都按它写）。
- *
- *  ⚠️ 只在**选点**那条路上吸附；选框（自由框）**不吸** —— 那是精确表达，吸了就没法框小区域。
- *  ⚠️ `GRID_CENTERS` 与 `GRID_RECTS` 同源（本文件一处）⇒ 吸附点与"格心"永远不会分叉。
- */
-export function nearestGridCenter(p) {
-  let best = { x: p.x, y: p.y, grid: '' }
-  let bestD = Infinity
-  for (const [name, [cx, cy]] of Object.entries(GRID_CENTERS)) {
-    const d = (p.x - cx) * (p.x - cx) + (p.y - cy) * (p.y - cy)
-    if (d < bestD) { bestD = d; best = { x: cx, y: cy, grid: name } }
-  }
-  return best
-}
-
 export function gridOrigin(name) {
   const p = GRID_CENTERS[name] || [50, 50]
   // ⚠️ **两位小数，与 Rust `types.rs::region_origin` 的 `{:.2}` 同口径**（2026-10-05 修）：
@@ -336,7 +318,7 @@ export const LANE_OF_TYPE = {
   pulse: 'effects',
 }
 
-export function buildIndex({ config, subtitles, danmaku, duration, stickerSrc, karaokeCues, fps }) {
+export function buildIndex({ config, subtitles, danmaku, duration, stickerSrc, karaokeCues, fps, danmakuFontFamily }) {
   const cfg = config || {}
   let dur = duration || cfg.duration || 0
 
@@ -403,7 +385,7 @@ export function buildIndex({ config, subtitles, danmaku, duration, stickerSrc, k
       if (type === 'sticker') {
         const name = ev.name || ev.keyword || ''
         entry.src = stickerSrc ? stickerSrc(name) : ''
-        entry.isEmoji = /^[0-9a-f]+$/i.test(name) && !entry.src
+        entry.isEmoji = isEmojiName(name, entry.src)
         entry.emoji = entry.isEmoji ? safeEmoji(name) : ''
         // 落点不在这里改：auto 用 ev.x/ev.y（process 安全区算法），
         // manual 固定到 _canvas.sticker.position —— 统一在 stickersAt 里算，
@@ -436,7 +418,7 @@ export function buildIndex({ config, subtitles, danmaku, duration, stickerSrc, k
           //      必须一直防着贴纸形状 —— 用户报的"贴纸不显示"就是这么来的。
           const name = ev.name || ev.keyword || ev.text || ''
           entry.src = stickerSrc ? stickerSrc(name) : ''
-          entry.isEmoji = /^[0-9a-f]+$/i.test(name) && !entry.src
+          entry.isEmoji = isEmojiName(name, entry.src)
           entry.emoji = entry.isEmoji ? safeEmoji(name) : ''
           // 落到 `idx.sticker`（**同一个 entry 对象**，不复制）——
           // ⚠️ 不复制：`entry` 已在 `idx.element` 里挂了号，复制品会让
@@ -591,7 +573,16 @@ export function buildIndex({ config, subtitles, danmaku, duration, stickerSrc, k
     : (danmaku && dmOff !== 0)
       ? danmaku.map((d) => ({ start: d.start + dmOff, end: d.end + dmOff, text: d.text, color: d.color, y: d.y, travel_duration: d.travel_duration }))
       : (danmaku || [])
-  idx.dmWidths = measureDanmakuWidths(idx.dms, dmFontSize(cfg), dmFontFamily(cfg))
+  // ⚠️ `danmakuFontFamily`（2026-10-16）**可选**：调用方把「库 id → 内部族名」换好之后传进来。
+  //    不传 = 老行为（下面 `dmFontFamily(cfg)` 原样，可能是个库 id）—— R4：老调用点逐字节不变。
+  //    ⚠️ 为什么需要它：弹幕的**滚动时长**按量出来的宽度算，而量宽与绘制**必须是同一个族**
+  //    （卡里写着这条）。绘制那层（`PolishPreview` 的 `.dm`）走的是换过族名的名字，
+  //    量宽这层以前走库 id ⇒ **量宽 ≠ 绘制** ⇒ 症状是「弹幕没滚到边就消失」，两边各自看都正常。
+  //    ⚠️ 本模块**不认识字体库**（零依赖、纯求值）⇒ 换算只能由调用方做。
+  const dmFamily = typeof danmakuFontFamily === 'function'
+    ? (danmakuFontFamily() || dmFontFamily(cfg))
+    : (danmakuFontFamily || dmFontFamily(cfg))
+  idx.dmWidths = measureDanmakuWidths(idx.dms, dmFontSize(cfg), dmFamily)
   idx.dur = dur
   idx.layout = cfg.layout || {}
   idx.subStyle = (cfg.style && cfg.style.subtitle) || {}
@@ -635,9 +626,59 @@ function dmFontFamily(cfg) {
   return `"${fam}","Microsoft YaHei","Noto Sans SC",sans-serif`
 }
 
-function safeEmoji(name) {
-  const code = parseInt(name, 16)
-  return Number.isNaN(code) ? '✨' : String.fromCodePoint(code)
+/** `name` 是不是"要当 emoji 字符画"（而不是去 `STICKER_MAP` 找图）。
+ *
+ *  ⚠️ **两处调用点必须同口径**（`sticker` 与 `element{kind:'sticker'}` 两个分支）：
+ *  分开各写一份就会"贴纸轨能用、旧写法不能"（或反过来），而两边各自看都正常 ——
+ *  这正是这次要修的缺陷的形状（见 `safeEmoji` 的注释）。
+ *
+ *  ⚠️ `!src` 是判据的一部分、**不能省**：包内有同名文件时（`STICKER_MAP` 命中），
+ *  图优先于字 —— 否则用户明明选了贴纸包里的图，画面上却出现一个字符。
+ */
+export function isEmojiName(name, src) {
+  if (src) return false
+  const s = String(name == null ? '' : name).trim()
+  if (!s) return false
+  return /^[0-9a-f]+(_[0-9a-f]+)*$/i.test(s) || /^\p{Extended_Pictographic}/u.test(s)
+}
+
+/** `name` → 要画的 emoji 字符。**两种写法都收**（2026-10-15，用户报「添加表情后没有正确显示」）。
+ *
+ *  `name` 的合法写法有两种，而原来只认第一种：
+ *  ① **码点十六进制**（`process` 解析 emoji 来源后写回的值，如 `"1f62d"`）；
+ *  ② **直接就是 emoji 字符** —— 用户在手填框里粘一个 😭 是最自然的操作，
+ *     而老实现只会 `parseInt("😭", 16)` ⇒ `NaN` ⇒ 回落成 ✨（**贴的不是他选的那个**）。
+ *
+ *  ⚠️ **越界必须挡住**：`String.fromCodePoint` 对 > `0x10FFFF` 的值**抛 `RangeError`**，
+ *     而 `"deadbeef"` 恰好能过那个 hex 正则（8 位十六进制 ⇒ 3735928559）。求值器抛错
+ *     不是"这一个贴纸不画"，是**整个预览子树被 Vue 卸载**（见 `check-preview-engine.mjs`
+ *     卡里那次事故）。所以这里返回空串、由调用方跳过，不抛。
+ *
+ *  ⚠️ **非 emoji 的普通文本不认**：`name` 也可能是包内文件名（如 `"angry"`），
+ *     那种要等 `STICKER_MAP` 命中。把它当字符画出来会是个**巨大的字母**盖在画面上 ——
+ *     比白块更难归因，所以只放行 emoji 码点。
+ */
+export function safeEmoji(name) {
+  const s = String(name == null ? '' : name).trim()
+  if (!s) return ''
+  // ① 码点写法。⚠️ **可能是多码点序列**，用 `_` 分隔（目录里 881 条有 **343 条**是这种）：
+  //    `203c_fe0f`（‼️）、`1f642_200d_2195_fe0f`（🙂↕️）。
+  //    ⚠️ 老实现只认单个十六进制串 ⇒ 这 39% 全都解不出来（`parseInt` 见 `_` 就停，
+  //    得到的是截断值，画出来是**另一个字符**或空）。求值器里那是"用户选了表情、
+  //    画面上是别的东西/什么都没有"，而目录里近四成都是这一类。
+  if (/^[0-9a-f]+(_[0-9a-f]+)*$/i.test(s)) {
+    const parts = s.split('_')
+    const chars = []
+    for (const p of parts) {
+      const code = parseInt(p, 16)
+      // 0x10FFFF 是 Unicode 上界；下界 0 也挡（`fromCodePoint(0)` 是 NUL，画不出来）
+      if (!(code > 0 && code <= 0x10ffff)) return ''
+      chars.push(String.fromCodePoint(code))
+    }
+    return chars.join('')
+  }
+  // ② 已经是字符：只认 emoji（`Extended_Pictographic` 覆盖 😭 / 🩸 / ❤️ 这类）
+  return /^\p{Extended_Pictographic}/u.test(s) ? s : ''
 }
 
 /** §5 E4a 文字元素动效的**工程级**参数（`[elements]` 段）。
@@ -2372,7 +2413,14 @@ export function getElements(idx, t) {
       }
       // T6 底衬：没颜色就**一个像素都不多画**（`padPx` 读都不读 —— 单向关系）。
       // ⚠️ alpha 会**乘上这一帧的不透明度**，所以这里**不在这里再乘一次淡入**（那会淡两次）。
-      const plate = mo && mo.plateColor ? mo.plateColor : null
+      // ⚠️ **逐条 `backdrop` 优先**（2026-10-16）：`chapter`/`comment` 是「卡片」档，
+      //    `process` 把这一位写进 `source` 第 7 段、成片那条腿按它铺底衬
+      //    （转译器里那句 `...(st.backdrop ? { plate_color: [0, 0, 0, 140] } : {})`）——
+      //    预览必须同口径，否则就是「预览没有卡片、成片有」的分叉（这条改动的第一版正是这样）。
+      //    优先级与成片同序：逐条预设 > 全局 `[elements] plate_color`。
+      const plate = e.textStyle && e.textStyle.backdrop
+        ? PLATE_CARD_COLOR
+        : (mo && mo.plateColor ? mo.plateColor : null)
       // ---- T7 摇摆（P1，2026-10-13）：预览侧**按帧**求角度 ----
       //
       // ⚠️⚠️ **这段以前不存在**，是"配了摇摆、成片在摆、预览纹丝不动"的根因。
