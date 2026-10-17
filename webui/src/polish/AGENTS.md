@@ -29,6 +29,10 @@
   ⚠️ 音效**加载失败**经 `onError` 每个 name 只上报一次 —— 以前是纯静默，"预览没有音效"无从查起；
   组件侧记 debug 不刷 warn）。
 - `fonts.js`：`ensureFontFace(pid, dir, id, {onDebug})`；`api.js`：polish 端点 + `watchJob`。
+- `heat.js`：**热度曲线**（时间轴标尺带）的唯一口径 —— `heatSeries` / `heatBucketAt` / `heatCharCount`
+  + `heatDisplay`（画线与读数**共用**的显示对比拉伸）+ 常量（桶宽 0.5s / 权重 0.6·0.4 / 拉伸指数 2）。
+  ⚠️ 与 `process/punch.rs` 是「**继承四条 + 两处有意不同**」（窗口更细、权重反过来 —— 理由在模块头，
+  别把"不一样"当漂移去改齐）；漂移判据 `node webui/scripts/check-heat-curve.mjs`。
 - 漂移对拍脚本：`webui/scripts/check-overlay.mjs`（覆盖层色档）、`check-caption-wrap.mjs`（折行）、
   `check-sticker-anchor.mjs`（贴纸锚点/尺寸）、`check-handheld.mjs`（手持摇摆）、
   `check-stage-backdrop.mjs`（画面构成/衬底）。它们**从源码文本里扒函数**、零依赖、不 import 本模块。

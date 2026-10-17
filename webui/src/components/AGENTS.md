@@ -7,15 +7,13 @@
 
 ## 入口
 
-- `TimelineEditor.vue`（7 条泳道，`kind` = `seg|event|sub|mute`）：props `dir`(必填)/`pid`/`currentTime`/
-  `playing`/`reprocessBusy`/`propsTarget`(默认 `'#tl-props-host'`)；emits `seek`/`toggle`/`preview`/`saved`/
-  `done`/`reprocess`/`retried`/`redo-segment`。`saved` = **这批改动已落盘**（Dhampir 那条腿据此重载），与
+- `TimelineEditor.vue`（7 条泳道，`kind` = `seg|event|sub|mute`）：props 见文件头（`propsTarget` 默认
+  `'#tl-props-host'`）；emits `seek`/`toggle`/`preview`/`saved`/`done`/`reprocess` 一族。`saved` = **这批改动已落盘**（Dhampir 那条腿据此重载），与
   `preview`（本地镜像、**不落盘**）**别互相替代**；`done` 保证在它之后。
-- `PolishPreview.vue`（自绘 DOM/GSAP 层，**只有这一层**）：props `pid`/`dir`/`config`/`subtitles`/`danmaku`/
-  `metaDuration`/`selectMode`/`selectRect`/`selectLabel`/`pointMode`/`point`/`pointLabel`/`fontFallback`；
-  emits `time`/`playing`/`update:selectRect`/`update:point`。字体栈纪律见下节。
+- `PolishPreview.vue`（自绘 DOM/GSAP 层，**只有这一层**）：props 见文件头（`config`/`subtitles`/`danmaku`/
+  `fonts`/`fontFallback`/`selectRect`/`point` 等）；emits `time`/`playing`/`update:selectRect`/`update:point`。
+  字体栈纪律见下节。
 - `CoverDesigner.vue`：props `dir`(必填)/`pid`，emit `changed`（「生成封面」按 `polish_cover` 门控）。
-  **图层面板**（左预览 / 右「左：属性 · 右：图层列表 · 底：工具条」，PS 口径）：见「边界 · 封面设计器」③。
 - 其余组件逐个的职责与规则见「边界 · 其他组件」。
 
 ## 边界
@@ -23,13 +21,14 @@
 > ① 时间轴编辑器 ② 精修预览 ③ 封面设计器 ④ 运镜 ⑤ 贴纸落点与区域编辑 ⑥ 其他组件逐个。
 > 各节内部自带子目录（布局几何 / 安全区几何 / 两种「隐身」根因等）。
 ### 时间轴编辑器
-- **布局必须保持紧凑**（它**独占一整行** = 整个内容宽度）：泳道 **26px ×7 条 + 标尺 20px = 202px**；
-  标题/提示经 `<slot name="head">` 进 `.tl-head`（见 `docs/webui-components.md` ①）。
+- **布局必须保持紧凑**（它**独占一整行** = 整个内容宽度）：泳道 **26px ×7 条 + 标尺 20px = 202px**（标尺带里
+  叠了条 16px 的**热度曲线**：弹幕按条 + 字幕按字量，口径 `polish/heat.js`，开着时 218px —— 几何、四条
+  装配纪律与"眼睛不进 `[stage.lanes]`"见 ①.8）；标题/提示经 `<slot name="head">` 进 `.tl-head`（见 ①）。
 - ⚠️ **遮挡**：曲线画在**字幕泳道**上，而那条泳道的字幕块不透明（`laneBlocks`）—— 波形 `.wave-layer` 必须
   是 **`z-index:4`**（压过字幕块与选中块、在播放头之下），否则**说话时段整段被盖住**；`pointer-events:none`
   不能去掉（①.2）。
-- ⚠️ **刻度**：窗口是 **[-40, -8]**（`WAVE_DB_TOP`/`WAVE_DB_BOTTOM`）。**这两个常量即"看不出高低差"的
-  旋钮**（改回 [-60,0] 动态范围只剩 6.6px）。
+- ⚠️ **刻度**：窗口 **[-40, -8]**（`WAVE_DB_TOP`/`WAVE_DB_BOTTOM`）—— 这两个常量即"看不出高低差"的旋钮
+  （改回 [-60,0] 动态范围只剩 6.6px）；曲线判据 `node webui/scripts/check-heat-curve.mjs`。
 - 用户明确**不要**电平参考线/刻度、**不要**新增泳道（保持 7 条 202px）、**不要**把字幕块改半透明。
 - 事件字段是 `time` + `end`，**没有 `duration` 了**；老工程的 `duration` 由 `legacy.rs::upgrade_event_times`
   在**反序列化前**换算；三处求值器统一走各自的 `evDur()` / `evDuration()`，别再直接读 `.duration`。
@@ -41,8 +40,8 @@
 - ⚠️ **别再改回"落盘后 1.2s 自动跑"**（你还在填 keyword 时它就会插进来，半成品被当成品处理）。**落盘 ≠ 编辑
   完成**：后处理只在 `done` 之后跑（`done` 本身等落盘成功）——控件 `change`（`input` 每敲一键**不算**）/取消
   选中/切片段（带**旧 dir**）/卸载前 `flushSave()`。
-- **手工放的事件（`manual`）后处理一律不改写**：新建（`addEventAt`）、复制（`duplicateSelected`）与改时间都打
-  这个标记；**吸附与 `cap_events` 抽稀全跳过**。
+- **手工放的事件（`manual`）后处理一律不改写**：新建（`addEventAt`）与改时间都打这个标记；
+  **吸附与 `cap_events` 抽稀全跳过**。
 - **属性面板用 `<Teleport :to="teleportTo">` 投到 `PolishView` 预览卡里的 `#tl-props-host`**（选中/编辑逻辑留在
   组件里）。**⚠️ 必须门控 Teleport**：目标是**挂载时**解析的，而那时子树还没进 document ⇒ 直接
   `:to="propsTarget"` 会解析到 null、**面板整块不渲染**（①.5）。
@@ -57,6 +56,7 @@
   `flushSave` 开头 `if (loadError.value) return`；横幅 + 「重试」在 `tl-head` 下面（**不能放进 Teleport 的面板**）；
   `/api/polish/subtitles` 的 **404 是空态、不是错误**；**不许静默丢弃**；`watch(() => props.dir)` 里 `commitEdit`
   之后必须 `resetTimelineState()` 再 `loadData()`
+
 ### 精修预览（`PolishPreview.vue`）
 - ⚠️ **跳手动屏蔽区间 = A/B 预滚（首选）+ 定格遮罩（兜底），不许退回"直接 seek"**：`videoRef` 是 **computed**
   （换台靠 `activeStage`；Dhampir 那条腿靠 `engine.bindSource` 换绑 + 源没就绪不画），改回模板 ref、删掉备用源/

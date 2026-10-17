@@ -359,7 +359,7 @@ import {
   coverFrame, coverBackground, coverTitle, coverConfig, runCover,
 } from '../api/polish'
 import { api } from '../api/client'
-import { ensureFontFace } from '../polish/fonts'
+import { ensureFontFace, fontInLibrary, fontLabelFor } from '../polish/fonts'
 
 const props = defineProps({
   dir: { type: String, required: true },
@@ -498,7 +498,10 @@ const fontOptions = computed(() => {
   }
   const cur = coverFont.value
   if (!cur) opts.unshift({ value: '', label: '未指定 · 用默认文字字体', placeholder: true })
-  else if (!fonts.value.some((f) => f.id === cur)) opts.push({ value: cur, label: `${cur}（不在字体库）` })
+  // ⚠️ 认 id / 族名 / 显示名（见 `fontInLibrary`）：`Noto Sans SC` 是**族名**，它在库里。
+  //    别名命中时**必须补一条 `value === cur`**（否则 select 显示第一项，像是「选中项跳了」）。
+  else if (!fontInLibrary(fonts.value, cur)) opts.push({ value: cur, label: `${cur}（不在字体库）` })
+  else opts.push({ value: cur, label: fontLabelFor(fonts.value, cur) })
   return opts
 })
 /** 选中的即浏览器里要用的字族名；未选时交给全站 `--font`（不写 fontFamily，保持继承） */

@@ -104,6 +104,9 @@
                 <img v-else-if="it.thumb" :src="it.thumb" alt="" loading="lazy" @error="it.thumb = ''">
                 <Icon v-else :name="kind === 'video' ? 'video' : 'image'" :size="22" />
                 <span v-if="it.badge" class="ml-badge">{{ it.badge }}</span>
+                <!-- ⚠️ 第二个徽标位（2026-10-16）：字体页的「无粗体」与「默认」可能同时成立，
+                     挤进同一个 `it.badge` 会丢掉一条信息。解释一律进 `title`（行内 ≤20 字）。 -->
+                <span v-if="it.badge2" class="ml-badge warn" :title="it.badge2Hint">{{ it.badge2 }}</span>
               </span>
               <span class="ml-name">{{ it.name }}</span>
               <span class="ml-sub muted">{{ it.sub }}</span>
@@ -247,10 +250,13 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import Icon from './Icon.vue'
 import AppModal from './AppModal.vue'
 import { api } from '../api/client'
+// ⚠️ 内建表情的 CDN 地址**只有一份**（engine.js::emojiGifUrl，与出片模板那句逐字同形）——
+//    别在这里再拼一遍 'https://fonts.gstatic.com/...'。
+import { emojiGifUrl } from '../polish/engine'
 import {
   assetUrl,
   deleteFont,
@@ -260,6 +266,7 @@ import {
   videoThumbUrl,
 } from '../api/polish'
 import { stickersApi, UPLOAD_MAX_BYTES } from '../api/stickers'
+import { ensureFontFace } from '../polish/fonts'
 import { confirmDialog } from '../stores/dialog'
 import { toast } from '../stores/toast'
 
@@ -296,6 +303,9 @@ const sampleOf = () => testText.value.trim() || SAMPLE
 /** 三种素材各自的列表状态（切类型不互清 —— 切回来是即时的）。 */
 const videos = ref([])
 const packs = ref([])
+/** 内建表情目录：`[{tag, codepoints:[…]}]` —— 881 条按 **85 个 tag** 分组，
+ *  而**同一个码点会挂在多个 tag 下**（那是分类视图，不是互斥分区）。 */
+const emojiGroups = ref([])
 /** 包封面：`{包名: 图片URL}`。**列表接口不带文件名**（只回 `count`），所以封面要现拉 detail。
  *
  * ⚠️ 缓存在这里、**每个包只拉一次**：`items` 是 computed，每次重算都会调 `coverOf`，
@@ -303,6 +313,8 @@ const packs = ref([])
  * ⚠️ 拉失败**留空**（渲染成占位），不要拿别人的图顶上 —— 张冠李戴比没有图更难发现。 */
 const covers = reactive({})
 function coverOf(pack) {
+  // 内建包：封面就是第一张动图（没有 detail 可拉，也别去拉 —— 那是一次注定 404 的请求）
+  if (pack === EMOJI_PACK) return emojiCover.value
   if (covers[pack] !== undefined) return covers[pack]
   covers[pack] = '' // 占位，同时充当"已在拉"的标记
   stickersApi
@@ -416,6 +428,20 @@ async function selectItem(it) {
     }
     return
   }
+  // ⚠️ **内建 `emoji` 包没有 detail 接口可拉**（磁盘上没有这个包）—— 包内文件现从目录造，
+  //    形状与下面那条**完全一致**（`{name, url, tags}`）⇒ 右栏那份渲染一个字都不用改，
+  //    标签筛选栏也白拿（你那 85 个分类各自命中多少张，都是现算的）。
+  //    ⚠️ 别在这里也走一次 `stickersApi.detail('emoji')` —— 那是一次注定 404 的请求。
+  if (it.emoji) {
+    preview.value = { type: 'sticker', name: EMOJI_PACK, files: [], tagList: [], activeTag: null, builtin: true }
+    // **必须是 CDN 动图**（与出片模板的 CDN 回退、`engine.js::emojiGifUrl` 同一个地址）——
+    // 静态字符那一版正是用户报的「polish编辑器内有，但是是静态的」。
+    preview.value.files = emojiAll.value.map((e) => ({ name: e.cp, url: emojiGifUrl(e.cp), tags: e.tags }))
+    const n = {}
+    for (const f of preview.value.files) for (const t of f.tags) n[t] = (n[t] || 0) + 1
+    preview.value.tagList = Object.keys(n).sort((a, b) => n[b] - n[a] || a.localeCompare(b, 'zh'))
+    return
+  }
   preview.value = { type: 'sticker', name: it.name, files: [], tagList: [], activeTag: null }
   try {
     const d = await stickersApi.detail(it.name)
@@ -479,9 +505,36 @@ const roots = reactive({ video: '', font: '', sticker: '' })
 const root = computed(() => roots[kind.value] || '')
 const loading = ref(false)
 const error = ref('')
+/** **内建 emoji 包**：不是磁盘上的目录，而是编译期内嵌的 `assets/emoji_catalog.json`
+ *  （881 条，走 `GET /api/polish/emoji-catalog`）；`emojiAll` 是它**去重后**的全量
+ *  （码点 → 它挂着的那些 tag）。
+ *
+ *  ⚠️⚠️ **它是「贴纸页里的一个包」，不是第五种素材类型**（2026-10-17 用户订正：
+ *  「emoji 这个表情是作为贴纸包存在的，你怎么给我单开一页？」）。编辑器那边它就是这么存在的 ——
+ *  `StickerPicker` 的包列表里有一行固定的 `emoji`（「表情 · 内建」）。所以素材库照同一个模型：
+ *  **贴纸页多一行 `emoji` 包**，点开在右栏列整包（与 ysyk 那条完全同一条路），
+ *  只是包内文件来自目录、不是磁盘。**别再给它单开一个类型页**。
+ *
+ *  ⚠️ 汇总要去重：同一个码点会挂在多个 tag 下（那是分类视图，不是互斥分区），
+ *  直接拼各组会重复（目录 881 条而各组之和 > 881）。 */
+const EMOJI_PACK = 'emoji'
+const emojiAll = computed(() => {
+  const byCp = new Map()
+  for (const g of emojiGroups.value) {
+    for (const cp of (g.codepoints || [])) {
+      let e = byCp.get(cp)
+      if (!e) { e = { cp, tags: [] }; byCp.set(cp, e) }
+      if (g.tag && !e.tags.includes(g.tag)) e.tags.push(g.tag)
+    }
+  }
+  return [...byCp.values()]
+})
+/** 内建包的那张封面（第一张动图）—— 它没有 `stickersApi.detail` 可拉。 */
+const emojiCover = computed(() => (emojiAll.value.length ? emojiGifUrl(emojiAll.value[0].cp) : ''))
 const counts = computed(() => ({
   video: videos.value.length,
-  sticker: packs.value.length,
+  // ⚠️ **内建包也算一个包**（网格里确实多一行）—— 不算的话「列表 2 行、计数 1」自相矛盾。
+  sticker: packs.value.length + (emojiAll.value.length ? 1 : 0),
   font: installedFontCount.value,
 }))
 const countText = computed(() => `${counts.value.video} 视频 · ${counts.value.sticker} 贴纸包 · ${counts.value.font} 字体`)
@@ -522,9 +575,23 @@ const items = computed(() => {
     return fonts.value.map((f) => ({
       key: f.id,
       name: f.display_name || f.id,
-      sub: f.installed === false ? '未安装' : f.flat ? '老布局' : f.file,
+      // ⚠️ **副标题以前是 `f.file`**（2026-10-16 用户报「字体列表有点紊乱」）：v2 布局下每一条的
+      //    `file` 都是 `font.ttf` ⇒ 三张卡片副标题**一模一样**，看不出区别（看着还像坏了）。
+      //    改成有信息量的来源：自带 / 导入（老平铺布局与未安装照旧单独标）。
+      sub: f.installed === false ? '未安装' : f.flat ? '老布局' : f.builtin ? '自带' : '导入',
       title: f.id,
       badge: f.is_default ? '默认' : null,
+      // ⚠️ **「无粗体」要说出来**（2026-10-16）：库里没有 `<族名> Bold` 时，字幕/元素的
+      //    700·600 字重会被底座**退回常规体**（它不合成粗体）—— 而预览这一侧也显式关掉了
+      //    合成（`.cap/.dm/.text-el { font-synthesis:none }`）⇒ 两边一致地细。
+      //    以前这件事**只有出片日志里那句 warn 知道**：用户在界面上选 900，看着没变化，
+      //    没有任何提示。判据与 Rust `find_font` 同源（`hasBoldFace`）。
+      // ⚠️ **emoji 字体与未安装的不挂这枚徽标**（2026-10-16）：
+      //    · emoji 字体不参与正文的字重（它只补表情的字形），标「无粗体」纯属噪音；
+      //    · 还没落盘的条目谈"有没有粗体"没有意义（同族粗体可能就在下载列表里）。
+      badge2: f.emoji || f.installed === false || hasBoldFace(fonts.value, f) ? null : '无粗体',
+      badge2Hint: '库里没有「' + (f.family || f.id) + ' Bold」这一支 ⇒ 字幕与文字的 700·600 字重会退回常规体' +
+        '（预览与成片一致地细）。要真粗体：导入一支同族名的 Bold 字体。',
       stack: `"${f.family || f.id}", system-ui, sans-serif`,
       sample: sampleOf(),
       meta: `族名 ${f.family || f.id} · ${f.installed === false ? '还没落盘' : (f.bytes ? fmtBytes(f.bytes) : '')}`,
@@ -547,7 +614,7 @@ const items = computed(() => {
   }
   // 贴纸：一行一个包（不是一张图一个格）—— 包内可能几百张，铺成格子会卡；
   // 这里用包里第一张当封面，点开看整包。
-  return packs.value.map((p) => {
+  const rows = packs.value.map((p) => {
     return {
       key: p.name,
       name: p.name,
@@ -568,7 +635,46 @@ const items = computed(() => {
       ].filter(Boolean),
     }
   })
+  // ⚠️ **末尾多一行内建 `emoji` 包**（2026-10-17，用户订正：emoji 是**作为贴纸包**存在的）。
+  //    位置与编辑器 `StickerPicker` 的包列表一致（真实包在前、`emoji` 在最后）。
+  //    它没有 `<包名>.toml`、也不在磁盘上 ⇒ `sub`/`title` 现算，`actions` 为空
+  //    （「构建」「删除」对一条不存在于磁盘的包都不适用 —— 别给点了必然失败的按钮）。
+  if (emojiAll.value.length) {
+    rows.push({
+      key: EMOJI_PACK,
+      name: EMOJI_PACK,
+      sub: emojiAll.value.length + ' 张 · 内建',
+      title: '内建 Noto 动态表情：编译期内嵌、不联网',
+      badge: null,
+      thumb: emojiCover.value,
+      url: emojiCover.value,
+      type: 'sticker',
+      emoji: true,
+      detail: '内建：编译期内嵌、不联网 —— 精修里选「表情」来源时用的就是这一套。',
+      actions: [],
+    })
+  }
+  return rows
 })
+
+/**
+ * 给字体库里每一支注册 FontFace —— **样例字要用它**。
+ *
+ * ⚠️ 幂等：`ensureFontFace` 自己按「名字|dir」缓存，重复调用不会重复取字节。
+ * ⚠️ 只跳过**没落盘**的条目（`installed === false`）：`.ttc` 也试着注册 —— 认不出时浏览器
+ *    会自己退回 `system-ui`（与下拉里"不进列表"那条判据不冲突：这里只是**展示**）。
+ * ⚠️ 库接口是**程序级**的（与工程无关）⇒ `pid` 传 `null`、`dir` 传空串。
+ */
+async function registerLibraryFonts() {
+  for (const f of fonts.value) {
+    if (f.installed === false) continue
+    const name = f.family || f.id
+    await ensureFontFace(null, '', name, { onDebug: (m) => console.debug('[字体库]', m) })
+  }
+}
+
+/** 切到「字体」页时才注册（视频/贴纸页不必为几 MB 字体买单）。 */
+watch(kind, (k) => { if (k === 'font') registerLibraryFonts() })
 
 async function load(force = false) {
   loading.value = true
@@ -576,14 +682,25 @@ async function load(force = false) {
   try {
     // ⚠️ 素材库是**全局**资产（不在任何项目里），所以这三条请求**都不带 `{project, dir}` 作用域**
     // —— 别给 `api()` 硬塞一个作用域：那会去查一个跟素材库无关的项目。
-    const [v, s, f] = await Promise.all([
+    const [v, s, f, em] = await Promise.all([
       api('/api/polish/video-library', { label: '读取视频素材库' }),
       stickersApi.list(),
       api('/api/polish/fonts', { label: '读取字体库' }),
+      // ⚠️ **内建 `emoji` 包的内容**（贴纸页里那一行）：编译期内嵌、不属于任何工程 ⇒
+      //    这条**不需要作用域**，别给它塞 {project, dir}（那会去查一个跟素材库无关的工程）。
+      //    形状 {groups:[{tag, codepoints}]}。
+      api('/api/polish/emoji-catalog', { label: '读取内建表情包' }),
     ])
     videos.value = v?.videos || []
     packs.value = s?.packs || []
     fonts.value = f?.fonts || []
+    emojiGroups.value = em?.groups || []
+    // ⚠️ **字体页的样例字要真的用那支字体渲染**（2026-10-16 修，用户报「字体列表有点紊乱」）：
+    //    卡片上的 `it.stack` 写的是**族名**，而这一页**从未注册过 FontFace** ⇒ 浏览器根本不认识
+    //    那些族名 ⇒ **每张卡片都用系统字体画样例**（三张卡看着一模一样，换样例文字也没区别）。
+    //    注册名必须与 `stack` 里那个名字**逐字相同**（都是内部族名）—— 注册 id 而 CSS 用族名
+    //    等于没注册（同一个坑在字幕预览那边也踩过）。
+    if (kind.value === 'font') await registerLibraryFonts()
     // 三个根各取各的（都只对 admin 非空 —— 服务端刻意不给非 admin 回服务器路径）
     roots.video = v?.root || ''
     roots.sticker = s?.root || ''
@@ -991,6 +1108,10 @@ onMounted(() => load())
   font-size:10px; padding:0 4px; border-radius:4px;
   background:var(--main); color:#fff;
 }
+/* ⚠️ 「无粗体」那枚挪到**左下角**（`.ml-badge` 是右下角绝对定位的，两枚同角会叠成一枚 ——
+   第一版就是这样，白写一条信息）。配色走仓里既有的警示口径（`--amber-soft` / `--amber-deep`，
+   两个主题都有定义；`App.vue` 的 `.pwd-banner` 与 `app.css` 的 `.chip.a` 同一套）。 */
+.ml-badge.warn { right:auto; left:3px; background:var(--amber-soft); color:var(--amber-deep); }
 .ml-name { font-size:12px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .ml-sub { font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 

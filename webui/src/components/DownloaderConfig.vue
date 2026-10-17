@@ -43,8 +43,9 @@
       <div class="grid2 mt-12">
         <label class="fld">
           <span class="lbl">引擎</span>
-          <select v-model="form.engine">
-            <option value="yt-dlp">内置 yt-dlp（推荐：版本与哈希已钉死）</option>
+          <!-- ⚠️ 行内文案按仓里预算（≤20 字）："版本与哈希已钉死"这类**生效条件**挪进 title -->
+          <select v-model="form.engine" title="内置那份 yt-dlp 的版本与哈希已钉死，随发行物一起更新">
+            <option value="yt-dlp">内置 yt-dlp（推荐）</option>
             <option value="__custom__">自备可执行文件…</option>
           </select>
           <span class="muted small">
