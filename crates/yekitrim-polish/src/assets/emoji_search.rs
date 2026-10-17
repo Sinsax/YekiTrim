@@ -398,16 +398,34 @@ impl EmojiCatalog {
             let mut grouped: std::collections::BTreeMap<String, Vec<String>> =
                 std::collections::BTreeMap::new();
             let mut ungrouped: Vec<String> = Vec::new();
-            for cp in &self.all_codepoints {
-                match self
-                    .dims
+            // ⚠️ **两级分组**（2026-10-17 实测）：只按情绪会得到一个巨大的 `neutral` 组
+            //    （430/881 = 49% —— 模型把 neutral 当成"没有情绪"的表达方式，那是它的合理读法）。
+            //    于是"旗子/房子/工具/动物"全挤在那一组里，**按题材根本找不到**。
+            //    所以：情绪只有 `neutral`（或没有情绪）时，改用 `object` 的第一个取值当组名。
+            //    两级都空 ⇒ `uncategorized` —— **一个都不许丢**（面板的「全部」是从各组拼的）。
+            let emotion_none = |cp: &String| -> bool {
+                self.dims
                     .get(cp)
                     .and_then(|d| d.get(&primary))
                     .and_then(|vs| vs.first())
-                {
-                    Some(v) => grouped.entry(v.clone()).or_default().push(cp.clone()),
-                    // ⚠️ **没分到组的一个都不许丢**：面板的「全部（不限）」是从各组拼出来的，
-                    //    丢掉它们 = 这些表情在面板上永远看不见（静默消失）。
+                    .is_none_or(|v| v == "neutral")
+            };
+            for cp in &self.all_codepoints {
+                let key = if emotion_none(cp) {
+                    self.dims
+                        .get(cp)
+                        .and_then(|d| d.get("object"))
+                        .and_then(|vs| vs.first())
+                        .cloned()
+                } else {
+                    self.dims
+                        .get(cp)
+                        .and_then(|d| d.get(&primary))
+                        .and_then(|vs| vs.first())
+                        .cloned()
+                };
+                match key {
+                    Some(k) => grouped.entry(k).or_default().push(cp.clone()),
                     None => ungrouped.push(cp.clone()),
                 }
             }
@@ -743,6 +761,14 @@ mod tests {
                 ("intensity".to_string(), vec!["3".to_string()]),
             ]),
         );
+        // 只有 neutral 情绪、但有题材的（旗子）—— 两级分组要把这类分到 `object` 去
+        dims.insert(
+            "1f6a9".to_string(),
+            HashMap::from([
+                ("emotion".to_string(), vec!["neutral".to_string()]),
+                ("object".to_string(), vec!["flag".to_string()]),
+            ]),
+        );
         EmojiCatalog {
             tag_index: HashMap::new(),
             // 老工程那条兜底路（词表外的自由词）要有东西可命中
@@ -751,6 +777,7 @@ mod tests {
                 "1f622".to_string(),
                 "1f602".to_string(),
                 "1f621".to_string(),
+                "1f6a9".to_string(),
                 "1f600".to_string(),
             ],
             dims,
@@ -807,6 +834,15 @@ mod tests {
         assert!(
             names.contains(&&"uncategorized".to_string()),
             "没有 dim 的 codepoint 必须落到 uncategorized: {names:?}"
+        );
+        // **两级分组**：只有 neutral 情绪的那张旗子要落到 `flag`（object），不是 `neutral`
+        assert!(
+            names.contains(&&"flag".to_string()),
+            "只有 neutral 情绪的表情应当按 object 分组: {names:?}"
+        );
+        assert!(
+            !names.contains(&&"neutral".to_string()),
+            "既然按 object 兜底了，就不该再出现一个巨大的 neutral 组: {names:?}"
         );
         let total: usize = groups.iter().map(|(_, c)| c.len()).sum();
         assert_eq!(total, cat.all().len(), "分组不许丢 codepoint（面板的全部靠它拼）");
@@ -868,6 +904,16 @@ mod tests {
             })
             .count();
         assert!(groups >= 10, "{} 只有 {groups} 组有成员 —— 分类退化了", primary.key);
+        // **分布**：最大的组不许超过整个目录的一半 —— "一锅烩"等于没分类。
+        // （2026-10-17 实测：只按情绪时 `neutral` 是 430/881 = 49%，加了两级分组才降到这个线以下。）
+        let biggest = cat.grouped().iter().map(|(_, c)| c.len()).max().unwrap_or(0);
+        // ⚠️ 门槛取 **1/4**：只按情绪时 `neutral` 是 430/881（49%），加了两级分组后最大组是
+        //    `calm` 105/881（12%）。放宽到 50% 会让"没有两级分组"这个回归溜过去。
+        assert!(
+            biggest * 4 <= cat.all().len(),
+            "最大的组 {biggest}/{} 超过四分之一 —— 分组等于没分（那一组会把其他全淹掉）",
+            cat.all().len()
+        );
     }
 
 /// 码点 → 字符（给 LLM 的注解），并钉住**候选标签取回 stem 就是码点**这条约定。
