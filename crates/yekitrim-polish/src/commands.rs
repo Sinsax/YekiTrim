@@ -40,7 +40,13 @@ pub async fn cmd_init(path: &Path) -> anyhow::Result<()> {
     //
     // ⚠️ 库里没有任何一支设过默认 ⇒ **保持 example 的出厂值不动**（自带 Noto Sans SC），
     // 那是设计好的空库回落态（与 `SYSTEM_FONT_STACK` 首项同名，有单测钉着）。
-    if let Some(family) = yekitrim_core::fonts::default_text_family(&yekitrim_core::fonts::dir()) {
+    // ⚠️ **按归属取库**（2026-10-16）：`fonts::dir()` 是"单人/当前管理员"那条入口，
+    //    而 server 可能正为**别的账号**切片段 —— 读错库的后果是"你设的默认位对别人的新片段生效"。
+    let font_owner = yekitrim_core::owner::Owner::from_env();
+    let _ = yekitrim_core::fonts::ensure_dir_for(font_owner);
+    if let Some(family) =
+        yekitrim_core::fonts::default_text_family(&yekitrim_core::fonts::dir_for(font_owner))
+    {
         tracing::info!("  ✓ 字幕字体 = 库里的默认字体：{family}");
         example.style.subtitle.font = family;
     }
@@ -1178,6 +1184,514 @@ async fn llm_generate_package_tags(
         progress.stage_progress(done, total);
     }
     Ok(result)
+}
+
+// ============================================================
+// emoji 多维分类（开发期工具）
+// ============================================================
+
+/// 每批喂给 LLM 的 emoji 条数。
+///
+/// 40 条 × 六维 —— 与贴纸包那条（`PACKAGE_TAG_BATCH`=120）不同：那边每条只出一两个 tag，
+/// 这边每条要出 6 个维度、输出体积大得多，同一条教训（太大输出会被截断、截断就是静默丢标签）。
+pub const EMOJI_TAG_BATCH: usize = 40;
+
+/// `polish emoji build` 的结果（打印给人看 + 单测断言用）。
+#[derive(Debug, Default)]
+pub struct EmojiBuildReport {
+    /// 处理了多少条
+    pub total: usize,
+    /// LLM 调用次数
+    pub batches: usize,
+    /// 真的拿到分类的条数（没拿到的保留原有 tag，不写 dim）
+    pub classified: usize,
+    /// ``维度 ` 取值`, 命中条数`` —— **含 0**（0 就是"这个词没有任何表情"，闭合性判据要它）
+    pub coverage: Vec<(String, usize)>,
+    /// 被丢掉的非法取值（`维度:取值`），逐条报出来 —— 它们是"LLM 造了词"的证据
+    pub dropped: Vec<String>,
+    /// 写回路径（`--dry-run` 时为 None）
+    pub out_path: Option<std::path::PathBuf>,
+}
+
+/// **开发期工具**：用 LLM 把内嵌 emoji 目录重做成**六维闭集分类**，写回**仓库里**的
+/// `crates/yekitrim-polish/assets/emoji_catalog.json`。
+///
+/// ⚠️ 它写的是**编译期输入**（`emoji_search.rs` 的 `include_str!`）⇒ 跑完必须 `cargo build`。
+/// ⚠️ **只在开发机上能跑**：路径取自编译期常量 `CARGO_MANIFEST_DIR`；发行二进制里那个路径
+/// 不存在 —— 于是它**明确报错**，而不是往用户数据目录写一份没人读的 JSON。
+/// ⚠️ 写回前**先备份** `<文件>.bak`：不满意就换回来（git 上也有一份）。
+///
+/// 词表真源在 `assets::emoji_taxonomy`（prompt 与查询共用，**不许在这里另抄一份**）。
+pub async fn cmd_emoji_build(
+    catalog: Option<std::path::PathBuf>,
+    dry_run: bool,
+    limit: Option<usize>,
+    drop_legacy_tags: bool,
+    // 默认**增量**（已经有 §dim§ 的条目跳过）—— 一次全量是 23 次调用，
+    // 补漏/换词表时不该再付一遍。要彻底重做就打开它。
+    reclassify_all: bool,
+) -> anyhow::Result<EmojiBuildReport> {
+    use yekitrim_core::llm::LlmClient;
+
+    let path = catalog.unwrap_or_else(|| {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("assets")
+            .join("emoji_catalog.json")
+    });
+    if !path.is_file() {
+        anyhow::bail!(
+            "emoji 目录不存在: {} —— 这条是**开发期工具**（路径取编译期 CARGO_MANIFEST_DIR），\
+             发行二进制里跑不了；要跑就显式传 --catalog <路径>",
+            path.display()
+        );
+    }
+    let raw = std::fs::read_to_string(&path)?;
+    let mut entries: Vec<serde_json::Value> = serde_json::from_str(&raw)?;
+    if entries.is_empty() {
+        anyhow::bail!("emoji 目录是空的: {}", path.display());
+    }
+    if let Some(n) = limit {
+        entries.truncate(n);
+    }
+
+    let owner = yekitrim_core::owner::Owner::from_env();
+    let llm_cfg = yekitrim_core::config::load_llm_config_for(owner);
+    if llm_cfg.api_key.is_empty() || llm_cfg.api_key == "sk-your-api-key-here" {
+        anyhow::bail!(
+            "未配置 LLM API key（编辑 {} 里的 llm.toml）",
+            yekitrim_core::owner::state_dir(owner).display()
+        );
+    }
+
+    tracing::info!(
+        "  🤖 emoji 多维分类：{} 条 / 每批 {} 条（模型 {}）…",
+        entries.len(),
+        EMOJI_TAG_BATCH,
+        llm_cfg.model
+    );
+    let linked = llm_cfg.for_link(yekitrim_core::config::LlmLink::Utility);
+    let client = LlmClient::from_config(&linked)?
+        .with_usage_context(yekitrim_core::llm::usage::UsageContext::new("emoji 多维分类"));
+
+    let system = emoji_classify_system_prompt();
+    let mut report = EmojiBuildReport { total: entries.len(), ..Default::default() };
+    let mut hit: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+
+    // ⚠️ **两轮**：第一轮全量；第二轮只补第一轮没匹配上的（批更小）。
+    //    为什么必须有第二轮（2026-10-17 实测）：第一轮 881 条只落了 478 —— 未分类的是
+    //    **6 段连续区**（40–199 / 240–279 / 320–359 / 440–559 / 600–639），也就是**整批**
+    //    没匹配上（模型把结果包了一层、或键换了写法），而 `map.get()` 直接落空、**一声不响**。
+    //    静默的部分成功比彻底失败更坏 —— 所以这一轮既补数据，也把"哪批没对上"打到日志里。
+    let mut pending: Vec<String> = Vec::new();
+    // 批一次比一次小：40 → 20 → 10。第三轮给"怎么问都说不好"的那几条收尾
+    // （实测前两轮之后仍剩 20 条没分类；它们不阻塞使用，但补上更好排查）。
+    for round in 0..3 {
+        let batch = match round {
+            0 => EMOJI_TAG_BATCH,
+            1 => EMOJI_TAG_BATCH / 2,
+            _ => EMOJI_TAG_BATCH / 4,
+        };
+        let mut work: Vec<&mut serde_json::Value> = if round == 0 {
+            entries
+                .iter_mut()
+                .filter(|e| reclassify_all || e.get("dim").is_none())
+                .collect()
+        } else {
+            entries
+                .iter_mut()
+                .filter(|e| {
+                    let cp = e.get("codepoint").and_then(|v| v.as_str()).unwrap_or("");
+                    pending.iter().any(|p| p == cp)
+                })
+                .collect()
+        };
+        if work.is_empty() {
+            break;
+        }
+        tracing::info!("  · 第 {} 轮：{} 条（每批 {}）", round + 1, work.len(), batch);
+        pending = Vec::new();
+        for chunk in work.chunks_mut(batch) {
+            report.batches += 1;
+            let missed = classify_emoji_batch(
+                &client,
+                &system,
+                chunk,
+                drop_legacy_tags,
+                &mut hit,
+                &mut report.dropped,
+            )
+            .await?;
+            if missed.len() == chunk.len() {
+                tracing::warn!(
+                    "  ⚠ 第 {} 批（{} 条）**一条都没匹配上** —— 模型换了键写法或包了一层？",
+                    report.batches,
+                    chunk.len()
+                );
+            }
+            pending.extend(missed);
+        }
+    }
+    // 到这里 `pending` = 两轮之后仍然没分类的（保持原样、不写 dim）
+    if !pending.is_empty() {
+        tracing::warn!("  ⚠ {} 条两轮都没分类成功，保持原样", pending.len());
+    }
+    report.classified = entries
+        .iter()
+        .filter(|e| e.get("dim").is_some())
+        .count();
+
+    // 覆盖表：**每个取值都列**（0 也要列 —— 闭合性判据就是看有没有 0）
+    for d in &crate::assets::emoji_taxonomy::taxonomy().dims {
+        for v in &d.values {
+            report.coverage.push((format!("{}.{}", d.key, v), *hit.get(v).unwrap_or(&0)));
+        }
+    }
+    report.dropped.sort();
+    report.dropped.dedup();
+
+    if dry_run {
+        tracing::info!("  · --dry-run：不写盘");
+        return Ok(report);
+    }
+
+    let bak = path.with_extension("json.bak");
+    std::fs::copy(&path, &bak)?;
+    let mut text = serde_json::to_string_pretty(&entries)?;
+    text.push('\n');
+    std::fs::write(&path, text)?;
+    tracing::info!("  ✓ 已写回 {}（备份 {}）", path.display(), bak.display());
+    report.out_path = Some(path);
+    Ok(report)
+}
+
+/// 把 LLM **一批**的输出落进 chunk，返回**没匹配上**的 codepoint。
+///
+/// 抽出它是为了两件事：① 两轮（全量 + 补漏）共用同一段逻辑；
+/// ② **整批没对上必须能被报出来** —— 第一版只在调用点做 map.get(cp)，
+/// 实测 881 条只落 478（未分类的是 6 段连续区 = 整批落空），而日志里一个字都没有。
+/// 静默的部分成功比彻底失败更坏。
+async fn classify_emoji_batch(
+    client: &yekitrim_core::llm::LlmClient,
+    system: &str,
+    chunk: &mut [&mut serde_json::Value],
+    drop_legacy_tags: bool,
+    hit: &mut std::collections::HashMap<String, usize>,
+    dropped: &mut Vec<String>,
+) -> anyhow::Result<Vec<String>> {
+    use yekitrim_core::llm::agent::extract_json_object;
+
+    let input: Vec<serde_json::Value> = chunk
+        .iter()
+        .map(|e| {
+            serde_json::json!({
+                "codepoint": e.get("codepoint").and_then(|v| v.as_str()).unwrap_or(""),
+                // 官方短名是最有用的上下文（:joy: / :smile:）；name 字段是 emoji_u1f602 这种，没用
+                "shortcodes": e.get("shortcodes").cloned().unwrap_or(serde_json::json!([])),
+                // **把现有分类当提示喂进去**（用户口径「根据当前的进行处理」）：
+                // 它是参考、不是约束 —— 词表才是约束。
+                "current": e.get("tag").cloned().unwrap_or(serde_json::json!([])),
+            })
+        })
+        .collect();
+    let user = format!(
+        "emoji 列表（codepoint 是唯一键）：\n{}\n\n\
+         只输出一个 JSON 对象：key = codepoint（原样回传），value = 各维度的字符串数组（没有就空数组）。",
+        serde_json::to_string(&input)?
+    );
+    let resp = client.chat(system, &user).await?;
+    let json = extract_json_object(&resp)?;
+    let map: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&json)?;
+
+    let mut missed: Vec<String> = Vec::new();
+    for e in chunk.iter_mut() {
+        let cp = e.get("codepoint").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let Some(obj) = find_dims_for(&map, &cp) else {
+            missed.push(cp);
+            continue;
+        };
+        // ① 归一化（纯函数：只留词表里的取值、单选只留一个、没给的补空数组）
+        let (dim, dim_union, d) = normalize_emoji_dims(obj);
+        dropped.extend(d);
+        if dim.values().all(|v| v.as_array().is_some_and(|a| a.is_empty())) {
+            // 一条都没认出来：保留原有 tag、不写 dim（宁可漏，不可错），并记进没对上
+            missed.push(cp);
+            continue;
+        }
+        // ② tag = 各维取值并集（派生字段）。默认并上旧 tag：那些别名是老工程的 keyword
+        //    还能命中的唯一依据（search 走 index = tag ∪ shortcodes）。
+        let legacy: Vec<String> = if drop_legacy_tags {
+            Vec::new()
+        } else {
+            e.get("tag")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str())
+                        .map(|t| t.trim().to_ascii_lowercase())
+                        .filter(|t| !t.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let tag = derive_emoji_tag(&dim_union, &legacy);
+        for v in &tag {
+            *hit.entry(v.clone()).or_insert(0) += 1;
+        }
+        let obj_mut = e.as_object_mut().expect("catalog 条目必须是对象");
+        obj_mut.insert("dim".to_string(), serde_json::Value::Object(dim));
+        obj_mut.insert("tag".to_string(), serde_json::json!(tag));
+    }
+    Ok(missed)
+}
+
+/// 在 LLM 返回的 JSON 里找 cp 的分类 —— 三层兜底。
+///
+/// 2026-10-17 实测的两种走样：模型把结果包了一层（多一个顶层键）、
+/// 或把键写成 emoji_u1f602（拿 name 字段当键）。调用点原来只有 map.get(cp) 这一手，
+/// 于是整批落空。三层：① 直接键；② 任意一层嵌套对象里的键；③ 归一化键
+/// （去 emoji_u / emoji_ 前缀、大小写）+ 数组里按 codepoint 字段找。
+fn find_dims_for<'a>(
+    map: &'a serde_json::Map<String, serde_json::Value>,
+    cp: &str,
+) -> Option<&'a serde_json::Map<String, serde_json::Value>> {
+    fn norm(k: &str) -> String {
+        k.trim()
+            .trim_start_matches("emoji_u")
+            .trim_start_matches("emoji_")
+            .to_ascii_lowercase()
+    }
+    let want = norm(cp);
+    if let Some(v) = map.get(cp).and_then(|v| v.as_object()) {
+        return Some(v);
+    }
+    for (k, v) in map {
+        if norm(k) == want {
+            if let Some(o) = v.as_object() {
+                return Some(o);
+            }
+        }
+        match v {
+            serde_json::Value::Object(o) => {
+                for (k2, v2) in o {
+                    if norm(k2) == want {
+                        if let Some(o2) = v2.as_object() {
+                            return Some(o2);
+                        }
+                    }
+                }
+            }
+            // 数组形态：[{"codepoint":"1f602","emotion":[…],…}, …]
+            serde_json::Value::Array(a) => {
+                for it in a {
+                    let Some(o) = it.as_object() else { continue };
+                    if o.get("codepoint").and_then(|c| c.as_str()).map(norm).as_deref()
+                        == Some(want.as_str())
+                    {
+                        return Some(o);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// 分类用的 system prompt。
+///
+/// ⚠️ 词表**只从 `emoji_taxonomy::prompt_vocab_text()` 来** —— 在这里抄一份就必然漂。
+fn emoji_classify_system_prompt() -> String {
+    format!(
+        "你是 emoji 语义分类助手。为每个 emoji 在**给定词表**里选标签。\n\
+         \n\
+         ## 词表（**只能从中选**，不许造词；造的词会被丢弃）\n\
+         {}\n\
+         ## 要求\n\
+         - 输出**一个 JSON 对象**：key = codepoint（原样回传），value = 各维度**字符串数组**\n\
+         - 单选维度（标注了「单选」的）**只给一个**值；确实说不好就给最接近的那个，别空着除非真的无关\n\
+         - 可多选维度：**看到就给，别只给显眼的那些**（2026-10-17 实测：模型只给 hand/body/animal，\n         把 🎸 的 object.music、🚩 的 object.flag、🏠 的 object.building、⏰ 的 object.time 全漏了，\n         而这些题材**目录里都有** ⇒ 那一维的大多数取值零覆盖、查询等于空转）\n         - ⚠️ `[]` **只留给真的没有那一维的表情**（😀 是纯情绪，object 才该是空）；\n         有具体东西（动物/食物/手/乐器/球/房子/旗子/钟表）就必须给 object，\n         有明确动作（挥手/点赞/鼓掌/祈祷/写字/打电话/睡觉/吃东西）就必须给 action\n\
+         - `intensity` 看情绪的**爆发程度**：微笑=1 / 大笑·惊讶=2 / 崩溃·暴怒·狂喜=3\n\
+         - `usage` 想的是「做直播切片时这个表情该出现在哪」，不是表情本身长什么样\n\
+         - 只输出 JSON，不要 markdown、不要解释\n",
+        crate::assets::emoji_taxonomy::prompt_vocab_text()
+    )
+}
+
+/// 把 LLM 给的一条分类**归一化**（纯函数，好单测）。
+///
+/// 三条规矩，缺一条都会静默出错：
+/// ① **只留词表里的取值** —— 造的词丢掉并记进 `dropped`（否则它会永远选不到表情）；
+/// ② **单选维度只留一个** —— 多给了就按它给的顺序取首个（不静默留一堆让打分变成"全都沾一点"）；
+/// ③ **没给的维度补 `[]`** —— 消费侧不必判 `Option`，`dim.emotion` 永远是数组。
+///
+/// 返回 `(dim 对象, 取值并集, 被丢掉的非法取值)`。
+pub fn normalize_emoji_dims(
+    raw: &serde_json::Map<String, serde_json::Value>,
+) -> (
+    serde_json::Map<String, serde_json::Value>,
+    Vec<String>,
+    Vec<String>,
+) {
+    let mut dim = serde_json::Map::new();
+    let mut union: Vec<String> = Vec::new();
+    let mut dropped: Vec<String> = Vec::new();
+    for d in &crate::assets::emoji_taxonomy::taxonomy().dims {
+        let mut picked: Vec<String> = Vec::new();
+        let raws: Vec<String> = match raw.get(&d.key) {
+            Some(serde_json::Value::Array(a)) => a
+                .iter()
+                .map(|v| match v {
+                    serde_json::Value::String(s) => s.clone(),
+                    other => other.to_string().trim_matches('"').to_string(),
+                })
+                .collect(),
+            // 模型偶尔给单值而不是数组（`"intensity": "2"`）—— 收，别当没给
+            Some(serde_json::Value::String(s)) => vec![s.clone()],
+            _ => Vec::new(),
+        };
+        for v in raws {
+            let low = v.trim().to_ascii_lowercase();
+            if low.is_empty() {
+                continue;
+            }
+            if crate::assets::emoji_taxonomy::is_valid_value(&d.key, &low) {
+                if !picked.contains(&low) {
+                    picked.push(low);
+                }
+            } else {
+                dropped.push(format!("{}:{}", d.key, low));
+            }
+        }
+        if !d.multi {
+            picked.truncate(1);
+        }
+        if !picked.is_empty() {
+            union.extend(picked.iter().cloned());
+        }
+        dim.insert(d.key.clone(), serde_json::json!(picked));
+    }
+    (dim, union, dropped)
+}
+
+/// 派生 `tag` = 各维取值并集 ∪ 旧 tag（去重排序）。
+///
+/// ⚠️ 它是**派生字段**，不是第二份真源：面板按主维度分区（`primary_dim`）、查询走 `dim`，
+/// `tag` 只剩"旧工程的自由词还能命中"这一个用途（`index` = tag ∪ shortcodes）。
+pub fn derive_emoji_tag(dim_union: &[String], legacy: &[String]) -> Vec<String> {
+    let mut v: Vec<String> = dim_union.to_vec();
+    v.extend(legacy.iter().cloned());
+    v.sort();
+    v.dedup();
+    v
+}
+
+#[cfg(test)]
+mod emoji_build_tests {
+    use super::*;
+
+    fn dims_of(json: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+        json.as_object().expect("测试输入是对象").clone()
+    }
+
+    /// **闭合性**：词表外的取值必须丢掉（否则"那个词永远选不到表情"）。
+    ///
+    /// 变异自证：把 `is_valid_value` 那道判断去掉 → 当场红。
+    #[test]
+    fn normalize_emoji_dims_enforces_the_vocabulary() {
+        let raw = dims_of(serde_json::json!({
+            "emotion": ["joy", "ecstatic"],
+            "intensity": ["3", "9"],
+            "action": ["laugh", "vibe"],
+            "tone": ["positive"],
+        }));
+        let (dim, union, dropped) = normalize_emoji_dims(&raw);
+        assert_eq!(dim["emotion"], serde_json::json!(["joy"]));
+        assert_eq!(dim["intensity"], serde_json::json!(["3"]));
+        assert_eq!(dim["action"], serde_json::json!(["laugh"]));
+        assert!(union.contains(&"joy".to_string()));
+        assert!(!union.contains(&"ecstatic".to_string()), "词表外的词不许进 tag");
+        assert!(dropped.contains(&"emotion:ecstatic".to_string()), "丢掉的要报出来: {dropped:?}");
+        assert!(dropped.contains(&"intensity:9".to_string()));
+        assert!(dropped.contains(&"action:vibe".to_string()));
+    }
+
+    /// **单选维度只留一个**；可多选维度照收；没给的维度补空数组。
+    ///
+    /// 变异自证：删掉 `picked.truncate(1)` → 第一条断言红。
+    #[test]
+    fn normalize_emoji_dims_keeps_one_per_single_choice_dim() {
+        let raw = dims_of(serde_json::json!({
+            "emotion": ["joy", "love"],
+            "intensity": "2",
+            "usage": ["punchline", "reaction"],
+        }));
+        let (dim, union, _) = normalize_emoji_dims(&raw);
+        assert_eq!(dim["emotion"], serde_json::json!(["joy"]));
+        assert_eq!(dim["intensity"], serde_json::json!(["2"]));
+        assert_eq!(dim["usage"], serde_json::json!(["punchline", "reaction"]));
+        assert_eq!(dim["object"], serde_json::json!([]));
+        assert_eq!(dim["tone"], serde_json::json!([]));
+        assert!(!union.contains(&"love".to_string()), "被截掉的单选值不许进 tag");
+    }
+
+    /// 派生 tag = 并集 ∪ 旧 tag，去重且有序。
+    ///
+    /// 变异自证：去掉 `legacy` 那一半 → 旧工程的 keyword 命中不了（断言红）。
+    #[test]
+    fn derive_emoji_tag_unions_dim_values_and_legacy() {
+        let tag = derive_emoji_tag(
+            &["joy".to_string(), "laugh".to_string()],
+            &["happy".to_string(), "joy".to_string()],
+        );
+        assert_eq!(tag, vec!["happy", "joy", "laugh"]);
+    }
+
+    /// **开发期工具的手跑入口**（与其它诊断同规矩：`#[ignore]` + 环境变量门控）。
+    ///
+    /// ```bash
+    /// VT_EMOJI_LIMIT=40 cargo test -p yekitrim-polish --lib emoji_build_dev_tool -- --ignored --nocapture
+    /// VT_EMOJI_BUILD=1 cargo test -p yekitrim-polish --lib emoji_build_dev_tool -- --ignored --nocapture
+    /// ```
+    ///
+    /// * `VT_EMOJI_BUILD=1` = **真写盘**（不设则只算不写）
+    /// * `VT_EMOJI_LIMIT=N` = 只跑前 N 条
+    /// * `VT_EMOJI_CATALOG=<path>` = 指定目录 JSON
+    /// * `VT_EMOJI_DROP_LEGACY=1` = 丢掉旧 tag
+    ///
+    /// ⚠️ 写盘 = 改**编译期输入**（`assets/emoji_catalog.json`）⇒ 跑完要 `cargo build`。
+    #[tokio::test]
+    #[ignore = "开发期工具：真调 LLM；VT_EMOJI_BUILD=1 才写盘"]
+    async fn emoji_build_dev_tool() {
+        let dry = std::env::var("VT_EMOJI_BUILD").ok().as_deref() != Some("1");
+        let limit = std::env::var("VT_EMOJI_LIMIT").ok().and_then(|v| v.parse().ok());
+        let catalog = std::env::var("VT_EMOJI_CATALOG").ok().map(std::path::PathBuf::from);
+        let drop_legacy = std::env::var("VT_EMOJI_DROP_LEGACY").ok().as_deref() == Some("1");
+        let all = std::env::var("VT_EMOJI_ALL").ok().as_deref() == Some("1");
+        println!(
+            "用法: VT_EMOJI_LIMIT=40 [VT_EMOJI_BUILD=1] cargo test -p yekitrim-polish --lib \
+             emoji_build_dev_tool -- --ignored --nocapture   (dry_run={dry} limit={limit:?})"
+        );
+        let r = super::cmd_emoji_build(catalog, dry, limit, drop_legacy, all)
+            .await
+            .expect("emoji 分类失败");
+        println!(
+            "total={} batches={} classified={} out={:?}",
+            r.total, r.batches, r.classified, r.out_path
+        );
+        for d in crate::assets::emoji_taxonomy::taxonomy().dims.iter() {
+            let prefix = format!("{}.", d.key);
+            let row: Vec<String> = r
+                .coverage
+                .iter()
+                .filter(|(k, _)| k.starts_with(&prefix))
+                .map(|(k, n)| format!("{}={}", k.trim_start_matches(&prefix), n))
+                .collect();
+            println!("  [{}] {}", d.key, row.join(" "));
+        }
+        let zero: Vec<&String> = r.coverage.iter().filter(|(_, n)| *n == 0).map(|(k, _)| k).collect();
+        println!("零覆盖 {} 个: {:?}", zero.len(), zero);
+        println!("词表外被丢 {} 条: {:?}", r.dropped.len(), r.dropped);
+    }
 }
 
 /// 扫描本地贴纸目录生成/更新 stickers.json 清单

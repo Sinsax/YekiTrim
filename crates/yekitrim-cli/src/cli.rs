@@ -268,6 +268,13 @@ pub enum ConfigAction {
     },
     /// 显示当前配置
     Show,
+    /// 清掉配置里已下线的键并写回（工程级配置按设计不自动写回，见 core/config/version.rs）
+    Migrate {
+        /// 工程目录（认 `yekitrim.toml` / `polish.toml`）或直接给 toml 文件；可给多个。
+        /// 不给 = 只处理**程序级**那两个（`<数据目录>/.yekitrim/{config,llm}.toml`）。
+        #[arg(value_name = "路径")]
+        paths: Vec<PathBuf>,
+    },
 }
 
 /// 视频精修子命令
@@ -349,6 +356,11 @@ pub enum PolishAction {
         #[command(subcommand)]
         action: StickerAction,
     },
+    /// 内建 emoji 目录工具（**开发期**：多维分类写回仓库里的 JSON）
+    Emoji {
+        #[command(subcommand)]
+        action: EmojiAction,
+    },
 }
 
 /// 字体库子命令（见 `docs/plan/font-library.md`）
@@ -388,6 +400,32 @@ pub enum StickerAction {
         /// 贴纸包名（如 ysyk）
         #[arg(required = true)]
         package: String,
+    },
+}
+
+/// 内建 emoji 目录子命令。
+///
+/// ⚠️ 它是**开发期工具**，不是产品功能：emoji 目录经 `include_str!` 编进二进制
+/// （`emoji_search.rs`），所以「重新分类」只能改**仓库里的那个 JSON** 再重编译。
+#[derive(Subcommand)]
+pub enum EmojiAction {
+    /// 用 LLM 把目录重新做六维分类（写回仓库里的 assets/emoji_catalog.json）
+    Build {
+        /// 目录 JSON 路径（默认取编译期的 crates/yekitrim-polish/assets/emoji_catalog.json）
+        #[arg(long)]
+        catalog: Option<std::path::PathBuf>,
+        /// 只跑不写盘（先看覆盖表再决定）
+        #[arg(long)]
+        dry_run: bool,
+        /// 只处理前 N 条（试跑用；不写盘也建议配它）
+        #[arg(long)]
+        limit: Option<usize>,
+        /// 丢掉旧 tag（默认**保留**：老工程的 keyword 靠它才能继续命中）
+        #[arg(long)]
+        drop_legacy_tags: bool,
+        /// 连已经分类过的条目一起重做（默认**增量**：跳过已有 dim 的）
+        #[arg(long)]
+        all: bool,
     },
 }
 

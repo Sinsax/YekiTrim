@@ -430,6 +430,29 @@ Command::Polish(action) => {
                         }
                     }
                 }
+                cli::PolishAction::Emoji { action } => match action {
+                    cli::EmojiAction::Build { catalog, dry_run, limit, drop_legacy_tags, all } => {
+                        let r = commands::cmd_emoji_build(
+                            catalog.clone(),
+                            *dry_run,
+                            *limit,
+                            *drop_legacy_tags,
+                            *all,
+                        )
+                        .await?;
+                        // **覆盖表**是这条命令的产出之一（不是装饰）：闭合性判据 = 每个取值至少 1 条，
+                        // 零覆盖的取值意味着"LLM 能写但一定选不到"，要在合并词表之前处理掉。
+                        let zero: Vec<&String> = r.coverage.iter().filter(|(_, n)| *n == 0).map(|(k, _)| k).collect();
+                        tracing::info!("  📊 覆盖：{} 个取值 / 其中 {} 个零覆盖", r.coverage.len(), zero.len());
+                        if !zero.is_empty() {
+                            tracing::info!("  ⚠ 零覆盖（写了也选不到）: {}", zero.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(" "));
+                        }
+                        if !r.dropped.is_empty() {
+                            tracing::info!("  ⚠ 词表外的取值（已丢弃）{} 条: {}", r.dropped.len(), r.dropped.join(" "));
+                        }
+                        tracing::info!("  ✓ 分类完成：{}/{} 条，{} 批", r.classified, r.total, r.batches);
+                    }
+                },
             }
         }
         Command::Fonts(action) => match action {
