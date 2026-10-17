@@ -365,6 +365,13 @@ impl EmojiCatalog {
         self.search(keyword, max)
     }
 
+    /// 某个 codepoint 的六维分类（`维度 → [取值]`）。没有分类时 `None`。
+    ///
+    /// 给"把 emoji 当贴纸包用"那条路（`sticker_index::builtin_meta`：tag = `维度:取值`）。
+    pub fn dim_of(&self, cp: &str) -> Option<&HashMap<String, Vec<String>>> {
+        self.dims.get(cp)
+    }
+
     /// 目录里**有没有**六维分类（构建工具 `polish emoji build` 跑过没有）。
     /// 老数据 / 远端 API 都是 `false` ⇒ 面板走 tag 老路、`search_dims` 空转。
     pub fn has_dims(&self) -> bool {

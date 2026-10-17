@@ -303,9 +303,12 @@ pub async fn regenerate_segment_events(
         sfx_blacklist,
     );
     let sticker_root = yekitrim_core::path::sticker_dir_readable();
+    // ⚠️ 用 §is_known_pack_source§（**磁盘 ∪ 内建 emoji 包**）而不是 §is_package_source§：
+    //    后者是纯磁盘判据，而内建包不是目录 ⇒ 来源只写 §emoji§ 的工程会**整段候选文本都不注入**
+    //    （那正是"LLM 不知道有哪些词可用"的一个入口）。
     let has_local = sticker_source
         .iter()
-        .any(|s| crate::assets::sticker_index::is_package_source(&sticker_root, s));
+        .any(|s| crate::assets::sticker_index::is_known_pack_source(&sticker_root, s));
     let local_sticker_text = if has_local {
         crate::assets::sticker_index::local_sticker_candidates_text(&sticker_root)
     } else {
@@ -377,24 +380,22 @@ async fn run_sticker_choice_step(
     let mut package_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     for (si, seg) in segments.iter().enumerate() {
         for (ei, ev) in seg.events.iter().enumerate() {
-            if let Event::Sticker {
-                keyword,
-                sticker_tag: Some(tag),
-                time,
-                ..
-            } = ev
-            {
+            // ⚠️ **两个载体都要收**（`process/AGENTS.md`「贴纸有两个载体」）：只认 `Event::Sticker`
+            // 时，编辑器「贴纸轨」建的贴纸**永远不参与 Step2b 精挑**。
+            let Some(tag) = ev.sticker_tag() else { continue };
+            if let Some(keyword) = ev.sticker_keyword() {
                 let kw = keyword.trim().to_string();
                 let tag = tag.trim().to_string();
                 if kw.is_empty() || tag.is_empty() {
                     continue;
                 }
                 package_names.insert(kw.clone());
+                let time = ev.sticker_time().unwrap_or(0.0);
                 let ctx = StickerChoiceContext {
                     segment_index: si,
                     event_index: ei,
-                    time: *time,
-                    context_text: subtitle_context_text(subtitles, *time),
+                    time,
+                    context_text: subtitle_context_text(subtitles, time),
                 };
                 groups.entry((kw, tag)).or_default().push(ctx);
             }
@@ -419,11 +420,12 @@ async fn run_sticker_choice_step(
         match choose_sticker_files_batch(llm_cfg, project, package_name, tag, &candidates, &contexts).await {
             Ok(chosen) => {
                 for (si, ei, stem) in chosen {
+                    // 写回也走访问器（两个载体的 `name`/`source` 字段不同名）
                     if let Some(seg) = segments.get_mut(si)
-                        && let Some(Event::Sticker { name, source, .. }) = seg.events.get_mut(ei)
+                        && let Some(ev) = seg.events.get_mut(ei)
+                        && ev.is_sticker()
                     {
-                        *name = Some(stem.clone());
-                        *source = Some(package_name.clone());
+                        ev.set_sticker_resolved(&package_name, &stem);
                     }
                 }
             }

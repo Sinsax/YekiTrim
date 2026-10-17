@@ -64,6 +64,31 @@ pub fn is_image_path(p: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// 在一个目录下按**去扩展名的文件名**找一个图片文件（`name.png` / `name.gif` / …）。
+///
+/// # 为什么需要它
+///
+/// 事件里的 `name` 是**去扩展名的文件名**（与 `copy_sticker_from_local` 同口径），
+/// 而扩展名有五种（见 [`is_image_file_name`]）。出片侧曾经写死 `.gif`：
+/// **PNG 贴纸在 DOM 预览里照常显示、成片里一张都没有**，且不报错（`render/AGENTS.md` 那条）。
+///
+/// ⚠️ 判据只有 [`is_image_file_name`] 一份 —— 别在这里再抄一遍扩展名清单，
+/// 那样新增格式时两份必然会漂。
+pub fn find_image_in(dir: &Path, name: &str) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    for e in entries.flatten() {
+        let p = e.path();
+        if !is_image_path(&p) {
+            continue;
+        }
+        let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
+        if stem == name {
+            return Some(p);
+        }
+    }
+    None
+}
+
 /// 「一个文件名算不算**视频素材**」的**唯一判据**（第 6 批 / 规格 §11.2 第 1 条）：
 /// 只认这 5 种扩展名（大小写不敏感）。
 ///
@@ -210,11 +235,79 @@ pub fn build_package_meta_from_tags(
     })
 }
 
-/// 读取 `stickers/<包名>.toml` 元数据。
+/// **内建 emoji 包的包名**。
+///
+/// 它**不是磁盘上的目录** —— 内容是编译期内嵌的 `assets/emoji_catalog.json`
+/// （见 `emoji_search::EmojiCatalog`）。这里把它**按包协议**接进来，是为了让 emoji
+/// 拿到本地贴纸包同款的两步：候选 tag 列表、以及"tag 内精挑一个文件"。
+///
+/// ⚠️ **磁盘上真有 `stickers/emoji/` 时以磁盘为准**（贴纸库的老口径：列表以磁盘为准）。
+pub const BUILTIN_EMOJI_PACK: &str = "emoji";
+
+/// `source` / 包名是不是**内建包**。
+pub fn is_builtin_pack(name: &str) -> bool {
+    name == BUILTIN_EMOJI_PACK
+}
+
+/// `"有本地贴纸包"` 的判据 —— **磁盘 ∪ 内建**。
+///
+/// ⚠️ 为什么单开一条、而不是改 `is_package_source`：后者还有一个消费点
+/// `project/validate.rs::fill_default_local_packages` 拿它判"已经有包了、别再自动补"。
+/// 让内建包算进去，`sources = ["emoji"]` 的工程就**不再自动补入已 build 的包**了 ——
+/// 那是静默的行为变更，不是这次要做的事。磁盘判据保持原样，这一条给"注入候选文本"用。
+pub fn is_known_pack_source(root: &Path, source: &str) -> bool {
+    is_package_source(root, source) || (is_builtin_pack(source) && root.join(source).is_dir() == false)
+}
+
+/// 内建包 → **合成一份 `StickerPackageMeta`**（tag → 文件列表）。
+///
+/// tag 是 **`「维度:取值」`**（`emotion:joy` / `usage:punchline` / `object:hand`…），
+/// 文件是 `"<码点>.gif"` —— 与 `process` 把它们下载进 `<片段>/assets/stickers/` 之后的
+/// 文件名**逐字相同**，所以下游（`tag_files` → 精挑 → 转译器找文件）一个字都不用改。
+///
+/// ⚠️ tag 带维度前缀是**有意的**：候选清单于是与"LLM 该写的查询串"**同一套写法**，
+/// 不用在提示词里再教一遍"清单里的 joy 要写成 emotion:joy"。
+pub fn builtin_meta(root: &Path, name: &str) -> Option<StickerPackageMeta> {
+    if !is_builtin_pack(name) || root.join(name).is_dir() {
+        return None;
+    }
+    let cat = crate::assets::emoji_search::EmojiCatalog::fetch_embedded().ok()?;
+    let mut grouped: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for cp in cat.all() {
+        for (dim, values) in cat.dim_of(cp).into_iter().flatten() {
+            for v in values {
+                grouped
+                    .entry(format!("{dim}:{v}"))
+                    .or_default()
+                    .push(format!("{cp}.gif"));
+            }
+        }
+    }
+    if grouped.is_empty() {
+        return None;
+    }
+    Some(StickerPackageMeta {
+        name: name.to_string(),
+        description: "内建 Noto 动态表情（编译期内嵌、不联网）".to_string(),
+        tags: grouped
+            .into_iter()
+            .map(|(tag, files)| StickerTagMeta { tag, files })
+            .collect(),
+    })
+}
+
+/// 读取 `stickers/<包名>.toml` 元数据（磁盘没有就回落**内建包**）。
 pub fn load_package_meta(root: &Path, package_name: &str) -> Option<StickerPackageMeta> {
     let path = root.join(format!("{package_name}.toml"));
-    let raw = std::fs::read_to_string(&path).ok()?;
-    toml::from_str(&raw).ok()
+    if let Ok(raw) = std::fs::read_to_string(&path) {
+        if let Ok(meta) = toml::from_str(&raw) {
+            return Some(meta);
+        }
+    }
+    // 磁盘上没有（或坏了）⇒ 内建包。
+    // ⚠️ 顺序不能反：磁盘上有 `emoji.toml` 时**以磁盘为准**（有人手工建过同名包）。
+    builtin_meta(root, package_name)
 }
 
 /// 将 `StickerPackageMeta` 序列化为 TOML 字符串。
@@ -865,10 +958,6 @@ pub fn pick_package_file(packages: &[StickerPackage], package_name: &str, seed: 
 /// 只暴露真实存在的贴纸包，避免 LLM 引用不存在的文件。
 pub fn local_sticker_candidates_text(root: &Path) -> String {
     let packages = scan_packages(root);
-    if packages.is_empty() {
-        return String::new();
-    }
-
     let mut lines: Vec<String> = Vec::new();
     for pkg in &packages {
         if let Some(meta) = load_package_meta(root, &pkg.name) {
@@ -889,6 +978,36 @@ pub fn local_sticker_candidates_text(root: &Path) -> String {
         }
     }
 
+    // **内建 emoji 包**（磁盘上没有同名目录时才列）：它与本地包走**同一套协议**
+    // （包名 + 标签 + tag 内挑文件），但标签是 `「维度:取值」`（`emotion:joy`）——
+    // 所以这一行按维度压成几行、只报每档张数，取值本身在「内建 emoji 词表」那段里，
+    // 不在这里重复一百多次。
+    if let Some(meta) = builtin_meta(root, BUILTIN_EMOJI_PACK) {
+        let mut uniq: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut per_dim: std::collections::BTreeMap<&str, Vec<String>> =
+            std::collections::BTreeMap::new();
+        for t in &meta.tags {
+            for f in &t.files {
+                uniq.insert(f.as_str());
+            }
+            let (dim, val) = t.tag.split_once(':').unwrap_or(("", t.tag.as_str()));
+            per_dim.entry(dim).or_default().push(format!("{val}({})", t.files.len()));
+        }
+        let desc: Vec<String> = per_dim
+            .into_iter()
+            .map(|(dim, vals)| format!("{dim}: {}", vals.join(" ")))
+            .collect();
+        lines.push(format!(
+            "{BUILTIN_EMOJI_PACK} - {}（共 {} 张）  取值(张数): {}",
+            meta.description,
+            uniq.len(),
+            desc.join(" | ")
+        ));
+    }
+
+    if lines.is_empty() {
+        return String::new();
+    }
     format!("## 可用本地贴纸包（只能从以下包名选择）\n{}\n", lines.join("\n"))
 }
 
@@ -1484,6 +1603,78 @@ mod tests {
         assert_eq!(parse_filename("打字(恼怒).gif"), Some(("打字".into(), "恼怒".into())));
         assert_eq!(parse_filename("通知_提示_爱心_喜欢.gif"), Some(("通知_提示_爱心_喜欢".into(), "".into())));
         assert_eq!(parse_filename("睡觉_(UU).gif"), Some(("睡觉".into(), "UU".into())));
+    }
+
+    /// **内建 emoji 包走本地包同一套协议**：tag = 「维度:取值」、文件 = <码点>.gif
+    /// （与 process 把它们下载进 <片段>/assets/stickers/ 之后的文件名**逐字相同**）。
+    ///
+    /// 变异自证：把 tag 的维度前缀去掉 → 第一条断言红
+    /// （候选清单与 LLM 要写的查询串就对不上了）。
+    #[test]
+    fn builtin_emoji_pack_speaks_the_pack_protocol() {
+        let (_t, root) = temp_sticker_dir();
+        let meta = builtin_meta(&root, BUILTIN_EMOJI_PACK).expect("内建包应当合成得出 meta");
+        assert_eq!(meta.name, BUILTIN_EMOJI_PACK);
+        assert!(!meta.tags.is_empty());
+        for t in &meta.tags {
+            let (dim, val) = t.tag.split_once(':').expect("tag 必须带维度前缀");
+            assert!(
+                crate::assets::emoji_taxonomy::is_valid_value(dim, val),
+                "词表外的 tag: {}",
+                t.tag
+            );
+        }
+        let cat = crate::assets::emoji_search::EmojiCatalog::fetch_embedded().expect("内嵌目录");
+        let mut uniq = std::collections::HashSet::new();
+        for t in &meta.tags {
+            for f in &t.files {
+                assert!(f.ends_with(".gif"), "文件名: {f}");
+                assert!(
+                    cat.all().iter().any(|cp| f == &format!("{cp}.gif")),
+                    "词表外的码点: {f}"
+                );
+                uniq.insert(f.clone());
+            }
+        }
+        assert_eq!(uniq.len(), cat.all().len(), "并集必须等于目录条数");
+        assert!(!tag_files(&meta, "emotion:joy").is_empty(), "emotion:joy 应当有候选");
+        assert!(tag_files(&meta, "emotion:definitely-not-a-value").is_empty());
+    }
+
+    /// **磁盘赢**：建出 stickers/emoji/ + emoji.toml 之后，内建包必须让位。
+    ///
+    /// 变异自证：把 builtin_meta 里那句 root.join(name).is_dir() 判断去掉 → 第二条断言红。
+    #[test]
+    fn disk_wins_over_the_builtin_pack() {
+        let (_t, root) = temp_sticker_dir();
+        assert!(builtin_meta(&root, BUILTIN_EMOJI_PACK).is_some());
+        // ⚠️ 磁盘判据**不认**内建包（有意的：validate 拿它判"已经有包了、别再自动补"）
+        assert!(!is_package_source(&root, BUILTIN_EMOJI_PACK));
+        // 「有没有包」这一问要认内建
+        assert!(is_known_pack_source(&root, BUILTIN_EMOJI_PACK));
+        std::fs::create_dir_all(root.join(BUILTIN_EMOJI_PACK)).unwrap();
+        std::fs::write(root.join(BUILTIN_EMOJI_PACK).join("x.gif"), b"GIF89a").unwrap();
+        std::fs::write(
+            root.join(format!("{BUILTIN_EMOJI_PACK}.toml")),
+            "name = \"emoji\"\ndescription = \"手工建的\"\n\n[[tags]]\ntag = \"mine\"\nfiles = [\"x.gif\"]\n",
+        )
+        .unwrap();
+        assert!(
+            builtin_meta(&root, BUILTIN_EMOJI_PACK).is_none(),
+            "磁盘上有同名包时不许再合成"
+        );
+        let meta = load_package_meta(&root, BUILTIN_EMOJI_PACK).expect("磁盘 meta");
+        assert_eq!(meta.description, "手工建的");
+    }
+
+    /// 候选文本里**必须出现内建包**（哪怕一个磁盘包都没有）——
+    /// 这正是「LLM 不知道有哪些词可用」的入口之一。
+    #[test]
+    fn candidates_text_lists_the_builtin_pack_even_without_disk_packs() {
+        let (_t, root) = temp_sticker_dir();
+        let text = local_sticker_candidates_text(&root);
+        assert!(text.contains(BUILTIN_EMOJI_PACK), "候选文本里没有内建包:\n{text}");
+        assert!(text.contains("emotion:"), "取值要按维度列出:\n{text}");
     }
 
     #[test]
