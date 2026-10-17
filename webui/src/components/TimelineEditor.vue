@@ -380,14 +380,6 @@
               <div v-else-if="evManualPos" class="row mt-4 gap-6">
                 <button class="mini-btn" title="清掉手动落点，交回自动（安全区算法）" @click="clearManualPos">恢复自动</button>
               </div>
-              <div v-if="manualPick" class="row mt-4 gap-6">
-                <button class="mini-btn primary" title="把这一块的中心定在这个位置（写入 manual_pos）"
-                        @click="saveManualPos">保存落点</button>
-                <button class="mini-btn" @click="cancelManualPick">取消</button>
-              </div>
-              <div v-else-if="evManualPos" class="row mt-4 gap-6">
-                <button class="mini-btn" title="清掉手动落点，交回自动（安全区算法）" @click="clearManualPos">恢复自动</button>
-              </div>
               <!-- ---- ⚠️⚠️ **「元素种类」下拉已删除**（2026-10-14）----
                    用户口径：「**前端编辑器也要分离**」。
 
