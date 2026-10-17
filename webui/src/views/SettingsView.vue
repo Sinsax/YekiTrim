@@ -192,12 +192,18 @@
           <div class="form-section-title">提示词<span class="muted small">写入 config.toml 的 [detection]</span></div>
           <div class="prompt-pair">
             <div>
-              <label title="每行一条，可含 emoji；留空用内建示例">参考标题</label>
-              <textarea v-model="referenceTitlesText" rows="8" placeholder="每行一条参考标题"></textarea>
-              <!-- ★ 留空时把**实际会用哪几条**显示出来：`reference_titles = []` **不代表没有参考标题**，
-                   运行时照样注入内建那几条（`resolve_reference_titles`）。
-                   ⚠️ 只做灰字预览、**不预填进输入框** —— 预填会让用户"以为是自己的"，
-                      一保存就把内建那几条固化进 config.toml，从此再也回不到内建更新。 -->
+              <label title="每行一条，可含 emoji；清空保存则运行时用内建示例">参考标题</label>
+              <textarea v-model="referenceTitlesText" rows="8" placeholder="每行一条参考标题"
+                        @input="referenceTitlesFromDefault = false"></textarea>
+              <!-- 「参考标题」的两条口径（2026-10-18 用户拍板，**推翻了上一版**）：
+                   ① **留空就把内建默认值填进输入框**（与其他设置项一致：表单里显示的就是
+                      "实际会用的那一份"）—— 用户要改就在默认值基础上改，保存即写进 config.toml；
+                   ② **清空再保存 = 回到预设**（`patch_config_file` 是深合并，`[]` 会真的清掉数组 ⇒
+                      `resolve_reference_titles` 回落到内建示例）。此时下面那条灰字预览把
+                      "实际会用哪几条"列出来 —— 清空**不等于没有参考标题**。 -->
+              <div v-if="referenceTitlesFromDefault && referenceTitlesText.trim()" class="muted small mt-4">
+                以上是内建默认值（本配置原先留空）。改了保存即生效；<b>清空再保存</b> = 回到内建示例。
+              </div>
               <div v-if="!referenceTitlesText.trim() && referenceTitlesDefault.length" class="rt-preview">
                 <div class="muted small">
                   留空时使用内建示例（{{ referenceTitlesDefault.length }} 条）：
@@ -344,9 +350,16 @@ const configError = ref('')
 const llmResult = ref('')
 const referenceTitlesText = ref('')
 /** 留空时**实际会用**的内建参考标题（服务端 `GET /api/config` 的 `reference_titles_default`）。
- *  ⚠️ 只用于灰字预览，**绝不预填进 `referenceTitlesText`** —— 预填会让用户"以为是自己的"，
- *  一保存就把内建那几条固化进 config.toml，从此再也回不到内建更新。 */
+ *
+ *  ⚠️ **2026-10-18 口径改了**（用户：「将默认参数写入，和其他逻辑一致就行，留空就用预设的」）：
+ *  以前**刻意不预填**（怕用户"以为是自己的"），现在改成**留空就把默认值填进输入框** ——
+ *  与其他设置项一致：表单显示的就是"实际会用的那一份"；用户要改就在默认值上改，
+ *  清空再保存 = 回到内建示例（`patch_config_file` 深合并，`[]` 会真的清掉数组）。
+ *  ⚠️ 代价（照实记）：内建默认值一旦随保存写进 config.toml，就与代码里的默认值脱钩了 ——
+ *  以后改内建那几条对这份配置无效（与检测 `prompt_template` 的副本同一条规矩）。 */
 const referenceTitlesDefault = ref([])
+/** 输入框里那份是不是**刚从内建默认值填进去的**（用户一改/一清空就置 false）。只驱动那行提示文案。 */
+const referenceTitlesFromDefault = ref(false)
 const asrModeHint = computed(() => form.asr.mode === 'hybrid' ? 'SenseVoice 打轴 + qwen3 填词' : 'SenseVoice')
 /**
  * 本地免登录位（`GET /api/health.local_no_auth`）—— **与 `App.vue` 同一口径**：
@@ -548,6 +561,15 @@ async function loadConfig() {
       prompt_template: c.detection.prompt_template || ''
     })
     referenceTitlesText.value = (form.detection.reference_titles || []).join('\n')
+    // **留空 ⇒ 把内建默认值填进去**（用户口径，见 `referenceTitlesDefault` 的注释）：
+    // 与其他设置项一致 —— 表单显示"实际会用的那一份"，保存时经 syncReferenceTitlesFromText
+    // 写进 config.toml；清空再保存 = 回到预设。
+    if (!referenceTitlesText.value.trim() && referenceTitlesDefault.value.length) {
+      referenceTitlesText.value = referenceTitlesDefault.value.join('\n')
+      referenceTitlesFromDefault.value = true
+    } else {
+      referenceTitlesFromDefault.value = false
+    }
     if (c.cutting) Object.assign(form.cutting, {
       output_dir: c.cutting.output_dir || './output',
       overwrite: !!c.cutting.overwrite,
