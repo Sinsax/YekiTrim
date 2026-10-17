@@ -29,8 +29,14 @@ pub(super) async fn try_resolve_sticker(
     match src {
         "emoji" => {
             if let Some(cat) = catalog {
+                // ⚠️ **走 `search_best` 而不是 `search`**（2026-10-17）：
+                //    `search` 只有"精确 + 子串 ⊇"两档，命中谁**由目录顺序决定**、无评分 ——
+                //    那是"LLM 写 game，结果拿到 video-game 那一组的前 8 个"的来源。
+                //    `search_best` 先试**分维查询**（`emotion:joy,usage:punchline` 这种紧凑串，
+                //    或能对上词表的自由词）并按维度权重打分排序，再落回 `search` 兜底 ——
+                //    所以老工程那些词表外的 keyword（`lol`/`angry`）照样能命中。
                 // 取第一个未被使用的 codepoint, 避免同一 emoji 重复出现
-                cat.search(kw, 8).into_iter()
+                cat.search_best(kw, 8).into_iter()
                     .find(|cp| !used_emojis.contains(cp))
                     .map(|cp| { used_emojis.insert(cp.clone()); cp })
             } else {
