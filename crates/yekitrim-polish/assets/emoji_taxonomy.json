@@ -5,7 +5,7 @@
     {
       "key": "emotion",
       "label": "情绪",
-      "desc": "这条表情最主要在表达什么情绪（单选，选最贴近的一个）。⚠️「赞同 / 否定」这类**态度**写进 usage 维的 agreement / denial，别写进 emotion。",
+      "desc": "这条表情**最主要**在表达什么情绪（单选；**真的没有情绪就留空 []**）。⚠️ 有题材的表情（旗子/房子/工具/交通/食物/乐器…）请把信息给 object / action 维，**不要硬塞 neutral** —— 那个值只留给「说不清情绪、但确实是一张脸」的表情（如 😐）。⚠️「赞同 / 否定」这类态度写进 usage 维的 agreement / denial。",
       "multi": false,
       "weight": 3,
       "values": [
@@ -30,7 +30,8 @@
         "pain",
         "sympathy",
         "neutral"
-      ]
+      ],
+      "optional": true
     },
     {
       "key": "intensity",

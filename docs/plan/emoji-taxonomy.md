@@ -153,9 +153,15 @@
 
 ### 已知偏差（照实记）
 
-- **主维度的分布没有达到"每组 10–60 条"**：`emotion.neutral = 374/881`（42%），其余 4–105。
-  模型的默认倾向就是"说不清就 neutral"。对**选取**影响有限（LLM 按情绪查时给的是具体情绪，
-  不会主动写 neutral），对**浏览**（面板）影响是"neutral 那一组偏大"。
-  要收紧就改 `emotion` 维的 desc（要求"只有真的中性才用 neutral"）再重跑一次分类（23 次调用）。
+- **分布**：一度不达标（`emotion.neutral = 374/881` = 42%）。处理过程照实记：
+  ① 把 `emotion` 标成 **optional**（`optional: true` ⇒ prompt 里写"真的没有就留空 []"）并重跑全量分类（23 次调用）——
+     **结果 neutral 反而涨到 430**：模型把 `neutral` 当成"没有情绪"的表达方式，那是它的合理读法；
+  ② 所以真正该改的是**面板**，不是数据：`grouped()` 改成**两级分组** —— 情绪只有 `neutral`（或没有情绪）的，
+     改用 `object` 的第一个取值当组名（旗子归 flag、房子归 building、工具归 tool…）。
+  ③ 结果：**39 组 / 881 条**，最大 `calm` **105（12%）**，最小 1–2 —— 判据收紧到"最大组 ≤ 1/4"并带变异自证。
+  （`emotion.neutral` 仍然大，但那是**数据事实**、也是选取时不会主动写的值；面板已经不受它拖累。）
+- **零覆盖取值 0 个**（这一轮全补上了，连 `action.salute` 都有 1 个）。
+- ⚠️ **本仓要求 LF**：用 python 重写 `emoji_taxonomy.json` 时默认换行翻译会写成 CRLF，
+  被 `check_module_boundaries.py` 当场抓住 —— 写 JSON 要 `newline='\n'`。
 - **零覆盖取值 1 个**：`action.salute`（🫡 `1fae1` 在目录里，模型没给）。判据允许 ≤5%。
 - `process/download.rs` 的 `search_best` 接线**未提交**（与作者的存量 WIP 同文件，hunk 拆分被 git 判 corrupt）。

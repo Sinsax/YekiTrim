@@ -43,6 +43,14 @@ pub struct DimSpec {
     /// 面板（`grouped()`）按第一个 `multi = false` 的维度分区。
     #[serde(default)]
     pub multi: bool,
+    /// 这一维**允许为空**吗（`multi = false` 时才有意义）。
+    ///
+    /// ⚠️ 2026-10-17 加：`emotion` 原先按"单选、必须给一个"写进 prompt，模型于是给
+    /// 旗子/房子/工具也塞 `neutral` —— 实测 `neutral` 占 **374/881（42%）**，
+    /// 既毁了"每组 10–60 条"的分布，也毁了选取精度（按 `emotion:neutral` 查会查出旗子）。
+    /// 打开这个开关 = 允许"这张表情没有情绪"，题材信息交给 `object` / `action` 维。
+    #[serde(default)]
+    pub optional: bool,
     /// 打分权重（`search_dims`）。含义：这个维度对上"有多值钱"。
     #[serde(default = "default_weight")]
     pub weight: f32,
@@ -106,7 +114,13 @@ pub fn prompt_vocab_text() -> String {
             "- {} ({}，{}): {}\n",
             d.key,
             d.label,
-            if d.multi { "可多选，没有就留空 []" } else { "单选，必须给一个" },
+            if d.multi {
+                "可多选，没有就留空 []"
+            } else if d.optional {
+                "单选；**真的没有就留空 []**（别硬塞一个凑数）"
+            } else {
+                "单选，必须给一个"
+            },
             d.values.join(" ")
         ));
         if !d.desc.is_empty() {

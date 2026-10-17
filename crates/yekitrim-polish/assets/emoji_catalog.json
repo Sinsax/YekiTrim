@@ -386,8 +386,8 @@
         "positive"
       ],
       "usage": [
-        "decoration",
-        "reaction"
+        "reaction",
+        "decoration"
       ]
     },
     "name": "emoji_u1f617",
@@ -425,8 +425,8 @@
         "positive"
       ],
       "usage": [
-        "decoration",
-        "reaction"
+        "reaction",
+        "decoration"
       ]
     },
     "name": "emoji_u1f619",
@@ -465,8 +465,8 @@
         "positive"
       ],
       "usage": [
-        "decoration",
-        "reaction"
+        "reaction",
+        "decoration"
       ]
     },
     "name": "emoji_u1f61a",
@@ -504,8 +504,8 @@
         "positive"
       ],
       "usage": [
-        "decoration",
-        "reaction"
+        "reaction",
+        "decoration"
       ]
     },
     "name": "emoji_u1f618",
@@ -543,8 +543,8 @@
         "positive"
       ],
       "usage": [
-        "decoration",
-        "reaction"
+        "reaction",
+        "decoration"
       ]
     },
     "name": "emoji_u1f970",
@@ -967,9 +967,7 @@
       "action": [
         "bow"
       ],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -1441,8 +1439,8 @@
         "neutral"
       ],
       "usage": [
-        "cutaway",
-        "reaction"
+        "reaction",
+        "cutaway"
       ]
     },
     "name": "emoji_u1f611",
@@ -1463,7 +1461,7 @@
     "dim": {
       "action": [],
       "emotion": [
-        "neutral"
+        "calm"
       ],
       "intensity": [
         "1"
@@ -1475,8 +1473,8 @@
         "neutral"
       ],
       "usage": [
-        "reaction",
-        "cutaway"
+        "cutaway",
+        "reaction"
       ]
     },
     "name": "emoji_u1f610",
@@ -1547,7 +1545,8 @@
       ],
       "usage": [
         "cutaway",
-        "meme"
+        "meme",
+        "reaction"
       ]
     },
     "name": "emoji_u1f636_200d_1f32b_fe0f",
@@ -1563,6 +1562,7 @@
       "meme",
       "neutral",
       "person",
+      "reaction",
       "weather"
     ],
     "url": "https://fonts.gstatic.com/s/e/notoemoji/latest/1f636_200d_1f32b_fe0f/512.gif"
@@ -1584,8 +1584,9 @@
         "neutral"
       ],
       "usage": [
+        "cutaway",
         "meme",
-        "cutaway"
+        "reaction"
       ]
     },
     "name": "emoji_u1fae5",
@@ -1600,7 +1601,8 @@
       "emotion",
       "meme",
       "neutral",
-      "person"
+      "person",
+      "reaction"
     ],
     "url": "https://fonts.gstatic.com/s/e/notoemoji/latest/1fae5/512.gif"
   },
@@ -1609,7 +1611,7 @@
     "dim": {
       "action": [],
       "emotion": [
-        "neutral"
+        "annoyance"
       ],
       "intensity": [
         "2"
@@ -1618,7 +1620,7 @@
         "person"
       ],
       "tone": [
-        "neutral"
+        "negative"
       ],
       "usage": [
         "denial",
@@ -1631,9 +1633,11 @@
     ],
     "tag": [
       "2",
+      "annoyance",
       "denial",
       "emotion",
       "meme",
+      "negative",
       "neutral",
       "person"
     ],
@@ -1660,7 +1664,8 @@
       ],
       "usage": [
         "agreement",
-        "hype"
+        "hype",
+        "emphasis"
       ]
     },
     "name": "emoji_u1fae1",
@@ -1670,6 +1675,7 @@
     "tag": [
       "2",
       "agreement",
+      "emphasis",
       "hand",
       "hype",
       "person",
@@ -1693,15 +1699,16 @@
         "1"
       ],
       "object": [
-        "person",
-        "hand"
+        "hand",
+        "person"
       ],
       "tone": [
         "neutral"
       ],
       "usage": [
         "question",
-        "reaction"
+        "reaction",
+        "cutaway"
       ]
     },
     "name": "emoji_u1f914",
@@ -1712,6 +1719,7 @@
       "1",
       "confused",
       "confusion",
+      "cutaway",
       "hand",
       "neutral",
       "person",
@@ -1733,8 +1741,8 @@
         "2"
       ],
       "object": [
-        "person",
-        "hand"
+        "hand",
+        "person"
       ],
       "tone": [
         "negative"
@@ -1771,8 +1779,8 @@
         "2"
       ],
       "object": [
-        "person",
-        "hand"
+        "hand",
+        "person"
       ],
       "tone": [
         "neutral"
@@ -1811,15 +1819,16 @@
         "2"
       ],
       "object": [
-        "person",
-        "hand"
+        "hand",
+        "person"
       ],
       "tone": [
         "positive"
       ],
       "usage": [
         "reaction",
-        "meme"
+        "meme",
+        "hype"
       ]
     },
     "name": "emoji_u1f92d",
@@ -1831,6 +1840,7 @@
       "2",
       "emotion",
       "hand",
+      "hype",
       "joy",
       "laugh",
       "meme",
@@ -1851,14 +1861,15 @@
         "1"
       ],
       "object": [
-        "person"
+        "person",
+        "body"
       ],
       "tone": [
         "negative"
       ],
       "usage": [
-        "reaction",
-        "cutaway"
+        "cutaway",
+        "reaction"
       ]
     },
     "name": "emoji_u1f971",
@@ -1867,6 +1878,7 @@
     ],
     "tag": [
       "1",
+      "body",
       "bored",
       "boredom",
       "cutaway",
@@ -1891,14 +1903,16 @@
       ],
       "object": [
         "person",
-        "hand"
+        "hand",
+        "heart"
       ],
       "tone": [
         "positive"
       ],
       "usage": [
+        "reaction",
         "comfort",
-        "reaction"
+        "hype"
       ]
     },
     "name": "emoji_u1f917",
@@ -1910,7 +1924,9 @@
       "comfort",
       "emotion",
       "hand",
+      "heart",
       "hug",
+      "hype",
       "love",
       "person",
       "positive",
@@ -1936,8 +1952,8 @@
         "neutral"
       ],
       "usage": [
-        "meme",
-        "cutaway"
+        "cutaway",
+        "meme"
       ]
     },
     "name": "emoji_u1fae3",
@@ -2010,8 +2026,8 @@
         "neutral"
       ],
       "usage": [
-        "question",
-        "reaction"
+        "reaction",
+        "question"
       ]
     },
     "name": "emoji_u1f928",
@@ -2046,8 +2062,8 @@
         "neutral"
       ],
       "usage": [
-        "question",
-        "meme"
+        "meme",
+        "question"
       ]
     },
     "name": "emoji_u1f9d0",
@@ -2082,8 +2098,8 @@
         "negative"
       ],
       "usage": [
-        "reaction",
-        "cutaway"
+        "cutaway",
+        "reaction"
       ]
     },
     "name": "emoji_u1f612",
@@ -2118,8 +2134,8 @@
         "negative"
       ],
       "usage": [
-        "denial",
-        "reaction"
+        "reaction",
+        "denial"
       ]
     },
     "name": "emoji_u1f644",
@@ -2263,8 +2279,8 @@
         "negative"
       ],
       "usage": [
-        "reaction",
-        "punchline"
+        "punchline",
+        "reaction"
       ]
     },
     "name": "emoji_u1f621",
@@ -2300,7 +2316,8 @@
       ],
       "usage": [
         "reaction",
-        "meme"
+        "meme",
+        "punchline"
       ]
     },
     "name": "emoji_u1f92c",
@@ -2314,6 +2331,7 @@
       "meme",
       "negative",
       "person",
+      "punchline",
       "reaction"
     ],
     "url": "https://fonts.gstatic.com/s/e/notoemoji/latest/1f92c/512.gif"
@@ -2589,9 +2607,9 @@
         "neutral"
       ],
       "usage": [
+        "reaction",
         "cutaway",
-        "meme",
-        "reaction"
+        "meme"
       ]
     },
     "name": "emoji_u1fae4",
@@ -2628,8 +2646,8 @@
       ],
       "usage": [
         "reaction",
-        "cutaway",
-        "comfort"
+        "comfort",
+        "cutaway"
       ]
     },
     "name": "emoji_u1f615",
@@ -2955,8 +2973,8 @@
         "positive"
       ],
       "usage": [
-        "punchline",
         "reaction",
+        "punchline",
         "hype"
       ]
     },
@@ -3297,8 +3315,8 @@
         "2"
       ],
       "object": [
-        "weather",
-        "body"
+        "body",
+        "weather"
       ],
       "tone": [
         "negative"
@@ -3438,8 +3456,8 @@
         "neutral"
       ],
       "usage": [
-        "cutaway",
-        "reaction"
+        "reaction",
+        "cutaway"
       ]
     },
     "name": "emoji_u1f634",
@@ -3846,7 +3864,9 @@
       "intensity": [
         "1"
       ],
-      "object": [],
+      "object": [
+        "person"
+      ],
       "tone": [
         "neutral"
       ],
@@ -3865,6 +3885,7 @@
       "emotion",
       "meme",
       "neutral",
+      "person",
       "surprise"
     ],
     "url": "https://fonts.gstatic.com/s/e/notoemoji/latest/1f978/512.gif"
@@ -4078,9 +4099,7 @@
     "codepoint": "1f916",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -4334,7 +4353,8 @@
         "1"
       ],
       "object": [
-        "weather"
+        "weather",
+        "symbol"
       ],
       "tone": [
         "positive"
@@ -4353,6 +4373,7 @@
       "decoration",
       "emotion",
       "positive",
+      "symbol",
       "weather"
     ],
     "url": "https://fonts.gstatic.com/s/e/notoemoji/latest/1f31d/512.gif"
@@ -4370,7 +4391,8 @@
         "2"
       ],
       "object": [
-        "weather"
+        "weather",
+        "symbol"
       ],
       "tone": [
         "positive"
@@ -4394,6 +4416,7 @@
       "positive",
       "reaction",
       "smile",
+      "symbol",
       "weather"
     ],
     "url": "https://fonts.gstatic.com/s/e/notoemoji/latest/1f31e/512.gif"
@@ -4403,13 +4426,14 @@
     "dim": {
       "action": [],
       "emotion": [
-        "neutral"
+        "calm"
       ],
       "intensity": [
         "1"
       ],
       "object": [
-        "weather"
+        "weather",
+        "symbol"
       ],
       "tone": [
         "neutral"
@@ -4424,9 +4448,11 @@
     ],
     "tag": [
       "1",
+      "calm",
       "decoration",
       "emotion",
       "neutral",
+      "symbol",
       "weather"
     ],
     "url": "https://fonts.gstatic.com/s/e/notoemoji/latest/1f31b/512.gif"
@@ -4436,13 +4462,14 @@
     "dim": {
       "action": [],
       "emotion": [
-        "neutral"
+        "calm"
       ],
       "intensity": [
         "1"
       ],
       "object": [
-        "weather"
+        "weather",
+        "symbol"
       ],
       "tone": [
         "neutral"
@@ -4457,9 +4484,11 @@
     ],
     "tag": [
       "1",
+      "calm",
       "decoration",
       "emotion",
       "neutral",
+      "symbol",
       "weather"
     ],
     "url": "https://fonts.gstatic.com/s/e/notoemoji/latest/1f31c/512.gif"
@@ -4522,7 +4551,8 @@
         "positive"
       ],
       "usage": [
-        "reaction"
+        "reaction",
+        "decoration"
       ]
     },
     "name": "emoji_u1f638",
@@ -4532,6 +4562,7 @@
     "tag": [
       "1",
       "animal",
+      "decoration",
       "emotion",
       "joy",
       "positive",
@@ -5029,7 +5060,8 @@
         "3"
       ],
       "object": [
-        "weather"
+        "weather",
+        "symbol"
       ],
       "tone": [
         "neutral"
@@ -5053,6 +5085,7 @@
       "hype",
       "neutral",
       "surprise",
+      "symbol",
       "transition",
       "weather"
     ],
@@ -5226,9 +5259,9 @@
         "positive"
       ],
       "usage": [
-        "agreement",
         "emphasis",
-        "hype"
+        "hype",
+        "agreement"
       ]
     },
     "name": "emoji_u1f4af",
@@ -5310,8 +5343,8 @@
         "positive"
       ],
       "usage": [
-        "decoration",
-        "hype"
+        "hype",
+        "decoration"
       ]
     },
     "name": "emoji_u1f38a",
@@ -5751,7 +5784,8 @@
         "positive"
       ],
       "usage": [
-        "decoration"
+        "decoration",
+        "reaction"
       ]
     },
     "name": "emoji_u1f498",
@@ -5765,6 +5799,7 @@
       "heart",
       "love",
       "positive",
+      "reaction",
       "symbol"
     ],
     "url": "https://fonts.gstatic.com/s/e/notoemoji/latest/1f498/512.gif"
@@ -6096,8 +6131,8 @@
         "positive"
       ],
       "usage": [
-        "decoration",
-        "agreement"
+        "agreement",
+        "decoration"
       ]
     },
     "name": "emoji_u2665_fe0f",
@@ -6332,8 +6367,8 @@
         "positive"
       ],
       "usage": [
-        "comfort",
-        "reaction"
+        "reaction",
+        "comfort"
       ]
     },
     "name": "emoji_u1fac2",
@@ -6359,15 +6394,13 @@
       "action": [
         "call"
       ],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
       "object": [
-        "person",
-        "body"
+        "body",
+        "person"
       ],
       "tone": [
         "neutral"
@@ -6397,9 +6430,7 @@
     "codepoint": "1f463",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -6411,8 +6442,8 @@
         "neutral"
       ],
       "usage": [
-        "transition",
-        "decoration"
+        "decoration",
+        "transition"
       ]
     },
     "name": "emoji_u1f463",
@@ -6434,9 +6465,7 @@
     "codepoint": "1fac6",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -6470,9 +6499,7 @@
       "action": [
         "think"
       ],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -6483,8 +6510,8 @@
         "neutral"
       ],
       "usage": [
-        "emphasis",
         "cutaway",
+        "emphasis",
         "meme"
       ]
     },
@@ -6547,9 +6574,7 @@
     "codepoint": "1fa78",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -6560,8 +6585,8 @@
         "neutral"
       ],
       "usage": [
-        "decoration",
-        "cutaway"
+        "cutaway",
+        "decoration"
       ]
     },
     "name": "emoji_u1fa78",
@@ -6595,8 +6620,8 @@
         "negative"
       ],
       "usage": [
-        "meme",
-        "cutaway"
+        "cutaway",
+        "meme"
       ]
     },
     "name": "emoji_u1f9a0",
@@ -6620,9 +6645,7 @@
     "codepoint": "1f9b4",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -6691,9 +6714,7 @@
     "codepoint": "1f441_fe0f",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -6762,9 +6783,7 @@
     "codepoint": "1f443",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -6795,9 +6814,7 @@
     "codepoint": "1f443_1f3fb",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -6828,9 +6845,7 @@
     "codepoint": "1f443_1f3fc",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -6861,9 +6876,7 @@
     "codepoint": "1f443_1f3fd",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -6894,9 +6907,7 @@
     "codepoint": "1f443_1f3fe",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -6927,9 +6938,7 @@
     "codepoint": "1f443_1f3ff",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -6960,9 +6969,7 @@
     "codepoint": "1f442",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -6993,9 +7000,7 @@
     "codepoint": "1f442_1f3fb",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -7026,9 +7031,7 @@
     "codepoint": "1f442_1f3fc",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -7059,9 +7062,7 @@
     "codepoint": "1f442_1f3fd",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -7092,9 +7093,7 @@
     "codepoint": "1f442_1f3fe",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -7161,9 +7160,7 @@
     "codepoint": "1f9bb",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -7175,8 +7172,7 @@
         "neutral"
       ],
       "usage": [
-        "decoration",
-        "question"
+        "decoration"
       ]
     },
     "name": "emoji_u1f9bb",
@@ -7198,9 +7194,7 @@
     "codepoint": "1f9bb_1f3fb",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -7212,8 +7206,7 @@
         "neutral"
       ],
       "usage": [
-        "decoration",
-        "question"
+        "decoration"
       ]
     },
     "name": "emoji_u1f9bb_1f3fb",
@@ -7235,14 +7228,13 @@
     "codepoint": "1f9bb_1f3fc",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
       "object": [
-        "body"
+        "body",
+        "tech"
       ],
       "tone": [
         "neutral"
@@ -7260,7 +7252,8 @@
       "body",
       "decoration",
       "emotion",
-      "neutral"
+      "neutral",
+      "tech"
     ],
     "url": "https://fonts.gstatic.com/s/e/notoemoji/latest/1f9bb_1f3fc/512.gif"
   },
@@ -7268,14 +7261,13 @@
     "codepoint": "1f9bb_1f3fd",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
       "object": [
-        "body"
+        "body",
+        "tech"
       ],
       "tone": [
         "neutral"
@@ -7293,7 +7285,8 @@
       "body",
       "decoration",
       "emotion",
-      "neutral"
+      "neutral",
+      "tech"
     ],
     "url": "https://fonts.gstatic.com/s/e/notoemoji/latest/1f9bb_1f3fd/512.gif"
   },
@@ -7301,14 +7294,13 @@
     "codepoint": "1f9bb_1f3fe",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
       "object": [
-        "body"
+        "body",
+        "tech"
       ],
       "tone": [
         "neutral"
@@ -7326,7 +7318,8 @@
       "body",
       "decoration",
       "emotion",
-      "neutral"
+      "neutral",
+      "tech"
     ],
     "url": "https://fonts.gstatic.com/s/e/notoemoji/latest/1f9bb_1f3fe/512.gif"
   },
@@ -7334,14 +7327,13 @@
     "codepoint": "1f9bb_1f3ff",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
       "object": [
-        "body"
+        "body",
+        "tech"
       ],
       "tone": [
         "neutral"
@@ -7359,7 +7351,8 @@
       "body",
       "decoration",
       "emotion",
-      "neutral"
+      "neutral",
+      "tech"
     ],
     "url": "https://fonts.gstatic.com/s/e/notoemoji/latest/1f9bb_1f3ff/512.gif"
   },
@@ -7367,9 +7360,7 @@
     "codepoint": "1f9b6",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -7400,9 +7391,7 @@
     "codepoint": "1f9b6_1f3fb",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -7433,9 +7422,7 @@
     "codepoint": "1f9b6_1f3fc",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -7466,9 +7453,7 @@
     "codepoint": "1f9b6_1f3fd",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -7499,9 +7484,7 @@
     "codepoint": "1f9b6_1f3fe",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -7532,9 +7515,7 @@
     "codepoint": "1f9b6_1f3ff",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -7565,9 +7546,7 @@
     "codepoint": "1f9b5",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -7598,9 +7577,7 @@
     "codepoint": "1f9b5_1f3fb",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -7631,9 +7608,7 @@
     "codepoint": "1f9b5_1f3fc",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -7664,9 +7639,7 @@
     "codepoint": "1f9b5_1f3fd",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -7697,9 +7670,7 @@
     "codepoint": "1f9b5_1f3fe",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -7730,9 +7701,7 @@
     "codepoint": "1f9b5_1f3ff",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -7763,9 +7732,7 @@
     "codepoint": "1f9bf",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -7798,9 +7765,7 @@
     "codepoint": "1f9be",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -8867,8 +8832,8 @@
       ],
       "usage": [
         "comfort",
-        "reaction",
-        "agreement"
+        "agreement",
+        "reaction"
       ]
     },
     "name": "emoji_u1faf6",
@@ -8910,8 +8875,8 @@
       ],
       "usage": [
         "comfort",
-        "reaction",
-        "agreement"
+        "agreement",
+        "reaction"
       ]
     },
     "name": "emoji_u1faf6_1f3fb",
@@ -8953,8 +8918,8 @@
       ],
       "usage": [
         "comfort",
-        "reaction",
-        "agreement"
+        "agreement",
+        "reaction"
       ]
     },
     "name": "emoji_u1faf6_1f3fc",
@@ -8996,8 +8961,8 @@
       ],
       "usage": [
         "comfort",
-        "reaction",
-        "agreement"
+        "agreement",
+        "reaction"
       ]
     },
     "name": "emoji_u1faf6_1f3fd",
@@ -9039,8 +9004,8 @@
       ],
       "usage": [
         "comfort",
-        "reaction",
-        "agreement"
+        "agreement",
+        "reaction"
       ]
     },
     "name": "emoji_u1faf6_1f3fe",
@@ -9082,8 +9047,8 @@
       ],
       "usage": [
         "comfort",
-        "reaction",
-        "agreement"
+        "agreement",
+        "reaction"
       ]
     },
     "name": "emoji_u1faf6_1f3ff",
@@ -9108,8 +9073,9 @@
     "codepoint": "1f64c",
     "dim": {
       "action": [
+        "celebrate",
         "cheer",
-        "celebrate"
+        "clap"
       ],
       "emotion": [
         "joy"
@@ -9138,6 +9104,7 @@
       "3",
       "celebrate",
       "cheer",
+      "clap",
       "hand",
       "hands-up",
       "hype",
@@ -9152,8 +9119,9 @@
     "codepoint": "1f64c_1f3fb",
     "dim": {
       "action": [
+        "celebrate",
         "cheer",
-        "celebrate"
+        "clap"
       ],
       "emotion": [
         "joy"
@@ -9182,6 +9150,7 @@
       "3",
       "celebrate",
       "cheer",
+      "clap",
       "emotion",
       "hand",
       "hype",
@@ -9196,8 +9165,9 @@
     "codepoint": "1f64c_1f3fc",
     "dim": {
       "action": [
+        "celebrate",
         "cheer",
-        "celebrate"
+        "clap"
       ],
       "emotion": [
         "joy"
@@ -9226,6 +9196,7 @@
       "3",
       "celebrate",
       "cheer",
+      "clap",
       "emotion",
       "hand",
       "hype",
@@ -9240,8 +9211,9 @@
     "codepoint": "1f64c_1f3fd",
     "dim": {
       "action": [
+        "celebrate",
         "cheer",
-        "celebrate"
+        "clap"
       ],
       "emotion": [
         "joy"
@@ -9270,6 +9242,7 @@
       "3",
       "celebrate",
       "cheer",
+      "clap",
       "emotion",
       "hand",
       "hype",
@@ -9284,8 +9257,9 @@
     "codepoint": "1f64c_1f3fe",
     "dim": {
       "action": [
+        "celebrate",
         "cheer",
-        "celebrate"
+        "clap"
       ],
       "emotion": [
         "joy"
@@ -9314,6 +9288,7 @@
       "3",
       "celebrate",
       "cheer",
+      "clap",
       "emotion",
       "hand",
       "hype",
@@ -9328,8 +9303,9 @@
     "codepoint": "1f64c_1f3ff",
     "dim": {
       "action": [
+        "celebrate",
         "cheer",
-        "celebrate"
+        "clap"
       ],
       "emotion": [
         "joy"
@@ -9358,6 +9334,7 @@
       "3",
       "celebrate",
       "cheer",
+      "clap",
       "emotion",
       "hand",
       "hype",
@@ -10392,15 +10369,15 @@
         "2"
       ],
       "object": [
-        "body",
-        "hand"
+        "hand",
+        "body"
       ],
       "tone": [
         "positive"
       ],
       "usage": [
-        "emphasis",
-        "hype"
+        "hype",
+        "emphasis"
       ]
     },
     "name": "emoji_u270a_1f3fc",
@@ -10434,15 +10411,15 @@
         "2"
       ],
       "object": [
-        "body",
-        "hand"
+        "hand",
+        "body"
       ],
       "tone": [
         "positive"
       ],
       "usage": [
-        "emphasis",
-        "hype"
+        "hype",
+        "emphasis"
       ]
     },
     "name": "emoji_u270a_1f3fd",
@@ -10476,15 +10453,15 @@
         "2"
       ],
       "object": [
-        "body",
-        "hand"
+        "hand",
+        "body"
       ],
       "tone": [
         "positive"
       ],
       "usage": [
-        "emphasis",
-        "hype"
+        "hype",
+        "emphasis"
       ]
     },
     "name": "emoji_u270a_1f3fe",
@@ -10518,15 +10495,15 @@
         "2"
       ],
       "object": [
-        "body",
-        "hand"
+        "hand",
+        "body"
       ],
       "tone": [
         "positive"
       ],
       "usage": [
-        "emphasis",
-        "hype"
+        "hype",
+        "emphasis"
       ]
     },
     "name": "emoji_u270a_1f3ff",
@@ -10554,21 +10531,22 @@
         "thumbs-up"
       ],
       "emotion": [
-        "pride"
+        "desire"
       ],
       "intensity": [
         "2"
       ],
       "object": [
-        "body",
-        "hand"
+        "hand",
+        "body"
       ],
       "tone": [
         "positive"
       ],
       "usage": [
         "agreement",
-        "hype"
+        "hype",
+        "emphasis"
       ]
     },
     "name": "emoji_u1f44a",
@@ -10581,6 +10559,8 @@
       "agreement",
       "body",
       "cheer",
+      "desire",
+      "emphasis",
       "fist",
       "hand",
       "hype",
@@ -10598,21 +10578,22 @@
         "thumbs-up"
       ],
       "emotion": [
-        "pride"
+        "desire"
       ],
       "intensity": [
         "2"
       ],
       "object": [
-        "body",
-        "hand"
+        "hand",
+        "body"
       ],
       "tone": [
         "positive"
       ],
       "usage": [
         "agreement",
-        "hype"
+        "hype",
+        "emphasis"
       ]
     },
     "name": "emoji_u1f44a_1f3fb",
@@ -10625,6 +10606,8 @@
       "agreement",
       "body",
       "cheer",
+      "desire",
+      "emphasis",
       "fist",
       "hand",
       "hype",
@@ -10642,21 +10625,22 @@
         "thumbs-up"
       ],
       "emotion": [
-        "pride"
+        "desire"
       ],
       "intensity": [
         "2"
       ],
       "object": [
-        "body",
-        "hand"
+        "hand",
+        "body"
       ],
       "tone": [
         "positive"
       ],
       "usage": [
         "agreement",
-        "hype"
+        "hype",
+        "emphasis"
       ]
     },
     "name": "emoji_u1f44a_1f3fc",
@@ -10669,6 +10653,8 @@
       "agreement",
       "body",
       "cheer",
+      "desire",
+      "emphasis",
       "fist",
       "hand",
       "hype",
@@ -10686,21 +10672,22 @@
         "thumbs-up"
       ],
       "emotion": [
-        "pride"
+        "desire"
       ],
       "intensity": [
         "2"
       ],
       "object": [
-        "body",
-        "hand"
+        "hand",
+        "body"
       ],
       "tone": [
         "positive"
       ],
       "usage": [
         "agreement",
-        "hype"
+        "hype",
+        "emphasis"
       ]
     },
     "name": "emoji_u1f44a_1f3fd",
@@ -10713,6 +10700,8 @@
       "agreement",
       "body",
       "cheer",
+      "desire",
+      "emphasis",
       "fist",
       "hand",
       "hype",
@@ -10730,21 +10719,22 @@
         "thumbs-up"
       ],
       "emotion": [
-        "pride"
+        "desire"
       ],
       "intensity": [
         "2"
       ],
       "object": [
-        "body",
-        "hand"
+        "hand",
+        "body"
       ],
       "tone": [
         "positive"
       ],
       "usage": [
         "agreement",
-        "hype"
+        "hype",
+        "emphasis"
       ]
     },
     "name": "emoji_u1f44a_1f3fe",
@@ -10757,6 +10747,8 @@
       "agreement",
       "body",
       "cheer",
+      "desire",
+      "emphasis",
       "fist",
       "hand",
       "hype",
@@ -10774,21 +10766,22 @@
         "thumbs-up"
       ],
       "emotion": [
-        "pride"
+        "desire"
       ],
       "intensity": [
         "2"
       ],
       "object": [
-        "body",
-        "hand"
+        "hand",
+        "body"
       ],
       "tone": [
         "positive"
       ],
       "usage": [
         "agreement",
-        "hype"
+        "hype",
+        "emphasis"
       ]
     },
     "name": "emoji_u1f44a_1f3ff",
@@ -10801,6 +10794,8 @@
       "agreement",
       "body",
       "cheer",
+      "desire",
+      "emphasis",
       "fist",
       "hand",
       "hype",
@@ -10822,8 +10817,8 @@
         "1"
       ],
       "object": [
-        "body",
-        "hand"
+        "hand",
+        "body"
       ],
       "tone": [
         "negative"
@@ -10861,8 +10856,8 @@
         "1"
       ],
       "object": [
-        "body",
-        "hand"
+        "hand",
+        "body"
       ],
       "tone": [
         "negative"
@@ -10900,8 +10895,8 @@
         "1"
       ],
       "object": [
-        "body",
-        "hand"
+        "hand",
+        "body"
       ],
       "tone": [
         "negative"
@@ -10939,8 +10934,8 @@
         "1"
       ],
       "object": [
-        "body",
-        "hand"
+        "hand",
+        "body"
       ],
       "tone": [
         "negative"
@@ -10978,8 +10973,8 @@
         "1"
       ],
       "object": [
-        "body",
-        "hand"
+        "hand",
+        "body"
       ],
       "tone": [
         "negative"
@@ -11017,8 +11012,8 @@
         "1"
       ],
       "object": [
-        "body",
-        "hand"
+        "hand",
+        "body"
       ],
       "tone": [
         "negative"
@@ -11058,8 +11053,8 @@
         "1"
       ],
       "object": [
-        "body",
-        "hand"
+        "hand",
+        "body"
       ],
       "tone": [
         "neutral"
@@ -11100,8 +11095,8 @@
         "1"
       ],
       "object": [
-        "body",
-        "hand"
+        "hand",
+        "body"
       ],
       "tone": [
         "neutral"
@@ -11142,8 +11137,8 @@
         "1"
       ],
       "object": [
-        "body",
-        "hand"
+        "hand",
+        "body"
       ],
       "tone": [
         "neutral"
@@ -11184,8 +11179,8 @@
         "1"
       ],
       "object": [
-        "body",
-        "hand"
+        "hand",
+        "body"
       ],
       "tone": [
         "neutral"
@@ -11226,8 +11221,8 @@
         "1"
       ],
       "object": [
-        "body",
-        "hand"
+        "hand",
+        "body"
       ],
       "tone": [
         "neutral"
@@ -11268,8 +11263,8 @@
         "1"
       ],
       "object": [
-        "body",
-        "hand"
+        "hand",
+        "body"
       ],
       "tone": [
         "neutral"
@@ -11303,15 +11298,13 @@
       "action": [
         "point"
       ],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
       "object": [
-        "body",
-        "hand"
+        "hand",
+        "body"
       ],
       "tone": [
         "neutral"
@@ -11343,15 +11336,13 @@
       "action": [
         "point"
       ],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
       "object": [
-        "body",
-        "hand"
+        "hand",
+        "body"
       ],
       "tone": [
         "neutral"
@@ -11383,15 +11374,13 @@
       "action": [
         "point"
       ],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
       "object": [
-        "body",
-        "hand"
+        "hand",
+        "body"
       ],
       "tone": [
         "neutral"
@@ -11423,15 +11412,13 @@
       "action": [
         "point"
       ],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
       "object": [
-        "body",
-        "hand"
+        "hand",
+        "body"
       ],
       "tone": [
         "neutral"
@@ -11463,15 +11450,13 @@
       "action": [
         "point"
       ],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
       "object": [
-        "body",
-        "hand"
+        "hand",
+        "body"
       ],
       "tone": [
         "neutral"
@@ -11503,15 +11488,13 @@
       "action": [
         "point"
       ],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
       "object": [
-        "body",
-        "hand"
+        "hand",
+        "body"
       ],
       "tone": [
         "neutral"
@@ -11543,15 +11526,13 @@
       "action": [
         "point"
       ],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
       "object": [
-        "body",
-        "hand"
+        "hand",
+        "body"
       ],
       "tone": [
         "neutral"
@@ -11583,15 +11564,13 @@
       "action": [
         "point"
       ],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
       "object": [
-        "body",
-        "hand"
+        "hand",
+        "body"
       ],
       "tone": [
         "neutral"
@@ -11623,15 +11602,13 @@
       "action": [
         "point"
       ],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
       "object": [
-        "body",
-        "hand"
+        "hand",
+        "body"
       ],
       "tone": [
         "neutral"
@@ -11663,15 +11640,13 @@
       "action": [
         "point"
       ],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
       "object": [
-        "body",
-        "hand"
+        "hand",
+        "body"
       ],
       "tone": [
         "neutral"
@@ -11703,15 +11678,13 @@
       "action": [
         "point"
       ],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
       "object": [
-        "body",
-        "hand"
+        "hand",
+        "body"
       ],
       "tone": [
         "neutral"
@@ -11743,15 +11716,13 @@
       "action": [
         "point"
       ],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
       "object": [
-        "body",
-        "hand"
+        "hand",
+        "body"
       ],
       "tone": [
         "neutral"
@@ -11788,8 +11759,8 @@
         "2"
       ],
       "object": [
-        "body",
-        "hand"
+        "hand",
+        "body"
       ],
       "tone": [
         "negative"
@@ -11826,8 +11797,8 @@
         "2"
       ],
       "object": [
-        "body",
-        "hand"
+        "hand",
+        "body"
       ],
       "tone": [
         "negative"
@@ -11864,8 +11835,8 @@
         "2"
       ],
       "object": [
-        "body",
-        "hand"
+        "hand",
+        "body"
       ],
       "tone": [
         "negative"
@@ -11902,8 +11873,8 @@
         "2"
       ],
       "object": [
-        "body",
-        "hand"
+        "hand",
+        "body"
       ],
       "tone": [
         "negative"
@@ -11940,8 +11911,8 @@
         "2"
       ],
       "object": [
-        "body",
-        "hand"
+        "hand",
+        "body"
       ],
       "tone": [
         "negative"
@@ -11978,8 +11949,8 @@
         "2"
       ],
       "object": [
-        "body",
-        "hand"
+        "hand",
+        "body"
       ],
       "tone": [
         "negative"
@@ -12435,8 +12406,8 @@
         "positive"
       ],
       "usage": [
-        "reaction",
-        "decoration"
+        "decoration",
+        "reaction"
       ]
     },
     "name": "emoji_u1f44b_1f3fe",
@@ -12476,8 +12447,8 @@
         "positive"
       ],
       "usage": [
-        "reaction",
-        "decoration"
+        "decoration",
+        "reaction"
       ]
     },
     "name": "emoji_u1f44b_1f3ff",
@@ -12518,7 +12489,8 @@
       ],
       "usage": [
         "denial",
-        "question"
+        "question",
+        "reaction"
       ]
     },
     "name": "emoji_u1f91a",
@@ -12534,7 +12506,8 @@
       "hand",
       "neutral",
       "point",
-      "question"
+      "question",
+      "reaction"
     ],
     "url": "https://fonts.gstatic.com/s/e/notoemoji/latest/1f91a/512.gif"
   },
@@ -12559,7 +12532,8 @@
       ],
       "usage": [
         "denial",
-        "question"
+        "question",
+        "reaction"
       ]
     },
     "name": "emoji_u1f91a_1f3fb",
@@ -12575,7 +12549,8 @@
       "hand",
       "neutral",
       "point",
-      "question"
+      "question",
+      "reaction"
     ],
     "url": "https://fonts.gstatic.com/s/e/notoemoji/latest/1f91a_1f3fb/512.gif"
   },
@@ -12600,7 +12575,8 @@
       ],
       "usage": [
         "denial",
-        "question"
+        "question",
+        "reaction"
       ]
     },
     "name": "emoji_u1f91a_1f3fc",
@@ -12616,7 +12592,8 @@
       "hand",
       "neutral",
       "point",
-      "question"
+      "question",
+      "reaction"
     ],
     "url": "https://fonts.gstatic.com/s/e/notoemoji/latest/1f91a_1f3fc/512.gif"
   },
@@ -12641,7 +12618,8 @@
       ],
       "usage": [
         "denial",
-        "question"
+        "question",
+        "reaction"
       ]
     },
     "name": "emoji_u1f91a_1f3fd",
@@ -12657,7 +12635,8 @@
       "hand",
       "neutral",
       "point",
-      "question"
+      "question",
+      "reaction"
     ],
     "url": "https://fonts.gstatic.com/s/e/notoemoji/latest/1f91a_1f3fd/512.gif"
   },
@@ -12682,7 +12661,8 @@
       ],
       "usage": [
         "denial",
-        "question"
+        "question",
+        "reaction"
       ]
     },
     "name": "emoji_u1f91a_1f3fe",
@@ -12698,7 +12678,8 @@
       "hand",
       "neutral",
       "point",
-      "question"
+      "question",
+      "reaction"
     ],
     "url": "https://fonts.gstatic.com/s/e/notoemoji/latest/1f91a_1f3fe/512.gif"
   },
@@ -12723,7 +12704,8 @@
       ],
       "usage": [
         "denial",
-        "question"
+        "question",
+        "reaction"
       ]
     },
     "name": "emoji_u1f91a_1f3ff",
@@ -12739,7 +12721,8 @@
       "hand",
       "neutral",
       "point",
-      "question"
+      "question",
+      "reaction"
     ],
     "url": "https://fonts.gstatic.com/s/e/notoemoji/latest/1f91a_1f3ff/512.gif"
   },
@@ -12828,9 +12811,7 @@
   {
     "codepoint": "1f590_1f3fc",
     "dim": {
-      "action": [
-        "point"
-      ],
+      "action": [],
       "emotion": [
         "awkward"
       ],
@@ -12869,9 +12850,7 @@
   {
     "codepoint": "1f590_1f3fd",
     "dim": {
-      "action": [
-        "point"
-      ],
+      "action": [],
       "emotion": [
         "awkward"
       ],
@@ -12910,9 +12889,7 @@
   {
     "codepoint": "1f590_1f3fe",
     "dim": {
-      "action": [
-        "point"
-      ],
+      "action": [],
       "emotion": [
         "awkward"
       ],
@@ -12951,9 +12928,7 @@
   {
     "codepoint": "1f590_1f3ff",
     "dim": {
-      "action": [
-        "point"
-      ],
+      "action": [],
       "emotion": [
         "awkward"
       ],
@@ -12993,7 +12968,8 @@
     "codepoint": "270b",
     "dim": {
       "action": [
-        "wave"
+        "wave",
+        "ok"
       ],
       "emotion": [
         "calm"
@@ -13006,11 +12982,12 @@
         "body"
       ],
       "tone": [
-        "neutral"
+        "positive"
       ],
       "usage": [
         "agreement",
-        "emphasis"
+        "emphasis",
+        "transition"
       ]
     },
     "name": "emoji_u270b",
@@ -13027,7 +13004,9 @@
       "hand-gesture",
       "neutral",
       "ok",
+      "positive",
       "stop",
+      "transition",
       "wave"
     ],
     "url": "https://fonts.gstatic.com/s/e/notoemoji/latest/270b/512.gif"
@@ -13036,7 +13015,8 @@
     "codepoint": "270b_1f3fb",
     "dim": {
       "action": [
-        "wave"
+        "wave",
+        "ok"
       ],
       "emotion": [
         "calm"
@@ -13049,11 +13029,12 @@
         "body"
       ],
       "tone": [
-        "neutral"
+        "positive"
       ],
       "usage": [
         "agreement",
-        "emphasis"
+        "emphasis",
+        "transition"
       ]
     },
     "name": "emoji_u270b_1f3fb",
@@ -13070,7 +13051,9 @@
       "hand-gesture",
       "neutral",
       "ok",
+      "positive",
       "stop",
+      "transition",
       "wave"
     ],
     "url": "https://fonts.gstatic.com/s/e/notoemoji/latest/270b_1f3fb/512.gif"
@@ -13079,7 +13062,8 @@
     "codepoint": "270b_1f3fc",
     "dim": {
       "action": [
-        "wave"
+        "wave",
+        "ok"
       ],
       "emotion": [
         "calm"
@@ -13092,11 +13076,12 @@
         "body"
       ],
       "tone": [
-        "neutral"
+        "positive"
       ],
       "usage": [
         "agreement",
-        "emphasis"
+        "emphasis",
+        "transition"
       ]
     },
     "name": "emoji_u270b_1f3fc",
@@ -13113,7 +13098,9 @@
       "hand-gesture",
       "neutral",
       "ok",
+      "positive",
       "stop",
+      "transition",
       "wave"
     ],
     "url": "https://fonts.gstatic.com/s/e/notoemoji/latest/270b_1f3fc/512.gif"
@@ -13122,7 +13109,8 @@
     "codepoint": "270b_1f3fd",
     "dim": {
       "action": [
-        "wave"
+        "wave",
+        "ok"
       ],
       "emotion": [
         "calm"
@@ -13135,11 +13123,12 @@
         "body"
       ],
       "tone": [
-        "neutral"
+        "positive"
       ],
       "usage": [
         "agreement",
-        "emphasis"
+        "emphasis",
+        "transition"
       ]
     },
     "name": "emoji_u270b_1f3fd",
@@ -13156,7 +13145,9 @@
       "hand-gesture",
       "neutral",
       "ok",
+      "positive",
       "stop",
+      "transition",
       "wave"
     ],
     "url": "https://fonts.gstatic.com/s/e/notoemoji/latest/270b_1f3fd/512.gif"
@@ -13165,7 +13156,8 @@
     "codepoint": "270b_1f3fe",
     "dim": {
       "action": [
-        "wave"
+        "wave",
+        "ok"
       ],
       "emotion": [
         "calm"
@@ -13178,11 +13170,12 @@
         "body"
       ],
       "tone": [
-        "neutral"
+        "positive"
       ],
       "usage": [
         "agreement",
-        "emphasis"
+        "emphasis",
+        "transition"
       ]
     },
     "name": "emoji_u270b_1f3fe",
@@ -13199,7 +13192,9 @@
       "hand-gesture",
       "neutral",
       "ok",
+      "positive",
       "stop",
+      "transition",
       "wave"
     ],
     "url": "https://fonts.gstatic.com/s/e/notoemoji/latest/270b_1f3fe/512.gif"
@@ -13208,7 +13203,8 @@
     "codepoint": "270b_1f3ff",
     "dim": {
       "action": [
-        "wave"
+        "wave",
+        "ok"
       ],
       "emotion": [
         "calm"
@@ -13221,11 +13217,12 @@
         "body"
       ],
       "tone": [
-        "neutral"
+        "positive"
       ],
       "usage": [
         "agreement",
-        "emphasis"
+        "emphasis",
+        "transition"
       ]
     },
     "name": "emoji_u270b_1f3ff",
@@ -13242,7 +13239,9 @@
       "hand-gesture",
       "neutral",
       "ok",
+      "positive",
       "stop",
+      "transition",
       "wave"
     ],
     "url": "https://fonts.gstatic.com/s/e/notoemoji/latest/270b_1f3ff/512.gif"
@@ -13250,9 +13249,7 @@
   {
     "codepoint": "1f596",
     "dim": {
-      "action": [
-        "wave"
-      ],
+      "action": [],
       "emotion": [
         "surprise"
       ],
@@ -13293,9 +13290,7 @@
   {
     "codepoint": "1f596_1f3fb",
     "dim": {
-      "action": [
-        "wave"
-      ],
+      "action": [],
       "emotion": [
         "surprise"
       ],
@@ -13336,9 +13331,7 @@
   {
     "codepoint": "1f596_1f3fc",
     "dim": {
-      "action": [
-        "wave"
-      ],
+      "action": [],
       "emotion": [
         "surprise"
       ],
@@ -13379,9 +13372,7 @@
   {
     "codepoint": "1f596_1f3fd",
     "dim": {
-      "action": [
-        "wave"
-      ],
+      "action": [],
       "emotion": [
         "surprise"
       ],
@@ -13422,9 +13413,7 @@
   {
     "codepoint": "1f596_1f3fe",
     "dim": {
-      "action": [
-        "wave"
-      ],
+      "action": [],
       "emotion": [
         "surprise"
       ],
@@ -13465,9 +13454,7 @@
   {
     "codepoint": "1f596_1f3ff",
     "dim": {
-      "action": [
-        "wave"
-      ],
+      "action": [],
       "emotion": [
         "surprise"
       ],
@@ -13508,9 +13495,7 @@
   {
     "codepoint": "1f91f",
     "dim": {
-      "action": [
-        "wave"
-      ],
+      "action": [],
       "emotion": [
         "love"
       ],
@@ -13527,7 +13512,8 @@
       ],
       "usage": [
         "hype",
-        "reaction"
+        "reaction",
+        "agreement"
       ]
     },
     "name": "emoji_u1f91f",
@@ -13536,6 +13522,7 @@
     ],
     "tag": [
       "2",
+      "agreement",
       "body",
       "hand",
       "hand-gesture",
@@ -13551,9 +13538,7 @@
   {
     "codepoint": "1f91f_1f3fb",
     "dim": {
-      "action": [
-        "wave"
-      ],
+      "action": [],
       "emotion": [
         "love"
       ],
@@ -13570,7 +13555,8 @@
       ],
       "usage": [
         "hype",
-        "reaction"
+        "reaction",
+        "agreement"
       ]
     },
     "name": "emoji_u1f91f_1f3fb",
@@ -13579,6 +13565,7 @@
     ],
     "tag": [
       "2",
+      "agreement",
       "body",
       "hand",
       "hand-gesture",
@@ -13594,9 +13581,7 @@
   {
     "codepoint": "1f91f_1f3fc",
     "dim": {
-      "action": [
-        "wave"
-      ],
+      "action": [],
       "emotion": [
         "love"
       ],
@@ -13613,7 +13598,8 @@
       ],
       "usage": [
         "hype",
-        "reaction"
+        "reaction",
+        "agreement"
       ]
     },
     "name": "emoji_u1f91f_1f3fc",
@@ -13622,6 +13608,7 @@
     ],
     "tag": [
       "2",
+      "agreement",
       "body",
       "hand",
       "hand-gesture",
@@ -13637,9 +13624,7 @@
   {
     "codepoint": "1f91f_1f3fd",
     "dim": {
-      "action": [
-        "wave"
-      ],
+      "action": [],
       "emotion": [
         "love"
       ],
@@ -13656,7 +13641,8 @@
       ],
       "usage": [
         "hype",
-        "reaction"
+        "reaction",
+        "agreement"
       ]
     },
     "name": "emoji_u1f91f_1f3fd",
@@ -13665,6 +13651,7 @@
     ],
     "tag": [
       "2",
+      "agreement",
       "body",
       "hand",
       "hand-gesture",
@@ -13698,7 +13685,8 @@
       ],
       "usage": [
         "reaction",
-        "agreement"
+        "agreement",
+        "decoration"
       ]
     },
     "name": "emoji_u1f91f_1f3fe",
@@ -13740,7 +13728,8 @@
       ],
       "usage": [
         "reaction",
-        "agreement"
+        "agreement",
+        "decoration"
       ]
     },
     "name": "emoji_u1f91f_1f3ff",
@@ -13775,13 +13764,14 @@
       ],
       "object": [
         "hand",
-        "music",
-        "symbol"
+        "body",
+        "music"
       ],
       "tone": [
         "positive"
       ],
       "usage": [
+        "reaction",
         "hype",
         "meme"
       ]
@@ -13793,6 +13783,7 @@
     ],
     "tag": [
       "3",
+      "body",
       "cheer",
       "hand",
       "hand-gesture",
@@ -13821,13 +13812,14 @@
       ],
       "object": [
         "hand",
-        "music",
-        "symbol"
+        "body",
+        "music"
       ],
       "tone": [
         "positive"
       ],
       "usage": [
+        "reaction",
         "hype",
         "meme"
       ]
@@ -13839,6 +13831,7 @@
     ],
     "tag": [
       "3",
+      "body",
       "cheer",
       "emotion",
       "hand",
@@ -13866,13 +13859,14 @@
       ],
       "object": [
         "hand",
-        "music",
-        "symbol"
+        "body",
+        "music"
       ],
       "tone": [
         "positive"
       ],
       "usage": [
+        "reaction",
         "hype",
         "meme"
       ]
@@ -13884,6 +13878,7 @@
     ],
     "tag": [
       "3",
+      "body",
       "cheer",
       "emotion",
       "hand",
@@ -13911,13 +13906,14 @@
       ],
       "object": [
         "hand",
-        "music",
-        "symbol"
+        "body",
+        "music"
       ],
       "tone": [
         "positive"
       ],
       "usage": [
+        "reaction",
         "hype",
         "meme"
       ]
@@ -13929,6 +13925,7 @@
     ],
     "tag": [
       "3",
+      "body",
       "cheer",
       "emotion",
       "hand",
@@ -13956,13 +13953,14 @@
       ],
       "object": [
         "hand",
-        "music",
-        "symbol"
+        "body",
+        "music"
       ],
       "tone": [
         "positive"
       ],
       "usage": [
+        "reaction",
         "hype",
         "meme"
       ]
@@ -13974,6 +13972,7 @@
     ],
     "tag": [
       "3",
+      "body",
       "cheer",
       "emotion",
       "hand",
@@ -14001,13 +14000,14 @@
       ],
       "object": [
         "hand",
-        "music",
-        "symbol"
+        "body",
+        "music"
       ],
       "tone": [
         "positive"
       ],
       "usage": [
+        "reaction",
         "hype",
         "meme"
       ]
@@ -14019,6 +14019,7 @@
     ],
     "tag": [
       "3",
+      "body",
       "cheer",
       "emotion",
       "hand",
@@ -14052,8 +14053,8 @@
         "positive"
       ],
       "usage": [
-        "decoration",
-        "agreement"
+        "reaction",
+        "decoration"
       ]
     },
     "name": "emoji_u270c_fe0f",
@@ -14096,8 +14097,8 @@
         "positive"
       ],
       "usage": [
-        "decoration",
-        "agreement"
+        "reaction",
+        "decoration"
       ]
     },
     "name": "emoji_u270c_1f3fb",
@@ -14140,8 +14141,8 @@
         "positive"
       ],
       "usage": [
-        "decoration",
-        "agreement"
+        "reaction",
+        "decoration"
       ]
     },
     "name": "emoji_u270c_1f3fc",
@@ -14184,8 +14185,8 @@
         "positive"
       ],
       "usage": [
-        "decoration",
-        "agreement"
+        "reaction",
+        "decoration"
       ]
     },
     "name": "emoji_u270c_1f3fd",
@@ -14228,8 +14229,8 @@
         "positive"
       ],
       "usage": [
-        "decoration",
-        "agreement"
+        "reaction",
+        "decoration"
       ]
     },
     "name": "emoji_u270c_1f3fe",
@@ -14272,8 +14273,8 @@
         "positive"
       ],
       "usage": [
-        "decoration",
-        "agreement"
+        "reaction",
+        "decoration"
       ]
     },
     "name": "emoji_u270c_1f3ff",
@@ -14536,8 +14537,8 @@
       ],
       "object": [
         "hand",
-        "heart",
-        "body"
+        "body",
+        "heart"
       ],
       "tone": [
         "positive"
@@ -14578,8 +14579,8 @@
       ],
       "object": [
         "hand",
-        "heart",
-        "body"
+        "body",
+        "heart"
       ],
       "tone": [
         "positive"
@@ -14620,8 +14621,8 @@
       ],
       "object": [
         "hand",
-        "heart",
-        "body"
+        "body",
+        "heart"
       ],
       "tone": [
         "positive"
@@ -14662,8 +14663,8 @@
       ],
       "object": [
         "hand",
-        "heart",
-        "body"
+        "body",
+        "heart"
       ],
       "tone": [
         "positive"
@@ -14704,8 +14705,8 @@
       ],
       "object": [
         "hand",
-        "heart",
-        "body"
+        "body",
+        "heart"
       ],
       "tone": [
         "positive"
@@ -14746,8 +14747,8 @@
       ],
       "object": [
         "hand",
-        "heart",
-        "body"
+        "body",
+        "heart"
       ],
       "tone": [
         "positive"
@@ -14796,6 +14797,7 @@
         "positive"
       ],
       "usage": [
+        "reaction",
         "hype",
         "meme"
       ]
@@ -14840,6 +14842,7 @@
         "positive"
       ],
       "usage": [
+        "reaction",
         "hype",
         "meme"
       ]
@@ -14884,6 +14887,7 @@
         "positive"
       ],
       "usage": [
+        "reaction",
         "hype",
         "meme"
       ]
@@ -14928,6 +14932,7 @@
         "positive"
       ],
       "usage": [
+        "reaction",
         "hype",
         "meme"
       ]
@@ -14972,6 +14977,7 @@
         "positive"
       ],
       "usage": [
+        "reaction",
         "hype",
         "meme"
       ]
@@ -15016,6 +15022,7 @@
         "positive"
       ],
       "usage": [
+        "reaction",
         "hype",
         "meme"
       ]
@@ -15061,6 +15068,7 @@
         "neutral"
       ],
       "usage": [
+        "reaction",
         "question",
         "meme"
       ]
@@ -15105,6 +15113,7 @@
         "neutral"
       ],
       "usage": [
+        "reaction",
         "question",
         "meme"
       ]
@@ -15149,6 +15158,7 @@
         "neutral"
       ],
       "usage": [
+        "reaction",
         "question",
         "meme"
       ]
@@ -15193,6 +15203,7 @@
         "neutral"
       ],
       "usage": [
+        "reaction",
         "question",
         "meme"
       ]
@@ -15237,6 +15248,7 @@
         "neutral"
       ],
       "usage": [
+        "reaction",
         "question",
         "meme"
       ]
@@ -15281,6 +15293,7 @@
         "neutral"
       ],
       "usage": [
+        "reaction",
         "question",
         "meme"
       ]
@@ -15322,8 +15335,8 @@
         "neutral"
       ],
       "usage": [
-        "punchline",
-        "meme"
+        "meme",
+        "punchline"
       ]
     },
     "name": "emoji_u1f90f",
@@ -15360,8 +15373,8 @@
         "neutral"
       ],
       "usage": [
-        "punchline",
-        "meme"
+        "meme",
+        "punchline"
       ]
     },
     "name": "emoji_u1f90f_1f3fb",
@@ -16078,11 +16091,11 @@
         "body"
       ],
       "tone": [
-        "neutral"
+        "negative"
       ],
       "usage": [
-        "emphasis",
-        "question"
+        "question",
+        "emphasis"
       ]
     },
     "name": "emoji_u1f449",
@@ -16096,6 +16109,7 @@
       "emotion",
       "emphasis",
       "hand",
+      "negative",
       "neutral",
       "point",
       "question"
@@ -16119,11 +16133,11 @@
         "body"
       ],
       "tone": [
-        "neutral"
+        "negative"
       ],
       "usage": [
-        "emphasis",
-        "question"
+        "question",
+        "emphasis"
       ]
     },
     "name": "emoji_u1f449_1f3fb",
@@ -16137,6 +16151,7 @@
       "emotion",
       "emphasis",
       "hand",
+      "negative",
       "neutral",
       "point",
       "question"
@@ -16160,11 +16175,11 @@
         "body"
       ],
       "tone": [
-        "neutral"
+        "negative"
       ],
       "usage": [
-        "emphasis",
-        "question"
+        "question",
+        "emphasis"
       ]
     },
     "name": "emoji_u1f449_1f3fc",
@@ -16178,6 +16193,7 @@
       "emotion",
       "emphasis",
       "hand",
+      "negative",
       "neutral",
       "point",
       "question"
@@ -16201,11 +16217,11 @@
         "body"
       ],
       "tone": [
-        "neutral"
+        "negative"
       ],
       "usage": [
-        "emphasis",
-        "question"
+        "question",
+        "emphasis"
       ]
     },
     "name": "emoji_u1f449_1f3fd",
@@ -16219,6 +16235,7 @@
       "emotion",
       "emphasis",
       "hand",
+      "negative",
       "neutral",
       "point",
       "question"
@@ -16242,11 +16259,11 @@
         "body"
       ],
       "tone": [
-        "neutral"
+        "negative"
       ],
       "usage": [
-        "emphasis",
-        "question"
+        "question",
+        "emphasis"
       ]
     },
     "name": "emoji_u1f449_1f3fe",
@@ -16260,6 +16277,7 @@
       "emotion",
       "emphasis",
       "hand",
+      "negative",
       "neutral",
       "point",
       "question"
@@ -16283,11 +16301,11 @@
         "body"
       ],
       "tone": [
-        "neutral"
+        "negative"
       ],
       "usage": [
-        "emphasis",
-        "question"
+        "question",
+        "emphasis"
       ]
     },
     "name": "emoji_u1f449_1f3ff",
@@ -16301,6 +16319,7 @@
       "emotion",
       "emphasis",
       "hand",
+      "negative",
       "neutral",
       "point",
       "question"
@@ -17416,9 +17435,9 @@
         "negative"
       ],
       "usage": [
-        "reaction",
         "denial",
-        "punchline"
+        "punchline",
+        "reaction"
       ]
     },
     "name": "emoji_u1f595_1f3fe",
@@ -17457,9 +17476,9 @@
         "negative"
       ],
       "usage": [
-        "reaction",
         "denial",
-        "punchline"
+        "punchline",
+        "reaction"
       ]
     },
     "name": "emoji_u1f595_1f3ff",
@@ -17485,9 +17504,7 @@
       "action": [
         "write"
       ],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -17498,8 +17515,8 @@
         "neutral"
       ],
       "usage": [
-        "emphasis",
-        "cutaway"
+        "cutaway",
+        "emphasis"
       ]
     },
     "name": "emoji_u270d_fe0f",
@@ -17522,9 +17539,7 @@
       "action": [
         "write"
       ],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -17535,8 +17550,8 @@
         "neutral"
       ],
       "usage": [
-        "emphasis",
-        "cutaway"
+        "cutaway",
+        "emphasis"
       ]
     },
     "name": "emoji_u270d_1f3fb",
@@ -17559,9 +17574,7 @@
       "action": [
         "write"
       ],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -17572,8 +17585,8 @@
         "neutral"
       ],
       "usage": [
-        "emphasis",
-        "cutaway"
+        "cutaway",
+        "emphasis"
       ]
     },
     "name": "emoji_u270d_1f3fc",
@@ -17596,9 +17609,7 @@
       "action": [
         "write"
       ],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -17609,8 +17620,8 @@
         "neutral"
       ],
       "usage": [
-        "emphasis",
-        "cutaway"
+        "cutaway",
+        "emphasis"
       ]
     },
     "name": "emoji_u270d_1f3fd",
@@ -17633,9 +17644,7 @@
       "action": [
         "write"
       ],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -17646,8 +17655,8 @@
         "neutral"
       ],
       "usage": [
-        "emphasis",
-        "cutaway"
+        "cutaway",
+        "emphasis"
       ]
     },
     "name": "emoji_u270d_1f3fe",
@@ -17670,9 +17679,7 @@
       "action": [
         "write"
       ],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -17683,8 +17690,8 @@
         "neutral"
       ],
       "usage": [
-        "emphasis",
-        "cutaway"
+        "cutaway",
+        "emphasis"
       ]
     },
     "name": "emoji_u270d_1f3ff",
@@ -17721,8 +17728,8 @@
         "positive"
       ],
       "usage": [
-        "decoration",
-        "cutaway"
+        "cutaway",
+        "decoration"
       ]
     },
     "name": "emoji_u1f933",
@@ -17764,8 +17771,8 @@
         "positive"
       ],
       "usage": [
-        "decoration",
-        "cutaway"
+        "cutaway",
+        "decoration"
       ]
     },
     "name": "emoji_u1f933_1f3fb",
@@ -17791,15 +17798,14 @@
     "codepoint": "1f933_1f3fc",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
       "object": [
         "hand",
-        "person"
+        "person",
+        "tech"
       ],
       "tone": [
         "neutral"
@@ -17828,15 +17834,14 @@
     "codepoint": "1f933_1f3fd",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
       "object": [
         "hand",
-        "person"
+        "person",
+        "tech"
       ],
       "tone": [
         "neutral"
@@ -17865,15 +17870,14 @@
     "codepoint": "1f933_1f3fe",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
       "object": [
         "hand",
-        "person"
+        "person",
+        "tech"
       ],
       "tone": [
         "neutral"
@@ -17902,15 +17906,14 @@
     "codepoint": "1f933_1f3ff",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
       "object": [
         "hand",
-        "person"
+        "person",
+        "tech"
       ],
       "tone": [
         "neutral"
@@ -17948,16 +17951,17 @@
         "2"
       ],
       "object": [
-        "hand"
+        "hand",
+        "person"
       ],
       "tone": [
         "positive"
       ],
       "usage": [
-        "reaction",
         "comfort",
-        "agreement",
-        "hype"
+        "hype",
+        "reaction",
+        "agreement"
       ]
     },
     "name": "emoji_u1f64f",
@@ -17978,6 +17982,7 @@
       "gratitude",
       "hand",
       "hype",
+      "person",
       "positive",
       "pray",
       "reaction"
@@ -17997,16 +18002,17 @@
         "2"
       ],
       "object": [
-        "hand"
+        "hand",
+        "person"
       ],
       "tone": [
         "positive"
       ],
       "usage": [
-        "reaction",
         "comfort",
-        "agreement",
-        "hype"
+        "hype",
+        "reaction",
+        "agreement"
       ]
     },
     "name": "emoji_u1f64f_1f3fb",
@@ -18027,6 +18033,7 @@
       "gratitude",
       "hand",
       "hype",
+      "person",
       "positive",
       "pray",
       "reaction"
@@ -18046,16 +18053,17 @@
         "2"
       ],
       "object": [
-        "hand"
+        "hand",
+        "person"
       ],
       "tone": [
         "positive"
       ],
       "usage": [
-        "reaction",
         "comfort",
-        "agreement",
-        "hype"
+        "hype",
+        "reaction",
+        "agreement"
       ]
     },
     "name": "emoji_u1f64f_1f3fc",
@@ -18076,6 +18084,7 @@
       "gratitude",
       "hand",
       "hype",
+      "person",
       "positive",
       "pray",
       "reaction"
@@ -18095,16 +18104,17 @@
         "2"
       ],
       "object": [
-        "hand"
+        "hand",
+        "person"
       ],
       "tone": [
         "positive"
       ],
       "usage": [
-        "reaction",
         "comfort",
-        "agreement",
-        "hype"
+        "hype",
+        "reaction",
+        "agreement"
       ]
     },
     "name": "emoji_u1f64f_1f3fd",
@@ -18125,6 +18135,7 @@
       "gratitude",
       "hand",
       "hype",
+      "person",
       "positive",
       "pray",
       "reaction"
@@ -18144,16 +18155,17 @@
         "2"
       ],
       "object": [
-        "hand"
+        "hand",
+        "person"
       ],
       "tone": [
         "positive"
       ],
       "usage": [
-        "reaction",
         "comfort",
-        "agreement",
-        "hype"
+        "hype",
+        "reaction",
+        "agreement"
       ]
     },
     "name": "emoji_u1f64f_1f3fe",
@@ -18174,6 +18186,7 @@
       "gratitude",
       "hand",
       "hype",
+      "person",
       "positive",
       "pray",
       "reaction"
@@ -18193,16 +18206,17 @@
         "2"
       ],
       "object": [
-        "hand"
+        "hand",
+        "person"
       ],
       "tone": [
         "positive"
       ],
       "usage": [
-        "reaction",
         "comfort",
-        "agreement",
-        "hype"
+        "hype",
+        "reaction",
+        "agreement"
       ]
     },
     "name": "emoji_u1f64f_1f3ff",
@@ -18223,6 +18237,7 @@
       "gratitude",
       "hand",
       "hype",
+      "person",
       "positive",
       "pray",
       "reaction"
@@ -18233,15 +18248,13 @@
     "codepoint": "1f485",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
       "object": [
-        "hand",
-        "body"
+        "body",
+        "hand"
       ],
       "tone": [
         "neutral"
@@ -18268,15 +18281,13 @@
     "codepoint": "1f485_1f3fb",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
       "object": [
-        "hand",
-        "body"
+        "body",
+        "hand"
       ],
       "tone": [
         "neutral"
@@ -18303,15 +18314,13 @@
     "codepoint": "1f485_1f3fc",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
       "object": [
-        "hand",
-        "body"
+        "body",
+        "hand"
       ],
       "tone": [
         "neutral"
@@ -18338,15 +18347,13 @@
     "codepoint": "1f485_1f3fd",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
       "object": [
-        "hand",
-        "body"
+        "body",
+        "hand"
       ],
       "tone": [
         "neutral"
@@ -18373,15 +18380,13 @@
     "codepoint": "1f485_1f3fe",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
       "object": [
-        "hand",
-        "body"
+        "body",
+        "hand"
       ],
       "tone": [
         "neutral"
@@ -18408,15 +18413,13 @@
     "codepoint": "1f485_1f3ff",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
       "object": [
-        "hand",
-        "body"
+        "body",
+        "hand"
       ],
       "tone": [
         "neutral"
@@ -18442,9 +18445,7 @@
   {
     "codepoint": "1f91d",
     "dim": {
-      "action": [
-        "thumbs-up"
-      ],
+      "action": [],
       "emotion": [
         "calm"
       ],
@@ -18482,9 +18483,7 @@
   {
     "codepoint": "1f91d_1f3fb",
     "dim": {
-      "action": [
-        "thumbs-up"
-      ],
+      "action": [],
       "emotion": [
         "calm"
       ],
@@ -18523,9 +18522,7 @@
   {
     "codepoint": "1faf1_1f3fb_200d_1faf2_1f3fc",
     "dim": {
-      "action": [
-        "thumbs-up"
-      ],
+      "action": [],
       "emotion": [
         "calm"
       ],
@@ -18564,9 +18561,7 @@
   {
     "codepoint": "1faf1_1f3fb_200d_1faf2_1f3fd",
     "dim": {
-      "action": [
-        "thumbs-up"
-      ],
+      "action": [],
       "emotion": [
         "calm"
       ],
@@ -18606,11 +18601,10 @@
     "codepoint": "1faf1_1f3fb_200d_1faf2_1f3fe",
     "dim": {
       "action": [
-        "thumbs-up",
         "hug"
       ],
       "emotion": [
-        "calm"
+        "gratitude"
       ],
       "intensity": [
         "1"
@@ -18624,7 +18618,6 @@
       ],
       "usage": [
         "agreement",
-        "reaction",
         "comfort"
       ]
     },
@@ -18638,6 +18631,7 @@
       "agreement",
       "calm",
       "comfort",
+      "gratitude",
       "hand",
       "handshake",
       "hug",
@@ -18653,11 +18647,10 @@
     "codepoint": "1faf1_1f3fb_200d_1faf2_1f3ff",
     "dim": {
       "action": [
-        "thumbs-up",
         "hug"
       ],
       "emotion": [
-        "calm"
+        "gratitude"
       ],
       "intensity": [
         "1"
@@ -18671,7 +18664,6 @@
       ],
       "usage": [
         "agreement",
-        "reaction",
         "comfort"
       ]
     },
@@ -18685,6 +18677,7 @@
       "agreement",
       "calm",
       "comfort",
+      "gratitude",
       "hand",
       "handshake",
       "hug",
@@ -18700,11 +18693,10 @@
     "codepoint": "1faf1_1f3fc_200d_1faf2_1f3fb",
     "dim": {
       "action": [
-        "thumbs-up",
         "hug"
       ],
       "emotion": [
-        "calm"
+        "gratitude"
       ],
       "intensity": [
         "1"
@@ -18718,7 +18710,6 @@
       ],
       "usage": [
         "agreement",
-        "reaction",
         "comfort"
       ]
     },
@@ -18732,6 +18723,7 @@
       "agreement",
       "calm",
       "comfort",
+      "gratitude",
       "hand",
       "handshake",
       "hug",
@@ -18747,11 +18739,10 @@
     "codepoint": "1f91d_1f3fc",
     "dim": {
       "action": [
-        "thumbs-up",
         "hug"
       ],
       "emotion": [
-        "calm"
+        "gratitude"
       ],
       "intensity": [
         "1"
@@ -18765,7 +18756,6 @@
       ],
       "usage": [
         "agreement",
-        "reaction",
         "comfort"
       ]
     },
@@ -18779,6 +18769,7 @@
       "agreement",
       "calm",
       "comfort",
+      "gratitude",
       "hand",
       "handshake",
       "hug",
@@ -18794,11 +18785,10 @@
     "codepoint": "1faf1_1f3fc_200d_1faf2_1f3fd",
     "dim": {
       "action": [
-        "thumbs-up",
         "hug"
       ],
       "emotion": [
-        "calm"
+        "gratitude"
       ],
       "intensity": [
         "1"
@@ -18812,7 +18802,6 @@
       ],
       "usage": [
         "agreement",
-        "reaction",
         "comfort"
       ]
     },
@@ -18826,6 +18815,7 @@
       "agreement",
       "calm",
       "comfort",
+      "gratitude",
       "hand",
       "handshake",
       "hug",
@@ -18841,11 +18831,10 @@
     "codepoint": "1faf1_1f3fc_200d_1faf2_1f3fe",
     "dim": {
       "action": [
-        "thumbs-up",
         "hug"
       ],
       "emotion": [
-        "calm"
+        "gratitude"
       ],
       "intensity": [
         "1"
@@ -18859,7 +18848,6 @@
       ],
       "usage": [
         "agreement",
-        "reaction",
         "comfort"
       ]
     },
@@ -18873,6 +18861,7 @@
       "agreement",
       "calm",
       "comfort",
+      "gratitude",
       "hand",
       "handshake",
       "hug",
@@ -18888,11 +18877,10 @@
     "codepoint": "1faf1_1f3fc_200d_1faf2_1f3ff",
     "dim": {
       "action": [
-        "thumbs-up",
         "hug"
       ],
       "emotion": [
-        "calm"
+        "gratitude"
       ],
       "intensity": [
         "1"
@@ -18906,7 +18894,6 @@
       ],
       "usage": [
         "agreement",
-        "reaction",
         "comfort"
       ]
     },
@@ -18920,6 +18907,7 @@
       "agreement",
       "calm",
       "comfort",
+      "gratitude",
       "hand",
       "handshake",
       "hug",
@@ -18935,11 +18923,10 @@
     "codepoint": "1faf1_1f3fd_200d_1faf2_1f3fb",
     "dim": {
       "action": [
-        "thumbs-up",
         "hug"
       ],
       "emotion": [
-        "calm"
+        "gratitude"
       ],
       "intensity": [
         "1"
@@ -18953,7 +18940,6 @@
       ],
       "usage": [
         "agreement",
-        "reaction",
         "comfort"
       ]
     },
@@ -18967,6 +18953,7 @@
       "agreement",
       "calm",
       "comfort",
+      "gratitude",
       "hand",
       "handshake",
       "hug",
@@ -18982,11 +18969,10 @@
     "codepoint": "1faf1_1f3fd_200d_1faf2_1f3fc",
     "dim": {
       "action": [
-        "thumbs-up",
         "hug"
       ],
       "emotion": [
-        "calm"
+        "gratitude"
       ],
       "intensity": [
         "1"
@@ -19000,7 +18986,6 @@
       ],
       "usage": [
         "agreement",
-        "reaction",
         "comfort"
       ]
     },
@@ -19014,6 +18999,7 @@
       "agreement",
       "calm",
       "comfort",
+      "gratitude",
       "hand",
       "handshake",
       "hug",
@@ -19029,11 +19015,10 @@
     "codepoint": "1f91d_1f3fd",
     "dim": {
       "action": [
-        "thumbs-up",
         "hug"
       ],
       "emotion": [
-        "calm"
+        "gratitude"
       ],
       "intensity": [
         "1"
@@ -19047,7 +19032,6 @@
       ],
       "usage": [
         "agreement",
-        "reaction",
         "comfort"
       ]
     },
@@ -19061,6 +19045,7 @@
       "agreement",
       "calm",
       "comfort",
+      "gratitude",
       "hand",
       "handshake",
       "hug",
@@ -19076,11 +19061,10 @@
     "codepoint": "1faf1_1f3fd_200d_1faf2_1f3fe",
     "dim": {
       "action": [
-        "thumbs-up",
         "hug"
       ],
       "emotion": [
-        "calm"
+        "gratitude"
       ],
       "intensity": [
         "1"
@@ -19094,7 +19078,6 @@
       ],
       "usage": [
         "agreement",
-        "reaction",
         "comfort"
       ]
     },
@@ -19108,6 +19091,7 @@
       "agreement",
       "calm",
       "comfort",
+      "gratitude",
       "hand",
       "handshake",
       "hug",
@@ -19123,11 +19107,10 @@
     "codepoint": "1faf1_1f3fd_200d_1faf2_1f3ff",
     "dim": {
       "action": [
-        "thumbs-up",
         "hug"
       ],
       "emotion": [
-        "calm"
+        "gratitude"
       ],
       "intensity": [
         "1"
@@ -19141,7 +19124,6 @@
       ],
       "usage": [
         "agreement",
-        "reaction",
         "comfort"
       ]
     },
@@ -19155,6 +19137,7 @@
       "agreement",
       "calm",
       "comfort",
+      "gratitude",
       "hand",
       "handshake",
       "hug",
@@ -19170,11 +19153,10 @@
     "codepoint": "1faf1_1f3fe_200d_1faf2_1f3fb",
     "dim": {
       "action": [
-        "thumbs-up",
         "hug"
       ],
       "emotion": [
-        "calm"
+        "gratitude"
       ],
       "intensity": [
         "1"
@@ -19188,7 +19170,6 @@
       ],
       "usage": [
         "agreement",
-        "reaction",
         "comfort"
       ]
     },
@@ -19202,6 +19183,7 @@
       "agreement",
       "calm",
       "comfort",
+      "gratitude",
       "hand",
       "handshake",
       "hug",
@@ -19217,11 +19199,10 @@
     "codepoint": "1faf1_1f3fe_200d_1faf2_1f3fc",
     "dim": {
       "action": [
-        "thumbs-up",
         "hug"
       ],
       "emotion": [
-        "calm"
+        "gratitude"
       ],
       "intensity": [
         "1"
@@ -19235,7 +19216,6 @@
       ],
       "usage": [
         "agreement",
-        "reaction",
         "comfort"
       ]
     },
@@ -19249,6 +19229,7 @@
       "agreement",
       "calm",
       "comfort",
+      "gratitude",
       "hand",
       "handshake",
       "hug",
@@ -19264,11 +19245,10 @@
     "codepoint": "1faf1_1f3fe_200d_1faf2_1f3fd",
     "dim": {
       "action": [
-        "thumbs-up",
         "hug"
       ],
       "emotion": [
-        "calm"
+        "gratitude"
       ],
       "intensity": [
         "1"
@@ -19282,7 +19262,6 @@
       ],
       "usage": [
         "agreement",
-        "reaction",
         "comfort"
       ]
     },
@@ -19296,6 +19275,7 @@
       "agreement",
       "calm",
       "comfort",
+      "gratitude",
       "hand",
       "handshake",
       "hug",
@@ -19311,11 +19291,10 @@
     "codepoint": "1f91d_1f3fe",
     "dim": {
       "action": [
-        "thumbs-up",
         "hug"
       ],
       "emotion": [
-        "calm"
+        "gratitude"
       ],
       "intensity": [
         "1"
@@ -19329,7 +19308,6 @@
       ],
       "usage": [
         "agreement",
-        "reaction",
         "comfort"
       ]
     },
@@ -19343,6 +19321,7 @@
       "agreement",
       "calm",
       "comfort",
+      "gratitude",
       "hand",
       "handshake",
       "hug",
@@ -19358,11 +19337,10 @@
     "codepoint": "1faf1_1f3fe_200d_1faf2_1f3ff",
     "dim": {
       "action": [
-        "thumbs-up",
         "hug"
       ],
       "emotion": [
-        "calm"
+        "gratitude"
       ],
       "intensity": [
         "1"
@@ -19376,7 +19354,6 @@
       ],
       "usage": [
         "agreement",
-        "reaction",
         "comfort"
       ]
     },
@@ -19390,6 +19367,7 @@
       "agreement",
       "calm",
       "comfort",
+      "gratitude",
       "hand",
       "handshake",
       "hug",
@@ -19405,11 +19383,10 @@
     "codepoint": "1faf1_1f3ff_200d_1faf2_1f3fb",
     "dim": {
       "action": [
-        "thumbs-up",
         "hug"
       ],
       "emotion": [
-        "calm"
+        "gratitude"
       ],
       "intensity": [
         "1"
@@ -19423,7 +19400,6 @@
       ],
       "usage": [
         "agreement",
-        "reaction",
         "comfort"
       ]
     },
@@ -19437,6 +19413,7 @@
       "agreement",
       "calm",
       "comfort",
+      "gratitude",
       "hand",
       "handshake",
       "hug",
@@ -19452,11 +19429,10 @@
     "codepoint": "1faf1_1f3ff_200d_1faf2_1f3fc",
     "dim": {
       "action": [
-        "thumbs-up",
         "hug"
       ],
       "emotion": [
-        "calm"
+        "gratitude"
       ],
       "intensity": [
         "1"
@@ -19470,7 +19446,6 @@
       ],
       "usage": [
         "agreement",
-        "reaction",
         "comfort"
       ]
     },
@@ -19484,6 +19459,7 @@
       "agreement",
       "calm",
       "comfort",
+      "gratitude",
       "hand",
       "handshake",
       "hug",
@@ -19499,11 +19475,10 @@
     "codepoint": "1faf1_1f3ff_200d_1faf2_1f3fd",
     "dim": {
       "action": [
-        "thumbs-up",
         "hug"
       ],
       "emotion": [
-        "calm"
+        "gratitude"
       ],
       "intensity": [
         "1"
@@ -19517,7 +19492,6 @@
       ],
       "usage": [
         "agreement",
-        "reaction",
         "comfort"
       ]
     },
@@ -19531,6 +19505,7 @@
       "agreement",
       "calm",
       "comfort",
+      "gratitude",
       "hand",
       "handshake",
       "hug",
@@ -19546,11 +19521,10 @@
     "codepoint": "1faf1_1f3ff_200d_1faf2_1f3fe",
     "dim": {
       "action": [
-        "thumbs-up",
         "hug"
       ],
       "emotion": [
-        "calm"
+        "gratitude"
       ],
       "intensity": [
         "1"
@@ -19564,7 +19538,6 @@
       ],
       "usage": [
         "agreement",
-        "reaction",
         "comfort"
       ]
     },
@@ -19578,6 +19551,7 @@
       "agreement",
       "calm",
       "comfort",
+      "gratitude",
       "hand",
       "handshake",
       "hug",
@@ -19593,11 +19567,10 @@
     "codepoint": "1f91d_1f3ff",
     "dim": {
       "action": [
-        "thumbs-up",
         "hug"
       ],
       "emotion": [
-        "calm"
+        "gratitude"
       ],
       "intensity": [
         "1"
@@ -19611,7 +19584,6 @@
       ],
       "usage": [
         "agreement",
-        "reaction",
         "comfort"
       ]
     },
@@ -19625,6 +19597,7 @@
       "agreement",
       "calm",
       "comfort",
+      "gratitude",
       "hand",
       "handshake",
       "hug",
@@ -19647,15 +19620,12 @@
         "2"
       ],
       "object": [
-        "vehicle",
-        "weather",
-        "person"
+        "vehicle"
       ],
       "tone": [
         "positive"
       ],
       "usage": [
-        "reaction",
         "cutaway"
       ]
     },
@@ -19680,9 +19650,7 @@
     "codepoint": "1fac8",
     "dim": {
       "action": [],
-      "emotion": [
-        "surprise"
-      ],
+      "emotion": [],
       "intensity": [
         "2"
       ],
@@ -19694,8 +19662,8 @@
         "neutral"
       ],
       "usage": [
-        "meme",
-        "cutaway"
+        "cutaway",
+        "meme"
       ]
     },
     "name": "emoji_u1fac8",
@@ -19967,7 +19935,7 @@
         "love"
       ],
       "intensity": [
-        "2"
+        "1"
       ],
       "object": [
         "plant"
@@ -19976,8 +19944,8 @@
         "positive"
       ],
       "usage": [
-        "decoration",
-        "comfort"
+        "comfort",
+        "decoration"
       ]
     },
     "name": "emoji_u1f490",
@@ -19986,6 +19954,7 @@
       ":flowers:"
     ],
     "tag": [
+      "1",
       "2",
       "comfort",
       "decoration",
@@ -20013,8 +19982,8 @@
         "positive"
       ],
       "usage": [
-        "decoration",
-        "comfort"
+        "comfort",
+        "decoration"
       ]
     },
     "name": "emoji_u1f339",
@@ -20086,8 +20055,8 @@
         "positive"
       ],
       "usage": [
-        "decoration",
-        "comfort"
+        "comfort",
+        "decoration"
       ]
     },
     "name": "emoji_u1f337",
@@ -20122,8 +20091,8 @@
         "positive"
       ],
       "usage": [
-        "decoration",
-        "comfort"
+        "comfort",
+        "decoration"
       ]
     },
     "name": "emoji_u1fab7",
@@ -20158,8 +20127,8 @@
         "positive"
       ],
       "usage": [
-        "decoration",
-        "comfort"
+        "comfort",
+        "decoration"
       ]
     },
     "name": "emoji_u1f338",
@@ -20317,9 +20286,7 @@
     "codepoint": "1f344",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -20522,9 +20489,7 @@
     "codepoint": "1fabe",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -20589,9 +20554,7 @@
     "codepoint": "1faa8",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -20670,8 +20633,8 @@
         "negative"
       ],
       "usage": [
-        "reaction",
-        "decoration"
+        "decoration",
+        "reaction"
       ]
     },
     "name": "emoji_u1f30b",
@@ -21173,9 +21136,7 @@
     "codepoint": "1fa90",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -21206,9 +21167,7 @@
     "codepoint": "1f30d",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -21239,9 +21198,7 @@
     "codepoint": "1f30e",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -21272,9 +21229,7 @@
     "codepoint": "1f30f",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -21407,9 +21362,7 @@
     "codepoint": "1f43a",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -21440,9 +21393,7 @@
     "codepoint": "1f43b",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -21507,9 +21458,7 @@
     "codepoint": "1f98a",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -21540,9 +21489,7 @@
     "codepoint": "1f42e",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -21609,9 +21556,7 @@
     "codepoint": "1f98e",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -21655,8 +21600,8 @@
         "negative"
       ],
       "usage": [
-        "punchline",
-        "hype"
+        "hype",
+        "punchline"
       ]
     },
     "name": "emoji_u1f409",
@@ -21679,9 +21624,7 @@
     "codepoint": "1f996",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "2"
       ],
@@ -21714,9 +21657,7 @@
     "codepoint": "1f995",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "2"
       ],
@@ -21783,9 +21724,7 @@
     "codepoint": "1f40a",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "2"
       ],
@@ -21852,9 +21791,7 @@
     "codepoint": "1f438",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -22097,9 +22034,7 @@
     "codepoint": "1f416",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -22204,9 +22139,7 @@
     "codepoint": "1f402",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -22237,9 +22170,7 @@
     "codepoint": "1f410",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -22376,9 +22307,7 @@
     "codepoint": "1f412",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -22517,9 +22446,7 @@
     "codepoint": "1f99d",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -22694,9 +22621,7 @@
     "codepoint": "1f426_200d_2b1b",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -23084,13 +23009,13 @@
     "codepoint": "1f426_200d_1f525",
     "dim": {
       "action": [
-        "cheer"
+        "celebrate"
       ],
       "emotion": [
         "pride"
       ],
       "intensity": [
-        "3"
+        "2"
       ],
       "object": [
         "animal",
@@ -23101,8 +23026,8 @@
       ],
       "usage": [
         "hype",
-        "punchline",
-        "emphasis"
+        "emphasis",
+        "punchline"
       ]
     },
     "name": "emoji_u1f426_200d_1f525",
@@ -23110,8 +23035,10 @@
       ":phoenix:"
     ],
     "tag": [
+      "2",
       "3",
       "animal",
+      "celebrate",
       "cheer",
       "emphasis",
       "hype",
@@ -23140,8 +23067,8 @@
         "neutral"
       ],
       "usage": [
-        "decoration",
-        "meme"
+        "meme",
+        "decoration"
       ]
     },
     "name": "emoji_u1f427",
@@ -23210,8 +23137,8 @@
         "negative"
       ],
       "usage": [
-        "decoration",
-        "meme"
+        "meme",
+        "decoration"
       ]
     },
     "name": "emoji_u1f988",
@@ -23315,8 +23242,8 @@
         "positive"
       ],
       "usage": [
-        "decoration",
-        "meme"
+        "meme",
+        "decoration"
       ]
     },
     "name": "emoji_u1f433",
@@ -23338,9 +23265,7 @@
     "codepoint": "1f41f",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -23386,8 +23311,8 @@
         "neutral"
       ],
       "usage": [
-        "decoration",
-        "meme"
+        "meme",
+        "decoration"
       ]
     },
     "name": "emoji_u1f421",
@@ -23409,9 +23334,7 @@
     "codepoint": "1f99e",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -23444,9 +23367,7 @@
     "codepoint": "1f980",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -23477,9 +23398,7 @@
     "codepoint": "1f419",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -23510,9 +23429,7 @@
     "codepoint": "1fabc",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -23624,8 +23541,8 @@
         "negative"
       ],
       "usage": [
-        "decoration",
-        "meme"
+        "meme",
+        "decoration"
       ]
     },
     "name": "emoji_u1f577_fe0f",
@@ -23647,9 +23564,7 @@
     "codepoint": "1f40c",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -23680,9 +23595,7 @@
     "codepoint": "1f41c",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -23713,9 +23626,7 @@
     "codepoint": "1f997",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -23793,8 +23704,8 @@
         "negative"
       ],
       "usage": [
-        "decoration",
-        "meme"
+        "meme",
+        "decoration"
       ]
     },
     "name": "emoji_u1fab3",
@@ -23850,9 +23761,7 @@
     "codepoint": "1f41d",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -23884,9 +23793,7 @@
     "codepoint": "1f41e",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -24020,9 +23927,7 @@
     "codepoint": "1f43e",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -24119,9 +24024,7 @@
     "codepoint": "1f34e",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -24152,9 +24055,7 @@
     "codepoint": "1f345",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -24217,9 +24118,7 @@
     "codepoint": "1f34a",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -24252,9 +24151,7 @@
     "codepoint": "1f955",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -24284,9 +24181,7 @@
     "codepoint": "1f96d",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -24317,9 +24212,7 @@
     "codepoint": "1f34d",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -24350,9 +24243,7 @@
     "codepoint": "1f33d",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -24384,9 +24275,7 @@
     "codepoint": "1f34b",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -24418,9 +24307,7 @@
     "codepoint": "1f348",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -24452,9 +24339,7 @@
     "codepoint": "1f350",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -24486,9 +24371,7 @@
     "codepoint": "1fadb",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -24520,9 +24403,7 @@
     "codepoint": "1f96c",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -24554,9 +24435,7 @@
     "codepoint": "1fad1",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -24588,9 +24467,7 @@
     "codepoint": "1f95d",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -24622,9 +24499,7 @@
     "codepoint": "1f951",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -24656,9 +24531,7 @@
     "codepoint": "1f966",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -24690,9 +24563,7 @@
     "codepoint": "1f952",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -24724,9 +24595,7 @@
     "codepoint": "1fad0",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -24758,9 +24627,7 @@
     "codepoint": "1f347",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -24792,9 +24659,7 @@
     "codepoint": "1fadc",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -24828,9 +24693,7 @@
     "codepoint": "1f954",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -24862,9 +24725,7 @@
     "codepoint": "1f9c5",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -24896,9 +24757,7 @@
     "codepoint": "1fada",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -24930,9 +24789,7 @@
     "codepoint": "1f9c4",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -24964,9 +24821,7 @@
     "codepoint": "1fad8",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -25000,9 +24855,7 @@
       "action": [
         "eat"
       ],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -25068,12 +24921,8 @@
   {
     "codepoint": "1f373",
     "dim": {
-      "action": [
-        "eat"
-      ],
-      "emotion": [
-        "neutral"
-      ],
+      "action": [],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -25108,9 +24957,7 @@
       "action": [
         "eat"
       ],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -25228,8 +25075,8 @@
         "positive"
       ],
       "usage": [
-        "hype",
-        "decoration"
+        "decoration",
+        "hype"
       ]
     },
     "name": "emoji_u1f354",
@@ -25289,9 +25136,7 @@
       "action": [
         "eat"
       ],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -25337,8 +25182,8 @@
         "positive"
       ],
       "usage": [
-        "hype",
-        "decoration"
+        "decoration",
+        "hype"
       ]
     },
     "name": "emoji_u1f355",
@@ -25470,9 +25315,7 @@
       "action": [
         "eat"
       ],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -25507,7 +25350,9 @@
       "action": [
         "eat"
       ],
-      "emotion": [],
+      "emotion": [
+        "relief"
+      ],
       "intensity": [
         "1"
       ],
@@ -25518,8 +25363,8 @@
         "positive"
       ],
       "usage": [
-        "comfort",
-        "decoration"
+        "decoration",
+        "comfort"
       ]
     },
     "name": "emoji_u1f35c",
@@ -25532,7 +25377,8 @@
       "decoration",
       "eat",
       "food",
-      "positive"
+      "positive",
+      "relief"
     ],
     "url": "https://fonts.gstatic.com/s/e/notoemoji/latest/1f35c/512.gif"
   },
@@ -25542,9 +25388,7 @@
       "action": [
         "eat"
       ],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -25626,8 +25470,8 @@
         "positive"
       ],
       "usage": [
-        "comfort",
-        "decoration"
+        "decoration",
+        "comfort"
       ]
     },
     "name": "emoji_u1f368",
@@ -25664,8 +25508,8 @@
         "positive"
       ],
       "usage": [
-        "comfort",
-        "decoration"
+        "decoration",
+        "comfort"
       ]
     },
     "name": "emoji_u1f366",
@@ -25795,9 +25639,7 @@
     "codepoint": "1f9c2",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -25827,8 +25669,8 @@
     "codepoint": "1f37f",
     "dim": {
       "action": [
-        "eat",
-        "celebrate"
+        "celebrate",
+        "eat"
       ],
       "emotion": [
         "joy"
@@ -25843,8 +25685,8 @@
         "positive"
       ],
       "usage": [
-        "hype",
-        "decoration"
+        "decoration",
+        "hype"
       ]
     },
     "name": "emoji_u1f37f",
@@ -25876,8 +25718,8 @@
         "1"
       ],
       "object": [
-        "food",
-        "drink"
+        "drink",
+        "food"
       ],
       "tone": [
         "positive"
@@ -25909,15 +25751,13 @@
       "action": [
         "drink"
       ],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
       "object": [
-        "food",
-        "drink"
+        "drink",
+        "food"
       ],
       "tone": [
         "neutral"
@@ -25947,15 +25787,13 @@
       "action": [
         "drink"
       ],
-      "emotion": [
-        "calm"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
       "object": [
-        "food",
-        "drink"
+        "drink",
+        "food"
       ],
       "tone": [
         "neutral"
@@ -25993,8 +25831,8 @@
         "1"
       ],
       "object": [
-        "food",
-        "drink"
+        "drink",
+        "food"
       ],
       "tone": [
         "neutral"
@@ -26032,8 +25870,8 @@
         "1"
       ],
       "object": [
-        "food",
-        "drink"
+        "drink",
+        "food"
       ],
       "tone": [
         "positive"
@@ -26071,8 +25909,8 @@
         "1"
       ],
       "object": [
-        "food",
-        "drink"
+        "drink",
+        "food"
       ],
       "tone": [
         "neutral"
@@ -26110,8 +25948,8 @@
         "1"
       ],
       "object": [
-        "food",
-        "drink"
+        "drink",
+        "food"
       ],
       "tone": [
         "neutral"
@@ -26140,8 +25978,8 @@
     "codepoint": "1f37b",
     "dim": {
       "action": [
-        "cheer",
         "celebrate",
+        "cheer",
         "drink"
       ],
       "emotion": [
@@ -26151,8 +25989,8 @@
         "2"
       ],
       "object": [
-        "food",
-        "drink"
+        "drink",
+        "food"
       ],
       "tone": [
         "positive"
@@ -26183,8 +26021,8 @@
     "codepoint": "1f942",
     "dim": {
       "action": [
-        "cheer",
         "celebrate",
+        "cheer",
         "drink"
       ],
       "emotion": [
@@ -26194,8 +26032,8 @@
         "2"
       ],
       "object": [
-        "food",
-        "drink"
+        "drink",
+        "food"
       ],
       "tone": [
         "positive"
@@ -26226,7 +26064,8 @@
     "codepoint": "1f37e",
     "dim": {
       "action": [
-        "celebrate"
+        "celebrate",
+        "drink"
       ],
       "emotion": [
         "joy"
@@ -26235,8 +26074,8 @@
         "2"
       ],
       "object": [
-        "food",
-        "drink"
+        "drink",
+        "food"
       ],
       "tone": [
         "positive"
@@ -26275,8 +26114,8 @@
         "1"
       ],
       "object": [
-        "food",
-        "drink"
+        "drink",
+        "food"
       ],
       "tone": [
         "positive"
@@ -26307,15 +26146,13 @@
       "action": [
         "drink"
       ],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
       "object": [
-        "food",
-        "drink"
+        "drink",
+        "food"
       ],
       "tone": [
         "neutral"
@@ -26353,8 +26190,8 @@
         "2"
       ],
       "object": [
-        "food",
-        "drink"
+        "drink",
+        "food"
       ],
       "tone": [
         "positive"
@@ -26388,9 +26225,7 @@
       "action": [
         "eat"
       ],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -26427,9 +26262,7 @@
       "action": [
         "eat"
       ],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -26574,9 +26407,7 @@
     "codepoint": "26fd",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -26624,8 +26455,7 @@
         "positive"
       ],
       "usage": [
-        "comfort",
-        "cutaway"
+        "comfort"
       ]
     },
     "name": "emoji_u1f6df",
@@ -26683,9 +26513,7 @@
     "codepoint": "1f6a6",
     "dim": {
       "action": [],
-      "emotion": [
-        "calm"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -26793,9 +26621,7 @@
     "codepoint": "1f697",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -26828,9 +26654,7 @@
     "codepoint": "1f69a",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -26863,14 +26687,13 @@
     "codepoint": "1f69c",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
       "object": [
-        "vehicle"
+        "vehicle",
+        "tool"
       ],
       "tone": [
         "neutral"
@@ -26889,6 +26712,7 @@
       "cutaway",
       "decoration",
       "neutral",
+      "tool",
       "travel",
       "vehicle"
     ],
@@ -26933,9 +26757,7 @@
     "codepoint": "1f695",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -26968,9 +26790,7 @@
     "codepoint": "1f68c",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -27003,9 +26823,7 @@
     "codepoint": "1f682",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -27081,6 +26899,7 @@
         "1"
       ],
       "object": [
+        "vehicle",
         "sport"
       ],
       "tone": [
@@ -27102,7 +26921,8 @@
       "decoration",
       "neutral",
       "sport",
-      "travel"
+      "travel",
+      "vehicle"
     ],
     "url": "https://fonts.gstatic.com/s/e/notoemoji/latest/1f6f6/512.gif"
   },
@@ -27123,8 +26943,8 @@
         "neutral"
       ],
       "usage": [
-        "meme",
-        "cutaway"
+        "cutaway",
+        "meme"
       ]
     },
     "name": "emoji_u1f6f8",
@@ -27151,6 +26971,7 @@
         "3"
       ],
       "object": [
+        "vehicle",
         "tech"
       ],
       "tone": [
@@ -27158,8 +26979,8 @@
       ],
       "usage": [
         "hype",
-        "transition",
-        "emphasis"
+        "emphasis",
+        "transition"
       ]
     },
     "name": "emoji_u1f680",
@@ -27173,7 +26994,8 @@
       "positive",
       "tech",
       "transition",
-      "travel"
+      "travel",
+      "vehicle"
     ],
     "url": "https://fonts.gstatic.com/s/e/notoemoji/latest/1f680/512.gif"
   },
@@ -27181,9 +27003,7 @@
     "codepoint": "2708_fe0f",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -27229,8 +27049,8 @@
         "positive"
       ],
       "usage": [
-        "transition",
-        "hype"
+        "hype",
+        "transition"
       ]
     },
     "name": "emoji_u1f6eb",
@@ -27265,8 +27085,8 @@
         "positive"
       ],
       "usage": [
-        "transition",
-        "comfort"
+        "comfort",
+        "transition"
       ]
     },
     "name": "emoji_u1f6ec",
@@ -27295,14 +27115,15 @@
         "3"
       ],
       "object": [
-        "game"
+        "game",
+        "vehicle"
       ],
       "tone": [
         "positive"
       ],
       "usage": [
-        "hype",
-        "reaction"
+        "reaction",
+        "hype"
       ]
     },
     "name": "emoji_u1f3a2",
@@ -27316,7 +27137,8 @@
       "hype",
       "positive",
       "reaction",
-      "travel"
+      "travel",
+      "vehicle"
     ],
     "url": "https://fonts.gstatic.com/s/e/notoemoji/latest/1f3a2/512.gif"
   },
@@ -27369,7 +27191,6 @@
         "1"
       ],
       "object": [
-        "game",
         "vehicle"
       ],
       "tone": [
@@ -27401,9 +27222,7 @@
     "codepoint": "1f5ff",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -27436,9 +27255,7 @@
     "codepoint": "1f3da_fe0f",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -28021,9 +27838,7 @@
     "codepoint": "26bd",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -28056,9 +27871,7 @@
     "codepoint": "26be",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -28091,9 +27904,7 @@
     "codepoint": "1f94e",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -28126,9 +27937,7 @@
     "codepoint": "1f3c0",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -28161,9 +27970,7 @@
     "codepoint": "1f3c9",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -28196,9 +28003,7 @@
     "codepoint": "1f3be",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -28231,9 +28036,7 @@
     "codepoint": "1f3f8",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -28266,9 +28069,7 @@
     "codepoint": "1f94d",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -28301,9 +28102,7 @@
     "codepoint": "1f3cf",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -28336,9 +28135,7 @@
     "codepoint": "1f3d1",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -28371,9 +28168,7 @@
     "codepoint": "1f3d2",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -28406,9 +28201,7 @@
     "codepoint": "1f3bf",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -28441,9 +28234,7 @@
     "codepoint": "26f8_fe0f",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -28476,9 +28267,7 @@
     "codepoint": "1f6fc",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -28510,10 +28299,10 @@
   {
     "codepoint": "1fa70",
     "dim": {
-      "action": [],
-      "emotion": [
-        "neutral"
+      "action": [
+        "dance"
       ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -28537,6 +28326,7 @@
       "activity",
       "clothing",
       "cutaway",
+      "dance",
       "decoration",
       "neutral"
     ],
@@ -28546,9 +28336,7 @@
     "codepoint": "1f6f9",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -28583,9 +28371,7 @@
     "codepoint": "26f3",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -28622,9 +28408,7 @@
       "action": [
         "point"
       ],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "2"
       ],
@@ -28661,9 +28445,7 @@
     "codepoint": "1f94f",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -28696,9 +28478,7 @@
     "codepoint": "1fa83",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -28737,9 +28517,7 @@
       "intensity": [
         "1"
       ],
-      "object": [
-        "game"
-      ],
+      "object": [],
       "tone": [
         "positive"
       ],
@@ -28803,9 +28581,7 @@
     "codepoint": "1f94b",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -28838,15 +28614,13 @@
     "codepoint": "1f3b1",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
       "object": [
-        "sport",
-        "game"
+        "game",
+        "sport"
       ],
       "tone": [
         "neutral"
@@ -28873,15 +28647,13 @@
     "codepoint": "1f3d3",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
       "object": [
-        "sport",
-        "game"
+        "game",
+        "sport"
       ],
       "tone": [
         "neutral"
@@ -28908,15 +28680,13 @@
     "codepoint": "1f3b3",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
       "object": [
-        "sport",
-        "game"
+        "game",
+        "sport"
       ],
       "tone": [
         "neutral"
@@ -28943,9 +28713,7 @@
     "codepoint": "265f_fe0f",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -28978,9 +28746,7 @@
     "codepoint": "1f3b2",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -29092,9 +28858,7 @@
     "codepoint": "1f4f7",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -29524,9 +29288,7 @@
     "codepoint": "1f4fa",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -29559,9 +29321,7 @@
     "codepoint": "1f39e_fe0f",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -29572,8 +29332,8 @@
         "neutral"
       ],
       "usage": [
-        "decoration",
-        "transition"
+        "transition",
+        "decoration"
       ]
     },
     "name": "emoji_u1f39e_fe0f",
@@ -29594,9 +29354,7 @@
     "codepoint": "1f3ac",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -29629,7 +29387,8 @@
     "codepoint": "1f3ad",
     "dim": {
       "action": [
-        "clap"
+        "clap",
+        "cheer"
       ],
       "emotion": [
         "joy"
@@ -29644,6 +29403,7 @@
         "positive"
       ],
       "usage": [
+        "reaction",
         "hype"
       ]
     },
@@ -29654,11 +29414,13 @@
     "tag": [
       "2",
       "activity",
+      "cheer",
       "clap",
       "hype",
       "joy",
       "person",
-      "positive"
+      "positive",
+      "reaction"
     ],
     "url": "https://fonts.gstatic.com/s/e/notoemoji/latest/1f3ad/512.gif"
   },
@@ -29702,9 +29464,7 @@
     "codepoint": "1f4df",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -29737,9 +29497,7 @@
     "codepoint": "1f50c",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -29770,9 +29528,7 @@
     "codepoint": "1f50b",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -29839,9 +29595,7 @@
     "codepoint": "1f4bf",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -29874,9 +29628,7 @@
       "action": [
         "write"
       ],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -29910,9 +29662,7 @@
     "codepoint": "1f5a8_fe0f",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -29958,8 +29708,8 @@
         "positive"
       ],
       "usage": [
-        "hype",
-        "emphasis"
+        "emphasis",
+        "hype"
       ]
     },
     "name": "emoji_u1fa8e",
@@ -29994,8 +29744,8 @@
         "positive"
       ],
       "usage": [
-        "hype",
-        "emphasis"
+        "emphasis",
+        "hype"
       ]
     },
     "name": "emoji_u1fa99",
@@ -30030,6 +29780,7 @@
         "positive"
       ],
       "usage": [
+        "emphasis",
         "hype",
         "decoration"
       ]
@@ -30042,6 +29793,7 @@
       "2",
       "decoration",
       "desire",
+      "emphasis",
       "hype",
       "money",
       "object",
@@ -30089,9 +29841,7 @@
     "codepoint": "2696_fe0f",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -30124,9 +29874,7 @@
     "codepoint": "1f6d2",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -30198,9 +29946,7 @@
     "codepoint": "1f9f9",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -30233,9 +29979,7 @@
     "codepoint": "1f9e6",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -30415,15 +30159,13 @@
     "codepoint": "2602_fe0f",
     "dim": {
       "action": [],
-      "emotion": [
-        "calm"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
       "object": [
-        "weather",
-        "tool"
+        "tool",
+        "weather"
       ],
       "tone": [
         "neutral"
@@ -30451,9 +30193,7 @@
     "codepoint": "1f460",
     "dim": {
       "action": [],
-      "emotion": [
-        "pride"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -30486,9 +30226,7 @@
     "codepoint": "1f45f",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -30521,9 +30259,7 @@
     "codepoint": "1f321_fe0f",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -30556,9 +30292,7 @@
     "codepoint": "1fa7a",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -30589,9 +30323,7 @@
     "codepoint": "1f6e0_fe0f",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -30622,9 +30354,7 @@
     "codepoint": "1fa8f",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -30656,9 +30386,7 @@
     "codepoint": "2699_fe0f",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -30703,7 +30431,8 @@
       ],
       "usage": [
         "punchline",
-        "emphasis"
+        "emphasis",
+        "cutaway"
       ]
     },
     "name": "emoji_u26d3_fe0f_200d_1f4a5",
@@ -30726,9 +30455,7 @@
     "codepoint": "26d3_fe0f",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -30759,9 +30486,7 @@
     "codepoint": "1f587_fe0f",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -30792,9 +30517,7 @@
     "codepoint": "2702_fe0f",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -30827,9 +30550,7 @@
       "action": [
         "write"
       ],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -30861,9 +30582,7 @@
     "codepoint": "1f4da",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -30894,9 +30613,7 @@
     "codepoint": "1f4ca",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -30934,8 +30651,8 @@
         "2"
       ],
       "object": [
-        "symbol",
-        "money"
+        "money",
+        "symbol"
       ],
       "tone": [
         "positive"
@@ -30972,8 +30689,8 @@
         "2"
       ],
       "object": [
-        "symbol",
-        "money"
+        "money",
+        "symbol"
       ],
       "tone": [
         "negative"
@@ -31035,9 +30752,7 @@
     "codepoint": "1f4e6",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -31068,9 +30783,7 @@
     "codepoint": "1f5f3_fe0f",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -31203,9 +30916,7 @@
     "codepoint": "1f6ce_fe0f",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -31249,8 +30960,8 @@
         "neutral"
       ],
       "usage": [
-        "emphasis",
-        "transition"
+        "transition",
+        "emphasis"
       ]
     },
     "name": "emoji_u1f514",
@@ -31485,9 +31196,7 @@
     "codepoint": "2660_fe0f",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -31519,9 +31228,7 @@
     "codepoint": "2648",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -31551,9 +31258,7 @@
     "codepoint": "2649",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -31583,9 +31288,7 @@
     "codepoint": "264a",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -31615,9 +31318,7 @@
     "codepoint": "264b",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -31647,9 +31348,7 @@
     "codepoint": "264c",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -31679,9 +31378,7 @@
     "codepoint": "264d",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -31711,9 +31408,7 @@
     "codepoint": "264e",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -31743,9 +31438,7 @@
     "codepoint": "264f",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -31775,9 +31468,7 @@
     "codepoint": "2650",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -31807,9 +31498,7 @@
     "codepoint": "2651",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -31839,9 +31528,7 @@
     "codepoint": "2652",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -31871,9 +31558,7 @@
     "codepoint": "2653",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -31903,9 +31588,7 @@
     "codepoint": "26ce",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -31972,9 +31655,7 @@
     "codepoint": "1f4ac",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -31985,8 +31666,8 @@
         "neutral"
       ],
       "usage": [
-        "cutaway",
         "decoration",
+        "cutaway",
         "emphasis"
       ]
     },
@@ -32204,9 +31885,9 @@
         "negative"
       ],
       "usage": [
-        "reaction",
+        "emphasis",
         "hype",
-        "emphasis"
+        "reaction"
       ]
     },
     "name": "emoji_u1f198",
@@ -32461,8 +32142,8 @@
         "positive"
       ],
       "usage": [
-        "emphasis",
         "hype",
+        "emphasis",
         "decoration"
       ]
     },
@@ -32485,15 +32166,13 @@
     "codepoint": "1f193",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
       "object": [
-        "symbol",
-        "money"
+        "money",
+        "symbol"
       ],
       "tone": [
         "positive"
@@ -32559,9 +32238,7 @@
       "action": [
         "ok"
       ],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -32608,8 +32285,8 @@
         "positive"
       ],
       "usage": [
-        "hype",
         "agreement",
+        "hype",
         "emphasis"
       ]
     },
@@ -32680,8 +32357,8 @@
         "positive"
       ],
       "usage": [
-        "decoration",
-        "comfort"
+        "comfort",
+        "decoration"
       ]
     },
     "name": "emoji_u262e_fe0f",
@@ -32715,8 +32392,8 @@
         "neutral"
       ],
       "usage": [
-        "decoration",
-        "comfort"
+        "comfort",
+        "decoration"
       ]
     },
     "name": "emoji_u262f_fe0f",
@@ -32737,9 +32414,7 @@
     "codepoint": "267e_fe0f",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -32784,9 +32459,9 @@
         "positive"
       ],
       "usage": [
-        "decoration",
+        "cutaway",
         "hype",
-        "cutaway"
+        "decoration"
       ]
     },
     "name": "emoji_u1f3b6",
@@ -32809,9 +32484,7 @@
     "codepoint": "2795",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -32844,9 +32517,7 @@
     "codepoint": "a9_fe0f",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -32876,9 +32547,7 @@
     "codepoint": "ae_fe0f",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -32908,9 +32577,7 @@
     "codepoint": "2122_fe0f",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -32977,9 +32644,7 @@
     "codepoint": "1f6a9",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -33011,9 +32676,7 @@
     "codepoint": "1f3f4",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
@@ -33043,9 +32706,7 @@
     "codepoint": "1f3f3_fe0f",
     "dim": {
       "action": [],
-      "emotion": [
-        "neutral"
-      ],
+      "emotion": [],
       "intensity": [
         "1"
       ],
