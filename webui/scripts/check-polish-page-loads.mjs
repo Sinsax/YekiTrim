@@ -149,7 +149,48 @@ const shot = await send('Page.captureScreenshot', { format: 'png' })
 const out = join(ROOT, '.workbuddy', 'check-polish-page-loads.png')
 writeFileSync(out, Buffer.from(shot.result.data, 'base64'))
 
+// ---------------------------------------------------------------------------
+// **工位页 + 素材库三个页签**（2026-10-18 加）
+//
+// 抓的是一类**静态门禁全都看不见**的错：`<script setup>` 里用了**没 import** 的标识符，
+// 而且落在 `computed` / render 路径上 ⇒ 渲染期 `ReferenceError` ⇒ **Vue 卸掉整块子树**
+// （用户报的「素材库点击字体时直接消失」就是这么来的：`hasBoldFace` 用了没引）。
+// esbuild 不为未定义全局变量报错；`check-layout-invariants.mjs` 那条「模板标识符必须有定义」
+// 只扫**模板**，那行在 `<script setup>` 里。
+// ---------------------------------------------------------------------------
 const problems = []
+{
+  await send('Page.navigate', { url: BASE + '/#/workbench' })
+  let libOk = false
+  for (let i = 0; i < 40; i++) {
+    if (await ev("!!document.querySelector('.ml-nav')")) { libOk = true; break }
+    await sleep(500)
+  }
+  if (!libOk) {
+    problems.push('工位页的素材库没挂起来（等 20s 没等到 .ml-nav）')
+  } else {
+    for (const sheet of ['视频', '贴纸', '字体']) {
+      const mark = exceptions.length + consoleErrors.length
+      const clicked = await ev(
+        "(function(){var b=Array.from(document.querySelectorAll('.ml-tab')).find(function(x){return x.innerText.indexOf('" + sheet + "')>=0});if(!b)return false;b.click();return true})()",
+      )
+      if (!clicked) { problems.push('素材库没有「' + sheet + '」页签'); continue }
+      await sleep(1800)
+      const alive = await ev(
+        "(function(){return {nav:!!document.querySelector('.ml-nav'),grid:!!document.querySelector('.ml-grid'),cells:document.querySelectorAll('.ml-cell').length}})()",
+      )
+      if (!alive || !alive.nav || !alive.grid) {
+        problems.push('切到「' + sheet + '」后素材库整块没了（nav=' + (alive && alive.nav) + ' grid=' + (alive && alive.grid) + ' cells=' + (alive && alive.cells) + '）')
+      }
+      const fresh = exceptions.slice(mark).concat(consoleErrors.slice(mark))
+      if (fresh.length) problems.push('切到「' + sheet + '」时抛错：' + fresh.slice(0, 2).join(' | '))
+    }
+    const p2 = await send('Page.captureScreenshot', { format: 'png' })
+    writeFileSync(join(ROOT, '.workbuddy', 'check-media-library-tabs.png'), Buffer.from(p2.result.data, 'base64'))
+    console.log('· 素材库三个页签都点过（截图：.workbuddy/check-media-library-tabs.png）')
+  }
+}
+
 if (!mounted) problems.push('精修页没挂起来（等 30s 没等到 .props-host）—— setup 里多半有立即求值的错误')
 for (const e of exceptions.slice(0, 5)) problems.push('未捕获异常：' + e)
 for (const e of consoleErrors.slice(0, 5)) problems.push('控制台 error：' + e)
