@@ -197,12 +197,17 @@ ok(new Set(uiNonEmpty).size === uiNonEmpty.length,
 // ---- ④ 档数下限（挡住"判据自己空转"）----
 //
 // ⚠️ 如果两边都被清空了，③ 的"两个 onlyXxx 都是空数组"会**全绿** ——
-//    这正是"判据空转"的经典形态。三轴收敛后的权威档数是 **9**：
-//    排版 3（tilt / vtext / arc）+ 过渡 2（pop / fade）+ 动效 4（shake / perchar_big /
-//    perchar_small / heartbeat）。
-// ⚠️ 用 **=== 9**、不是 `>= 9`：收敛后的档数是**契约**，
+//    这正是"判据空转"的经典形态。权威档数是 **10**（2026-10-18 起；此前 9）：
+//    排版 3（tilt / vtext / arc）+ **过渡 5**（pop / fade / `perchar` + 两个**老名字别名**
+//    `perchar_big` / `perchar_small`）+ 动效 2（shake / heartbeat）。
+//
+//    ⚠️ 为什么过渡变成了 5：用户口径（2026-10-18）「**将逐字变化归类为过渡**，并固定为
+//    入场逐字变大、出场逐字变小，不用手动设置」—— 逐字从动效轴挪到过渡轴，**只留一个入口**
+//    （`perchar`）；两个老名字仍**留在表里**（老工程的 `effect_anim` 写着它们，
+//    删了就是"认不出的档 ⇒ 界面显示不设、一保存就丢"），它们**不进下拉**（`legacy: true`）。
+// ⚠️ 用 **=== 10**、不是 `>= 10`：档数是**契约**，
 //    多出来的档同样是缺口（用户清单之外的档谁也选不到 / 或界面多出一条没人认）。
-const EXPECTED_TIERS = 9
+const EXPECTED_TIERS = 10
 ok(transKeys.length === EXPECTED_TIERS,
   `④ 转译器的档数应为 ${EXPECTED_TIERS} 档（实得 ${transKeys.length}）—— ` +
   '要么档被删/多加了，要么正则取漏了')
@@ -302,8 +307,17 @@ for (const b of kindBlocks) {
     }
     return out
   }
-  const transPerTier = perTierPerChar(transSrc, '    ')
-  const uiPerTier = perTierPerChar(uiSrc, '  ')
+  // ⚠️⚠️ **只在档位表各自的范围内切档**（2026-10-18 修）：
+  //    以前喂的是**整份源码**，于是别的表里那些同样缩进的条目也会被当成"档" ——
+  //    实测转译器侧抽出过一个 `count`（那是 `TEXT_STYLE_FALLBACK.count`，**不是动效档**），
+  //    而它的"档体"一路切到下一个同缩进条目、**里面恰好有 `perChar:`** ⇒
+  //    ⑥ 报"预览侧少了 count"，指向一个根本不存在的档。
+  //    （这个脚本自己的注释就写着这种切法脆弱 —— 现在把范围收窄到表内。）
+  const uiStart = uiSrc.indexOf('export const ANIM_PRESETS = {')
+  const uiClose = uiStart > 0 ? uiSrc.indexOf('\n}', uiStart) : -1
+  const uiBody = uiStart > 0 && uiClose > uiStart ? uiSrc.slice(uiStart, uiClose) : uiSrc
+  const transPerTier = perTierPerChar(transBody, '    ')
+  const uiPerTier = perTierPerChar(uiBody, '  ')
   const snakeToCamel = (s) => s.replace(/_([a-z0-9])/g, (_, c) => c.toUpperCase())
 
   ok(transPerTier.size > 0 && uiPerTier.size > 0,

@@ -506,6 +506,11 @@ export function buildIndex({ config, subtitles, danmaku, duration, stickerSrc, k
             ?? animPerChar(transitionAnimName)
           // ⚠ 逐字那两个数（`perCharFrame` / `perCharFps`）**不在这里给**：
           //   它们在**求值期**算（下面 `getElements` 的 push 里，
+        // **逐字出场窗口**（2026-10-18）：与 `perChar` 同一处取值（两轴都试、顺序一致），
+        // 写在 `entry` 上而不是塞进 `perChar` —— 与底座 `SubtitleStyle::per_char_out_frames`
+        // 同一层（轨级），别混进形态字段里。
+        entry.perCharOutFrames = animPerCharOut(styleAnimName) || animPerCharOut(effectAnimName)
+          || animPerCharOut(transitionAnimName) || 0
           //   `local * idx.fps` / `idx.fps`）—— `buildIndex` 是**一次性**索引，
           //   那时**没有"当前时间"这个量**（写 `t` 直接 `ReferenceError`，实测）。
           //   ⚠ 这里曾经又写了一遍 `entry.perCharFps` —— **死代码**：
@@ -731,8 +736,8 @@ export function emojiGifUrl(name) {
  *    没写 `anim` ⇒ 整条走全局那份（老行为，R4）。
  *
  *  ⚠️ `fade_only: {}`（空对象）是**合法且有意义**的：它表示"这一档什么都不加"，
- *  用来**压掉**全局那份弹入。所以"有没有写 anim"只能看**取没取到这一档**
- *  （`undefined` 才是没写），不能看 `Object.keys(preset).length > 0`。
+ *    用来**压掉**全局那份弹入。所以"有没有写 anim"只能看**取没取到这一档**
+ *    （`undefined` 才是没写），不能看 `Object.keys(preset).length > 0`。
  */
 export const ANIM_PRESETS = {
   // ── 排版轴（4 档，含"默认"= 空档名）──────────────────────────────
@@ -763,17 +768,37 @@ export const ANIM_PRESETS = {
   //     底座自己的 opacity 包络）——用来**压掉**全局 `[elements]` 那份弹入。
   //     ⇒ "有没有写 anim"只能看**取没取到这一档**（`undefined` 才是没写），
   //       不能看 `Object.keys(preset).length > 0`。判据钉着这一条。
+  //  ⚠️⚠️ **空对象是合法且有意义**的：它表示"这一档什么都不加"（淡入淡出走
+  //     底座自己的 opacity 包络）——用来**压掉**全局 `[elements]` 那份弹入。
+  //     ⇒ "有没有写 anim"只能看**取没取到这一档**（`undefined` 才是没写），
+  //       不能看 `Object.keys(preset).length > 0`。判据钉着这一条。
   fade: {},
 
   // ── 动效轴（4 档）在场时怎么动 ──────────────────────────────────
   shake: { shakePx: 6.0, shakeHz: 18.0 },
   //  ⚠️ 用 `scaleSpread`（**按序号的字号乘数**），**不是** `scaleTo`
   //     —— 后者是"同一个值给每个字" = **整行**缩放，字间没有差别。
+  // **逐字变化 = 过渡轴上的固定形状**（2026-10-18 用户口径：「将逐字变化归类为过渡，
+  // 并固定为入场逐字变大、出场逐字变小，不用手动设置」）。
+  //
+  // ⚠️ **三个名字指向同一个对象**（别名，不是三份拷贝）：`perchar`（界面唯一入口）、
+  // `perchar_big` / `perchar_small`（老名字，老工程的 `effect_anim` 里写着它们）。
+  // 抄三份必然漂 —— 漂的表现是"老片段与新片段同档、观感不一样"（`vtext_thin` 的老教训）。
+  //
+  // ⚠️ 从 `scaleSpread`（按序号的**静态**字号乘数）改成 `scaleFrom → scaleTo`：
+  // 前者是"整行按序号大小排开"、**根本不是入场动画**，而用户要的正是入场/出场动画。
+  // ⚠️ `perCharOutFrames` 与转译器同名同值（判据 `check-anim-presets-parity.mjs` 对拍）。
+  perchar: {
+    perChar: { scaleFrom: 0.2, scaleTo: 1.0, perCharFrames: 18, staggerFrames: 2 },
+    perCharOutFrames: 18
+  },
   perchar_big: {
-    perChar: { scaleSpread: 0.8, perCharFrames: 18, staggerFrames: 2 }
+    perChar: { scaleFrom: 0.2, scaleTo: 1.0, perCharFrames: 18, staggerFrames: 2 },
+    perCharOutFrames: 18
   },
   perchar_small: {
-    perChar: { scaleSpread: -0.55, perCharFrames: 18, staggerFrames: 2 }
+    perChar: { scaleFrom: 0.2, scaleTo: 1.0, perCharFrames: 18, staggerFrames: 2 },
+    perCharOutFrames: 18
   },
   //  ⚠️⚠️ **心跳的双峰脉冲在底座侧还没实现**（现有原语只有单次/正弦）。
   //     预览这里也只能做到"一次较缓的脉冲" —— 与成片**一致地**不完整，
@@ -825,7 +850,11 @@ export const ANIM_PRESETS = {
 const ANIM_AXIS = {
   tilt: 'style', arc: 'style', vtext: 'style',
   pop: 'transition', fade: 'transition',
-  shake: 'effect', perchar: 'effect', heartbeat: 'effect'
+  shake: 'effect',
+  // **逐字变化归过渡轴**（2026-10-18 用户口径：「将逐字变化归类为过渡」）。
+  // ⚠️ 老工程只写了 `anim = "perchar_big"` 时按**这张表**拆轴 ⇒ 改这里之后它自动落到过渡轴。
+  perchar: 'transition',
+  heartbeat: 'effect'
 }
 const ANIM_AXIS_PREFIXES = Object.keys(ANIM_AXIS).sort((a, b) => b.length - a.length)
 
@@ -1011,7 +1040,38 @@ export function animPerChar(animName) {
  *
  *  @returns {null | Array<{text, style}>} `null` = 不用逐字；否则每字一项，
  *    `style` 是可直接绑到 `<span>` 上的 CSS 键值对象（**空对象 = 这一字不动**）。 */
-export function perCharSpans(text, { perChar, perCharFrame, perCharFps, fontPx } = {}) {
+/** **逐字出场**：第 `index` 个字在出点附近长什么样。与 Rust `char_transform_at_out` 同式。
+ *
+ *  ⚠️ 实现方式是**把出场进度换算成等价的入场 `localFrame`** 再喂给 `charTransformAt`
+ *  —— 曲线/缓动/`rank`/`spread` 一个字节都不重写（抄一份必然漂）。
+ *  ⚠️ 边界与入场同纪律：还没轮到 ⇒ **终止值**（正常大小）；已经收完 ⇒ **起始值**（最小），
+ *  给恒等会让字在消失前**弹回原大小**，那一下极显眼又难归因。
+ */
+export function charTransformAtOut(spec, index, count, localFrame, spanFrames, outFrames) {
+  const IDENTITY = { scale: 1.0, rotationDeg: 0.0, offsetXEm: 0.0, offsetYEm: 0.0 }
+  if (!perCharActive(spec)) return IDENTITY
+  if (!(spanFrames > 0) || !(outFrames > 0)) return IDENTITY
+  const off = perCharStartFrame(spec, index, count)
+  const startOut = spanFrames - outFrames - off
+  const elapsed = localFrame - startOut
+  if (elapsed < 0) return charTransformAt(spec, index, count, off + spec.perCharFrames)
+  if (elapsed >= outFrames) return charTransformAt(spec, index, count, off)
+  const u = elapsed / outFrames
+  return charTransformAt(spec, index, count, Math.round(off + spec.perCharFrames * (1 - u)))
+}
+
+/** 档名 → **逐字出场窗口（帧）**。0 = 不做出场。
+ *
+ *  ⚠️ 与 `animPerChar` 分开一个函数：`perChar` 是形态、出场窗口是**轨级**的（与底座一致 ——
+ *  它住在 `SubtitleStyle` 上，不在 `PerCharSpec` 里）。
+ */
+export function animPerCharOut(animName) {
+  const p = animPreset(animName)
+  const v = p && p.perCharOutFrames
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0
+}
+
+export function perCharSpans(text, { perChar, perCharFrame, perCharFps, fontPx, perCharOutFrames, spanFrames } = {}) {
   const s = String(text ?? '')
   // 没档、没帧率、或只有一个字 —— 三种情况都没有"逐字"可言。
   if (!perCharActive(perChar)) return null
@@ -1020,8 +1080,18 @@ export function perCharSpans(text, { perChar, perCharFrame, perCharFps, fontPx }
   const chars = Array.from(s)
   const n = chars.length
   const em = Number.isFinite(fontPx) && fontPx > 0 ? fontPx : 0
+  // **出场窗口**（2026-10-18）：与底座宿主同一个判据 ——
+  // 落在出点前 `out + 错峰跨度` 之内就走"反着走"那条（逐字变小）。
+  // ⚠️ **必须判在窗口内**才切：出场那条在窗口之前返回的是终止值（正常大小），
+  // 无条件切过去会把**入场动画整个盖掉**（画面只是"没弹入"，极难归因）。
+  const outF = Number(perCharOutFrames)
+  const spanF = Number(spanFrames)
+  const staggerSpan = Math.max(0, perChar.staggerFrames || 0) * Math.max(0, n - 1)
+  const inExit = outF > 0 && spanF > 0 && perCharFrame >= spanF - outF - staggerSpan
   return chars.map((ch, i) => {
-    const t = charTransformAt(perChar, i, n, perCharFrame)
+    const t = inExit
+      ? charTransformAtOut(perChar, i, n, perCharFrame, spanF, outF)
+      : charTransformAt(perChar, i, n, perCharFrame)
     const parts = []
     // ⚠️ 顺序与 `.text-el` 上那串**必须同形**：translate → rotate → scale。
     //    反过来（scale 在前）会沿**旋转后的轴**缩放 ——
@@ -1082,6 +1152,9 @@ export function animMotion(cfg, animName, transitionName) {
     //   两种动效叠在一起而用户以为只选了一档。
     scaleCurve: null,
     scaleCycleMs: 0,
+    // ⚠️ 逐字出场窗口也要重置：不然"选了别的档"会继承上一档的出场，
+    //    而入场看着是对的（只有收尾在变小）。
+    perCharOutFrames: 0,
     heartbeatPeaksMs: null,
     heartbeatAmp: 1.0,
     heartbeatCycleMs: 0,
@@ -2289,7 +2362,13 @@ function subAnimFields(idx, s, t) {
     perChar: animPerChar(styleAnimName) ?? animPerChar(effectAnimName)
       ?? animPerChar(transitionAnimName),
     perCharFrame: local * idx.fps,
-    perCharFps: idx.fps
+    perCharFps: idx.fps,
+    // 逐字**出场窗口**（2026-10-18）：窗口（帧）+ 本条字幕的时长（帧）——
+    // 出场锚在出点，缺后者就只做入场。与上面 `perCharFrame` 同一条换算。
+    perCharOutFrames: animPerCharOut(styleAnimName)
+      || animPerCharOut(effectAnimName)
+      || animPerCharOut(transitionAnimName) || 0,
+    perCharSpanFrames: evDuration(c, 0) * idx.fps
   }
 }
 
@@ -2587,6 +2666,16 @@ export function getElements(idx, t) {
         perChar: e.perChar,
         perCharFrame: local * idx.fps,
         perCharFps: idx.fps,
+        // ---- 逐字**出场窗口**（2026-10-18）----
+        //
+        //  `perCharOutFrames` = 这一档的出场窗口（帧，0 = 不做出场）；
+        //  `perCharSpanFrames` = **这一条元素的时长换算成帧** —— 出场窗口锚在**出点**，
+        //  没有它就算不出出点（喂 0 会让 `perCharSpans` 只做入场）。
+        //  ⚠️ 与上面 `perCharFrame` 同一条换算（`秒 × fps`），别写成两套。
+        perCharOutFrames: animPerCharOut(e.styleAnimName || '')
+          || animPerCharOut(e.effectAnimName || '')
+          || animPerCharOut(e.transitionAnimName || '') || 0,
+        perCharSpanFrames: evDuration(e, 0) * idx.fps,
         // ⚠️ 一并带出去：判据要用它验证"逐条预设真的覆盖了全局"，
         //    而 `motionScale` / `swayDeg` 是**已求值的标量**，看不出参数来源。
         textMotion: mo

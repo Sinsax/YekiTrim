@@ -32,7 +32,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 // ---------------------------------------------------------------------------
@@ -1743,6 +1743,25 @@ export function denseRangesFor(spans, sparseSorted, lastOut) {
 }
 
 export function translate(config, clipDir, outPath, options = {}) {
+  // -------------------------------------------------------------------------
+  // **旁写文件一律落在工程文件旁边，绝不写回片段根目录**
+  // -------------------------------------------------------------------------
+  //
+  // 2026-10-18 用户报「渲染导出时中间文件过多」：实测一个片段根目录里堆了 **42 个**
+  // `dhampir-text_*.ass`。它们不是同一批，而是**每次改落点/动效/颜色**都换一个新文件名
+  // （id 里带 `_x..y..` 与动效/颜色档，见下面那段注释），而旧名字没人收。
+  //
+  // 现在分两层：
+  //   ① **子目录**：文字元素的 ASS 落 `<工程文件名去扩展名>.assets/` —— 每次转译独占
+  //      （工程文件名带 `--out` 的独占后缀）⇒ 并发的两次预览不会互相删（与
+  //      `_temp_font_families<tag>.json` 同一条教训），收尾由宿主整目录删掉；
+  //   ② 字幕/弹幕那两份**仍在工程文件旁边**（老契约，服务端的 `LEGACY_NAMES` 兜底读它们）。
+  //
+  // ⚠️ **这个推导与 Rust 侧 `dhampir.rs::cleanup_project` 必须逐字同一条**
+  //    （那边按 `translated.file_stem()` + `.assets` 拼）—— 两边分叉 = 目录永远删不掉，
+  //    又回到"中间文件越积越多"。
+  const docPath = outPath ?? join(clipDir, 'dhampir-project.doc.json');
+  const sideDir = join(dirname(docPath), `${basename(docPath).replace(/\.[^.]+$/, '')}.assets`);
   /// **出片那条腿传 `true`**：时间线保持整条（屏蔽区间留给出片尾部的整段重编码去剪，
   /// 与成片那条口径一致）。预览必须留 `false`（客户端要靠压缩时间线跳屏蔽区间）——
   /// 详见下面 `keepRanges` 那段注释。
@@ -3305,6 +3324,9 @@ export function translate(config, clipDir, outPath, options = {}) {
     //    那三个仍照旧写（老底座要用），但在新底座上不参与求值。
     put('scale_curve', pick('scale_curve', undefined));
     put('scale_cycle_ms', pick('scale_cycle_ms', undefined));
+    // **逐字出场窗口**（2026-10-18）：与 §per_char§ 配对，窗口锚在**出点**、进度反着走
+    // ⇒ "出场逐字变小"。只在档位真的带了它时才写（R4）。
+    put('per_char_out_frames', pick('per_char_out_frames', undefined));
     put('shake_px', pick('shake_px', cfg.shake_px));
     put('shake_hz', pick('shake_hz', cfg.shake_hz));
     // ⚠️ **相位按档错开，但 0 那一档不写**（0 就是底座默认值 ⇒ 写了是 R4 违规：
@@ -3469,8 +3491,12 @@ export function translate(config, clipDir, outPath, options = {}) {
   /// | 轴 | 档位 | 字段 |
   /// |---|---|---|
   /// | **排版**（原「形态/样式」**改名**） | （默认）· tilt · vtext · arc | `style_anim` |
-  /// | **过渡**（入场/出场，**新独立出来**） | pop · fade | `transition_anim` |
-  /// | **动效** | shake · perchar_big / perchar_small · heartbeat | `effect_anim` |
+  /// | **过渡**（入场/出场） | pop · fade · **perchar**（逐字：固定入场逐字变大 / 出场逐字变小） | `transition_anim` |
+  /// | **动效** | shake · heartbeat | `effect_anim` |
+  ///
+  /// ⚠️ **2026-10-18：逐字变化从动效轴挪到过渡轴**（用户口径：「将逐字变化归类为过渡，
+  /// 并固定为入场逐字变大、出场逐字变小，不用手动设置」）。`perchar_big` / `perchar_small`
+  /// 是它的**老名字别名**（老工程的 `effect_anim` 里写着它们），三个名字参数逐值相同。
   ///
   /// ## ⚠️ 与旧表的三个结构性差别
   ///
@@ -3480,10 +3506,7 @@ export function translate(config, clipDir, outPath, options = {}) {
   /// ② **档名全部换掉**（`tilt_std` → `tilt` 这样）：用户明确说没有存量工程，
   ///    所以**不做别名迁移**（那本来是本轮最贵的一块）。
   /// ③ **角度不再是档位的一部分**：`tilt` / `arc` 的档位里**不给角度**
-  ///    （只给缺省回落值），角度从事件字段 `layout_angle_deg` 读。
-  ///
-  /// ⚠️ **`none`（默认）不在这个表里** —— 它表示"不设"，是**没有档名**
-  ///    （`animPreset('')` 返回 `undefined`），不是一条有字段的档。
+
   const ANIM_PRESETS = {
     // ── 排版轴（4 档，含"默认"= 空档名）────────────────────────────
     //
@@ -3533,24 +3556,27 @@ export function translate(config, clipDir, outPath, options = {}) {
     //
     // 抖动：值同原 `shake_std`（6px / 18Hz）—— 保观感。
     shake: { sort: 'effect', shake_px: 6.0, shake_hz: 18.0 },
-    // 逐字变化：**把原来 C 组（逐字变换）+ D 组（逐字错峰）合并成一条**
-    // （用户：「合并逐字的效果作为一个动效」），下辖两支 —— 变大 / 变小。
+    // 逐字变化：**过渡轴（2026-10-18 挪过来的）** —— 见上面 `PERCHAR_FIXED` 那段。
     //
-    // ⚠️ 两支**必须产出不同参数**（守卫逐值钉着）—— 本仓有过
-    //    "两个预设产物逐字节相同"的实测教训（`vtext_thin` vs `vtext_bold`）。
-    //
-    // ⚠️ 用 `scale_spread`（**按序号的字号乘数**），**不是** `scale_to`
-    //    —— 后者是"同一个值给每个字" = **整行**缩放，字间没有差别。
-    //    这条是 2026-10-13 施工时实测抓出来的。
-    // ⚠️ `per_char_frames` **必须写**：缺省 0 ⇒ `is_active()` 为假 ⇒
-    //    **整个档不生效**，而画面里字照常显示 ⇒ 最像"这档就是这样的"。
+    // ⚠️ 三个名字**指向同一个对象**（别名，不是三份拷贝）：
+    //    `perchar`      = 界面上那一档「逐字」（唯一入口，用户不用再选大小）
+    //    `perchar_big`  = 老名字（老的「逐字变大」）⇒ 现在同样做"入场大、出场小"
+    //    `perchar_small`= 老名字（老的「逐字变小」）⇒ 同上
+    //    老工程读兼容的判据是**参数逐值相同**（守卫钉着），不是"名字还在"。
+    perchar: {
+      sort: 'transition',
+      perChar: { scale_from: 0.2, scale_to: 1.0, per_char_frames: 18, stagger_frames: 2 },
+      per_char_out_frames: 18,
+    },
     perchar_big: {
-      sort: 'effect',
-      perChar: { scale_spread: 0.8, per_char_frames: 18, stagger_frames: 2 },
+      sort: 'transition',
+      perChar: { scale_from: 0.2, scale_to: 1.0, per_char_frames: 18, stagger_frames: 2 },
+      per_char_out_frames: 18,
     },
     perchar_small: {
-      sort: 'effect',
-      perChar: { scale_spread: -0.55, per_char_frames: 18, stagger_frames: 2 },
+      sort: 'transition',
+      perChar: { scale_from: 0.2, scale_to: 1.0, per_char_frames: 18, stagger_frames: 2 },
+      per_char_out_frames: 18,
     },
     // 心跳：**新增档**（用户：「动效需要增加一个心跳，扑通扑通的心跳感」）。
     //
@@ -3670,7 +3696,15 @@ export function translate(config, clipDir, outPath, options = {}) {
   const ANIM_AXIS = {
     tilt: 'style', arc: 'style', vtext: 'style',
     pop: 'transition', fade: 'transition',
-    shake: 'effect', perchar: 'effect', heartbeat: 'effect',
+    shake: 'effect',
+    // **逐字变化归过渡轴**（2026-10-18 用户口径：「将逐字变化归类为过渡」）。
+    // ⚠️ 老工程只写了 `anim = "perchar_big"` 时，R4 迁移按**这张表**把它拆到两轴 ——
+    //    这里从 'effect' 改成 'transition' 之后，老工程的那一档会自动落到过渡轴 ✓
+    //    （前缀匹配：`perchar_big` → `perchar`）。
+    //    ⚠️ 别退回 'effect'：那样老工程的逐字会**写进动效轴**，而新档读的是过渡轴
+    //    ⇒ 同一份配置在新老片段上走两条不同的路。
+    perchar: 'transition',
+    heartbeat: 'effect',
   };
   // ⚠️ 档名 → 界面上的轴。前缀匹配（`tilt_std` → `tilt`）。
   //    ⚠️ **长的前缀要排在前面**（`shrink_in_std` 必须先命中 `shrink_in`，
@@ -6464,7 +6498,7 @@ export function translate(config, clipDir, outPath, options = {}) {
       }
     }
     const subName = 'dhampir-subtitle.srt';
-    const subPath = join(dirname(outPath ?? clipDir), subName);
+    const subPath = join(dirname(docPath), subName);
     mkdirSync(dirname(subPath), { recursive: true });
     writeFileSync(subPath, cuesToSrt(remapped), 'utf8');
     note(
@@ -6760,7 +6794,7 @@ export function translate(config, clipDir, outPath, options = {}) {
         }
         danmakuCueCount = cues.length;
         const assName = 'dhampir-danmaku.ass';
-        const assPath = join(dirname(outPath ?? clipDir), assName);
+        const assPath = join(dirname(docPath), assName);
         const dmStyle = config.style?.danmaku ?? {};
         const dmSizePx = typeof dmStyle.font_size === 'number' ? dmStyle.font_size : 42;
 
@@ -7202,7 +7236,12 @@ export function translate(config, clipDir, outPath, options = {}) {
           outlinePx: strokePxToAss(st.strokePx, st.fontPx),
           shadowPx: 1 },
       );
-      const assPath = join(clipDir, `dhampir-${id}.ass`);
+      // ⚠️ **不许写回片段根目录**（2026-10-18：「渲染导出时中间文件过多」，实测一个片段
+      //    42 个）。id 里带落点/动效/颜色 ⇒ 每改一次就是一个**新文件名**，旧名字没人收
+      //    ⇒ 片段目录越积越多。这里按**每次转译独占**的子目录落盘（`sideDir`），
+      //    收尾由宿主 `dhampir.rs::cleanup_project` 整目录删掉。
+      const assPath = join(sideDir, `dhampir-${id}.ass`);
+      mkdirSync(sideDir, { recursive: true });
       writeFileSync(assPath, ass, 'utf8');
       assets.push({
         id,
