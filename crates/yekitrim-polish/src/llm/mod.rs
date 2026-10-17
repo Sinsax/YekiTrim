@@ -360,6 +360,63 @@ pub async fn regenerate_segment_events(
 }
 
 /// Step2b：读取本地贴纸包 TOML，按 `(包名, sticker_tag)` 分组批量精挑具体文件，写回 event.name/source。
+/// emoji 精挑的候选标签：形如 `1f602.gif 😂`。
+///
+/// 抽成函数是为了**可测** —— 它把两条约定钉在一起：
+/// ① 模型看得懂（带真实字符；否则 `1f602.gif` 这种文件名它认不出是哪个表情，精挑等于随机）；
+/// ② `Path::file_stem()` 取回的**正好是码点** —— `choose_sticker_files_batch` 拿它当 `name`
+///    写盘，`process` 与转译器再按码点去找文件。
+fn emoji_candidate_label(cp: &str) -> String {
+    format!("{cp}.gif {}", crate::assets::emoji_search::codepoint_to_chars(cp))
+}
+
+#[cfg(test)]
+mod refine_tests {
+    use super::*;
+
+    /// 候选标签必须**双向对得上**：模型读得懂、取回来就是码点。
+    ///
+    /// 变异自证：把标签改成不带字符的 `{cp}.gif` ⇒ 第一条断言红；
+    /// 改成 `{cp} 😂`（没有扩展名）⇒ 第二条断言红（`file_stem` 会带上空格与字符）。
+    #[test]
+    fn emoji_candidate_labels_round_trip_to_the_codepoint() {
+        for cp in ["1f602", "203c_fe0f", "2764_fe0f"] {
+            let label = emoji_candidate_label(cp);
+            assert!(
+                label.starts_with(&format!("{cp}.gif ")) && label.len() > cp.len() + 5,
+                "标签要带可读字符: {label:?}"
+            );
+            assert_eq!(
+                std::path::Path::new(&label).file_stem().and_then(|s| s.to_str()),
+                Some(cp),
+                "标签 {label:?} 取回的不是码点 —— 写盘就会变成一个不存在的文件名"
+            );
+        }
+    }
+
+    /// **只有维度查询才进 emoji 精挑**：老工程的自由词不打乱存量行为。
+    ///
+    /// （判据本体在 `emoji_taxonomy::parse_query`，这里钉的是"调用点用的是它"。）
+    #[test]
+    fn only_dimension_queries_are_treated_as_emoji_events() {
+        for q in ["emotion:joy", "emotion:joy,usage:punchline", "usage:meme|reaction"] {
+            assert!(
+                !crate::assets::emoji_taxonomy::parse_query(q).is_empty(),
+                "{q} 应当被当成 emoji 查询"
+            );
+        }
+        for w in ["laugh", "angry", "ysyk", "emotion:ecstatic"] {
+            assert!(
+                crate::assets::emoji_taxonomy::parse_query(w).is_empty(),
+                "{w} 不该进 emoji 精挑（老工程的自由词 / 词表外的词）"
+            );
+        }
+    }
+}
+
+/// emoji 精挑喂给 LLM 的候选数：太多会把 prompt 撑长、太少挑不出想要的。
+const EMOJI_REFINE_CANDIDATES: usize = 16;
+
 async fn run_sticker_choice_step(
     owner: yekitrim_core::owner::Owner,
     segments: &mut [Segment],
@@ -431,6 +488,96 @@ async fn run_sticker_choice_step(
             }
             Err(e) => {
                 tracing::warn!("  ⚠ Step2b 批量选择失败 (tag={tag}): {e:#}");
+            }
+        }
+    }
+
+
+    // ------------------------------------------------------------------
+    // emoji 那一档（2026-10-17）：它的 keyword 是一条**维度查询**
+    // （emotion:joy,usage:punchline），而 sticker_tag 是空的 —— 所以上面那个
+    // (包名, tag) 分组**永远收不到它**，这正是"emoji 是全链路唯一没有复核那一档"的直接原因。
+    // 这里补上同款精挑：候选 = search_best(keyword, N)，让 LLM 挑一个具体表情。
+    // ------------------------------------------------------------------
+    {
+        use crate::assets::emoji_search::EmojiCatalog;
+        let mut emoji_groups: BTreeMap<String, Vec<StickerChoiceContext>> = BTreeMap::new();
+        for (si, seg) in segments.iter().enumerate() {
+            for (ei, ev) in seg.events.iter().enumerate() {
+                if !ev.is_sticker() {
+                    continue;
+                }
+                let Some(kw) = ev.sticker_keyword() else { continue };
+                let kw = kw.trim();
+                // 只认**新的维度查询**（含 dim:value）：老工程的自由词（laugh / angry）
+                // 继续走原来的路 —— 不打乱存量行为，也不为一堆老事件白烧调用。
+                if crate::assets::emoji_taxonomy::parse_query(kw).is_empty() {
+                    continue;
+                }
+                let time = ev.sticker_time().unwrap_or(0.0);
+                emoji_groups
+                    .entry(kw.to_string())
+                    .or_default()
+                    .push(StickerChoiceContext {
+                        segment_index: si,
+                        event_index: ei,
+                        time,
+                        context_text: subtitle_context_text(subtitles, time),
+                    });
+            }
+        }
+        match EmojiCatalog::fetch_embedded() {
+            Err(e) => {
+                if !emoji_groups.is_empty() {
+                    tracing::warn!("  ⚠ emoji 目录读不出来，跳过 emoji 精挑: {e}");
+                }
+            }
+            Ok(cat) => {
+                for (query, contexts) in &emoji_groups {
+                    // 每个查询一次独立调用：逐个查取消，别把剩下的成批发完
+                    if cancel.as_ref().is_some_and(|c| c()) {
+                        anyhow::bail!("任务已取消");
+                    }
+                    let hits = cat.search_best(query, EMOJI_REFINE_CANDIDATES);
+                    if hits.is_empty() {
+                        tracing::warn!("  ⚠ emoji 查询「{query}」一个候选都没有，跳过精挑");
+                        continue;
+                    }
+                    // 候选标签形如 "1f602.gif 😂"：模型认得出那是哪个表情，
+                    // 而 choose_sticker_files_batch 用 Path::file_stem() 取回的**正好是码点**
+                    // （= 写进 name 的东西，process 与转译器都按它找文件）。
+                    let candidates: Vec<String> =
+                        hits.iter().map(|cp| emoji_candidate_label(cp)).collect();
+                    let chosen: Vec<(usize, usize, String)> = if candidates.len() == 1 {
+                        // 只有一个候选 ⇒ 没必要花一次调用（能自己定的别问模型）
+                        let stem = hits[0].clone();
+                        contexts
+                            .iter()
+                            .map(|c| (c.segment_index, c.event_index, stem.clone()))
+                            .collect()
+                    } else {
+                        match choose_sticker_files_batch(
+                            llm_cfg, project, "emoji", query, &candidates, contexts,
+                        )
+                        .await
+                        {
+                            Ok(v) => v,
+                            Err(e) => {
+                                tracing::warn!("  ⚠ emoji 精挑失败 (query={query}): {e:#}");
+                                Vec::new()
+                            }
+                        }
+                    };
+                    for (si, ei, stem) in chosen {
+                        if let Some(seg) = segments.get_mut(si)
+                            && let Some(ev) = seg.events.get_mut(ei)
+                            && ev.is_sticker()
+                        {
+                            // 与 process Step 2 逐字同形：source = "emoji"、name = 码点
+                            ev.set_sticker_resolved("emoji", &stem);
+                        }
+                    }
+                }
             }
         }
     }
