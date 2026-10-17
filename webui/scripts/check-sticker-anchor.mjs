@@ -438,8 +438,25 @@ if (camBody) {
 //   ② `hasPos` 必须认它，否则会被下面那条 DROP 吃掉（症状：点完落点、贴纸直接不见了）。
 check("[trans ] 逐块 manual_pos 优先于项目级固定落点",
   /String\(event\.manual_pos \?\? ''\)[\s\S]{0,240}?anchor = \{ x: mx, y: my, center: true \}/.test(translatorSrc), true)
+//   ⚠️ 这条判据 2026-10-17 **重写过**（它此前一直是红的，而没人跑到这条脚本）：
+//      原先钉的是 `anchor !== undefined || stickerMode === 'manual'` —— 而那个写法本身是个
+//      **回归**：`anchor` 在三条分支之后**永远非空**，于是这条 `hasPos` 恒为真，
+//      把下面那道「auto 且事件里没有 x/y ⇒ DROP」的闸**一起放开了**（症状：没跑过后处理的工程
+//      不再报错，而是拿 50/50 硬贴）。修法是给逐块手动一个**独立**的门（`manualPerEvent`），
+//      三档并列写清楚。判据因此改成逐档钉 —— 少一档就红，且**不许**退回那个恒真写法。
 check("[trans ] hasPos 认逐块手动（否则被 DROP 吃掉）",
-  /const hasPos = anchor !== undefined \|\| stickerMode === 'manual'/.test(translatorSrc), true)
+  /const hasPos = manualPerEvent \|\| stickerMode === 'manual' \|\| \(ratio\(event\.x\) !== null && ratio\(event\.y\) !== null\)/
+    .test(translatorSrc), true)
+// ⚠️ **auto 那一档的闸必须还在**（同一行里的第三个分支）—— 只钉"有逐块手动"会让上面那条
+//    在"把 auto 闸删掉"时照样绿（那次回归正是这么发生的）。
+check("[trans ] auto 仍要 ratio() 那一档（不许退回恒真）",
+  !/const hasPos = anchor !== undefined/.test(translatorSrc), true)
+// 变异自证：把逐块手动那一档摘掉 ⇒ 上面第一条必须翻脸（本脚本能抓到自己失效）
+{
+  const broken = translatorSrc.replace("const hasPos = manualPerEvent ||", "const hasPos = false ||")
+  check("[trans·变异] hasPos 摘掉逐块手动后上面那条会翻脸",
+    /const hasPos = manualPerEvent \|\| stickerMode === 'manual'/.test(broken), false)
+}
 // 变异自证：把"优先"那条改成不认识 ⇒ 第一条判据必须翻脸（本脚本能抓到自己失效）
 {
   const broken = translatorSrc.replace("anchor = { x: mx, y: my, center: true }", "anchor = { x: 50, y: 50, center: true }")
