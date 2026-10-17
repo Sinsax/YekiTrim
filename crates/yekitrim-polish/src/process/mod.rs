@@ -300,7 +300,15 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
     //    **完全没避开主播脸**"，而且**不报错**。
     {
         let (cw, ch) = config.canvas_size();
-        let laid_out = layout_text_elements(&mut config.segments, cw as f64, ch as f64);
+        // **文字元素的描边 = 字幕的描边**（用户口径 2026-10-18）。`[style.subtitle].stroke`
+        // 形如 `"12px #403c3b"`；解析不出（0）就退回**字幕的默认 12px** —— 不回退到元素档位
+        // 那四档，那样又变回"元素比字幕细一倍"。
+        let el_stroke_px = {
+            let v = crate::process::placement::parse_px(&config.style.subtitle.stroke);
+            if v.is_finite() && v > 0.0 { v } else { 12.0 }
+        };
+        let laid_out =
+            layout_text_elements(&mut config.segments, cw as f64, ch as f64, el_stroke_px);
         if laid_out > 0 {
             tracing::info!("  · 文字元素排版：已排 {laid_out} 条（§5 E3）");
         }
@@ -1151,6 +1159,9 @@ fn sticker_obstacles(
             frame,
             config.style.subtitle.size as f64,
             placement::parse_px(&config.style.subtitle.stroke),
+            // ⚠️ 第 4 个实参 = 字幕条位置：落点求解器要与出片模板/转译器**同口径**读它，
+            //    否则"把字幕拖到中部 ⇒ 文字压上字幕"。（恢复：误用 `git checkout` 时被抹掉。）
+            config.style.subtitle.position_pct,
         ),
         placement::ObstacleKind::Captions,
     )];
@@ -1865,6 +1876,8 @@ fn layout_text_elements(
     segments: &mut [project::Segment],
     frame_w: f64,
     frame_h: f64,
+    // **字幕那份描边宽度**（文档像素）—— 文字元素与字幕用同一个值，见下面写回处那条注释。
+    stroke_px: f64,
 ) -> usize {
     use crate::process::placement::{ElementColor, Frame, TextAnchor, TextLayout, TextStyle};
 
@@ -1915,7 +1928,7 @@ fn layout_text_elements(
                 parsed
             };
             let anchor = TextAnchor::parse(pos.as_deref().unwrap_or(""));
-            let layout = TextLayout::solve(text, ts, anchor, f);
+            let layout = TextLayout::solve_with(text, ts, anchor, f, stroke_px);
             let (px, py) = layout.anchor_origin(f);
             // 写**百分比**（与贴纸的 `x`/`y` 同一种表示）。
             *x = Some(format!("{:.2}%", px / f.w * 100.0));
@@ -1951,11 +1964,16 @@ fn layout_text_elements(
             //       而长度判据正是老工程兼容的支点（`{7, 9}` 那两档）。
             let c = ec.map(|e| e.rgba()).unwrap_or_else(|| ts.color());
             let sc = ec.map(|e| e.stroke_for(ts)).unwrap_or_else(|| ts.stroke_color());
+            // ⚠️ **描边宽度 = 字幕那份**（2026-10-18 用户口径「文字层的描边没有和字幕的
+            //    描边同等，当前很细」）：这里以前写 `ts.base_stroke_px()`（四档 6/5/2/4），
+            //    而字幕是 `[style.subtitle].stroke`（默认 12px、用户可配置）⇒ 差一倍以上。
+            //    ⚠️ 消费方（转译器 `parseTextStyle` / DOM 预览 `tx.style.strokePx`）都**只读
+            //    这一段**，所以改这一处三端同时同步 —— 别在各自那边再写死一个值。
             *source = Some(format!(
                 "{}|{}|{}|{},{},{},{}|{},{},{},{}|{}|{}|{}|{}|{}",
                 style_name(ts),
                 ts.base_font_px(),
-                ts.base_stroke_px(),
+                stroke_px,
                 c[0],
                 c[1],
                 c[2],
@@ -2169,7 +2187,8 @@ y = "10%"
                 manual_pos: None,
             }],
         }];
-        assert_eq!(layout_text_elements(&mut segs, 1920.0, 1080.0), 1);
+        // ⚠️ 第 4 个参数 = **字幕那份描边宽度**（2026-10-18 起文字元素与字幕同宽）。
+        assert_eq!(layout_text_elements(&mut segs, 1920.0, 1080.0, 12.0), 1);
 
         let Event::Element { source, .. } = &segs[0].events[0] else {
             panic!("还是那条 element");
@@ -2187,7 +2206,9 @@ y = "10%"
         //    判据**照旧把具体值钉死** —— 它验的是"串里的值来自枚举、不是写死的"，
         //    改成"等于 base_font_px()"会让它变成同义反复（永远绿）。
         assert_eq!(parts[1], "80", "p1 = font_px");
-        assert_eq!(parts[2], "4", "p2 = stroke_px");
+        // ⚠️ 2026-10-18：p2 = **字幕那份**描边（调用方传 12），不再是档位默认的 4 ——
+        //    用户口径「文字层的描边没有和字幕的描边同等，当前很细」。
+        assert_eq!(parts[2], "12", "p2 = stroke_px（= 字幕的描边）");
         assert_eq!(parts[3], "255,255,255,255", "p3 = 填充色");
         assert_eq!(parts[4], "26,26,26,255", "p4 = 描边色");
         assert_eq!(parts[5], "800", "p5 = 字重");
@@ -2240,7 +2261,7 @@ y = "10%"
         }
         let run = |color: Option<&str>| {
             let mut segs = seg_with(color);
-            assert_eq!(layout_text_elements(&mut segs, 1920.0, 1080.0), 1);
+            assert_eq!(layout_text_elements(&mut segs, 1920.0, 1080.0, 12.0), 1);
             let Event::Element { source, .. } = &segs[0].events[0] else {
                 panic!("还是那条 element");
             };
@@ -2361,7 +2382,7 @@ y = "10%"
                 manual_pos: None,
             }],
         }];
-        assert_eq!(layout_text_elements(&mut segs, 1920.0, 1080.0), 1);
+        assert_eq!(layout_text_elements(&mut segs, 1920.0, 1080.0, 12.0), 1);
         let Event::Element { source, .. } = &segs[0].events[0] else {
             panic!("还是那条 element");
         };

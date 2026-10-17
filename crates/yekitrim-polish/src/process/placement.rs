@@ -484,9 +484,26 @@ pub fn parse_px(s: &str) -> f64 {
 /// DOM 容器 `bottom: 80×kh` + 行高 1.5 + 内边距；横向 = `#captions` 的
 /// `left = W×0.0625 / width = W×0.875`（A5 的 maxLineW，同一个常量）。
 ///
-/// 两条渲染路径都取并集，宁可多让一点。`style.subtitle.position` 目前渲染端未消费
-/// （只有 `"bottom"` 有实现），所以不区分。
-pub fn caption_band(f: Frame, font_size: f64, stroke_px: f64) -> Rect {
+/// 两条渲染路径都取并集，宁可多让一点。
+///
+/// # `position_pct`（2026-10-15 补）
+///
+/// ⚠️⚠️ **用户设了「字幕位置」而这里不读它 ⇒ 文字层会正好撞上字幕** ——
+/// 这是「文字层的位置问题，修了几轮还是不正常」在**位置**那一半的真根因。
+///
+/// 由来：字幕纵向落点有**三处消费**，而此前只有两处读 `position_pct`
+/// （出片模板 `templates/index.html::renderFrame`、转译器 `polish-to-dhampir.mjs`
+/// 的 `subBottomMargin`），**本处漏了** —— 于是把字幕拖到画面中部时，
+/// 字幕真的上去了，而**文字元素的避让障碍还钉在旧的底部位置**，
+/// 落点求解器（`pick_box_position`）据此挑出的「安全位」正好是字幕现在所在的地方。
+///
+/// 换算与那两处**逐值同口径**（三处必须一致，改一处要改三处）：
+/// `position_pct` = **文字带底边**距画布底的高度百分比 ⇒ 底边 y = `f.h × (1 − pct/100)`。
+/// 缺省（`None` = 老工程没写过）⇒ **一字不动**，走历史公式（存量零回归 R4）。
+///
+/// ⚠️ 只有**下沿**取并集（多行字幕会往下长，不能缩短覆盖）；**上沿必须跟着
+/// `position_pct` 走** —— 上沿也取并集就等于"字幕位置永远挪不动带子"（第一版踩过）。
+pub fn caption_band(f: Frame, font_size: f64, stroke_px: f64, position_pct: Option<f64>) -> Rect {
     const PAD: f64 = 8.0;
     /// 横画布基准底距（渲染端 80×kh）。
     const BOTTOM_OFFSET: f64 = 80.0;
@@ -495,13 +512,40 @@ pub fn caption_band(f: Frame, font_size: f64, stroke_px: f64) -> Rect {
     const DOM_PAD_V: f64 = 14.0;
     let (bottom_off, baseline_inset) = (BOTTOM_OFFSET * f.kh(), BASELINE_INSET * f.kh());
     let line_h = font_size * 1.5;
-    let dom_top = f.h - bottom_off - (line_h + DOM_PAD_V * 2.0);
-    let cy = f.h - baseline_inset;
     let canvas_half = font_size * 0.5 + stroke_px * 0.5;
-    let top = dom_top.min(cy - canvas_half) - PAD;
-    let bottom = (f.h - bottom_off).max(cy + canvas_half) + PAD;
-    // 横向取 DOM 容器（`#captions`），居中文字落不出这个盒子。
-    Rect::new(f.w * 0.0625, top, f.w * 0.9375, bottom)
+
+    // 历史路径（`position_pct` 缺省）：Canvas `cy = H - 120×kh` ∪ DOM `bottom: 80×kh`
+    let dom_top_hist = f.h - bottom_off - (line_h + DOM_PAD_V * 2.0);
+    let cy_hist = f.h - baseline_inset;
+    let hist_top = dom_top_hist.min(cy_hist - canvas_half) - PAD;
+    let hist_bottom = (f.h - bottom_off).max(cy_hist + canvas_half) + PAD;
+
+    // `position_pct` 路径：带底边贴 `f.h × (1 − pct/100)`，与模板/转译器同式。
+    // ⚠️ 夹到 `[0, 50]` 与服务端 `polish.rs` 的白名单同区间（越界值不该在这里造出怪盒子）。
+    let pct = position_pct.map(|p| p.clamp(0.0, 50.0));
+    match pct {
+        None => {
+            // 横向取 DOM 容器（`#captions`），居中文字落不出这个盒子。
+            Rect::new(f.w * 0.0625, hist_top, f.w * 0.9375, hist_bottom)
+        }
+        Some(pct) => {
+            // 带底边 = 距底 `pct%` 画布高；`cy` 是**块中心**，块高按 `font_size × 1.5` 的
+            // **单行**行盒估（多行时块往上长 ⇒ 这里估得偏保守，正好"宁可多让"）。
+            let band_bottom = f.h * (1.0 - pct / 100.0);
+            let cy = band_bottom - line_h / 2.0;
+            let pct_top = cy - canvas_half - PAD;
+            let pct_bottom = band_bottom + PAD;
+            // ⚠️⚠️ **上沿必须跟着 `position_pct` 走，不许与历史路径取并集**
+            //     （第一版就是那么写错的，被本测试当场抓住）：
+            //     并集让 `top` 恒等于 `hist_top`(856) ⇒ **字幕位置永远挪不动带子**，
+            //     表面对称、实际等于没修 —— 正是本项要消灭的那种"看着改了、其实没改"。
+            //
+            //     历史路径里唯一要保的是**下沿**（多行字幕会往下长，别把它缩短）：
+            //     所以只有 `bottom` 取 max，`top` 直接走 `pct`。
+            let bottom = pct_bottom.max(hist_bottom);
+            Rect::new(f.w * 0.0625, pct_top, f.w * 0.9375, bottom)
+        }
+    }
 }
 
 /// 文字元素的四个 `style` 预设（规格 `elements-spec.md` §2）。
@@ -868,6 +912,27 @@ impl TextLayout {
     /// 折行规则与字幕**同一套常量**（`CAPTION_SAFE_WIDTH_RATIO` 等），
     /// 不是另发明一套 —— 两套折行规则会在"字幕装得下、大字装不下"这种边界上打架。
     pub fn solve(text: &str, style: TextStyle, anchor: TextAnchor, f: Frame) -> Self {
+        Self::solve_with(text, style, anchor, f, style.base_stroke_px())
+    }
+
+    /// 与 [`solve`] 相同，但**描边宽度由调用方给**（文档像素，外侧宽度）。
+    ///
+    /// ⚠️ **为什么需要它**（2026-10-18 用户口径「文字层的描边…没有和字幕的描边同等，当前很细」）：
+    /// `TextStyle::base_stroke_px()` 是四档 6/5/2/4（规格 §4.2「描边 = 字号的 5–8%」），
+    /// 而字幕的描边是 `[style.subtitle].stroke`（默认 **12px**、用户可配）——
+    /// 两者差一倍以上，观感就是"文字层的描边很细"。
+    /// 现在 `process` 把**字幕那份宽度**传进来 ⇒ 元素与字幕**同一份描边**
+    /// （这是用户口径对规格 §4.2 的直接覆盖：宁可超出 5–8%，也要和字幕一致）。
+    ///
+    /// ⚠️ **盒子必须用同一个值**：描边是外侧宽度，盒子不加够就会在贴边时切掉一圈 ——
+    /// 描边从 6 变 12，那圈差整整 12px（贴纸避让与居中都会偏）。
+    pub fn solve_with(
+        text: &str,
+        style: TextStyle,
+        anchor: TextAnchor,
+        f: Frame,
+        stroke_px: f64,
+    ) -> Self {
         use crate::project::{
             CAPTION_MAX_LINES, CAPTION_MIN_FONT_RATIO, CAPTION_SAFE_WIDTH_RATIO,
         };
@@ -899,7 +964,13 @@ impl TextLayout {
             .map(|l| display_width(l) * font_size * CHAR_W_RATIO)
             .fold(0.0_f64, f64::max);
         // 描边在外侧 ⇒ 盒子要把描边算进去，否则贴边时会切掉一圈。
-        let stroke = style.base_stroke_px() / FRAME_H * f.h;
+        // ⚠️ 宽度用**调用方给的那个**（= 字幕那份）；非有限/<=0 才退回档位默认。
+        let stroke_px = if stroke_px.is_finite() && stroke_px > 0.0 {
+            stroke_px
+        } else {
+            style.base_stroke_px()
+        };
+        let stroke = stroke_px / FRAME_H * f.h;
         let w = (text_w + stroke * 2.0).min(f.w).max(1.0);
         let h = (line_height * lines.len() as f64 + stroke * 2.0).min(f.h).max(1.0);
 
@@ -934,6 +1005,34 @@ impl TextLayout {
         (x, y)
     }
 
+    /// `pos` → **求解器的纵向偏好区间**（输出帧像素 `(y0, y1)`，盒子上沿要落在其中）。
+    ///
+    /// # ⚠️ 为什么需要这一步
+    ///
+    /// `anchor_origin` 按 `pos` 算出的 `y` **会被 Step 2b2 的落点求解器整体覆写**
+    /// （那边只按余量与帧心距离挑点）。于是 `pos` 对成片**零影响** —— 实测四个取值
+    /// 落盘 `x`/`y` 完全相同。本函数把 `pos` 的语义**转发**给求解器，
+    /// 由它作为"安全集内部的偏好"兑现（见 [`pick_box_position_pref`]）。
+    ///
+    /// 区间取**该锚点的期望盒位上下各留一个盒高**：足够把该档的所有安全位圈进来，
+    /// 又不至于把另一档的位也算成"本档"。`Auto` 返回 `None`（无偏好 = 与改造前逐像素一致）。
+    pub fn anchor_prefer_band(&self, f: Frame) -> Option<(f64, f64)> {
+        let margin = STICKER_MARGIN;
+        match self.anchor {
+            TextAnchor::Auto => None,
+            TextAnchor::Top => Some((0.0, margin + self.h * 2.0)),
+            TextAnchor::Center => {
+                // 盒心落在帧心上下各半盒高之内
+                let cy = f.h / 2.0;
+                Some((cy - self.h, cy + self.h))
+            }
+            TextAnchor::Bottom => Some((
+                (f.h - self.h - margin - self.h * 2.0).max(0.0),
+                f.h,
+            )),
+        }
+    }
+
     /// `bottom` 锚点时，文字底边**离画面底**要留多少 —— 也就是字幕带占掉的高度。
     ///
     /// ⚠️ **是「字幕带上沿到画面底」的距离，不是「字幕带自己的高」** ——
@@ -943,8 +1042,14 @@ impl TextLayout {
     ///
     /// ⚠️ 用 `band.y0` 反推而不是写死一个数：字幕带随画布与字号变，
     /// 写死会在竖屏上错位。
+    ///
+    /// ⚠️ **这里传 `None` 是有意的**：`TextLayout` 手上没有 `ProjectFile`
+    /// （拿不到 `[style.subtitle].position_pct`），而这条路径算出的 `x`/`y`
+    /// 会被 Step 2b2 用真障碍集**整体覆写**（`mod.rs` 的 `pick_box_position`）——
+    /// 那一处才是生效的避让，且已按 `position_pct` 传参。
+    /// ⇒ 这里保持历史值即可，改它不会影响成片（改错反而让 Step 1d3 的中间态更难对账）。
     fn caption_clearance(&self, f: Frame) -> f64 {
-        let band = caption_band(f, 72.0 * f.kh(), 12.0 * f.kh());
+        let band = caption_band(f, 72.0 * f.kh(), 12.0 * f.kh(), None);
         (f.h - band.y0).max(0.0)
     }
 }
@@ -1277,6 +1382,64 @@ pub fn pick_box_position(
     f: Frame,
     b: &BoxSize,
 ) -> Pick {
+    pick_box_position_pref(blocked, allow, seed, f, b, None)
+}
+
+/// [`pick_box_position`] 的**带纵向偏好**版本（文字元素的 `pos` 走这条）。
+///
+/// # `prefer_y` 是什么
+///
+/// 一个**纵向偏好区间**（输出帧像素，`(y0, y1)`）：求解器仍以"安全优先"为第一原则，
+/// 只在**同样安全**的候选里，优先挑盒子上沿落在该区间内的那些。
+///
+/// # ⚠️ 为什么需要它（2026-10-15）
+///
+/// `Event::Element.pos`（`top`/`center`/`bottom`）此前**完全不起作用** —— 实测：
+/// 同一个工程把 `pos` 依次设为 `None`/`top`/`center`/`bottom`，
+/// 落盘 `x`/`y` **四次完全相同**（`42% / 43%`）。
+///
+/// 原因是 `pos` 只喂给了 Step 1d3 的 `TextLayout::anchor_origin`，
+/// 而那份 `x`/`y` 随后被本求解器（Step 2b2）**无条件覆写**：
+/// `pick_box_position` 只按"余量最大 + 离帧心最近"挑点，**根本不看 `pos`**。
+///
+/// ⇒ 症状正是用户报的「**文字层的位置问题，修了几轮还是不正常**」：
+///   LLM 按提示词写了 `pos:"top"`（提示词明确要求 `pos` 三选一），
+///   用户在面板上也看得到这个字段 —— 而它对成片**零影响**，且**全程不报错**。
+///
+/// # ⚠️ 为什么不是"直接照着 `prefer_y` 放"
+///
+/// 那会把**安全优先**这条前提拆掉：`pos:"top"` 的位置可能正压着主播脸。
+/// 所以这里的顺序是**先过滤安全、再在安全集里谈偏好**，
+/// 与 `allow`（手写选框"只作偏好，没安全位就放弃"）同一个口径。
+/// 偏好区里一个安全位都没有时，**照旧回落到全域**（宁可位置不遂人意，也不要压住东西）。
+pub fn pick_box_position_pref(
+    blocked: &[Blocked],
+    allow: &[Rect],
+    seed: f64,
+    f: Frame,
+    b: &BoxSize,
+    prefer_y: Option<(f64, f64)>,
+) -> Pick {
+    let auto = pick_box_position_impl(blocked, allow, seed, f, b, None);
+    let Some(pref) = prefer_y else { return auto };
+    let preferred = pick_box_position_impl(blocked, allow, seed, f, b, Some(pref));
+    // ⚠️ 只有偏好解**同样没压住任何东西**时才采纳它。
+    //    偏好解一旦是 `relaxed`（帧内无安全位）就说明那个纵向区间在这条文字上是不可用的，
+    //    此时回落到全域解 —— 否则等于"为了满足 pos 去压主播脸"。
+    if preferred.relaxed && !auto.relaxed {
+        return auto;
+    }
+    preferred
+}
+
+fn pick_box_position_impl(
+    blocked: &[Blocked],
+    allow: &[Rect],
+    seed: f64,
+    f: Frame,
+    b: &BoxSize,
+    prefer_y: Option<(f64, f64)>,
+) -> Pick {
     // 临界候选：盒子刚好贴在障碍右侧/下方，或刚好停在左侧/上方
     let xs = axis(
         f.margin(),
@@ -1333,14 +1496,38 @@ pub fn pick_box_position(
 
     let pool = if !free_in_allow.is_empty() { &free_in_allow } else { &free };
     if !pool.is_empty() {
+        // ⚠️ **偏好只在安全集内部生效**：先把安全位分成"落在偏好纵向区间里的"与其余，
+        //    前者非空就用前者。两者都安全 —— 这一步不引入任何重叠风险。
+        if let Some((py0, py1)) = prefer_y {
+            let pref: Vec<(f64, f64, f64)> = pool
+                .iter()
+                .filter(|c| c.1 >= py0 && c.1 + b.h <= py1)
+                .copied()
+                .collect();
+            if !pref.is_empty() {
+                return central_pick(&pref, seed, f, b);
+            }
+        }
         return central_pick(pool, seed, f, b);
     }
 
     // 兜底：所有位置都压着东西 → 取重叠代价最小者，并列时取最靠近帧心的。
     lowest.sort_by(|a, c| {
-        center_dist(a.1, a.2, f, b)
-            .partial_cmp(&center_dist(c.1, c.2, f, b))
-            .unwrap_or(std::cmp::Ordering::Equal)
+        let (da, dc) = (
+            center_dist(a.1, a.2, f, b),
+            center_dist(c.1, c.2, f, b),
+        );
+        // 偏好区间内的优先（同为兜底解时，至少让 pos 还有一点话语权）
+        let (pa, pc) = match prefer_y {
+            Some((py0, py1)) => {
+                let ina = a.2 >= py0 && a.2 + b.h <= py1;
+                let inc = c.2 >= py0 && c.2 + b.h <= py1;
+                (!ina, !inc)
+            }
+            None => (false, false),
+        };
+        pa.cmp(&pc)
+            .then(da.partial_cmp(&dc).unwrap_or(std::cmp::Ordering::Equal))
     });
     let n = lowest.len().min(CENTRAL_PICK).max(1);
     let idx = ((seed.clamp(0.0, 0.999_999) * n as f64) as usize).min(n - 1);
@@ -1365,6 +1552,33 @@ mod tests {
     ///
     /// 用户点的是**盒子中心**（与 `[sticker] position` 同一基准），而落盘的 `x`/`y` 是**左上角**
     /// （求解器与两个消费端都按左上角读）⇒ 这一层换算必须**只有一处**。
+/// **文字元素的描边宽度 = 调用方给的那个**（2026-10-18 用户口径：
+    /// 「文字层的描边没有和字幕的描边同等，当前很细」）。
+    ///
+    /// 两件事：① 宽度**进盒子**（描边是外侧宽度，不进去就会在贴边时被切一圈，
+    /// 而 6→12 那一圈差整整 12px）；② 非法值（0/NaN）退回档位默认，不许把盒子算成 0。
+    ///
+    /// 变异自证：把 solve_with 里那个 stroke_px 判断换回 base_stroke_px()
+    /// ⇒ 第一条断言红（盒子不再随传入宽度变）。
+    #[test]
+    fn element_stroke_width_enters_the_box_and_falls_back_when_invalid() {
+        let f = Frame { w: 1920.0, h: 1080.0 };
+        let thin = TextLayout::solve_with("标题", TextStyle::Hook, TextAnchor::Top, f, 6.0);
+        let thick = TextLayout::solve_with("标题", TextStyle::Hook, TextAnchor::Top, f, 12.0);
+        assert!(
+            (thick.w - thin.w - 12.0).abs() < 0.01,
+            "描边从 6 变 12，盒子应宽 12px，实际 {} 到 {}",
+            thin.w,
+            thick.w
+        );
+        assert!((thick.h - thin.h - 12.0).abs() < 0.01, "高度同理");
+        let zero = TextLayout::solve_with("标题", TextStyle::Hook, TextAnchor::Top, f, 0.0);
+        let nan = TextLayout::solve_with("标题", TextStyle::Hook, TextAnchor::Top, f, f64::NAN);
+        let def = TextLayout::solve("标题", TextStyle::Hook, TextAnchor::Top, f);
+        assert_eq!(zero.w, def.w, "0 必须退回档位默认，不能把盒子算成空");
+        assert_eq!(nan.w, def.w, "NaN 同理");
+    }
+
     #[test]
     fn manual_pos_is_center_and_converts_to_box_corner() {
         let f = Frame::new(1920, 1080);
