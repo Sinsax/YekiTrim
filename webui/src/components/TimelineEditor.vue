@@ -366,13 +366,27 @@
             <!-- 贴纸：行递进三段（包 → 分类 → 贴纸），见 polish/StickerPicker.vue -->
             <!-- 统一视觉元素：kind 分派 text / sticker -->
             <template v-else-if="selItem.type === 'element'">
-              <!-- **逐块手动落点**：点了它就在预览上点一下，这一块的**中心**落到那儿；手动之后自动落点不再影响它。 -->
+              <!-- **逐块手动落点**：点「改落点」→ 在预览上**拖动** → 按「保存落点」才生效（草稿态）。 -->
               <div class="row mt-4 gap-6">
-                <button class="mini-btn" title="在预览上点一下，把这一块的中心放到那儿"
-                        @click="startManualPick">改落点</button>
-                <button v-if="evManualPos" class="mini-btn" title="清掉手动落点，交回自动（安全区算法）"
-                        @click="clearManualPos">恢复自动</button>
-                <span v-if="manualPick" class="muted small">在预览上点一下…</span>
+                <button v-if="!manualPick" class="mini-btn flex-1 jc-center"
+                        title="在预览上拖动这一块的位置（草稿态，保存后才落盘）" @click="startManualPick">改落点</button>
+                <div v-else class="mono small">{{ manualDraftPct }}</div>
+              </div>
+              <div v-if="manualPick" class="row mt-4 gap-6">
+                <button class="mini-btn primary" title="把这一块的中心定在这个位置（写入 manual_pos）"
+                        @click="saveManualPos">保存落点</button>
+                <button class="mini-btn" @click="cancelManualPick">取消</button>
+              </div>
+              <div v-else-if="evManualPos" class="row mt-4 gap-6">
+                <button class="mini-btn" title="清掉手动落点，交回自动（安全区算法）" @click="clearManualPos">恢复自动</button>
+              </div>
+              <div v-if="manualPick" class="row mt-4 gap-6">
+                <button class="mini-btn primary" title="把这一块的中心定在这个位置（写入 manual_pos）"
+                        @click="saveManualPos">保存落点</button>
+                <button class="mini-btn" @click="cancelManualPick">取消</button>
+              </div>
+              <div v-else-if="evManualPos" class="row mt-4 gap-6">
+                <button class="mini-btn" title="清掉手动落点，交回自动（安全区算法）" @click="clearManualPos">恢复自动</button>
               </div>
               <!-- ---- ⚠️⚠️ **「元素种类」下拉已删除**（2026-10-14）----
                    用户口径：「**前端编辑器也要分离**」。
@@ -2508,10 +2522,42 @@ const dirty = { segments: false, subtitles: false, mute: false, edl: false }
  *  ⚠️ 事件数据归**本组件**（它是落盘方）⇒ 点选态住在这里；预览那边只负责"要不要接收点击"，
  *  由页面经 `point-pick` 转达 —— 别把落盘散到页面上去（那是"两份写同一份文件"的老坑）。 */
 const manualPick = ref(false)
+/** 拖动中的**草稿**（盒子中心百分比）。⚠️ 只在这里攒着，**按「保存落点」才写进事件** ——
+ *  用户口径（2026-10-17）：「可以拖动位置，面板上确定位置，而不是点一下就确定了」。 */
+const manualDraft = ref({ x: 50, y: 50 })
+const manualDraftPct = computed(() => `${Math.round(manualDraft.value.x)}% ${Math.round(manualDraft.value.y)}%`)
 const evManualPos = computed(() => String(selectedEv.value?.manual_pos || ''))
 
-function startManualPick() { manualPick.value = true; emit('point-pick', true) }
-function stopManualPick() { manualPick.value = false; emit('point-pick', false) }
+/** 进编辑态：草稿从已有 `manual_pos` 起；没有就退到事件当前的 `x`/`y` 当近似起点（随即可拖）。 */
+function startManualPick() {
+  const ev = selectedEv.value
+  if (!ev) return
+  const mp = String(ev.manual_pos || '').trim()
+  const m = /^(-?\d+(?:\.\d+)?)%?\s+(-?\d+(?:\.\d+)?)%?$/.exec(mp)
+  if (m) manualDraft.value = { x: Number(m[1]), y: Number(m[2]) }
+  else {
+    const gx = parseFloat(String(ev.x ?? '').replace(/%$/, ''))
+    const gy = parseFloat(String(ev.y ?? '').replace(/%$/, ''))
+    manualDraft.value = { x: Number.isFinite(gx) ? gx : 50, y: Number.isFinite(gy) ? gy : 50 }
+  }
+  manualPick.value = true
+  emit('point-pick', true)
+}
+
+/** **只有这里**写 `manual_pos`（面板确认 ✔）；写完退出编辑态。 */
+function saveManualPos() {
+  const ev = selectedEv.value
+  if (ev) {
+    ev.manual_pos = manualDraftPct.value
+    touch(dirtyKindOf(selected.value?.kind))
+  }
+  cancelManualPick()
+}
+
+function cancelManualPick() {
+  manualPick.value = false
+  emit('point-pick', false)
+}
 
 /** 「恢复自动」：把键**删掉**（不是写空串 —— 空串是"有值但认不出"，会被当成脏值告警）。 */
 function clearManualPos() {
@@ -2521,14 +2567,10 @@ function clearManualPos() {
   touch(dirtyKindOf(selected.value?.kind))
 }
 
+// 预览上的**拖动**只更新草稿（`seq` 每 +1 代表一次新的指针位置）—— **绝不落盘** ✔
 watch(() => props.pointResult?.seq, () => {
-  if (!manualPick.value) return
-  const ev = selectedEv.value
-  if (!ev || !props.pointResult) { stopManualPick(); return }
-  const p = props.pointResult
-  ev.manual_pos = `${Math.round(p.x)}% ${Math.round(p.y)}%`
-  touch(dirtyKindOf(selected.value?.kind))
-  stopManualPick()
+  if (!manualPick.value || !props.pointResult) return
+  manualDraft.value = { x: props.pointResult.x, y: props.pointResult.y }
 })
 const saveState = ref('')   // '' | 'saving' | 'ok' | 'err'
 const saveErr = ref('')
