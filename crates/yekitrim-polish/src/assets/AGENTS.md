@@ -32,8 +32,11 @@
   `download_images_by_codepoints`、`collect_keywords(segments)`。
   ⚠️ `grouped()` 是**两级**的：情绪只有 `neutral`（或没有情绪）的按 `object` 的第一个取值分组 ——
   只按情绪会得到 430/881（49%）的 `neutral` 巨组，旗子/房子/工具全挤在里面。判据钉「最大组 ≤ 1/4」。
-  ⚠️ 它也是**内建 emoji 包**的数据源：`sticker_index::{BUILTIN_EMOJI_PACK, is_known_pack_source, builtin_meta}`
-  把它按贴纸包协议接出来（tag = `维度:取值`、文件 = `<码点>.gif`），**磁盘有同名目录时磁盘赢**。
+  ⚠️ 它也是**内建 emoji 包**的数据源：`sticker_index::{BUILTIN_EMOJI_PACK, is_reserved_pack_name,
+  is_known_pack_source, builtin_meta}` 把它按贴纸包协议接出来（tag = `维度:取值`、文件 = `<码点>.gif`）。
+  ⚠️ **`emoji` 是保留名、内建永远赢**（用户口径：分类交给程序处理，不给用户重建和更改的权限）：
+  `sanitize_pack_name` 拒绝它（上传/目录导入建不出同名包）、`scan_packages` 跳过同名目录、
+  `load_package_meta` 对保留名直接给内建那份（磁盘 TOML 不算数）、`builtin_meta` **不看磁盘**（没有 root 参数）。
 - `irasu_search`：`download_images` / `resolve_image_urls` / `collect_keywords(segments)`、`PLACEHOLDER_PNG`。
 - `downloader`：`AssetDownloader::{new, download_stickers, …}`、`DownloadReport { sticker_downloaded, sticker_existing, sfx_downloaded, sfx_existing, errors }`、`collect_sfx_ids(segments)`。
 

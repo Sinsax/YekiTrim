@@ -356,11 +356,6 @@ pub enum PolishAction {
         #[command(subcommand)]
         action: StickerAction,
     },
-    /// 内建 emoji 目录工具（**开发期**：多维分类写回仓库里的 JSON）
-    Emoji {
-        #[command(subcommand)]
-        action: EmojiAction,
-    },
 }
 
 /// 字体库子命令（见 `docs/plan/font-library.md`）
@@ -403,31 +398,11 @@ pub enum StickerAction {
     },
 }
 
-/// 内建 emoji 目录子命令。
-///
-/// ⚠️ 它是**开发期工具**，不是产品功能：emoji 目录经 `include_str!` 编进二进制
-/// （`emoji_search.rs`），所以「重新分类」只能改**仓库里的那个 JSON** 再重编译。
-#[derive(Subcommand)]
-pub enum EmojiAction {
-    /// 用 LLM 把目录重新做六维分类（写回仓库里的 assets/emoji_catalog.json）
-    Build {
-        /// 目录 JSON 路径（默认取编译期的 crates/yekitrim-polish/assets/emoji_catalog.json）
-        #[arg(long)]
-        catalog: Option<std::path::PathBuf>,
-        /// 只跑不写盘（先看覆盖表再决定）
-        #[arg(long)]
-        dry_run: bool,
-        /// 只处理前 N 条（试跑用；不写盘也建议配它）
-        #[arg(long)]
-        limit: Option<usize>,
-        /// 丢掉旧 tag（默认**保留**：老工程的 keyword 靠它才能继续命中）
-        #[arg(long)]
-        drop_legacy_tags: bool,
-        /// 连已经分类过的条目一起重做（默认**增量**：跳过已有 dim 的）
-        #[arg(long)]
-        all: bool,
-    },
-}
+// ⚠️ **内建 emoji 分类没有 CLI 入口**（2026-10-17 用户口径：分类是内建的、交给程序处理，
+//    不给用户重建和更改的权限）。作者要重跑分类就走 `commands::cmd_emoji_build` 的
+//    `#[ignore]` 开发入口（它写的是**仓库里的** assets/emoji_catalog.json = 编译期输入）：
+//      VT_EMOJI_BUILD=1 cargo test -p yekitrim-polish --lib emoji_build_dev_tool -- --ignored --nocapture
+//    发行二进制里那个路径不存在，所以就算有人想调也调不了。
 
 pub fn stage_name(num: u32) -> &'static str {
     match num {
