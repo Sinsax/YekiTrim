@@ -346,6 +346,53 @@ Command::Config(action) => match action {
             ConfigAction::Show => {
                 println!("{}", yekitrim_service::show_config(global_config.as_deref())?);
             }
+            ConfigAction::Migrate { paths } => {
+                // ⚠️ **为什么需要这条命令**：工程级配置（`yekitrim.toml` / `polish.toml`）按设计
+                //    **只在内存里升、不写回磁盘**（工程可能几百个、还可能在网络盘上）⇒ 那几个
+                //    已下线的键会**永远留在文件里**，每次读都重新发现它。程序照常跑（迁移在内存里），
+                //    但用户需要一个"按一下就真的清掉"的出口 —— 就是这一条。
+                //    ⚠️ 清之前每个文件都会留 `.bak-v<旧>`（原样回退的唯一手段）。
+                let mut targets: Vec<std::path::PathBuf> = Vec::new();
+                if paths.is_empty() {
+                    let home = yekitrim_core::path::yekitrim_home();
+                    targets.push(home.join("config.toml"));
+                    targets.push(home.join("llm.toml"));
+                } else {
+                    for p in paths {
+                        if p.is_dir() {
+                            targets.push(p.join("yekitrim.toml"));
+                            targets.push(p.join("polish.toml"));
+                        } else {
+                            targets.push(p.clone());
+                        }
+                    }
+                }
+                let (mut cleaned_total, mut failed) = (0usize, 0usize);
+                for target in targets {
+                    let shown = yekitrim_core::path::display(&target);
+                    if !target.is_file() {
+                        println!("· 跳过（文件不存在）：{shown}");
+                        continue;
+                    }
+                    match yekitrim_core::config::clean_retired_keys_in(&target) {
+                        Ok(keys) if keys.is_empty() => println!("✓ 无需改动：{shown}"),
+                        Ok(keys) => {
+                            cleaned_total += keys.len();
+                            println!("✓ {shown} 清掉了 {} 个没人读的键：{}", keys.len(), keys.join(" / "));
+                        }
+                        Err(e) => {
+                            failed += 1;
+                            println!("✗ {shown} 处理失败：{e:#}");
+                        }
+                    }
+                }
+                if failed == 0 {
+                    println!("（本次共清掉 {cleaned_total} 个键；原文件都留了 .bak-v<旧版本> 备份）");
+                } else {
+                    // ⚠️ 有失败就**非零退出**：脚本里 `config migrate && 下一步` 才有意义。
+                    anyhow::bail!("有 {failed} 个文件没处理成功（见上面的 ✗）");
+                }
+            }
         },
 
 Command::Silence { files, duration, threshold } => {
@@ -430,29 +477,7 @@ Command::Polish(action) => {
                         }
                     }
                 }
-                cli::PolishAction::Emoji { action } => match action {
-                    cli::EmojiAction::Build { catalog, dry_run, limit, drop_legacy_tags, all } => {
-                        let r = commands::cmd_emoji_build(
-                            catalog.clone(),
-                            *dry_run,
-                            *limit,
-                            *drop_legacy_tags,
-                            *all,
-                        )
-                        .await?;
-                        // **覆盖表**是这条命令的产出之一（不是装饰）：闭合性判据 = 每个取值至少 1 条，
-                        // 零覆盖的取值意味着"LLM 能写但一定选不到"，要在合并词表之前处理掉。
-                        let zero: Vec<&String> = r.coverage.iter().filter(|(_, n)| *n == 0).map(|(k, _)| k).collect();
-                        tracing::info!("  📊 覆盖：{} 个取值 / 其中 {} 个零覆盖", r.coverage.len(), zero.len());
-                        if !zero.is_empty() {
-                            tracing::info!("  ⚠ 零覆盖（写了也选不到）: {}", zero.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(" "));
-                        }
-                        if !r.dropped.is_empty() {
-                            tracing::info!("  ⚠ 词表外的取值（已丢弃）{} 条: {}", r.dropped.len(), r.dropped.join(" "));
-                        }
-                        tracing::info!("  ✓ 分类完成：{}/{} 条，{} 批", r.classified, r.total, r.batches);
-                    }
-                },
+                // ⚠️ 内建 emoji 分类**没有 CLI 面**（用户无权重建/更改，见 cli.rs 里那条注释）
             }
         }
         Command::Fonts(action) => match action {

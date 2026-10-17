@@ -165,3 +165,19 @@
   被 `check_module_boundaries.py` 当场抓住 —— 写 JSON 要 `newline='\n'`。
 - **零覆盖取值 1 个**：`action.salute`（🫡 `1fae1` 在目录里，模型没给）。判据允许 ≤5%。
 - `process/download.rs` 的 `search_best` 接线**未提交**（与作者的存量 WIP 同文件，hunk 拆分被 git 判 corrupt）。
+
+### 口径变更（2026-10-17）：分类是程序资产，用户无权重建/更改
+
+用户原话：「emoji 包的分类作为内建，交给程序处理，**不给用户重建和更改的权限**」。落地为四条：
+
+1. **没有 CLI 面**：`polish emoji build` 整条移除（`EmojiAction` 枚举删掉）。重跑分类只剩作者入口 ——
+   `VT_EMOJI_BUILD=1 cargo test -p yekitrim-polish --lib emoji_build_dev_tool -- --ignored --nocapture`；
+   而它写的是**编译期输人**（仓库里的 JSON），发行二进制里那个路径不存在 ⇒ 用户侧物理上也调不了。
+2. **保留名**：`sanitize_pack_name("emoji")` → `None`（上传 zip / 目录导入都建不出同名包）；
+   `scan_packages` 跳过名为 `emoji` 的目录（手建也不进包列表）。
+3. **内建永远赢**：`load_package_meta` 对保留名直接返回内建 meta（磁盘同名 TOML 不算数）；
+   `builtin_meta` **不再让位给磁盘**（并且去掉了 `root` 参数 —— 它不看磁盘）。
+4. **两个判据各司其职**：`is_package_source`（纯磁盘，`validate::fill_default_local_packages` 用它判
+   "已经有本地包了、别再自动补"）对保留名恒为 false；`is_known_pack_source`（磁盘 ∪ 内建）为 true。
+
+判据：`builtin_pack_cannot_be_created_or_overridden`（四条断言 + 三处变异自证）。

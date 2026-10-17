@@ -256,7 +256,9 @@ pub fn is_builtin_pack(name: &str) -> bool {
 /// 让内建包算进去，`sources = ["emoji"]` 的工程就**不再自动补入已 build 的包**了 ——
 /// 那是静默的行为变更，不是这次要做的事。磁盘判据保持原样，这一条给"注入候选文本"用。
 pub fn is_known_pack_source(root: &Path, source: &str) -> bool {
-    is_package_source(root, source) || (is_builtin_pack(source) && root.join(source).is_dir() == false)
+    // ⚠️ 内建包与"磁盘上有没有同名目录"**无关**了：分类归程序所有，磁盘目录既不能顶掉它、
+    //    也不许出现（保留名，见 `is_reserved_pack_name`）。
+    is_package_source(root, source) || is_builtin_pack(source)
 }
 
 /// 内建包 → **合成一份 `StickerPackageMeta`**（tag → 文件列表）。
@@ -267,8 +269,13 @@ pub fn is_known_pack_source(root: &Path, source: &str) -> bool {
 ///
 /// ⚠️ tag 带维度前缀是**有意的**：候选清单于是与"LLM 该写的查询串"**同一套写法**，
 /// 不用在提示词里再教一遍"清单里的 joy 要写成 emotion:joy"。
-pub fn builtin_meta(root: &Path, name: &str) -> Option<StickerPackageMeta> {
-    if !is_builtin_pack(name) || root.join(name).is_dir() {
+///
+/// ⚠️ **不看磁盘**（所以没有 `root` 参数）：内建分类是程序资产，用户无权更改也不许顶掉。
+pub fn builtin_meta(name: &str) -> Option<StickerPackageMeta> {
+    // ⚠️ **内建永远赢**（用户口径：分类归程序所有）：以前这里写的是 `|| root.join(name).is_dir()`
+    //    —— 那样用户手建一个 `stickers/emoji/` 目录就能顶掉内建的 881 条分类，等于给了更改权限。
+    //    现在保留名连建都建不出来（见 `is_reserved_pack_name`），这里也不再让位。
+    if !is_builtin_pack(name) {
         return None;
     }
     let cat = crate::assets::emoji_search::EmojiCatalog::fetch_embedded().ok()?;
@@ -297,17 +304,17 @@ pub fn builtin_meta(root: &Path, name: &str) -> Option<StickerPackageMeta> {
     })
 }
 
-/// 读取 `stickers/<包名>.toml` 元数据（磁盘没有就回落**内建包**）。
+/// 读取 `stickers/<包名>.toml` 元数据。
+///
+/// ⚠️ **保留名（现在是 `emoji`）一律由程序给出**，磁盘上就算有同名 TOML 也不用 ——
+/// 用户口径（2026-10-17）：内建 emoji 包的分类"交给程序处理，不给用户重建和更改的权限"。
 pub fn load_package_meta(root: &Path, package_name: &str) -> Option<StickerPackageMeta> {
-    let path = root.join(format!("{package_name}.toml"));
-    if let Ok(raw) = std::fs::read_to_string(&path) {
-        if let Ok(meta) = toml::from_str(&raw) {
-            return Some(meta);
-        }
+    if is_builtin_pack(package_name) {
+        return builtin_meta(package_name);
     }
-    // 磁盘上没有（或坏了）⇒ 内建包。
-    // ⚠️ 顺序不能反：磁盘上有 `emoji.toml` 时**以磁盘为准**（有人手工建过同名包）。
-    builtin_meta(root, package_name)
+    let path = root.join(format!("{package_name}.toml"));
+    let raw = std::fs::read_to_string(&path).ok()?;
+    toml::from_str(&raw).ok()
 }
 
 /// 将 `StickerPackageMeta` 序列化为 TOML 字符串。
@@ -362,6 +369,12 @@ pub fn register_package(root: &Path, package_name: &str) -> anyhow::Result<()> {
 
 /// 判断 `sticker_source` 中的某项是否表示本地贴纸包（具体包名）。
 pub fn is_package_source(root: &Path, source: &str) -> bool {
+    // ⚠️ 保留名（`emoji`）**不算本地包**：它不是磁盘目录、也不是用户能管的包。
+    //    这条判据的消费点是 `validate::fill_default_local_packages`（"已经有本地包了、别再自动补"）——
+    //    保留名在这里必须为假，自动补包的行为才与从前一致。
+    if is_reserved_pack_name(source) {
+        return false;
+    }
     let dir = root.join(source);
     dir.is_dir()
 }
@@ -393,6 +406,14 @@ pub fn is_safe_component(s: &str) -> bool {
         && !is_windows_reserved(s)
 }
 
+/// 包名是不是**保留名**（内建包占用，用户不能建同名的磁盘包）。
+///
+/// 现在只有一个：`emoji` —— 它的分类（六维词表 + 881 条标签）是**程序资产**
+/// （编译期内嵌 `assets/emoji_catalog.json`），用户既不能重建也不能改。
+pub fn is_reserved_pack_name(name: &str) -> bool {
+    name.trim() == BUILTIN_EMOJI_PACK
+}
+
 /// 包名规范化：字母/数字（含汉字、假名等 Unicode 字母）、`_`、`-`，1~32 字符。
 ///
 /// 包名会变成目录名、`<包名>.toml` 文件名、LLM prompt 里的候选名，也是接口的路径参数，
@@ -400,6 +421,12 @@ pub fn is_safe_component(s: &str) -> bool {
 pub fn sanitize_pack_name(raw: &str) -> Option<String> {
     let name = raw.trim();
     if name.is_empty() || name.starts_with('.') || name.chars().count() > 32 {
+        return None;
+    }
+    // ⚠️ **保留名**（2026-10-17，用户口径：内建 emoji 包的分类"交给程序处理、不给用户重建和更改的权限"）：
+    //    `emoji` 是内建包的包名，任何"上传 / 目录导入 / 手工建目录"都不许占用它 ——
+    //    否则用户能拿一个同名磁盘包**顶掉**内建的 881 条分类（那正是"更改权限"）。
+    if is_reserved_pack_name(name) {
         return None;
     }
     let ok = name
@@ -823,6 +850,11 @@ pub fn scan_packages(root: &Path) -> Vec<StickerPackage> {
         if name.starts_with('.') || name == "backup" {
             continue;
         }
+        // 保留名（内建包）不参与"磁盘包"列表 —— 它由 `builtin_meta` 提供；
+        // 手建同名目录也不许出现在包列表里（用户无权更改内建分类）。
+        if is_reserved_pack_name(&name) {
+            continue;
+        }
         let mut files: Vec<PathBuf> = Vec::new();
         if let Ok(file_entries) = std::fs::read_dir(&dir) {
             let mut file_paths: Vec<PathBuf> = file_entries
@@ -982,7 +1014,7 @@ pub fn local_sticker_candidates_text(root: &Path) -> String {
     // （包名 + 标签 + tag 内挑文件），但标签是 `「维度:取值」`（`emotion:joy`）——
     // 所以这一行按维度压成几行、只报每档张数，取值本身在「内建 emoji 词表」那段里，
     // 不在这里重复一百多次。
-    if let Some(meta) = builtin_meta(root, BUILTIN_EMOJI_PACK) {
+    if let Some(meta) = builtin_meta(BUILTIN_EMOJI_PACK) {
         let mut uniq: std::collections::HashSet<&str> = std::collections::HashSet::new();
         let mut per_dim: std::collections::BTreeMap<&str, Vec<String>> =
             std::collections::BTreeMap::new();
@@ -1612,8 +1644,8 @@ mod tests {
     /// （候选清单与 LLM 要写的查询串就对不上了）。
     #[test]
     fn builtin_emoji_pack_speaks_the_pack_protocol() {
-        let (_t, root) = temp_sticker_dir();
-        let meta = builtin_meta(&root, BUILTIN_EMOJI_PACK).expect("内建包应当合成得出 meta");
+        let (_t, _root) = temp_sticker_dir();
+        let meta = builtin_meta(BUILTIN_EMOJI_PACK).expect("内建包应当合成得出 meta");
         assert_eq!(meta.name, BUILTIN_EMOJI_PACK);
         assert!(!meta.tags.is_empty());
         for t in &meta.tags {
@@ -1641,17 +1673,22 @@ mod tests {
         assert!(tag_files(&meta, "emotion:definitely-not-a-value").is_empty());
     }
 
-    /// **磁盘赢**：建出 stickers/emoji/ + emoji.toml 之后，内建包必须让位。
+    /// **内建包归程序所有**（2026-10-17 用户口径：分类"交给程序处理，不给用户重建和更改的权限"）：
+    /// 就算磁盘上真有一个同名目录 + 同名 TOML，也**顶不掉**它，而且那个名字连建都建不出来。
     ///
-    /// 变异自证：把 builtin_meta 里那句 root.join(name).is_dir() 判断去掉 → 第二条断言红。
+    /// 变异自证：
+    ///  · 把 `sanitize_pack_name` 里那句保留名判断去掉 ⇒ 第一条断言红（用户又能建同名包了）；
+    ///  · 把 `load_package_meta` 改回"先读磁盘"⇒ 第三条断言红（磁盘 TOML 会盖住内建分类）；
+    ///  · 把 `scan_packages` 的跳过去掉 ⇒ 第四条断言红（同名目录会出现在包列表里）。
     #[test]
-    fn disk_wins_over_the_builtin_pack() {
+    fn builtin_pack_cannot_be_created_or_overridden() {
         let (_t, root) = temp_sticker_dir();
-        assert!(builtin_meta(&root, BUILTIN_EMOJI_PACK).is_some());
-        // ⚠️ 磁盘判据**不认**内建包（有意的：validate 拿它判"已经有包了、别再自动补"）
-        assert!(!is_package_source(&root, BUILTIN_EMOJI_PACK));
-        // 「有没有包」这一问要认内建
-        assert!(is_known_pack_source(&root, BUILTIN_EMOJI_PACK));
+        // ① 保留名：上传 / 目录导入都建不出来
+        assert!(
+            sanitize_pack_name(BUILTIN_EMOJI_PACK).is_none(),
+            "内建包的包名必须被保留，用户不许建同名包"
+        );
+        // ② 占用同样的名字（手工造目录 + TOML + 一张图）
         std::fs::create_dir_all(root.join(BUILTIN_EMOJI_PACK)).unwrap();
         std::fs::write(root.join(BUILTIN_EMOJI_PACK).join("x.gif"), b"GIF89a").unwrap();
         std::fs::write(
@@ -1659,12 +1696,22 @@ mod tests {
             "name = \"emoji\"\ndescription = \"手工建的\"\n\n[[tags]]\ntag = \"mine\"\nfiles = [\"x.gif\"]\n",
         )
         .unwrap();
+        // ③ 元数据仍然是内建那份（磁盘 TOML 不算数）
+        let meta = load_package_meta(&root, BUILTIN_EMOJI_PACK).expect("内建 meta");
         assert!(
-            builtin_meta(&root, BUILTIN_EMOJI_PACK).is_none(),
-            "磁盘上有同名包时不许再合成"
+            meta.description.contains("内建"),
+            "磁盘上的同名 TOML 不许盖住内建分类，实际: {}",
+            meta.description
         );
-        let meta = load_package_meta(&root, BUILTIN_EMOJI_PACK).expect("磁盘 meta");
-        assert_eq!(meta.description, "手工建的");
+        assert!(meta.tags.len() > 20, "内建 meta 应当是整套分类，实际 {} 个 tag", meta.tags.len());
+        // ④ 同名目录不进"磁盘包"列表
+        assert!(
+            !scan_packages(&root).iter().any(|p| p.name == BUILTIN_EMOJI_PACK),
+            "保留名目录不许出现在包列表里"
+        );
+        // ⑤ 两个判据各司其职：磁盘判据不认它，但"有没有包"认它
+        assert!(!is_package_source(&root, BUILTIN_EMOJI_PACK));
+        assert!(is_known_pack_source(&root, BUILTIN_EMOJI_PACK));
     }
 
     /// 候选文本里**必须出现内建包**（哪怕一个磁盘包都没有）——
