@@ -360,6 +360,27 @@ pub async fn download_images(
     (downloaded, existing)
 }
 
+/// `cp` 能不能当"下载键"用 —— **多码点序列（`203c_fe0f`）必须放行**。
+///
+/// ⚠️⚠️ 判据要**逐段**看：目录 881 条里 **343 条**是多码点（`_` 分隔）。
+/// 写成 `cp.chars().all(|c| c.is_ascii_hexdigit())` 会把它们**整批静默丢掉**
+/// （走 `continue`，一条日志都没有）—— 而调用点 `downloader.rs` 刚刚**特意**把
+/// `_` 放行（那里的注释写着"否则 39% 的表情会退回按 keyword 搜首个"），
+/// 于是两边各自看都对：调用点以为传进来了，这里一声不响地不要。
+///
+/// 症状链（2026-10-17 实测）：`([], 0)` ⇒ `<片段>/assets/stickers/` 里没有这个文件
+/// ⇒ 转译器 `findStickerFile` 找不到 → **DROP**（成片里没有它）
+/// ⇒ DOM 预览 `stickerSrc` 返回空 → 退回 `<span>{{ st.emoji }}</span>`（**静态字符**）。
+/// 用户看到的就是"表情是静态的"。
+///
+/// 文件名本身就带 `_`（`203c_fe0f.gif`），与 `index.html` / `engine.js::safeEmoji`
+/// 的解码口径一致。
+fn is_downloadable_key(cp: &str) -> bool {
+    !cp.is_empty()
+        && cp.split('_')
+            .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
 /// 下载指定 codepoint 的 emoji GIF (process 已解析出具体 codepoint 时用, 保证与 name 一致)
 /// 返回 (新下载文件列表, 已存在文件数)
 pub async fn download_images_by_codepoints(
@@ -370,7 +391,7 @@ pub async fn download_images_by_codepoints(
     let mut downloaded = vec![];
     let mut existing = 0;
     for cp in codepoints {
-        if cp.is_empty() || !cp.chars().all(|c| c.is_ascii_hexdigit()) {
+        if !is_downloadable_key(cp) {
             continue;
         }
         let path = dest_dir.join(format!("{}.gif", cp));
@@ -481,6 +502,48 @@ mod tests {
         );
     }
 
+    /// **面板的「分类」页必须是用户的 LLM 分类标签，不是官方短名**（2026-10-17 修）。
+    ///
+    /// 这条抓的是一个真实事故：`grouped()` 原先遍历 `index`，而 `index` 里**同时**装着
+    /// 作者的 `tag` 与官方 `shortcodes`（`:smile:` → `smile`、`:1st-place-medal:` →
+    /// `1st-place-medal`）⇒ 面板「分类」页变成 **686 个**短名（`!!` / `+1` / `100` /
+    /// `1st-place-medal`…），作者那套分类被淹没在里面（用户报的就是这个）。
+    /// 修法 = `tag_index`（**只由 `tag` 建**）+ `grouped()` 只认它。
+    ///
+    /// ⚠️ 判据钉的是**形状**（分类标签一律以字母开头，官方短名常以数字/符号开头），
+    /// 不是条数 —— 重新分类时条数会变，但"短名混进来"永远是错的。
+    /// **变异自证**：把 `grouped()` 里的 `src` 换回 `&self.index` ⇒ 当场红。
+    #[test]
+    fn emoji_panel_groups_are_llm_tags_not_official_shortcodes() {
+        let cat = EmojiCatalog::fetch_embedded().expect("内嵌目录");
+        let groups = cat.grouped();
+        let bad: Vec<&String> = groups
+            .iter()
+            .map(|(t, _)| t)
+            .filter(|t| !t.starts_with(|c: char| c.is_ascii_lowercase()))
+            .collect();
+        assert!(
+            bad.is_empty(),
+            "「分类」页混进了 {} 个官方短名（应当只按 LLM tag 分组）: {:?}",
+            bad.len(),
+            &bad[..bad.len().min(8)]
+        );
+        assert!(
+            groups.len() < 200,
+            "分类有 {} 组 —— 正常是几十组（用户那套分类）；上百组基本就是短名又漏进来了",
+            groups.len()
+        );
+        // 打印一次，肉眼可控（`--nocapture` 时可见）
+        let mut names: Vec<&String> = groups.iter().map(|(t, _)| t).collect();
+        names.sort();
+        println!(
+            "grouped() = {} 组，目录 {} 条：{:?} …",
+            groups.len(),
+            cat.all().len(),
+            &names[..names.len().min(10)]
+        );
+    }
+
     /// 面板上点一个码点 → `name` 就是这个字符串 ⇒ 它必须能被 `search()` 反查回来。
     /// （点完下次打开面板，选中态要认得出来。）
     #[test]
@@ -494,6 +557,45 @@ mod tests {
         assert!(
             hits.contains(cp),
             "组 {tag:?} 的第一个码点 {cp} 用同一个 tag 反查不到（面板选中态会失效）"
+        );
+    }
+
+    /// **自动下载那条路的入口判据**：目录里每一条都要能被下载器认下来。
+    ///
+    /// ⚠️ 这条抓的是"面板上有、项目里没有"：认不下来就 `continue`（**静默**），
+    /// 于是 GIF 从没落进 `<片段>/assets/stickers/` ⇒ 转译器 DROP、DOM 预览退回静态字符。
+    /// **变异自证**：把 `is_downloadable_key` 换回老写法
+    /// `!cp.is_empty() && cp.chars().all(|c| c.is_ascii_hexdigit())` ⇒ 当场红（343 条）。
+    #[test]
+    fn every_catalog_codepoint_is_downloadable() {
+        let cat = EmojiCatalog::fetch_embedded().expect("内嵌目录应当解得开");
+        let bad: Vec<&String> = cat
+            .all()
+            .iter()
+            .filter(|c| !is_downloadable_key(c))
+            .collect();
+        assert!(
+            bad.is_empty(),
+            "这些码点下载器不认（会被**静默**丢弃，成片缺图）: {bad:?}"
+        );
+        // 多码点那 343 条正是这条用例的意义所在 —— 一条都没有就说明目录退化了、用例在空转。
+        let seq = cat.all().iter().filter(|c| c.contains('_')).count();
+        assert!(seq > 100, "目录里应当有三百多条多码点序列，实测 {seq}");
+    }
+
+    /// 判据本身的正反面（不依赖目录内容）。
+    #[test]
+    fn downloadable_key_accepts_sequences_and_rejects_junk() {
+        for ok in ["1f62d", "203c_fe0f", "1f642_200d_2195_fe0f"] {
+            assert!(is_downloadable_key(ok), "{ok:?} 应当可下载");
+        }
+        for bad in ["", "_", "abc_", "_abc", "zz", "1f_zz", "1f62d_", " 1f62d"] {
+            assert!(!is_downloadable_key(bad), "{bad:?} 不该被当成码点");
+        }
+        // ⚠️ **别把老写法当等价物**：这正是那次静默丢失的形状。
+        assert!(
+            !"203c_fe0f".chars().all(|c| c.is_ascii_hexdigit()),
+            "老写法对多码点是 false —— 它就是 343 条被丢的原因"
         );
     }
 }
