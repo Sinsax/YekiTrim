@@ -366,19 +366,18 @@
             <!-- 贴纸：行递进三段（包 → 分类 → 贴纸），见 polish/StickerPicker.vue -->
             <!-- 统一视觉元素：kind 分派 text / sticker -->
             <template v-else-if="selItem.type === 'element'">
-              <!-- **逐块手动落点**：点「改落点」→ 在预览上**拖动** → 按「保存落点」才生效（草稿态）。 -->
+              <!-- **逐块手动落点**（改落点与恢复自动**同一行**，用户口径 2026-10-17）：点「改落点」→ 预览上拖动 →「保存落点」才生效。 -->
               <div class="row mt-4 gap-6">
                 <button v-if="!manualPick" class="mini-btn flex-1 jc-center"
                         title="在预览上拖动这一块的位置（草稿态，保存后才落盘）" @click="startManualPick">改落点</button>
-                <div v-else class="mono small">{{ manualDraftPct }}</div>
+                <div v-if="manualPick" class="mono small">{{ manualDraftPct }}</div>
+                <button v-if="evManualPos" class="mini-btn" title="清掉手动落点，交回自动（安全区算法）"
+                        @click="clearManualPos">恢复自动</button>
               </div>
               <div v-if="manualPick" class="row mt-4 gap-6">
                 <button class="mini-btn primary" title="把这一块的中心定在这个位置（写入 manual_pos）"
                         @click="saveManualPos">保存落点</button>
                 <button class="mini-btn" @click="cancelManualPick">取消</button>
-              </div>
-              <div v-else-if="evManualPos" class="row mt-4 gap-6">
-                <button class="mini-btn" title="清掉手动落点，交回自动（安全区算法）" @click="clearManualPos">恢复自动</button>
               </div>
               <!-- ---- ⚠️⚠️ **「元素种类」下拉已删除**（2026-10-14）----
                    用户口径：「**前端编辑器也要分离**」。
@@ -619,19 +618,18 @@
             </template>
 
             <template v-else-if="selItem.type === 'sticker'">
-              <!-- **逐块手动落点**：点「改落点」→ 在预览上**拖动** → 按「保存落点」才生效（草稿态）。 -->
+              <!-- **逐块手动落点**（改落点与恢复自动**同一行**，用户口径 2026-10-17）：点「改落点」→ 预览上拖动 →「保存落点」才生效。 -->
               <div class="row mt-4 gap-6">
                 <button v-if="!manualPick" class="mini-btn flex-1 jc-center"
                         title="在预览上拖动这一块的位置（草稿态，保存后才落盘）" @click="startManualPick">改落点</button>
-                <div v-else class="mono small">{{ manualDraftPct }}</div>
+                <div v-if="manualPick" class="mono small">{{ manualDraftPct }}</div>
+                <button v-if="evManualPos" class="mini-btn" title="清掉手动落点，交回自动（安全区算法）"
+                        @click="clearManualPos">恢复自动</button>
               </div>
               <div v-if="manualPick" class="row mt-4 gap-6">
                 <button class="mini-btn primary" title="把这一块的中心定在这个位置（写入 manual_pos）"
                         @click="saveManualPos">保存落点</button>
                 <button class="mini-btn" @click="cancelManualPick">取消</button>
-              </div>
-              <div v-else-if="evManualPos" class="row mt-4 gap-6">
-                <button class="mini-btn" title="清掉手动落点，交回自动（安全区算法）" @click="clearManualPos">恢复自动</button>
               </div>
               <StickerPicker :lib="stickerLib" :lib-error="stickerLibError" :pid="pid" :dir="dir"
                              :pack="selItem.keyword || ''" :tag="selItem.sticker_tag || ''"
