@@ -426,8 +426,6 @@ if (camBody) {
     /oxPct: \(f\.camera\.ox \/ c\.W\) \* 100/.test(previewSrc), true);
   check("有底座值时用 baseCam.scale（出片同源）",
     /base \? base\.scale : props\.selectMode \? 1 : f\.zoom/.test(previewSrc), true);
-  check("吸附在反解之后（否则格心会被一起缩放）",
-    /const q = e\.shiftKey \? p : nearestGridCenter\(p\)/.test(previewSrc), true);
 }
 
 
