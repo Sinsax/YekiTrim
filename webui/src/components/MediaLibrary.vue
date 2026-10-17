@@ -266,7 +266,12 @@ import {
   videoThumbUrl,
 } from '../api/polish'
 import { stickersApi, UPLOAD_MAX_BYTES } from '../api/stickers'
-import { ensureFontFace } from '../polish/fonts'
+// ⚠️ **`hasBoldFace` 必须一起引**（2026-10-18 真 bug）：字体分支的「无粗体」徽标用它算判据，
+//    而这里以前只引了 `ensureFontFace` ⇒ 切到「字体」页时 `items` 抛 ReferenceError ⇒
+//    **Vue 把整块子树卸掉，素材库直接消失**（用户报的就是这个）。
+//    ⚠️ 静态门禁抓不到这一类：esbuild 不为未定义的全局变量报错，而
+//    `check-layout-invariants.mjs` 那条「模板标识符必须有定义」只扫**模板**，这里是 `<script setup>` 里。
+import { ensureFontFace, hasBoldFace } from '../polish/fonts'
 import { confirmDialog } from '../stores/dialog'
 import { toast } from '../stores/toast'
 
