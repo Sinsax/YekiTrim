@@ -164,6 +164,15 @@
              不是画一个点 —— 固定落点的含义是"贴纸中心落在这一点"（config.rs 的 position 口径） -->
         <span class="point-box" :style="pointBoxStyle"><span class="point-dot"></span></span>
       </div>
+      <!-- A3 诊断 HUD：**只有 URL 带 `?diag=1`** 才渲染（polish/diag.js::diagHudEnabled）。
+           四行就是现场：present 延迟 / readyState / mask / canvasGen。
+           ⚠️ 别做成常显 —— B2 的黑帧探针按整块舞台的平均亮度判黑，多一层白字会污染那个读数。 -->
+      <div v-if="diagHud" class="dhampir-hud">
+        <div>present {{ diagHudText.present }}</div>
+        <div>readyState {{ diagHudText.ready }}</div>
+        <div>mask {{ diagHudText.mask }}</div>
+        <div>canvasGen {{ diagHudText.gen }}</div>
+      </div>
     </div>
 
     <div v-if="dhampirMode || dhampirError" class="dhampir-bar">
@@ -222,6 +231,9 @@ import { invertCameraPoint, buildIndex, videoFxAt, handheldSway, getFlash, getHu
 import { canvasOf, stickerScale } from '../polish/canvas.js'
 import { createSfxPlayer } from '../polish/audio'
 import { ensureFontFace, fontFamilyFor } from '../polish/fonts'
+// A3 预览诊断埋点（`window.__dhampirDiag`）：**模块级单例** —— canvasGen 要抓的正是
+// "组件被重挂"，写在实例里会跟着归零。正文与理由见 polish/diag.js。
+import { dhampirDiag, diagFrame, diagHudEnabled, diagPresent, diagTouchCanvas } from '../polish/diag.js'
 
 const props = defineProps({
   pid: { type: [String, Number], required: true },
@@ -1945,6 +1957,11 @@ function scheduleDhampir() {
   if (dhampirRaf) return
   const tick = () => {
     dhampirRaf = requestAnimationFrame(tick)
+    // A3 埋点：**先记这一帧的现场**（只读 + 记时刻），再走下面那些分支 ——
+    // 它不参与任何判断、也不改这里的时序（规格 §3 A3 的红线）。暂停时这条 rAF 仍在跑，
+    // 所以"暂停后 canvasGen 还准不准"这件事才有答案。
+    diagTouchCanvas(dhampirCanvasRef.value)
+    diagSample()
     if (!dhampirMode.value || !dhampirEngine || dhampirBusy) return
     // **换片段待办**：首屏还没起来时点的、或撞上"有帧在飞"被拦下的那次 —— 每帧开头补跑
     // （与下面 `dhampirReloadPending` 同一条纪律：**待办必须有人消费**，否则那次换片段
@@ -2069,6 +2086,8 @@ function scheduleDhampir() {
       },
     }))
       .then(async () => {
+        // A3：这一帧**已经画完**（promise 落定 = 引擎把 prep + draw 走完了）—— 记 present 时刻
+        diagPresent()
         // 每帧只更新**非响应式**那个（跳过判断用 ✓）；
         // 模板用的 ref 跟其它读数一起限频到 ~4Hz —— 它本来就只是给人看的 ✓。
         if (dhampirLastFrameDrawn >= 0 && f > dhampirLastFrameDrawn + 1) {
@@ -3329,6 +3348,9 @@ function tick() {
   // 定格期间：画面与时钟一起停（`endSkipFreeze` 里推）
   if (freezeOn.value) { rafId = requestAnimationFrame(tick); return }
   current.value = v.currentTime
+  // A3：DOM 那条腿的"上屏"读数（源在走、且有像素，才算一帧真的出来了）
+  if (!v.paused && !v.ended && v.readyState >= 2) diagPresent()
+  diagSample()
   player.sync(idx.value.soundEvents, v.currentTime)
   emit('time', v.currentTime)
   if (bgOn.value && bgRef.value && bgRef.value.currentTime &&
@@ -3883,6 +3905,61 @@ watch(() => props.persistedConfig, (cfg) => {
   dhampirReloadTimer = setTimeout(() => { dhampirReloadTimer = 0; reloadDhampirProject() }, 150)
 }, { immediate: true })
 
+// ---- A3 预览诊断埋点（`window.__dhampirDiag`，规格 §3 A3）----
+//
+// 每帧记一份"现场"，给两个消费者读：① `webui/scripts/check-polish-page-loads.mjs` 的
+// A4（canvasGen 恒 1）/ B2（黑帧）断言；② `?diag=1` 时舞台右下角的 HUD。
+// **只记录，不参与任何判断**（`lastPresentAt` 写在"这一帧已经画完"之后，不是新的同步点）。
+const diagHud = ref(diagHudEnabled())
+const diagHudText = ref({ present: '—', ready: '—', mask: '—', gen: 1 })
+let diagHudAt = 0
+
+/** HUD 文本节流到 ~5Hz：每帧写响应式 ref 会让整条工具条跟着重渲染（同 `dhampirReadoutAt` 的理由）。 */
+function diagRefreshHud() {
+  if (!diagHud.value) return
+  const now = performance.now()
+  if (now - diagHudAt < 200) return
+  diagHudAt = now
+  const d = dhampirDiag
+  diagHudText.value = {
+    present: d.lastPresentAt ? Math.round(now - d.lastPresentAt) + 'ms' : '—',
+    ready: String(d.activeSourceReadyState),
+    mask: d.maskOn ? 'on' : 'off',
+    gen: d.canvasGen
+  }
+}
+
+/** 这一帧要用的源里**最差**的那个 `readyState`（<2 = 引擎合成的可能是黑的；单源时就是它自己）。 */
+function diagReadyState(f) {
+  let min = -1
+  if (dhampirMode.value && dhampirEngine) {
+    try {
+      const list = dhampirEngine.sourcesFor(f) || []
+      for (const e of list) {
+        const v = dhampirSourceVideos.get(e && e.source)
+        if (!v) continue
+        min = min < 0 ? v.readyState : Math.min(min, v.readyState)
+      }
+    } catch (e) { /* 引擎还没就绪：退回下面那条 */ }
+  }
+  if (min >= 0) return min
+  const el = videoRef.value
+  return el ? el.readyState : 0
+}
+
+/** 每帧采一次（Dhampir 的 rAF 与 DOM 的 tick 都调）：**只记状态与时刻**。 */
+function diagSample() {
+  const el = videoRef.value
+  const t = el ? (Number(el.currentTime) || 0) : current.value
+  let f = null
+  if (dhampirMode.value && dhampirEngine) {
+    try { f = dhampirFrameAt(t) } catch (e) { f = null }
+  }
+  // ⚠️ `frameNull` 说的是**引擎**这一帧有没有帧 —— DOM 模式下恒 false（别读成"画面黑"）
+  diagFrame(t, diagReadyState(f), dhampirBusy, freezeOn.value, dhampirMode.value && f === null)
+  diagRefreshHud()
+}
+
 // ===== 默认进 Dhampir（用户要求：默认为 dhampir；旧预览暂时禁用）=====
 // 另起一个 onMounted（Vue 允许多个 ✓）：挂载后自动切一次，失败由 toggleDhampir 的 catch 接住 ✓
 onMounted(() => {
@@ -3892,6 +3969,8 @@ onMounted(() => {
 })
 
 onMounted(() => {
+  // A3：认下"这一页的 canvas 是哪一块"（换过元素就 canvasGen +1），WebGL 上下文丢失也在这处挂监听
+  diagTouchCanvas(dhampirCanvasRef.value)
   volume.value = player.getMasterVolume()
   muted.value = player.isMuted()
   lastVol = volume.value > 0 ? volume.value : 1
@@ -3947,6 +4026,13 @@ function pause() {
 .dhampir-canvas {
   position: absolute; inset: 0; width: 100%; height: 100%;
   object-fit: contain; background: #000; z-index: 40;
+}
+/* A3 诊断 HUD（只有 `?diag=1` 才在 DOM 里）。`pointer-events:none`：它盖在舞台上，
+   绝不许抢走框选 / 点选 / 播放那些指针事件；z-index 高于定格遮罩(60)，免得查问题时被它自己盖住。 */
+.dhampir-hud {
+  position: absolute; right: 8px; bottom: 8px; z-index: 80; pointer-events: none;
+  padding: 4px 6px; border-radius: 4px; background: rgba(0, 0, 0, .62); color: #fff;
+  font: 11px/1.5 ui-monospace, Consolas, 'Courier New', monospace; white-space: pre;
 }
 /* 素材宿主。
  *
