@@ -76,7 +76,7 @@ pub const GLOBAL_CONFIG_TOML: &str = r#"# YekiTrim 全局默认配置 — 所有
 # 相同参数会被 yekitrim.toml 覆盖
 # ⚠️ config_version 是**配置结构版本**：程序读它决定要不要跑迁移。
 #    手工改配置时**别动这一行**（改了会让迁移跑错；见 config/version.rs）。
-config_version = 1
+config_version = 2
 
 [asr]
 # ASR 模式: "single"（SenseVoice 单模型）| "hybrid"（SenseVoice 打轴 + qwen3 填词）
@@ -264,11 +264,16 @@ auto_pipeline = "detect"
 registration_enabled = false
 "#;
 
-/// LLM 配置模板（`yekitrim config init` 生成 .yekitrim/llm.toml 用）
+/// LLM 配置模板（`yekitrim config init` 生成 .yekitrim/llm.toml 用）。
+///
+/// ⚠️ 形状是 **v2**：**请求参数面**（`[llm.params]` + `[llm.overrides.<link>]`）与
+/// **能力面**（`[llm.models."<id>"]`）分开。老文件由 `version.rs` 的 v1→v2 搬过来，不用手改。
+/// 这里的 `config_version = 2` 必须与 [`super::version::CONFIG_VERSION`] 一致 ——
+/// 写小了的话新装的文件会被"升级"一次（多一个 .bak-v1），写大了则是本程序读不懂自己的模板。
 pub const LLM_CONFIG_TOML: &str = r#"# YekiTrim LLM 配置 — 独立于工程配置
 # 基于 OpenAI 兼容接口
 # ⚠️ 配置结构版本，别手改（见 config/version.rs）
-config_version = 1
+config_version = 2
 
 [llm]
 # API 基础地址
@@ -277,35 +282,57 @@ base_url = ""
 api_key = ""
 # 模型名称
 model = ""
-# 温度参数 (0=确定性输出，建议保持0)
-temperature = 0
-# 最大 Token 数：**没在下面 [llm.overrides.*] 里单独配的链路**用它。
-# 这只是「跑飞的上限」——模型自己会停；检测窗口实测输出 1.9k~4.1k（思考占大头）。
-max_tokens = 16384
 # 并发请求数——事件检测 / 精修事件生成 / 字幕订正**共用这一个值**
 # ([detection]/[correct] 各自的 max_concurrent 留空即跟随这里)。
 # 实测中转站允许并发且接近线性，批处理时间基本按它反比缩短；触发 429 就调小。
 max_concurrent = 3
-# 额外请求参数 (seed 确保稳定输出；thinking enabled 启用思考模式，disabled 关闭)
-# response_format=json_object 让模型不写解释性前言(需中转/服务端支持，不支持就删掉这行)
+# 额外请求参数：**逃逸口**，整表原样进请求体、优先级最低（结构化参数之后才盖）。
+# seed 确保稳定输出；thinking enabled 启用思考模式、disabled 关闭；response_format=json_object
+# 让模型不写解释性前言（需中转/服务端支持，不支持就删掉那一项）。
 extra_params = { seed = 42, thinking = { type = "enabled" }, response_format = { type = "json_object" } }
 
-# ── 按链路覆盖（缺一项 = 跟随上面 [llm] 的同名项）──
+# ── 请求参数面（**省略 = 不发送**；下面的链路没覆盖就跟随这里）──
+[llm.params]
+# 温度参数 (0=确定性输出，建议保持0)；**删掉这一行 = 不发 temperature**（交给服务端默认）
+temperature = 0
+# 最大 Token 数：**没在下面 [llm.overrides.*] 里单独配的链路**用它。
+# 这只是「跑飞的上限」——模型自己会停；检测窗口实测输出 1.9k~4.1k（思考占大头）。
+max_tokens = 16384
+# 推理档位：off|minimal|low|medium|high|xhigh（省略 = 不表态，由上面的 extra_params 决定）
+# reasoning = "high"
+# top_p = 1.0
+# 要求 JSON 输出（结构化键，优先级高于 extra_params.response_format）
+# json_mode = true
+
+# ── 按链路覆盖（**同一套请求参数面**；缺一项 = 跟随 [llm.params]）──
 # 各链路要的输出长度天差地别，别用同一个上限互相迁就。想「恢复跟随全局」就把那一行删掉
-# （设置页把输入框清空也会删掉它）。可选键：max_tokens / temperature / thinking。
+# （设置页把输入框清空也会删掉它）。
+# 可选键：temperature / max_tokens / reasoning / top_p / json_mode。
 [llm.overrides.detect]
 # 事件检测窗口 + 标题摘要热度评分：实测输出 1.9k~4.1k token，8k 留 2× 余量
 max_tokens = 8192
 [llm.overrides.polish]
 # 精修 LLM 剪辑（分段 + 逐段事件）：输出比检测长。
-# thinking 不写 = 关闭思考（分段/逐段事件的既定行为）；要开就在这写 thinking = "enabled"
+# reasoning 不写 = 关闭思考（分段/逐段事件的既定默认）；要开就在这写 reasoning = "high"
 max_tokens = 32768
 [llm.overrides.correct]
 # 字幕订正：输出量随输入走
 max_tokens = 8192
 # [llm.overrides.utility]
-# 零散单发（贴纸包/扫描标签、封面文案、连通测试）默认跟随 [llm]；要单独限就取消注释
+# 零散单发（贴纸包/扫描标签、封面文案、连通测试）默认跟随 [llm.params]；要单独限就取消注释
 # max_tokens = 8192
+
+# ── 模型能力（**内置表没有的模型**在这里手填；只覆盖写了的字段）──
+# 内置表收了 17 家 / 181 支模型，命中时这里一个字都不用写。
+# [llm.models."my-gateway-model"]
+# 推理参数怎么发（**取值只在 llm crate 的 wire.rs**；设置页「模型能力覆盖」有下拉，别在这儿手抄清单）
+# thinking_wire = "thinking_type"
+# 输出上限写哪个字段名（同上；不写 = max_tokens）
+# max_output_wire = "max_tokens"
+# 这个模型收不收 temperature：supported | unsupported
+# temperature = "unsupported"
+# 档位 → wire 拼写；**空串 = 支持但不发送**
+# reasoning = { off = "", high = "high" }
 "#;
 
 /// 生成 yekitrim.toml 项目配置文件（`yekitrim init`）。
@@ -1438,12 +1465,15 @@ vtuber_name = \"主播\"
         let body = "\
 # 顶部注释
 [llm]
+api_key = \"k\"
+
+[llm.params]
 max_tokens = 16384
 
 # 链路覆盖
 [llm.overrides.detect]
 max_tokens = 8192
-thinking = \"disabled\"
+reasoning = \"off\"
 
 [llm.overrides.polish]
 max_tokens = 32768
@@ -1452,14 +1482,14 @@ max_tokens = 32768
         patch_config_file(
             &p,
             &serde_json::json!({"llm": {"overrides": {"detect": {"max_tokens": null,
-                                                                 "thinking": "enabled"}}}}),
+                                                                 "reasoning": "high"}}}}),
         )
         .unwrap();
         let out = std::fs::read_to_string(&p).unwrap();
 
         assert!(!out.contains("8192"), "被 null 的键必须删掉：\n{out}");
         assert!(
-            out.contains("thinking = \"enabled\""),
+            out.contains("reasoning = \"high\""),
             "同一次 patch 里的其它键照常写入：\n{out}"
         );
         for keep in [
@@ -1479,11 +1509,38 @@ max_tokens = 32768
         let text = std::fs::read_to_string(&p).unwrap();
         let f: File = toml::from_str(&text).expect("删键后的 llm.toml 仍须可解析");
         assert_eq!(
-            f.llm.for_link(types::LlmLink::Detect).max_tokens,
-            16384,
-            "删掉覆盖 = 跟随 [llm].max_tokens"
+            f.llm.for_link(types::LlmLink::Detect).params.max_tokens,
+            Some(16384),
+            "删掉覆盖 = 跟随 [llm.params].max_tokens"
         );
-        assert_eq!(f.llm.for_link(types::LlmLink::Polish).max_tokens, 32768);
+        assert_eq!(f.llm.for_link(types::LlmLink::Polish).params.max_tokens, Some(32768));
+        let _ = std::fs::remove_dir_all(p.parent().unwrap());
+    }
+
+    /// **模型 id 里有点号/冒号时，patch 出来的子表键必须原样**（llm.models."cn:deepseek-v4.1-flash"）。
+    ///
+    /// ⚠️ 这条不是洁癖：toml_edit 对"带点号的键"有**两种解释**（一个键 vs 点号嵌套），
+    /// 解释错了 LlmConfig.models 就解析不出来 —— 而失败方式是**整份 llm.toml 被打回默认值**
+    /// （用户只会看到"我的配置没了"）。真实模型 id 就长这样：`cn:deepseek-v4.1-flash`。
+    #[test]
+    fn patch_keeps_model_ids_with_dots_as_single_keys() {
+        let p = write_tmp("llm-models-key", "[llm]\napi_key = \"k\"\n");
+        patch_config_file(
+            &p,
+            &serde_json::json!({"llm": {"models": {"cn:deepseek-v4.1-flash": {"thinking_wire": "thinking_type"}}}}),
+        )
+        .unwrap();
+        let out = std::fs::read_to_string(&p).unwrap();
+        #[derive(serde::Deserialize)]
+        struct File {
+            llm: types::LlmConfig,
+        }
+        let f: File = toml::from_str(&out).expect("模型级覆盖写进去之后，llm.toml 仍须可解析");
+        assert_eq!(
+            f.llm.models.get("cn:deepseek-v4.1-flash").and_then(|m| m.thinking_wire.as_deref()),
+            Some("thinking_type"),
+            "带点号的模型 id 必须落成一个键，不能变成点号嵌套：\n{out}"
+        );
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
     }
 
@@ -1499,6 +1556,18 @@ max_tokens = 32768
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
     }
 
+    /// 模板顶上的 config_version 必须与 CONFIG_VERSION 一致（两份模板都要）。
+    ///
+    /// 写小了：新装的文件第一次读就被"升级"一遍（还多一个 .bak-v1）；
+    /// 写大了：本程序读不懂自己写出来的模板（投影是"每次启动都重新迁移"）。
+    #[test]
+    fn templates_stamp_the_current_config_version() {
+        let want = format!("config_version = {CONFIG_VERSION}");
+        for (name, text) in [("config.toml", GLOBAL_CONFIG_TOML), ("llm.toml", LLM_CONFIG_TOML)] {
+            assert!(text.contains(&want), "{name} 模板里没有 {want}（模板与人手写的版本号会漂）");
+        }
+    }
+
     /// 模板必须是合法 TOML，且带着按链路的推荐值（新装的文件直接就是"检测 8k / 精修 32k"）。
     #[test]
     fn llm_config_template_parses_with_link_overrides() {
@@ -1508,21 +1577,21 @@ max_tokens = 32768
         }
         let f: File = toml::from_str(LLM_CONFIG_TOML).expect("LLM_CONFIG_TOML 必须是合法 TOML");
         assert_eq!(
-            f.llm.for_link(types::LlmLink::Detect).max_tokens,
-            8192,
+            f.llm.for_link(types::LlmLink::Detect).params.max_tokens,
+            Some(8192),
             "检测链路应带自己的上限"
         );
-        assert_eq!(f.llm.for_link(types::LlmLink::Polish).max_tokens, 32768);
-        assert_eq!(f.llm.for_link(types::LlmLink::Correct).max_tokens, 8192);
-        // utility 没写覆盖 → 跟随 [llm]
+        assert_eq!(f.llm.for_link(types::LlmLink::Polish).params.max_tokens, Some(32768));
+        assert_eq!(f.llm.for_link(types::LlmLink::Correct).params.max_tokens, Some(8192));
+        // utility 没写覆盖 → 跟随 [llm.params]
         assert_eq!(
-            f.llm.for_link(types::LlmLink::Utility).max_tokens,
-            f.llm.max_tokens
+            f.llm.for_link(types::LlmLink::Utility).params.max_tokens,
+            f.llm.params.max_tokens
         );
         // 精修/零散单发的默认关思考由链路默认给出
         assert_eq!(
-            f.llm.for_link(types::LlmLink::Polish).thinking.as_deref(),
-            Some("disabled")
+            f.llm.for_link(types::LlmLink::Polish).params.reasoning.as_deref(),
+            Some("off")
         );
     }
 

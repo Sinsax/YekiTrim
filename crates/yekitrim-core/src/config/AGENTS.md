@@ -44,7 +44,7 @@
 
 **`yekitrim.toml`** — 项目配置:
 ```toml
-config_version = 1           # 配置结构版本，别手改（见「版本号与读时迁移」）
+config_version = 2           # 配置结构版本，别手改（见「版本号与读时迁移」）
 input_file = ""
 danmaku_file = ""            # 唯一生效值（清单里「使用中」那条）
 transcript_file = ""
@@ -67,7 +67,7 @@ overwrite = false
 
 **`.yekitrim/config.toml`** — 全局程序配置:
 ```toml
-config_version = 1           # 配置结构版本，别手改
+config_version = 2           # 配置结构版本，别手改
 
 [asr]
 mode = "hybrid"              # 默认 hybrid（预处理页有下拉；也能改这里/项目 yekitrim.toml）
@@ -111,21 +111,36 @@ blacklist = []
 
 **`.yekitrim/llm.toml`** — LLM 配置（独立文件）:
 ```toml
-config_version = 1
+config_version = 2
 
 [llm]
 base_url = ""              # OpenAI 兼容 API 地址
 api_key = ""
 model = ""
-temperature = 0
-max_tokens = 65536         # 没单独配覆盖的链路用它
-extra_params = { seed = 42, thinking = { type = "disabled" } }
+max_concurrent = 3
+extra_params = { seed = 42, thinking = { type = "disabled" } }   # 逃逸口，优先级最低
 
-# 按链路覆盖：缺一项 = 跟随 [llm] 的同名项（`LlmConfig::for_link` 是唯一解析入口）
+# **请求参数面**（省略 = 不发送）；链路没覆盖就跟随这里
+[llm.params]
+temperature = 0
+max_tokens = 65536
+# reasoning = "high"       # off|minimal|low|medium|high|xhigh；省略 = 不表态
+# top_p = 1.0
+# json_mode = true
+
+# 按链路覆盖：**同一套请求参数面**，缺一项 = 跟随 [llm.params]（`LlmConfig::for_link` 是唯一解析入口）
 [llm.overrides.detect]
 max_tokens = 8192
 [llm.overrides.polish]
 max_tokens = 32768
+reasoning = "off"          # 精修默认关思考（链路代码默认给的就是这个）
+
+# **能力面**：内置表没收录的模型在这里手填，只覆盖写了的字段
+# [llm.models."cn:vendor.model"]
+# thinking_wire = "thinking_type"      # openai_effort|thinking_type|qwen_enable_thinking|openrouter_effort
+# max_output_wire = "max_tokens"       # max_tokens|max_completion_tokens
+# temperature = "unsupported"          # supported|unsupported
+# reasoning = { off = "", high = "high" }   # 空串 = 支持但不发送
 ```
 
 ### 死字段（2026-10：**已删除**，别再捡回来）
@@ -169,11 +184,21 @@ max_tokens = 32768
 迁移是**纯函数 + 保注释**：用 `toml_edit`（`toml::to_string` 重序列化会**把注释全丢掉**，
 而模板里大段说明都写在注释里）。`v0 → v1` 清掉的就是上一节那 4 个从来没读取方的键。
 
+**`v1 → v2`（2026-10-19，llm.toml）**：`[llm] temperature/max_tokens/thinking` 搬进 `[llm.params]`
+（`thinking` 改名 `reasoning`，`enabled`→`high`、`disabled`→`off`），链路覆盖里的 `thinking` 同理；
+**两个键缺席时要落成 v1 的生效值**（`0.1` / `65536`）—— 新形状里"缺席"= **不发送**，而 v1 那两个键
+有代码级默认值、每次都真的发出去。判据是"迁移前后**请求体逐字节相同**"：
+`version::tests::migrated_v1_llm_toml_produces_byte_identical_bodies`（12 行金色 JSON，
+含"省掉两个键"的那个文件）。**改这段迁移前先看那条用例**。
+
 ⚠️ **改配置键的规矩（第 5 步，比代码重要）** —— 删键 / 改名 / 改语义时必须做三件事：
 ① `config/version.rs` 的 `CONFIG_VERSION` **+1**；② 在 `ConfigKind::retired_in` 里把那个键按
 `["section", "key"]` 登记成"新版本该清掉的"；③ 到 `config/mod.rs` 的 `GLOBAL_CONFIG_TOML` /
 `LLM_CONFIG_TOML` 模板里同步注释。**漏 ①** ⇒ 迁移永远不跑；**漏 ②** ⇒ 老文件里那个键**永远留着**
 （`patch_config_file` 只合并不删），下一个读配置的人又要问一遍"这键到底有没有用"。
+⚠️ **"搬家/改名"再加一件**：`retired_in` 只会**删**，表达不了"搬到别处" —— 那种要在
+`migrate_step()` 里写一段一步一段的迁移（`migrate_llm_v2` 是样板：**连键的 decor 一起搬**，
+上方注释不丢；搬完再让 `retired_in` 兜底清掉搬不动的残留）。
 
 ⚠️ **`polish.toml` 的版本键在文本层**（不在 `ProjectFile` 里）：那个结构体是
 `deny_unknown_fields`，而且还会出口给前端与出片底座 —— 把版本塞进 schema 会波及它们。
@@ -214,10 +239,12 @@ max_tokens = 32768
 
 ### LLM 按链路覆盖（2026-09）
 
-- **一个入口**：`LlmConfig::for_link(LlmLink)`（`config/types.rs`）—— `max_tokens` / `temperature` /
-  `thinking` 三层优先级的**唯一实现**（链路覆盖 > `[llm]` > 链路代码默认）。判据与理由见
-  `crates/yekitrim-core/src/llm/AGENTS.md`，这里只记配置形态：`[llm.overrides.{detect,polish,correct,utility}]`，
-  未知键忽略（拼错不该让整份配置打回默认）。
+- **一个入口**：`LlmConfig::for_link(LlmLink)`（`config/types.rs`）—— 链路覆盖 /
+  `[llm.params]` / 链路代码默认 三层优先级的**唯一实现**（逐字段见 `LlmParamsToml::merged_over`）。
+  这里只记配置形态：`[llm.overrides.{detect,polish,correct,utility}]` 与 `[llm.params]` 是**同一套字段**
+  （`temperature` / `max_tokens` / `reasoning` / `top_p` / `json_mode`），未知键忽略（拼错不该让整份配置打回默认）。
+  ⚠️ **参数面（params/overrides）与能力面（`[llm.models."<id>"]`）分开**：前者是"这一趟发什么"，
+  后者是"这个模型能怎样"（`ModelOverrideToml` → `caps`，模型 id 匹配大小写不敏感）。
 - 新增链路 = `LlmLink` 加一个变体 + `ALL`/`key`/`label_zh`/`default_thinking` 四处 + `LlmOverrides` 加字段
   （设置页那张表按后端序列化出来的键自动出行，前端不用改）。
 - ⚠️ **`max_concurrent` 不在这张表里**：它仍是 `[llm] max_concurrent` + `[detection]`/`[correct]` 的
@@ -251,9 +278,9 @@ max_tokens = 32768
 ⚠️ **ASR 的 `Mode` 与它的说明挤成一行**（`.mode-field`）：说明原本另起一行，把那一格撑到 **81px**，而同一行的
 数值行只有 23px —— 那一行右侧空出 58px 竖向留白（实测）。改成「标签 · 下拉（`width:auto`）· 说明」后那一行 31px。
 其他页（PolishView / CoverDesigner / DownloaderConfig）仍是旧写法，要用就自己换。
-⚠️ **LLM 配置的「按链路覆盖」同样是 SliderField**（一行一条链路：勾选框 + 两个滑块 + thinking 下拉）。
+⚠️ **LLM 配置的「按链路覆盖」同样是 SliderField**（一行一条链路：勾选框 + 两个滑块 + reasoning 下拉）。
 "这一项没有值"用**勾选框**表达、不是空输入框：不勾 = 整条链路发 `null`（= 删键、跟随全局）；
-勾上 = 把该条的 max_tokens/temperature 写实（thinking 只有选具体值才写）。
+勾上 = 把该条的 max_tokens/temperature 写实（reasoning 只有选具体值才写）。
 
 > 改动只允许落在本目录；跨模块改动先读对方卡，并跑两条门禁。
 

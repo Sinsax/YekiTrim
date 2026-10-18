@@ -40,7 +40,11 @@ use anyhow::{Context, Result};
 use toml_edit::{DocumentMut, Item};
 
 /// 当前配置结构版本。**改配置键形状时 +1**，并在 [`ConfigKind::retired_in`] 里补登记。
-pub const CONFIG_VERSION: u32 = 1;
+///
+/// v2（2026-10-19）：`llm.toml` 把「请求参数面」与「能力」分开 ——
+/// `[llm] temperature/max_tokens/thinking` → `[llm.params]`（`thinking` 改名 `reasoning`），
+/// 能力覆盖进 `[llm.models."<id>"]`。**搬家**那一步在 [`migrate_llm_v2`]（`retired_in` 只会删）。
+pub const CONFIG_VERSION: u32 = 2;
 
 /// 版本键名（顶层）。**缺键 = 0**。
 pub const VERSION_KEY: &str = "config_version";
@@ -102,6 +106,10 @@ impl ConfigKind {
                 &["asr", "segment_merge_gap"],
                 &["cutting", "silence_noise_db"],
             ],
+            // v1 → v2：`[llm] thinking` 改名成 `[llm.params] reasoning`（搬家在 `migrate_llm_v2`）。
+            // 这一条是**兜底**：只有"不是字符串"那种手改坏的值会留在这儿（搬不动），
+            // 由这一趟清掉，别让它以"没人认的键"的身份永远躺着。
+            (Self::Llm, 1) => &[&["llm", "thinking"]],
             _ => &[],
         }
     }
@@ -134,6 +142,118 @@ pub struct Prepared {
     pub retired: Vec<String>,
 }
 
+/// 第 step 步（step → step+1）的**搬家/改名**迁移。
+///
+/// retired_in 只会**删**键，表达不了"搬到别处/改个名" —— 那种一步一段写在这里。
+fn migrate_step(doc: &mut DocumentMut, kind: ConfigKind, step: u32) {
+    if kind == ConfigKind::Llm && step == 1 {
+        migrate_llm_v2(doc);
+    }
+}
+
+/// 取走一个键，**把键名连同它的 decor（上方注释/缩进）一起留下** —— 搬到别的表时注释不能丢。
+fn take_key(table: &mut toml_edit::Table, name: &str) -> Option<(toml_edit::Key, Item)> {
+    let key = table.get_key_value(name).map(|(k, _)| k.clone())?;
+    let item = table.remove(name)?;
+    Some((key, item))
+}
+
+/// 改名（decor 跟着走）。
+fn rename_key(key: &toml_edit::Key, name: &str) -> toml_edit::Key {
+    let mut k = toml_edit::Key::new(name);
+    // ⚠️ 用 leaf_decor（不是 decor/decor_mut）：后者已废弃，而且点号键的 decor 语义不同
+    *k.leaf_decor_mut() = key.leaf_decor().clone();
+    k
+}
+
+/// thinking = "enabled" → "high"、"disabled" → "off"；已经是档位名就原样。
+///
+/// 非字符串（手改出的 thinking = true）原样返回 —— 它搬过去也是没人认的键，
+/// 由 retired_in 那一趟清掉，别在这里凭空造一个值出来。
+fn map_thinking_value(mut item: Item) -> Item {
+    let Some(s) = item.as_str().map(str::to_string) else {
+        return item;
+    };
+    let mapped = match s.trim().to_ascii_lowercase().as_str() {
+        "enabled" | "on" | "true" | "yes" => Some("high"),
+        "disabled" | "off" | "false" | "no" => Some("off"),
+        // 已经是档位名（或手写的怪值）：原样搬过去 —— 认不认是读的人的事
+        _ => None,
+    };
+    let Some(m) = mapped else { return item };
+    // 值自己的 decor（行尾注释）也留着
+    let decor = item.as_value().map(|v| v.decor().clone());
+    let mut new_item = toml_edit::value(m);
+    if let (Some(d), Some(v)) = (decor, new_item.as_value_mut()) {
+        *v.decor_mut() = d;
+    }
+    item = new_item;
+    item
+}
+
+/// v1 → v2（llm.toml）：把「请求参数面」从 [llm] 搬进 [llm.params]。
+///
+/// 三件事，**少一件就是"升级一次请求体变了"**：
+/// 1. [llm] temperature / max_tokens → [llm.params] 同名（连上方注释一起搬）；
+/// 2. [llm] thinking → [llm.params] reasoning（enabled→high、disabled→off，档位名原样），
+///    每条 [llm.overrides.<link>] thinking → reasoning（同一套映射）；
+/// 3. **缺席的 temperature / max_tokens 落成 v1 的生效值**（0.1 / 65536）：新形状里"缺席"的含义是
+///    **不发送**，而 v1 这两个键有代码级默认值、**每一次请求都真的发出去**。
+///
+/// extra_params 原位不动 —— 它仍是优先级最低的逃逸口（老工程里写死的 response_format 靠它）。
+///
+/// ⚠️ 只处理**真表**（[llm] / [llm.overrides.x]）。写成 llm = { … } 内联表的文件极其少见，
+/// 那种情况下这里什么都不动：老键会变成没人认的键（不报错、也不生效），而不是让文件坏掉。
+fn migrate_llm_v2(doc: &mut DocumentMut) {
+    let Some(llm) = doc.get_mut("llm").and_then(Item::as_table_mut) else {
+        return;
+    };
+    // ① 先取走要搬的三样（键名 + 值）
+    let temperature = take_key(llm, "temperature");
+    let max_tokens = take_key(llm, "max_tokens");
+    let reasoning = take_key(llm, "thinking")
+        .map(|(k, item)| (rename_key(&k, "reasoning"), map_thinking_value(item)));
+
+    // ② 链路覆盖里的 thinking：同一套改名与映射
+    if let Some(overrides) = llm.get_mut("overrides").and_then(Item::as_table_mut) {
+        let links: Vec<String> = overrides.iter().map(|(k, _)| k.to_string()).collect();
+        for link in links {
+            let Some(t) = overrides.get_mut(&link).and_then(Item::as_table_mut) else {
+                continue;
+            };
+            if let Some((k, item)) = take_key(t, "thinking") {
+                let key = rename_key(&k, "reasoning");
+                t.insert_formatted(&key, map_thinking_value(item));
+            }
+        }
+    }
+
+    // ③ 目标子表：没有就建（[llm.params] 得是真表，设置页的 patch 才能继续往下钻）
+    if llm.get("params").is_none() {
+        let mut params = toml_edit::Table::new();
+        params.set_implicit(false);
+        llm.insert("params", Item::Table(params));
+    }
+    let Some(params) = llm.get_mut("params").and_then(Item::as_table_mut) else {
+        return;
+    };
+    for (key, item) in [temperature, max_tokens].into_iter().flatten() {
+        params.insert_formatted(&key, item);
+    }
+    if let Some((key, item)) = reasoning {
+        params.insert_formatted(&key, item);
+    }
+
+    // ④ 缺席的生效值落成显式键（见函数头第 3 条）
+    if params.get("temperature").is_none() {
+        params.insert("temperature", toml_edit::value(super::types::default_temperature()));
+    }
+    if params.get("max_tokens").is_none() {
+        let n = super::types::default_max_tokens() as i64;
+        params.insert("max_tokens", toml_edit::value(n));
+    }
+}
+
 /// 纯函数：把文本升到 [`CONFIG_VERSION`]。**不碰磁盘**（写回由 [`prepare`] / `edit` 那条路负责）。
 ///
 /// 解析失败时返回 `Err` —— 调用方要保留各自原有的"坏文件"处理（有的备份、有的退回默认值）。
@@ -150,6 +270,9 @@ pub fn migrate_text(kind: ConfigKind, raw: &str) -> Result<Prepared> {
     // 逐级迁移。现在只有 v0 → v1 一步；将来加 `if from < 2 { … }` 这样一条一段。
     let mut retired: Vec<String> = Vec::new();
     for step in from..CONFIG_VERSION {
+        // ⚠️ **先搬家再清键**：搬走的老键不该进 retired 名单（那是"清掉"的意思），
+        //    而搬不动的那种（非字符串 thinking）留给 retired 那一趟兜底。
+        migrate_step(&mut doc, kind, step);
         for path in kind.retired_in(step) {
             if remove_path(&mut doc, path) {
                 // 只**收集**，不打日志 —— 见 `Prepared::retired` 的注释（工程级文件不写回，
@@ -199,6 +322,7 @@ pub fn migrate_doc_in_place(kind: ConfigKind, doc: &mut DocumentMut) -> u32 {
         return from;
     }
     for step in from..CONFIG_VERSION {
+        migrate_step(doc, kind, step);
         for path in kind.retired_in(step) {
             remove_path(doc, path);
         }
@@ -465,7 +589,11 @@ overwrite = false
         assert!(p.text.contains("# YekiTrim 全局默认配置"), "首行注释丢了：\n{}", p.text);
         assert!(p.text.contains("# 这些注释**必须活着**"), "注释丢了：\n{}", p.text);
         // 版本号在最前面，且能被读回来
-        assert!(p.text.starts_with("config_version = 1\n"), "版本行不在最前：\n{}", p.text);
+        assert!(
+            p.text.starts_with(&format!("config_version = {CONFIG_VERSION}\n")),
+            "版本行不在最前：\n{}",
+            p.text
+        );
         let doc: DocumentMut = p.text.parse().unwrap();
         assert_eq!(version_of(&doc), CONFIG_VERSION);
         // 迁移后仍是合法 TOML，且能反序列化成 Config
@@ -486,9 +614,9 @@ overwrite = false
     /// **更新的版本不许被降级** —— 这条是保护用户数据的关键。
     #[test]
     fn a_newer_version_is_left_completely_untouched() {
-        let future = "config_version = 2\n\n[asr]\nmode = \"single\"\n";
+        let future = "config_version = 3\n\n[asr]\nmode = \"single\"\n";
         let p = migrate_text(ConfigKind::Global, future).unwrap();
-        assert_eq!(p.from, 2);
+        assert_eq!(p.from, 3);
         assert!(!p.changed);
         assert_eq!(p.text, future, "一个字节都不许动");
     }
@@ -572,9 +700,8 @@ overwrite = false
         assert!(p.changed);
         // 磁盘上那份已经升级：版本在前、死键没了、活键与注释都在
         let on_disk = std::fs::read_to_string(&f).unwrap();
-        assert!(on_disk.starts_with("config_version = 1
-"), "写回的内容不对：
-{on_disk}");
+        let want_version = format!("config_version = {CONFIG_VERSION}\n");
+        assert!(on_disk.starts_with(&want_version), "写回的内容不对：\n{on_disk}");
         assert!(!on_disk.contains("align_model"));
         assert!(on_disk.contains("num_workers = 0"));
         assert!(on_disk.contains("# 这些注释**必须活着**"), "写回把注释吃掉了");
@@ -614,6 +741,144 @@ overwrite = false
         );
         assert!(!dir.join("yekitrim.toml.bak-v0").exists(), "也不该产生备份");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v1 → v2 的**结构**判据：搬家（键与注释一起）、改名（含链路覆盖）、
+    /// 缺席值落成 v1 的生效值、extra_params 原位不动、幂等。
+    #[test]
+    fn migrate_llm_v2_moves_keys_and_keeps_comments() {
+        const OLD: &str = r#"# 顶部注释
+config_version = 1
+
+[llm]
+api_key = "k"
+# 温度参数（这句注释必须活着）
+temperature = 0
+max_tokens = 16384
+thinking = "enabled"
+extra_params = { seed = 42 }
+
+[llm.overrides.detect]
+# 检测这条
+thinking = "disabled"
+max_tokens = 8192
+"#;
+        let p = migrate_text(ConfigKind::Llm, OLD).unwrap();
+        assert_eq!(p.from, 1, "这份夹具是 v1");
+        let text = &p.text;
+        assert!(text.starts_with(&format!("config_version = {CONFIG_VERSION}\n")), "{text}");
+        assert!(text.contains("[llm.params]"), "没有搬出参数表：\n{text}");
+        assert!(text.contains("温度参数（这句注释必须活着）"), "键上方注释被吃掉了：\n{text}");
+        assert!(text.contains("reasoning = \"high\""), "enabled 该变成 high：\n{text}");
+        assert!(text.contains("reasoning = \"off\""), "链路覆盖的 disabled 该变成 off：\n{text}");
+        assert!(!text.contains("thinking ="), "老键不许还留在文件里：\n{text}");
+        assert!(text.contains("extra_params = { seed = 42 }"), "逃逸口原位不动：\n{text}");
+        assert!(text.contains("max_tokens = 8192"), "链路覆盖的值要保留：\n{text}");
+
+        #[derive(serde::Deserialize)]
+        struct File {
+            llm: super::super::types::LlmConfig,
+        }
+        let f: File = toml::from_str(text).expect("迁移后必须能解析成新结构");
+        assert_eq!(f.llm.params.temperature, Some(0.0));
+        assert_eq!(f.llm.params.max_tokens, Some(16384));
+        assert_eq!(f.llm.params.reasoning.as_deref(), Some("high"));
+        assert_eq!(f.llm.overrides.detect.reasoning.as_deref(), Some("off"));
+        assert_eq!(f.llm.overrides.detect.max_tokens, Some(8192));
+
+        // 缺席的那两个键要**落成 v1 的生效值**（新形状里"缺席"= 不发送，不落就等于悄悄改了请求体）
+        let bare = migrate_text(ConfigKind::Llm, "[llm]\nmodel = \"m\"\n").unwrap().text;
+        assert!(bare.contains("temperature = 0.1"), "缺温度要补 v1 默认值：\n{bare}");
+        assert!(bare.contains("max_tokens = 65536"), "缺上限要补 v1 默认值：\n{bare}");
+
+        // 幂等：已经是 v2 的文本再迁一次，一个字节都不动
+        let again = migrate_text(ConfigKind::Llm, text).unwrap();
+        assert!(!again.changed);
+        assert_eq!(&again.text, text);
+    }
+
+    /// ⚠️ **验收项：v1 的 llm.toml 迁移到 v2 之后，请求体逐字节不变。**
+    ///
+    /// 下面那 12 行 JSON 是**迁移前的老代码真跑出来的**（同一条 wire::apply、同样三个文件），
+    /// 所以这条判据不是"我写了个期望值"，而是"升级前后打出去的字节一模一样"。
+    /// 三个文件各钉一类：认识的模型（走能力表）/ 表外的模型（保守默认）/ **省掉两个键**的那种
+    /// （v1 有代码级默认值 ⇒ 必须由迁移落成显式键）。
+    #[test]
+    fn migrated_v1_llm_toml_produces_byte_identical_bodies() {
+        #[derive(serde::Deserialize)]
+        struct File {
+            llm: super::super::types::LlmConfig,
+        }
+        fn bodies(text: &str) -> Vec<(String, String)> {
+            let f: File = toml::from_str(text).expect("老形状必须能解析");
+            super::super::types::LlmLink::ALL
+                .iter()
+                .map(|link| {
+                    let linked = f.llm.for_link(*link);
+                    let p: yekitrim_llm::LlmParams = (&linked).into();
+                    let mut body =
+                        serde_json::json!({ "messages": [{ "role": "user", "content": "hi" }] });
+                    yekitrim_llm::wire::apply(&mut body, &p);
+                    (link.key().to_string(), serde_json::to_string(&body).unwrap())
+                })
+                .collect()
+        }
+
+        const OLD_A: &str = r#"[llm]
+api_key = "k"
+base_url = "http://192.168.0.107:7863/v1"
+model = "cn:deepseek-v4.1-flash"
+temperature = 0
+max_tokens = 16384
+max_concurrent = 3
+thinking = "enabled"
+extra_params = { seed = 42, thinking = { type = "enabled" }, response_format = { type = "json_object" } }
+
+[llm.overrides.detect]
+max_tokens = 8192
+temperature = 0
+[llm.overrides.polish]
+max_tokens = 32768
+temperature = 0
+[llm.overrides.correct]
+max_tokens = 8192
+temperature = 0
+"#;
+        const OLD_B: &str = r#"[llm]
+api_key = "k"
+base_url = "https://api.deepseek.com/v1"
+model = "deepseek-v4-pro"
+temperature = 0
+max_tokens = 16384
+thinking = "disabled"
+"#;
+        const OLD_C: &str = r#"[llm]
+api_key = "k"
+base_url = "https://unknown.example.com/v1"
+model = "m"
+thinking = "enabled"
+
+[llm.overrides.detect]
+thinking = "disabled"
+"#;
+        // 金色请求体在**数据文件**里（不是源码）：wire 字面量只许出现在 yekitrim-llm，
+        // 而这份是"迁移前的老代码真跑出来的输出"，属于数据。
+        let golden: serde_json::Value =
+            serde_json::from_str(include_str!("testdata/llm-v1-bodies.json")).expect("金色数据必须是合法 JSON");
+        for (tag, old) in [("A", OLD_A), ("B", OLD_B), ("C", OLD_C)] {
+            let migrated = migrate_text(ConfigKind::Llm, old).expect("老文件必须能迁移").text;
+            assert!(
+                migrated.starts_with(&format!("config_version = {CONFIG_VERSION}\n")),
+                "{tag} 没升版本：\n{migrated}"
+            );
+            let want = golden[tag].as_array().expect("每组 4 条（顺序 = LlmLink::ALL）");
+            let got = bodies(&migrated);
+            assert_eq!(got.len(), want.len(), "{tag} 条数不对");
+            for (i, (link, body)) in got.iter().enumerate() {
+                let want_body = serde_json::to_string(&want[i]).expect("金色数据要能序列化");
+                assert_eq!(body, &want_body, "{tag}/{link} 的请求体变了");
+            }
+        }
     }
 
     /// 坏 TOML 要**报错**（让调用方走各自原有的"坏文件"处理），不能悄悄当成空文档。

@@ -1,0 +1,181 @@
+{
+  "_why": "v1→v2 迁移对拍用的**金色请求体**：由迁移前的老代码真跑出来（同一条 wire::apply），顺序 = LlmLink::ALL（detect/polish/correct/utility）。放在数据文件里而不是源码里，是因为 wire 字面量只许出现在 yekitrim-llm（门禁 only_llm_knows_wire），而这份是**数据**不是代码。",
+  "A": [
+    {
+      "max_tokens": 8192,
+      "messages": [
+        {
+          "content": "hi",
+          "role": "user"
+        }
+      ],
+      "model": "cn:deepseek-v4.1-flash",
+      "response_format": {
+        "type": "json_object"
+      },
+      "seed": 42,
+      "temperature": 0.0,
+      "thinking": {
+        "type": "enabled"
+      }
+    },
+    {
+      "max_tokens": 32768,
+      "messages": [
+        {
+          "content": "hi",
+          "role": "user"
+        }
+      ],
+      "model": "cn:deepseek-v4.1-flash",
+      "response_format": {
+        "type": "json_object"
+      },
+      "seed": 42,
+      "temperature": 0.0,
+      "thinking": {
+        "type": "enabled"
+      }
+    },
+    {
+      "max_tokens": 8192,
+      "messages": [
+        {
+          "content": "hi",
+          "role": "user"
+        }
+      ],
+      "model": "cn:deepseek-v4.1-flash",
+      "response_format": {
+        "type": "json_object"
+      },
+      "seed": 42,
+      "temperature": 0.0,
+      "thinking": {
+        "type": "enabled"
+      }
+    },
+    {
+      "max_tokens": 16384,
+      "messages": [
+        {
+          "content": "hi",
+          "role": "user"
+        }
+      ],
+      "model": "cn:deepseek-v4.1-flash",
+      "response_format": {
+        "type": "json_object"
+      },
+      "seed": 42,
+      "temperature": 0.0,
+      "thinking": {
+        "type": "enabled"
+      }
+    }
+  ],
+  "B": [
+    {
+      "max_completion_tokens": 16384,
+      "messages": [
+        {
+          "content": "hi",
+          "role": "user"
+        }
+      ],
+      "model": "deepseek-v4-pro",
+      "temperature": 0.0
+    },
+    {
+      "max_completion_tokens": 16384,
+      "messages": [
+        {
+          "content": "hi",
+          "role": "user"
+        }
+      ],
+      "model": "deepseek-v4-pro",
+      "temperature": 0.0
+    },
+    {
+      "max_completion_tokens": 16384,
+      "messages": [
+        {
+          "content": "hi",
+          "role": "user"
+        }
+      ],
+      "model": "deepseek-v4-pro",
+      "temperature": 0.0
+    },
+    {
+      "max_completion_tokens": 16384,
+      "messages": [
+        {
+          "content": "hi",
+          "role": "user"
+        }
+      ],
+      "model": "deepseek-v4-pro",
+      "temperature": 0.0
+    }
+  ],
+  "C": [
+    {
+      "max_tokens": 65536,
+      "messages": [
+        {
+          "content": "hi",
+          "role": "user"
+        }
+      ],
+      "model": "m",
+      "temperature": 0.1,
+      "thinking": {
+        "type": "disabled"
+      }
+    },
+    {
+      "max_tokens": 65536,
+      "messages": [
+        {
+          "content": "hi",
+          "role": "user"
+        }
+      ],
+      "model": "m",
+      "temperature": 0.1,
+      "thinking": {
+        "type": "enabled"
+      }
+    },
+    {
+      "max_tokens": 65536,
+      "messages": [
+        {
+          "content": "hi",
+          "role": "user"
+        }
+      ],
+      "model": "m",
+      "temperature": 0.1,
+      "thinking": {
+        "type": "enabled"
+      }
+    },
+    {
+      "max_tokens": 65536,
+      "messages": [
+        {
+          "content": "hi",
+          "role": "user"
+        }
+      ],
+      "model": "m",
+      "temperature": 0.1,
+      "thinking": {
+        "type": "enabled"
+      }
+    }
+  ]
+}

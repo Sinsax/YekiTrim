@@ -190,7 +190,7 @@
           <div class="form-section-title">生成<span class="muted small" :title="capsTitle">{{ capsText }}</span></div>
           <div class="form-grid">
             <div class="span-all">
-              <LlmParamFields :caps="caps" :target="form.llm" id-prefix="llm-g"
+              <LlmParamFields :caps="caps" :target="form.llm.params" id-prefix="llm-g"
                               :json-mode="jsonModeOn" @update:jsonMode="setJsonMode" />
             </div>
             <SliderField v-model="form.llm.max_concurrent" class="span-2" label="并发请求数"
@@ -249,10 +249,10 @@
               </label>
               <LlmParamFields v-if="form.llm.overrides[l.key].on" :caps="caps"
                               :target="form.llm.overrides[l.key]"
-                              :fields="['thinking', 'temperature', 'max_tokens']"
+                              :fields="['reasoning', 'temperature', 'max_tokens']"
                               :id-prefix="'llm-' + l.key" />
               <span v-else class="muted small ln-inherit" :title="inheritTitle(l.key)">
-                跟随全局（{{ form.llm.temperature }} · {{ form.llm.max_tokens }}）
+                跟随全局（{{ form.llm.params.temperature }} · {{ form.llm.params.max_tokens }}）
               </span>
             </div>
           </div>
@@ -275,6 +275,39 @@
               <button class="btn" @click="toggleLlmSource">
                 <Icon name="edit" :size="13" /> 编辑源文件
               </button>
+            </div>
+          </div>
+
+          <!-- 模型能力覆盖：**只在能力表没收录这个模型时出现**（caps.hit:false）。
+               表里没有 (host, model) 时，那几个旋钮在「生成」组里画不出来 —— 这块就是手填的出口。 -->
+          <div v-if="showModelCaps && modelCapsRow" class="llm-caps">
+            <div class="form-section-title">模型能力覆盖
+              <span class="muted small" :title="'写入 [llm.models.&quot;' + form.llm.model + '&quot;]，只影响这个模型；三个都留空 = 保存时删掉这条'">
+                写入 [llm.models."…"]
+              </span>
+            </div>
+            <div class="form-grid">
+              <div>
+                <label title="推理参数用哪种拼写发出去；留空 = 按内置表的保守默认（表里没这模型 ⇒ 不发推理参数）">推理参数怎么发</label>
+                <select v-model="modelCapsRow.thinking_wire">
+                  <option value="">不填</option>
+                  <option v-for="o in MODEL_WIRE_OPTS" :key="o" :value="o">{{ o }}</option>
+                </select>
+              </div>
+              <div>
+                <label title="输出上限写哪个字段名；留空 = max_tokens">输出上限字段</label>
+                <select v-model="modelCapsRow.max_output_wire">
+                  <option value="">不填</option>
+                  <option v-for="o in MODEL_MAXOUT_OPTS" :key="o" :value="o">{{ o }}</option>
+                </select>
+              </div>
+              <div>
+                <label title="这个模型收不收 temperature；留空 = 收（照发）">温度</label>
+                <select v-model="modelCapsRow.temperature">
+                  <option value="">不填</option>
+                  <option v-for="o in MODEL_TEMP_OPTS" :key="o" :value="o">{{ o }}</option>
+                </select>
+              </div>
             </div>
           </div>
         </div>
@@ -442,22 +475,21 @@ const form = reactive({
     api_key_set: false,
     base_url: '',
     model: '',
-    temperature: 0,
-    max_tokens: 65536,
     max_concurrent: 3,
-    // 推理档位（写的是 [llm] thinking）：'' = 不写这个键（跟随默认），否则是档位名。
+    // **请求参数面**（v2 的 [llm.params]）：'' / 缺键 = 不写这个键（也就是**不发送**）。
     // 档位清单不在这里写死 —— 由模型能力表给（components/llm/caps.js 归一化）
-    thinking: '',
-    extra_params: '',
-    // 按链路覆盖：每行 = { on, max_tokens, temperature, thinking }；
+    params: { temperature: 0, max_tokens: 65536, reasoning: '', json_mode: false },
+    // 按链路覆盖：每行 = { on, max_tokens, temperature, reasoning }（**与 params 同一套字段**）；
     // `on` 决定保存时写值还是发 null（服务端 patch 的 null = 删键 = 回到跟随全局，见 buildLlmPatch）
-    overrides: {}
+    overrides: {},
+    // **能力面**（v2 的 [llm.models."<id>"]）：内置表没收录这个模型时，由「高级」那一小块编辑
+    models: {}
   }
 })
 
 /** 链路 key → 中文名（key 与后端 `LlmLink::key()` 一致；表行按 llm_config.overrides 的键来） */
 const LLM_LINK_ZH = { detect: '事件检测', polish: '精修剪辑', correct: '字幕订正', utility: '零散单发' }
-/** 该链路 thinking 不写时的生效值（与 `LlmLink::default_thinking` 一致）—— 只用于"跟随全局"那句灰字的展示 */
+/** 该链路 reasoning 不写时的生效值（与 `LlmLink::default_thinking` 一致）—— 只用于"跟随全局"那句灰字的展示 */
 const LLM_LINK_THINKING = { polish: '关思考', utility: '关思考' }
 function defaultThinking(key) {
   return LLM_LINK_THINKING[key] || '跟随 extra_params'
@@ -482,7 +514,7 @@ const apiKeyTitle = computed(() => (form.llm.api_key_set
 /** 「跟随全局」那句灰字的细节（行内只留值，细节进 title —— 行内有 20 字预算）。 */
 function inheritTitle(key) {
   return '不勾 = 这条链路不写任何覆盖键（保存时发 null，服务端删键）⇒ '
-    + '输出上限 / 温度跟随上面「生成」；推理档位用 ' + defaultThinking(key)
+    + '输出上限 / 温度跟随上面「生成」（[llm.params]）；推理档位用 ' + defaultThinking(key)
 }
 
 /** 取这个模型的能力。失败**照实说**（404 = 服务端还没接这条接口），界面退化成「只画通用控件」。 */
@@ -516,6 +548,27 @@ watch(() => [form.llm.base_url, form.llm.model], () => {
   capsTimer = setTimeout(loadCaps, 400)
 })
 onBeforeUnmount(() => { if (capsTimer) clearTimeout(capsTimer) })
+
+/** 模型能力覆盖（`[llm.models."<id>"]`）手填的三项 —— 只在能力**未收录**时露出来。
+ *  ⚠️ 选项与 Rust 侧同一套拼写（`ModelOverrideToml`）；认不出的值服务端会降级成"不发"。 */
+const MODEL_WIRE_OPTS = ['openai_effort', 'thinking_type', 'qwen_enable_thinking', 'openrouter_effort']
+const MODEL_MAXOUT_OPTS = ['max_tokens', 'max_completion_tokens']
+const MODEL_TEMP_OPTS = ['supported', 'unsupported']
+/** 内置表**没收录**这对 (host, model)（hit:false）⇒ 「高级」里给一块手填能力的表单 */
+const showModelCaps = computed(() => !!(caps.value && caps.value.hit === false
+  && String(form.llm.model || '').trim()))
+/** 当前模型那一行（reactive 对象；由下面的 watch 保证存在） */
+const modelCapsRow = computed(() => {
+  const id = String(form.llm.model || '').trim()
+  return id ? (form.llm.models[id] || null) : null
+})
+// 模型一变就把那一行补出来（值按模型 id 存，切回来还在）；三个都留空 = 保存时把这条删掉
+watch(() => String(form.llm.model || '').trim(), (id) => {
+  if (!id) return
+  if (!form.llm.models[id]) {
+    form.llm.models[id] = { thinking_wire: '', max_output_wire: '', temperature: '' }
+  }
+}, { immediate: true })
 
 /** 表行：只列后端回给你的链路（新增链路不用改这里就会冒出来） */
 const llmLinks = computed(() =>
@@ -569,8 +622,11 @@ function buildGlobalPatch() {
   }
 }
 
-/** 「要求 JSON 输出」= `extra_params.response_format` 的一个视图（[llm] 没有这个一等公民键）。 */
+/** 「要求 JSON 输出」的真源 = `[llm.params] json_mode`（v2 的一等公民键）；
+ *  老工程把同一件事写在 `extra_params.response_format` 里 —— 那边也算"开"（否则界面会显示没开、
+ *  实际却在发）。 */
 const jsonModeOn = computed(() => {
+  if (form.llm.params && form.llm.params.json_mode === true) return true
   const t = String(form.llm.extra_params || '').trim()
   if (!t) return false
   try {
@@ -579,7 +635,8 @@ const jsonModeOn = computed(() => {
   } catch (e) { return false }
 })
 
-/** 勾 / 取消「要求 JSON 输出」：改的是 extra_params 正文。
+/** 勾 / 取消「要求 JSON 输出」：**新位置（params.json_mode）与老位置（extra_params.response_format）
+ *  一起改** —— 只改一处就会出现"勾着却没生效 / 没勾却在发"。
  *  ⚠️ 正文不是合法 JSON 时**拒绝改**（toast 说明）—— 不能为了一个开关把用户手写的逃逸口覆盖掉。 */
 function setJsonMode(on) {
   const raw = String(form.llm.extra_params || '').trim()
@@ -592,6 +649,7 @@ function setJsonMode(on) {
       toast('extra_params 必须是 JSON 对象，先修好再改「要求 JSON 输出」', 'err'); return
     }
   }
+  form.llm.params.json_mode = !!on
   if (on) obj.response_format = { type: 'json_object' }
   else delete obj.response_format
   form.llm.extra_params = Object.keys(obj).length ? JSON.stringify(obj, null, 2) : ''
@@ -599,15 +657,35 @@ function setJsonMode(on) {
 
 function buildLlmPatch() {
   const f = form.llm
+  const p = f.params || {}
   const llm = {
     base_url: f.base_url || '',
     model: f.model || '',
-    temperature: clampNum(f.temperature, 0, 2, 0),
-    max_tokens: Math.round(clampNum(f.max_tokens, 256, 65536, 65536)),
     max_concurrent: Math.max(1, Math.round(Number(f.max_concurrent) || 3)),
-    // 推理档位：'' = **发 null 删键**（跟随默认）；否则写档位名（服务端认 off/minimal/low/medium/high/xhigh）
-    thinking: f.thinking ? f.thinking : null
+    // ⚠️ **请求参数面写 [llm.params]**（v2）：这三个键不再是 [llm] 的一等公民键。
+    // 推理档位：'' = **发 null 删键**（不表态）；否则写档位名（服务端认 off/minimal/low/medium/high/xhigh）
+    params: {
+      temperature: clampNum(p.temperature, 0, 2, 0),
+      max_tokens: Math.round(clampNum(p.max_tokens, 256, 65536, 65536)),
+      reasoning: p.reasoning ? p.reasoning : null,
+      // 不要求 JSON 时发 null = 删键（老位置 extra_params.response_format 那边由 setJsonMode 同步）
+      json_mode: p.json_mode === true ? true : null
+    }
+  };
+  // **能力面**（[llm.models."<id>"]）：只发**有内容的行**；三个都空的那行整条删掉（别在文件里留空表）
+  const models = {}
+  for (const [id, row] of Object.entries(f.models || {})) {
+    if (!row || (!row.thinking_wire && !row.max_output_wire && !row.temperature)) {
+      models[id] = null
+      continue
+    }
+    models[id] = {
+      thinking_wire: row.thinking_wire ? row.thinking_wire : null,
+      max_output_wire: row.max_output_wire ? row.max_output_wire : null,
+      temperature: row.temperature ? row.temperature : null
+    }
   }
+  if (Object.keys(models).length) llm.models = models
   // ⚠️ api_key 只写不读：**没填就整个不发这个键**。新服务端把空串当「不修改」，旧服务端却会真写一个
   //    空串（把 key 清掉）—— 省略键在两边都等于「不修改」，所以留空时不发它（契约见 api/llm.js）。
   if (String(f.api_key || '').trim()) llm.api_key = String(f.api_key).trim()
@@ -632,12 +710,12 @@ function buildLlmPatch() {
   for (const [key, row] of Object.entries(f.overrides || {})) {
     llm.overrides[key] = row.on
       ? {
-          max_tokens: Math.round(clampNum(row.max_tokens, 256, 65536, f.max_tokens)),
-          temperature: clampNum(row.temperature, 0, 2, f.temperature),
-          // thinking 留「默认」就不写这个键（生效值由链路默认 / [llm].thinking 决定）
-          thinking: row.thinking ? row.thinking : null
+          max_tokens: Math.round(clampNum(row.max_tokens, 256, 65536, p.max_tokens)),
+          temperature: clampNum(row.temperature, 0, 2, p.temperature),
+          // reasoning 留「默认」就不写这个键（生效值由链路默认 / [llm.params].reasoning 决定）
+          reasoning: row.reasoning ? row.reasoning : null
         }
-      : { max_tokens: null, temperature: null, thinking: null }
+      : { max_tokens: null, temperature: null, reasoning: null }
   }
   return { llm }
 }
@@ -696,8 +774,10 @@ async function loadConfig() {
       overwrite: !!c.cutting.overwrite,
     })
     const l = d.llm_config || {}
-    const gMax = l.max_tokens ?? 65536
-    const gTemp = l.temperature ?? 0
+    // v2：请求参数面在 llm_config.params（不再是 [llm] 上的 temperature/max_tokens/thinking）
+    const p = l.params || {}
+    const gMax = p.max_tokens ?? 65536
+    const gTemp = p.temperature ?? 0
     form.llm = {
       // ⚠️ api_key **不预填**（P3 起接口只回 api_key_set 布尔；老服务端回明文也不填进表单）——
       //    留空 = 不修改，填了才覆盖（见 buildLlmPatch）
@@ -705,12 +785,26 @@ async function loadConfig() {
       api_key_set: (typeof d.api_key_set === 'boolean') ? d.api_key_set : !!l.api_key,
       base_url: l.base_url || '',
       model: l.model || '',
-      temperature: gTemp,
-      max_tokens: gMax,
       max_concurrent: l.max_concurrent ?? 3,
-      // 老配置里的 thinking 可能是 "enabled"/"disabled"（老开关）—— 归一成等价档位再显示；
-      // 写回的是规范档位名（服务端两套都认，映射见 caps.js::normalizeLevel）
-      thinking: normalizeLevel(l.thinking),
+      // 老配置里的 reasoning 可能是 "enabled"/"disabled"（v1 的 thinking 迁过来的）——
+      // 归一成等价档位再显示；写回的是规范档位名（服务端两套都认，见 caps.js::normalizeLevel）
+      params: {
+        temperature: gTemp,
+        max_tokens: gMax,
+        reasoning: normalizeLevel(p.reasoning),
+        json_mode: p.json_mode === true
+      },
+      // 能力面：整份带过来（只编辑当前模型那一行，其余原样回写）
+      models: Object.fromEntries(
+        Object.entries(l.models || {}).map(([id, m]) => [
+          id,
+          {
+            thinking_wire: m?.thinking_wire || '',
+            max_output_wire: m?.max_output_wire || '',
+            temperature: m?.temperature || ''
+          }
+        ])
+      ),
       extra_params: l.extra_params ? JSON.stringify(l.extra_params, null, 2) : '',
       // 后端把四张覆盖表都序列化出来（缺席的项是 null）→ 行按它的键走。
       // on = 这条链路在 llm.toml 里已经有一项覆盖；控件显示值取"覆盖值，否则当前全局值"。
@@ -718,10 +812,10 @@ async function loadConfig() {
         Object.entries(l.overrides || {}).map(([k, v]) => [
           k,
           {
-            on: v?.max_tokens != null || v?.temperature != null || !!v?.thinking,
+            on: v?.max_tokens != null || v?.temperature != null || !!v?.reasoning,
             max_tokens: v?.max_tokens ?? gMax,
             temperature: v?.temperature ?? gTemp,
-            thinking: normalizeLevel(v?.thinking)
+            reasoning: normalizeLevel(v?.reasoning)
           }
         ])
       )
@@ -825,6 +919,8 @@ onMounted(async () => {
    extra_params 与「源文件」并排（各 50%）：JSON 正文不需要更宽，再宽也是换行看不清。 */
 textarea.llm-extra { min-height:230px; resize:vertical; font-size:12px; line-height:1.6; }
 .llm-cols { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:10px 20px; align-items:start; }
+/* 模型能力覆盖（只在能力表未收录时出现）：与上面两栏隔开，别混成一张表单 */
+.llm-caps { margin-top:12px; padding-top:10px; border-top:1px dashed var(--line); }
 @media (max-width:1200px) { .llm-cols { grid-template-columns:minmax(0,1fr); gap:14px 0; } }
 /* 按链路覆盖：一条链路一格（两栏 = 2×2）—— [勾选框 + 链路名] + 该链路的参数控件（LlmParamFields）。
    没勾的只留一行灰字（跟随全局），勾开才长出控件。控件的出现与否由**模型能力**决定。

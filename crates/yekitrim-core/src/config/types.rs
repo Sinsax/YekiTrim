@@ -14,10 +14,15 @@ fn default_asr_model() -> String {
 fn default_output_dir() -> String {
     "./output".into()
 }
-fn default_temperature() -> f64 {
+/// v1 的代码级默认值（`[llm] temperature` 缺席时那个数**真的会发出去**）。
+///
+/// ⚠️ 现在唯一的用途是 **v1→v2 迁移时把它落成显式键**（`version.rs`）——
+/// 新形状里"缺席"的含义是"不发送"，不落实现值就等于升级一次、请求体少一个键。
+pub(super) fn default_temperature() -> f64 {
     0.1
 }
-fn default_max_tokens() -> u32 {
+/// 同 `default_temperature`：v1 的 `[llm] max_tokens` 默认值（迁移时落成显式键）。
+pub(super) fn default_max_tokens() -> u32 {
     65536
 }
 
@@ -842,31 +847,120 @@ impl LlmLink {
         }
     }
 
-    /// 该链路的**代码级默认** thinking（都没配时的兜底）。
+    /// 该链路的**代码级默认**推理档位（全局与覆盖都没配时的兜底）。
     ///
-    /// - `Polish` / `Utility` = `disabled`：精修分段/逐段事件、贴纸包标签、封面文案
+    /// - `Polish` / `Utility` = `"off"`：精修分段/逐段事件、贴纸包标签、封面文案
     ///   历史上就在代码里写死了关思考，这里把它收成一处；
     /// - `Detect` = `None`：检测从来没强制过，交给 `extra_params.thinking`；
     /// - `Correct` = `None`：订正另有 `[correct] thinking` 老开关（见 `AgentTask::thinking`），
     ///   LLM 层没表态时它照旧生效。
+    ///
+    /// ⚠️ 值的拼写用**档位名**（`off`），不是 v1 的 `disabled`：这个字符串会落进
+    /// `LlmParamsToml.reasoning`，两种拼写混在一起迟早有人按"档位名"去解析。
+    /// `from_thinking_flag` 两个都认，所以行为与 v1 逐字节相同。
     pub fn default_thinking(self) -> Option<&'static str> {
         match self {
             LlmLink::Detect | LlmLink::Correct => None,
-            LlmLink::Polish | LlmLink::Utility => Some("disabled"),
+            LlmLink::Polish | LlmLink::Utility => Some("off"),
         }
     }
 }
 
-/// 单条链路的 LLM 调用参数覆盖；**字段缺席 = 跟随 `[llm]` 的同名项**。
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct LlmOverride {
-    #[serde(default)]
-    pub max_tokens: Option<u32>,
+/// **请求参数面**（`[llm.params]` 与 `[llm.overrides.<link>]` 用的是**同一套字段**）。
+///
+/// ⚠️ **每个字段都是 `Option`：「省略」= 不表态（那个键不进请求体）。**
+/// 这是与 v1 最大的语义差别 —— v1 的 `[llm] temperature` / `max_tokens` 是**带默认值的必填项**
+/// （0.1 / 65536，每次请求都真的发出去），所以老文件迁移时会把生效值**落成显式键**
+/// （见 [`super::version`] 的 v1→v2），否则"升级一次请求体就变了"。
+///
+/// 与**能力**分开：能力在 `[llm.models."<id>"]`（[ModelOverrideToml]），这里只说"这一趟发什么"。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct LlmParamsToml {
+    /// 采样温度；**省略 = 不发**（`temperature = 0` 是"要发 0"，不是"没配"）。
     #[serde(default)]
     pub temperature: Option<f64>,
-    /// `"enabled"` / `"disabled"`；其它值原样透传给 provider。
+    /// 输出上限；**省略 = 不发**（字段名由该模型的能力决定：`max_tokens` / `max_completion_tokens`）。
     #[serde(default)]
-    pub thinking: Option<String>,
+    pub max_tokens: Option<u32>,
+    /// 推理档位：`off|minimal|low|medium|high|xhigh`（v1 的 `enabled`/`disabled` 也认）；
+    /// **省略 = 不表态**（此时 `extra_params.thinking` 说了算，各链路的代码默认也照旧生效）。
+    #[serde(default)]
+    pub reasoning: Option<String>,
+    #[serde(default)]
+    pub top_p: Option<f64>,
+    /// 要求 JSON 输出（wire 上写 `response_format`）；省略 = 不主动打开
+    /// （老工程仍由 `extra_params.response_format` 表达，那是优先级最低的逃逸口）。
+    #[serde(default)]
+    pub json_mode: Option<bool>,
+}
+
+/// 单条链路的覆盖：**与 `[llm.params]` 同一套字段**（缺席 = 跟随全局）。
+pub type LlmOverride = LlmParamsToml;
+
+impl LlmParamsToml {
+    /// 链路覆盖合并：**覆盖里写了的字段优先**，其余继承全局。
+    ///
+    /// 三个 v1 就有的兜底原样搬过来（**别删**，都是手改坏文件的现场）：
+    /// `max_tokens = 0` 视为没配、非有限 temperature 忽略、超范围夹回 [0,2]。
+    fn merged_over(&self, ov: &Self, link: LlmLink) -> Self {
+        let max_tokens = match ov.max_tokens {
+            // 0 = 没配（设置页清空会写成 null，但不排除手改出 0）：别把 0 发给 provider
+            Some(0) => {
+                tracing::warn!(
+                    "[llm.overrides.{}] max_tokens = 0 无效，按未设置处理（跟随 [llm.params] 的 {:?}）",
+                    link.key(),
+                    self.max_tokens
+                );
+                self.max_tokens
+            }
+            Some(n) => Some(n),
+            None => self.max_tokens,
+        };
+        let temperature = match ov.temperature {
+            Some(t) if t.is_finite() => Some(t.clamp(0.0, 2.0)),
+            Some(t) => {
+                tracing::warn!(
+                    "[llm.overrides.{}] temperature = {t} 不是有限值，按未设置处理",
+                    link.key()
+                );
+                self.temperature
+            }
+            None => self.temperature,
+        };
+        Self {
+            temperature,
+            max_tokens,
+            // 链路覆盖 → 全局 → 链路代码默认（精修/零散单发 = 关思考）
+            reasoning: ov
+                .reasoning
+                .clone()
+                .or_else(|| self.reasoning.clone())
+                .or_else(|| link.default_thinking().map(str::to_string)),
+            top_p: ov.top_p.or(self.top_p),
+            json_mode: ov.json_mode.or(self.json_mode),
+        }
+    }
+}
+
+/// `[llm.models."<id>"]`：**手填能力**（内置表里没有的模型靠它），只覆盖写了的字段。
+///
+/// 与参数面分开的理由：能力是"这个模型**能**怎样"，参数是"这一趟**要**怎样"。
+/// 混在一张表里就会出现"改了全局温度、顺手把某模型的能力也改了"。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ModelOverrideToml {
+    /// `openai_effort` / `thinking_type` / `qwen_enable_thinking` / `openrouter_effort`；
+    /// 认不出的值降级成"不发推理参数"（宁可不发也不瞎发）。
+    #[serde(default)]
+    pub thinking_wire: Option<String>,
+    /// `max_tokens` / `max_completion_tokens`。
+    #[serde(default)]
+    pub max_output_wire: Option<String>,
+    /// `"supported"` / `"unsupported"`（后者 = 这个模型不收 temperature，别发）。
+    #[serde(default)]
+    pub temperature: Option<String>,
+    /// 档位 → wire 拼写；**空串 = 支持但不发送**（与内置表里的 `null` 同义）。
+    #[serde(default)]
+    pub reasoning: Option<std::collections::BTreeMap<String, String>>,
 }
 
 /// 按链路的覆盖表（`[llm.overrides]`）。未知键忽略，与其余配置类型一致 ——
@@ -894,6 +988,12 @@ impl LlmOverrides {
     }
 }
 
+/// `.yekitrim/llm.toml` 的形状（v2）。
+///
+/// **三块各管各的**（别混进同一张表）：
+/// * 连接面：`api_key` / `base_url` / `model` / `max_concurrent`；
+/// * **请求参数面**：[`LlmParamsToml`]（全局 `params` + 四条链路的 `overrides`）；
+/// * **能力面**：`models["<id>"]`（[`ModelOverrideToml`]）；`extra_params` 是优先级最低的老逃逸口。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmConfig {
     #[serde(default)]
@@ -902,21 +1002,20 @@ pub struct LlmConfig {
     pub base_url: String,
     #[serde(default)]
     pub model: String,
-    #[serde(default = "default_temperature")]
-    pub temperature: f64,
-    #[serde(default = "default_max_tokens")]
-    pub max_tokens: u32,
-    #[serde(default)]
-    pub extra_params: Option<toml::Table>,
     /// 并发请求数——**所有 LLM 调用方共用这一个旋钮**（事件检测 / 精修事件生成 / 字幕订正）。
     /// 各段自己的 `max_concurrent` 留空即跟随这里；填了则那一段以自己的为准。
     #[serde(default = "default_llm_max_concurrent")]
     pub max_concurrent: usize,
-    /// 全局思考开关。`None` = 不设置（由 `extra_params.thinking` 决定）。
-    /// ⚠️ `build_body` 里 `self.thinking` 会**盖掉** `extra_params.thinking`，所以这里是更高优先级的开关。
+    /// **请求参数面**（全局）。不写 = 那几个键都不进请求体。
     #[serde(default)]
-    pub thinking: Option<String>,
-    /// 按链路的调用参数覆盖（见 [`LlmConfig::for_link`]）。
+    pub params: LlmParamsToml,
+    /// **能力面**：表里没收录的模型在这里手填（键 = 模型 id，匹配大小写不敏感）。
+    #[serde(default)]
+    pub models: std::collections::BTreeMap<String, ModelOverrideToml>,
+    /// 老逃逸口：整表原样进请求体，**优先级最低**（结构化项之后、reasoning 之前）。
+    #[serde(default)]
+    pub extra_params: Option<toml::Table>,
+    /// 按链路的**请求参数**覆盖（见 [`LlmConfig::for_link`]）。
     #[serde(default)]
     pub overrides: LlmOverrides,
 }
@@ -927,11 +1026,10 @@ impl Default for LlmConfig {
             api_key: String::new(),
             base_url: String::new(),
             model: String::new(),
-            temperature: default_temperature(),
-            max_tokens: default_max_tokens(),
-            extra_params: None,
             max_concurrent: default_llm_max_concurrent(),
-            thinking: None,
+            params: LlmParamsToml::default(),
+            models: std::collections::BTreeMap::new(),
+            extra_params: None,
             overrides: LlmOverrides::default(),
         }
     }
@@ -948,56 +1046,15 @@ impl LlmConfig {
         section_override.unwrap_or(self.max_concurrent).max(1)
     }
 
-    /// 某链路的**有效** LLM 调用参数 —— **所有构造 `LlmClient` 的地方都必须走这里**，
-    /// 别再裸 `from_config` + 手写 `with_max_tokens` / `with_temperature` / `with_thinking`
+    /// 某链路的**有效**调用参数 —— **所有构造 `LlmClient` 的地方都必须走这里**，
+    /// 别再裸 `From` + 手写 `with_max_tokens` / `with_temperature` / `with_thinking`
     /// （漏一个调用点 = 那个旋钮静默不生效）。
     ///
-    /// 优先级（高 → 低）：
-    /// - `max_tokens`：`overrides.<link>.max_tokens` → `[llm].max_tokens`（`0` 视为未设置）
-    /// - `temperature`：`overrides.<link>.temperature` → `[llm].temperature`（非有限值忽略，夹 [0,2]）
-    /// - `thinking`：`overrides.<link>.thinking` → `[llm].thinking` → [`LlmLink::default_thinking`]
-    ///   → 都没给就不设置（此时 `extra_params.thinking` 生效）
+    /// 只改写 `params`（请求参数面）：覆盖里写了的字段优先，其余继承全局；**能力面 `models` 原样带过去**
+    /// （能力跟模型走，不跟链路走）。逐字段优先级见 [`LlmParamsToml::merged_over`]。
     pub fn for_link(&self, link: LlmLink) -> LlmConfig {
         let ov = self.overrides.of(link);
-
-        let max_tokens = match ov.max_tokens {
-            // 0 = 没配（设置页的输入框清空后会写成 null，但不排除手改出 0）：别把 0 发给 provider
-            Some(0) => {
-                tracing::warn!(
-                    "[llm.overrides.{}] max_tokens = 0 无效，按未设置处理（跟随 [llm].max_tokens = {}）",
-                    link.key(),
-                    self.max_tokens
-                );
-                self.max_tokens
-            }
-            Some(n) => n,
-            None => self.max_tokens,
-        };
-
-        let temperature = match ov.temperature {
-            Some(t) if t.is_finite() => t.clamp(0.0, 2.0),
-            Some(t) => {
-                tracing::warn!(
-                    "[llm.overrides.{}] temperature = {t} 不是有限值，按未设置处理",
-                    link.key()
-                );
-                self.temperature
-            }
-            None => self.temperature,
-        };
-
-        let thinking = ov
-            .thinking
-            .clone()
-            .or_else(|| self.thinking.clone())
-            .or_else(|| link.default_thinking().map(|s| s.to_string()));
-
-        LlmConfig {
-            max_tokens,
-            temperature,
-            thinking,
-            ..self.clone()
-        }
+        LlmConfig { params: self.params.merged_over(ov, link), ..self.clone() }
     }
 }
 
@@ -1078,22 +1135,22 @@ mod llm_link_tests {
     fn base() -> LlmConfig {
         let mut c = LlmConfig::default();
         c.model = "m".into();
-        c.max_tokens = 16384;
-        c.temperature = 0.1;
+        c.params.max_tokens = Some(16384);
+        c.params.temperature = Some(0.1);
         c
     }
 
-    /// 没配覆盖 = 逐项跟随 `[llm]`（既有安装升级上来行为不变）。
+    /// 没配覆盖 = 逐项跟随 `[llm.params]`（既有安装升级上来行为不变）。
     #[test]
     fn for_link_inherits_global_when_no_override() {
         let c = base();
         let d = c.for_link(LlmLink::Detect);
-        assert_eq!(d.max_tokens, 16384);
-        assert_eq!(d.temperature, 0.1);
+        assert_eq!(d.params.max_tokens, Some(16384));
+        assert_eq!(d.params.temperature, Some(0.1));
         assert_eq!(d.model, "m");
         assert_eq!(d.max_concurrent, c.max_concurrent);
-        // 检测不强制思考（历史上就没有写死），交给 extra_params
-        assert_eq!(d.thinking, None);
+        // 检测不强制推理档位（历史上就没有写死），交给 extra_params
+        assert_eq!(d.params.reasoning, None);
     }
 
     /// 覆盖 > 全局，且只影响自己那条链路。
@@ -1102,32 +1159,32 @@ mod llm_link_tests {
         let mut c = base();
         c.overrides.detect.max_tokens = Some(8192);
         c.overrides.detect.temperature = Some(0.7);
-        c.overrides.detect.thinking = Some("enabled".into());
+        c.overrides.detect.reasoning = Some("high".into());
 
         let d = c.for_link(LlmLink::Detect);
-        assert_eq!(d.max_tokens, 8192);
-        assert!((d.temperature - 0.7).abs() < 1e-9);
-        assert_eq!(d.thinking.as_deref(), Some("enabled"));
+        assert_eq!(d.params.max_tokens, Some(8192));
+        assert!((d.params.temperature.unwrap() - 0.7).abs() < 1e-9);
+        assert_eq!(d.params.reasoning.as_deref(), Some("high"));
 
         let p = c.for_link(LlmLink::Polish);
-        assert_eq!(p.max_tokens, 16384, "别的链路不受影响");
-        assert!((p.temperature - 0.1).abs() < 1e-9);
+        assert_eq!(p.params.max_tokens, Some(16384), "别的链路不受影响");
+        assert!((p.params.temperature.unwrap() - 0.1).abs() < 1e-9);
     }
 
     /// 链路代码默认：精修/零散单发关思考（历史写死的那两处），可被覆盖或全局顶掉。
     #[test]
     fn link_thinking_defaults_and_precedence() {
         let mut c = base();
-        assert_eq!(c.for_link(LlmLink::Polish).thinking.as_deref(), Some("disabled"));
-        assert_eq!(c.for_link(LlmLink::Utility).thinking.as_deref(), Some("disabled"));
-        assert_eq!(c.for_link(LlmLink::Correct).thinking, None);
+        assert_eq!(c.for_link(LlmLink::Polish).params.reasoning.as_deref(), Some("off"));
+        assert_eq!(c.for_link(LlmLink::Utility).params.reasoning.as_deref(), Some("off"));
+        assert_eq!(c.for_link(LlmLink::Correct).params.reasoning, None);
 
         // 链路覆盖 > 全局
-        c.thinking = Some("enabled".into());
-        assert_eq!(c.for_link(LlmLink::Polish).thinking.as_deref(), Some("enabled"));
-        assert_eq!(c.for_link(LlmLink::Detect).thinking.as_deref(), Some("enabled"));
-        c.overrides.polish.thinking = Some("disabled".into());
-        assert_eq!(c.for_link(LlmLink::Polish).thinking.as_deref(), Some("disabled"));
+        c.params.reasoning = Some("high".into());
+        assert_eq!(c.for_link(LlmLink::Polish).params.reasoning.as_deref(), Some("high"));
+        assert_eq!(c.for_link(LlmLink::Detect).params.reasoning.as_deref(), Some("high"));
+        c.overrides.polish.reasoning = Some("off".into());
+        assert_eq!(c.for_link(LlmLink::Polish).params.reasoning.as_deref(), Some("off"));
     }
 
     /// 手改坏的值不能让整条链路炸：0 = 未设置，非有限 temperature 忽略，超范围夹回来。
@@ -1137,43 +1194,104 @@ mod llm_link_tests {
         c.overrides.detect.max_tokens = Some(0);
         c.overrides.detect.temperature = Some(f64::NAN);
         let d = c.for_link(LlmLink::Detect);
-        assert_eq!(d.max_tokens, 16384);
-        assert_eq!(d.temperature, 0.1);
+        assert_eq!(d.params.max_tokens, Some(16384));
+        assert_eq!(d.params.temperature, Some(0.1));
 
         c.overrides.correct.temperature = Some(5.0);
-        assert_eq!(c.for_link(LlmLink::Correct).temperature, 2.0);
+        assert_eq!(c.for_link(LlmLink::Correct).params.temperature, Some(2.0));
     }
 
-    /// TOML 形态（= 用户手写的那张表）；未知键忽略，不把整份配置打回默认。
+    /// TOML 形态（= 用户手写的那两段）；未知键忽略，不把整份配置打回默认。
     #[test]
-    fn parses_overrides_table_from_toml() {
+    fn parses_params_and_overrides_from_toml() {
         let text = r#"
 api_key = "k"
+
+[params]
 max_tokens = 16384
-thinking = "disabled"
+reasoning = "off"
 
 [overrides.detect]
 max_tokens = 8192
 [overrides.polish]
 max_tokens = 32768
 temperature = 0.2
-thinking = "enabled"
+reasoning = "high"
 "#;
         let c: LlmConfig = toml::from_str(text).unwrap();
-        assert_eq!(c.for_link(LlmLink::Detect).max_tokens, 8192);
-        assert_eq!(c.for_link(LlmLink::Polish).max_tokens, 32768);
-        assert_eq!(c.for_link(LlmLink::Polish).thinking.as_deref(), Some("enabled"));
+        assert_eq!(c.for_link(LlmLink::Detect).params.max_tokens, Some(8192));
+        assert_eq!(c.for_link(LlmLink::Polish).params.max_tokens, Some(32768));
+        assert_eq!(c.for_link(LlmLink::Polish).params.reasoning.as_deref(), Some("high"));
         // utility 缺席 → 跟随全局
-        assert_eq!(c.for_link(LlmLink::Utility).max_tokens, 16384);
+        assert_eq!(c.for_link(LlmLink::Utility).params.max_tokens, Some(16384));
 
         let typo: LlmConfig =
             toml::from_str("api_key = \"k\"\n[overrides.detectt]\nmax_tokens = 1\n").unwrap();
         assert_eq!(typo.api_key, "k");
         assert_eq!(
-            typo.for_link(LlmLink::Detect).max_tokens,
-            LlmConfig::default().max_tokens,
+            typo.for_link(LlmLink::Detect).params.max_tokens,
+            LlmConfig::default().params.max_tokens,
             "拼错的表名只被忽略，不该生效也不该撑大范围"
         );
+    }
+
+    /// **模型级能力覆盖**：内置表怎么说是一回事，手填的必须真的进 `LlmParams.caps`。
+    ///
+    /// 这条是"表里没收录的模型也能用"的判据 —— 少了它，用户填了 `[llm.models."x"]` 却毫无效果
+    /// （而且**不报错**，最难查）。
+    #[test]
+    fn model_level_caps_override_reaches_llm_params() {
+        use yekitrim_llm::params::MaxOutputWire;
+        // 先拿一支**表里认识**的模型当底（deepseek：thinking_type + 非默认的输出字段名）
+        let mut c = LlmConfig::default();
+        c.base_url = "https://api.deepseek.com/v1".into();
+        c.model = "deepseek-v4-pro".into();
+        let before: yekitrim_llm::LlmParams = (&c).into();
+        assert_eq!(before.caps.thinking_wire, yekitrim_llm::ThinkingWire::ThinkingType);
+        assert_eq!(before.caps.max_output_wire, MaxOutputWire::MaxCompletionTokens);
+
+        c.models.insert(
+            "deepseek-v4-pro".into(),
+            ModelOverrideToml {
+                thinking_wire: Some("openai_effort".into()),
+                max_output_wire: Some("max_tokens".into()),
+                temperature: Some("unsupported".into()),
+                reasoning: Some(
+                    [("off".to_string(), String::new()), ("high".to_string(), "high".to_string())]
+                        .into_iter()
+                        .collect(),
+                ),
+            },
+        );
+        let after: yekitrim_llm::LlmParams = (&c).into();
+        assert_eq!(after.caps.thinking_wire, yekitrim_llm::ThinkingWire::OpenAIEffort);
+        assert_eq!(after.caps.max_output_wire, MaxOutputWire::MaxTokens, "输出上限字段名被改回来了");
+        assert!(after.caps.reasoning_supported(), "手填的档位要算数");
+        assert_eq!(after.caps.wire_for(yekitrim_llm::ReasoningLevel::High), Some(&Some("high".into())));
+        assert_eq!(
+            after.caps.wire_for(yekitrim_llm::ReasoningLevel::Off),
+            Some(&None),
+            "空串 = 支持但不发送"
+        );
+        assert_eq!(after.caps.temperature, yekitrim_llm::params::Support::Unsupported);
+
+        // 键的大小写不该决定生效与否（模型 id 各家拼法不一）
+        c.model = "DeepSeek-V4-Pro".into();
+        let ci: yekitrim_llm::LlmParams = (&c).into();
+        assert_eq!(ci.caps.thinking_wire, yekitrim_llm::ThinkingWire::OpenAIEffort);
+
+        // 表里**完全没收录**的那对：手填照样生效（这就是这块存在的理由）
+        let mut u = LlmConfig::default();
+        u.base_url = "https://unknown.example.com/v1".into();
+        u.model = "my-gateway-model".into();
+        let before_u: yekitrim_llm::LlmParams = (&u).into();
+        assert_eq!(before_u.caps.thinking_wire, yekitrim_llm::ThinkingWire::None, "未知模型保守默认");
+        u.models.insert(
+            "my-gateway-model".into(),
+            ModelOverrideToml { thinking_wire: Some("openai_effort".into()), ..Default::default() },
+        );
+        let after_u: yekitrim_llm::LlmParams = (&u).into();
+        assert_eq!(after_u.caps.thinking_wire, yekitrim_llm::ThinkingWire::OpenAIEffort);
     }
 
     /// 枚举 ↔ TOML 键名是契约（设置页与配置文件都按这个走）。
@@ -1288,32 +1406,85 @@ impl From<LlmConfig> for yekitrim_llm::LlmParams {
     }
 }
 
+/// `[llm.models."<id>"]` 里那条覆盖（**大小写不敏感**：模型 id 各家拼法不一，
+/// 手写一个大小写不同的键就静默不生效，是最难查的那种坑）。
+fn model_override_for<'a>(c: &'a LlmConfig) -> Option<&'a ModelOverrideToml> {
+    let id = c.model.trim();
+    if id.is_empty() {
+        return None;
+    }
+    c.models
+        .get(id)
+        .or_else(|| c.models.iter().find(|(k, _)| k.eq_ignore_ascii_case(id)).map(|(_, v)| v))
+}
+
+/// 把手填能力盖到内置表查出来的 caps 上（**只覆盖写了的字段**）。
+fn apply_model_override(caps: &mut yekitrim_llm::ModelCaps, ov: &ModelOverrideToml) {
+    use yekitrim_llm::params::{MaxOutputWire, Support, ThinkingWire};
+    if let Some(w) = ov.thinking_wire.as_deref() {
+        caps.thinking_wire = ThinkingWire::parse(w);
+    }
+    if let Some(w) = ov.max_output_wire.as_deref() {
+        caps.max_output_wire = MaxOutputWire::parse(w);
+    }
+    if let Some(t) = ov.temperature.as_deref() {
+        // 与内置表同一套写法（unsupported / no / false 都算不支持）
+        let t = t.trim().to_ascii_lowercase();
+        caps.temperature = if matches!(t.as_str(), "unsupported" | "no" | "false") {
+            Support::Unsupported
+        } else {
+            Support::Supported
+        };
+    }
+    if let Some(levels) = &ov.reasoning {
+        for (k, wire) in levels {
+            if let Some(lv) = yekitrim_llm::ReasoningLevel::parse(k) {
+                // 空串 = 支持但不发送（与内置表里的 null 同义）
+                caps.levels.insert(lv, (!wire.is_empty()).then(|| wire.clone()));
+            }
+        }
+    }
+}
+
 impl From<&LlmConfig> for yekitrim_llm::LlmParams {
     fn from(c: &LlmConfig) -> Self {
-        // 旧口径 `[llm] thinking = "enabled"/"disabled"` → 推理档位。
-        // ⚠️ `reasoning_explicit` 必须跟着置位：链路自己的老开关（如 `[correct] thinking`）
+        use yekitrim_llm::params::Support;
+        let p = &c.params;
+        // 档位：老拼写（enabled / disabled）与档位名都认 —— 手改的文件不该因此静默失效。
+        // ⚠️ reasoning_explicit 必须跟着置位：链路自己的老开关（如 [correct] thinking）
         //    只在 LLM 层**没表态**时才生效（2026-09 修过的一个真 bug）。
-        let reasoning = c
-            .thinking
+        let reasoning = p
+            .reasoning
             .as_deref()
             .and_then(yekitrim_llm::ReasoningLevel::from_thinking_flag);
+        // 能力：**内置表打底 → 手填覆盖**（表里没收录的模型靠 [llm.models]）。
+        let mut caps = yekitrim_llm::catalog::caps_for(&c.base_url, &c.model);
+        if let Some(ov) = model_override_for(c) {
+            apply_model_override(&mut caps, ov);
+        }
+        // ⚠️ 「省略 temperature = 不发」只能借 caps 这一个出口表达：LlmParams.temperature 不是
+        //    Option，而 wire 只在 caps.temperature == Supported 时才写那个键。借它是安全的 ——
+        //    本函数算出来的 caps 只喂给这一次请求（界面看的能力走 GET /config/llm/catalog）。
+        //    顺序：手填覆盖在前、这条在后 —— 没写值时就**没有值可发**，不该凭空塞一个默认温度。
+        if p.temperature.is_none() {
+            caps.temperature = Support::Unsupported;
+        }
         Self {
             api_key: c.api_key.clone(),
             base_url: c.base_url.clone(),
             model: c.model.clone(),
-            temperature: c.temperature,
-            max_tokens: Some(c.max_tokens),
+            temperature: p.temperature.filter(|t| t.is_finite()).unwrap_or_default(),
+            // 省略 = 不发（v1 那个"永远会发出去的默认值"由迁移落成显式键，见 version.rs）
+            max_tokens: p.max_tokens,
             reasoning: reasoning.unwrap_or_default(),
             reasoning_explicit: reasoning.is_some(),
-            top_p: None,
-            // `response_format` 仍由 `extra_params` 表达（老工程的写死值原样保留）；
-            // 归一化面的 `json_mode` 是给新界面用的，这里不主动打开。
-            json_mode: false,
-            // `extra_params` 是 TOML 表，传输层只认 JSON —— 在这里转一次。
+            top_p: p.top_p.filter(|v| v.is_finite()),
+            // extra_params.response_format 仍是老工程的表达（原样保留）；这里是新界面的一等公民键。
+            json_mode: p.json_mode.unwrap_or(false),
+            // extra_params 是 TOML 表，传输层只认 JSON —— 在这里转一次。
             extra_params: c.extra_params.as_ref().and_then(|t| serde_json::to_value(t).ok()),
             max_concurrent: c.concurrency(None),
-            // 能力表：按 (base_url, model) 查内置表；查不到就是保守默认（不发推理参数）。
-            caps: yekitrim_llm::catalog::caps_for(&c.base_url, &c.model),
+            caps,
         }
     }
 }
