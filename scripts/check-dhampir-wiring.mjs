@@ -150,6 +150,31 @@ check(
   `少了前缀（生产会 404）：\n    ${barePolish.join('\n    ')}`,
 );
 
+// ---- 3b：LLM 新接口的接线（**同一类缝**：前端路径 <-> routes.rs 注册的路由）----
+// 为什么并到这里而不是新开一个脚本：这张卡的判据本来就是「隔着边界的名字」，HTTP 路径 ←→ 路由
+// 正是其中一处；而 `scripts/AGENTS.md` 的卡片预算只剩 76 B，新脚本需要新卡片行。
+const LLM_API = join(repo, 'webui/src/api/llm.js');
+const llmJs = existsSync(LLM_API) ? readFileSync(LLM_API, 'utf8') : '';
+check(
+  llmJs.length > 0,
+  'webui/src/api/llm.js 应当存在（设置页的 LLM 面全走它）',
+  '没找到这个文件 —— 是改路径了，还是接口层被绕过了？',
+);
+const llmPaths = new Set();
+for (const m of llmJs.matchAll(/['"`](\/api\/[^'"`]*)/g)) {
+  const p = m[1].split('?')[0].split('${')[0].replace(/\/$/, '');
+  if (p) llmPaths.add(p);
+}
+check(llmPaths.size > 0, 'api/llm.js 应当至少调一个 /api 路径', '一条都没找到');
+for (const p of llmPaths) {
+  const suffix = p.slice('/api'.length);
+  check(
+    routesSrc.includes('.route("' + suffix + '"'),
+    `api/llm.js 调了 ${p}，routes.rs 必须有 .route("${suffix}", …)`,
+    '路由名对不上 —— 浏览器会落到 fallback（它返回 200 "未知接口"，最容易被当成"成功了"）',
+  );
+}
+
 // ---- 热重载的四条判据（主检查与 --self-test 共用，避免两处各写一份而漂移）----
 // ---- 4：前端调的 `engine.*` 方法，`Engine` 上必须真的有 ----
 // 4f/4g 的探针（2026-10-05）：与主检查共用一份，别在两处各写一个正则而漂移
