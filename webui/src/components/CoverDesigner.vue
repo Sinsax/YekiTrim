@@ -188,8 +188,8 @@
                 <div class="mini-field"><label>X</label><input type="range" min="0" max="100" step="1" v-model.number="textX"><input class="rv-input" type="number" min="0" max="100" step="1" :value="textX" title="可直接填写（0 ~ 100）" @change="numBind(textX, (v) => (textX = v), $event, 0, 100)"></div>
                 <div class="mini-field"><label>Y</label><input type="range" min="0" max="100" step="1" v-model.number="textY"><input class="rv-input" type="number" min="0" max="100" step="1" :value="textY" title="可直接填写（0 ~ 100）" @change="numBind(textY, (v) => (textY = v), $event, 0, 100)"></div>
                 <!-- 封面字体：字体库（程序目录 resources/fonts/）里的字体。空 = 系统字体栈。 -->
-                <div class="mini-field"><label>字体</label>
-                  <select :value="coverFont" :disabled="!configLoaded" @change="onCoverFontChange">
+                <div class="mini-field stacked"><label>字体</label>
+                  <select :value="coverFont" :disabled="!configLoaded" :title="fontTitle" @change="onCoverFontChange">
                     <option v-for="o in fontOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
                   </select>
                 </div>
@@ -505,6 +505,8 @@ const fontOptions = computed(() => {
   return opts
 })
 /** 选中的即浏览器里要用的字族名；未选时交给全站 `--font`（不写 fontFamily，保持继承） */
+/** 下拉被裁时靠 title 兜住全文（2026-10-19：用户报「只显示『未指定 · 』」）。 */
+const fontTitle = computed(() => (fontOptions.value.find((o) => o.value === coverFont.value) || {}).label || '')
 const coverFontFamily = computed(() => (coverFont.value ? `"${coverFont.value}"` : ''))
 
 /** 库内 emoji 字体的 **id**（出片 `emoji_font_stack()` 打头的也是它；库里没有 = 空串）。
@@ -2081,7 +2083,13 @@ onUnmounted(() => {
 .mini-field { display:flex; align-items:center; gap:5px; min-width:0; }
 .mini-field > label { flex:none; margin:0; font-size:11px; color:var(--ink-dim); white-space:nowrap; }
 .mini-field > input[type=range] { flex:1; min-width:0; padding:0; height:18px; background:transparent; border:none; box-shadow:none; accent-color:var(--main); cursor:pointer; }
-.mini-field > select { flex:1; min-width:0; width:auto; padding:2px 6px; font-size:11.5px; border-radius:6px; }
+.mini-field > select { flex:1; min-width:0; width:auto; padding:2px 6px; font-size:11.5px; border-radius:6px; text-overflow:ellipsis; }
+/* ⚠️ **字体这一格标签另起一行**（2026-10-19）：同行时标签吃掉 ~30px，select 只剩 83px，
+   而最长的选项要 205px ⇒ 用户看到的是「只显示『未指定 · 』」（截图
+   .workbuddy/fontlist/shot-cover-font-select-6x.png）。叠放后 select 拿满整列 ~110px；
+   仍放不下的长族名由 title 兜住全文 + 末尾省略号（不再是从中间切断）。 */
+.mini-field.stacked { flex-direction:column; align-items:stretch; gap:2px; }
+.mini-field.stacked > label { font-size:10.5px; }
 .mini-field > input[type=color] { flex:1; min-width:0; width:auto; height:22px; padding:1px 2px; border-radius:6px; }
 /* 手填 16 进制码：与取色器并排，窄列也能看清 6 位 */
 .hex-input { flex:1; min-width:0; padding:2px 6px; font-size:11.5px; font-family:monospace; }
