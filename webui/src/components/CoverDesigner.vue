@@ -194,6 +194,8 @@
                   </select>
                 </div>
                 <div class="mini-field"><label>字号</label><input type="range" min="24" max="240" step="2" v-model.number="fontSize"><input class="rv-input" type="number" min="24" max="240" step="2" :value="fontSize" title="可直接填写（24 ~ 240）" @change="numBind(fontSize, (v) => (fontSize = v), $event, 24, 240)"></div>
+                <!-- 封面标题温度（只作用于「LLM 生成标题」）：空 = 自动（0.8 起步），0 = 稳定保守，1.5 = 很放飞 -->
+                <div class="mini-field"><label>温度</label><input type="range" min="0" max="1.5" step="0.05" :value="titleTemperature ?? 0.8" @input="setTitleTemperature($event.target.value)"><input class="rv-input" type="number" min="0" max="1.5" step="0.05" :value="titleTemperature ?? ''" placeholder="自动" title="封面标题的取样温度：0 = 稳定保守，1.5 = 很放飞；清空 = 自动（0.8）" @change="setTitleTemperature($event.target.value)"></div>
               </div>
             </div>
             <!-- 首次拿到标题时自动排一次版并放进 4:3 安全区；放不下就在这儿说出来（不静默） -->
@@ -445,6 +447,9 @@ const textX = ref(35)
 const textY = ref(50)
 const textWidth = ref(62)
 const fontSize = ref(120)
+/** 封面标题的取样温度：`null` = 自动（服务端下限 0.8）；0 = 稳定保守，1.5 = 很放飞。
+ *  只影响「LLM 生成标题」那一次调用（不动 `[llm] temperature`）。 */
+const titleTemperature = ref(null)
 const stroke = ref(20)
 const hlColor = ref('#ffcc00')
 // 高亮词的相对字号（1.0 = 与标题同号）；落到根变量 --hl-fs，出片模板的 .hl 读同一个变量
@@ -480,6 +485,10 @@ function numBind(cur, set, e, lo, hi) {
 // 非空 = 库里的字体 id。出片由 cover.rs 注入 @font-face，这里负责**让设计器预览也认得它**。
 const fonts = ref([])
 const coverFont = ref('')
+/** 出片侧的动态兜底栈（/api/polish/fonts 的 fallback_stack）—— 库里连默认都没有时才用它 */
+const fallbackStack = ref('')
+/** 库里**默认位**那支的 id（用户报「没应用素材库设置的默认字体」的落点） */
+const defaultFontId = ref('')
 const fontOptions = computed(() => {
   // ⚠️ **不再有「（系统默认）」这一项**（2026-10-02，与字幕字体下拉同一口径）：
   // 自带字体已内嵌、库里永远有字可用，再留一个"回到系统栈"的选择只会让人选到更差的观感。
@@ -497,17 +506,31 @@ const fontOptions = computed(() => {
     opts.push({ value: f.id, label: f.is_default ? `${base}[默认]` : base })
   }
   const cur = coverFont.value
-  if (!cur) opts.unshift({ value: '', label: '未指定 · 用默认文字字体', placeholder: true })
+  if (!cur) opts.unshift({
+    value: '',
+    // ⚠️ 措辞要准：空值 = **跟随字体库默认位**（不是全站文字字体）。2026-10-19 用户报
+    // 「没应用素材库设置的默认字体」—— 以前这里写「默认文字字体」，而预览走的正是全站 --font。
+    label: defaultFontId.value ? '未指定 · 用字体库默认' : '未指定 · 用系统字体',
+    placeholder: true,
+  })
   // ⚠️ 认 id / 族名 / 显示名（见 `fontInLibrary`）：`Noto Sans SC` 是**族名**，它在库里。
   //    别名命中时**必须补一条 `value === cur`**（否则 select 显示第一项，像是「选中项跳了」）。
   else if (!fontInLibrary(fonts.value, cur)) opts.push({ value: cur, label: `${cur}（不在字体库）` })
   else opts.push({ value: cur, label: fontLabelFor(fonts.value, cur) })
   return opts
 })
-/** 选中的即浏览器里要用的字族名；未选时交给全站 `--font`（不写 fontFamily，保持继承） */
+/** 选中的即浏览器里要用的字族名；**未选 = 字体库默认那支**（按 id 解析，不写 ids 就继承 --font） */
 /** 下拉被裁时靠 title 兜住全文（2026-10-19：用户报「只显示『未指定 · 』」）。 */
 const fontTitle = computed(() => (fontOptions.value.find((o) => o.value === coverFont.value) || {}).label || '')
-const coverFontFamily = computed(() => (coverFont.value ? `"${coverFont.value}"` : ''))
+const coverFontFamily = computed(() => {
+  // ⚠️ **空值必须落到字体库默认那支**（2026-10-19 用户报「没应用素材库设置的默认字体」）：
+  // 以前返回空串 ⇒ fontFamily 不写 ⇒ 继承全站 --font（字幕字体/系统栈），
+  // 而出片侧 cover.rs::cover_font_css 用的是库默认那支 —— 设计器与成片不是同一个字形。
+  // 用 **id** 而不是内部族名：@font-face 声明的是 id（见 ensureFontFace）。
+  if (coverFont.value) return '"' + coverFont.value + '"'
+  if (defaultFontId.value) return '"' + defaultFontId.value + '"'
+  return fallbackStack.value || ''
+})
 
 /** 库内 emoji 字体的 **id**（出片 `emoji_font_stack()` 打头的也是它；库里没有 = 空串）。
  *  ⚠️ **必须是 id、不是内部族名**：`/api/polish/font` 路由与 `@font-face` 都按 **id** 解析/声明，
@@ -527,6 +550,15 @@ async function loadFonts() {
     // 列表里按 id / 内部族名反查回那一条；查不到再退回"第一条 emoji"。
     const fam = String(r.emoji_family || '')
     const list = r.fonts || []
+    // **默认位那支**（用户报「没应用素材库设置的默认字体」）：
+    // 空 `cover.font` 时预览按它渲染 + 注册 FontFace，与出片 `cover.rs` 同一支。
+    // 判据与 Rust `cover_default_font_id()` 逐条对齐：installed / 非 emoji / is_default。
+    fallbackStack.value = String(r.fallback_stack || '')
+    const def = list.find((f) => f.is_default && f.installed !== false && !f.emoji)
+    defaultFontId.value = def ? def.id : ''
+    if (defaultFontId.value) {
+      ensureFontFace(props.pid, props.dir, defaultFontId.value, { onDebug: (m) => addClient('debug', m, 'cover') })
+    }
     const entry = (fam ? list.find((f) => f.id === fam || f.family === fam) : null)
       || list.find((f) => f.emoji && f.installed !== false)
     emojiFontId.value = entry ? entry.id : ''
@@ -1163,7 +1195,7 @@ function titleSafeMargin() {
  * 手动操作（改文字 / 拖滑杆 / 点预设 / 拖拽）**一律不调** —— 否则用户每动一下都要跟
  * 自动排版打架，这正是"仅限第一次"要防的。
  */
-async function fitTitleIntoSafeArea() {
+async function fitTitleIntoSafeArea({ resizeFont = true } = {}) {
   const stage = stageRef.value
   const el = titleTextRef.value
   // 没有任何非空行就不用排（空标题量出来是 0 高，排了也没意义）
@@ -1207,7 +1239,9 @@ async function fitTitleIntoSafeArea() {
 
   // ① 字号：超出就按「两个方向里更紧的那个」比例缩。要迭代 —— 字号一变换行数会跳变，
   //    所以每轮都必须重新量，不能一次算完。
-  for (let i = 0; i < 6; i++) {
+  // ⚠️ **`resizeFont: false` 时一个字都不动字号**（2026-10-19 用户报「字号被 LLM 生成时更改」）：
+  //    字号是用户的选择，换标题不该替他改；放不下就只调位置 + 给提示，让他自己决定。
+  for (let i = 0; resizeFont && i < 6; i++) {
     const b = measure()
     if (fits(b)) break
     const cur = Number(fontSize.value) || 120
@@ -1260,7 +1294,9 @@ async function fitTitleIntoSafeArea() {
   // 判定 = 「到最小字号仍然溢出」，也就是现在这一刻还没进框。
   const relaxed = !fits(b)
   titleFitHint.value = relaxed
-    ? '标题按最小字号仍放不进安全区，已按最小溢出摆放 —— 建议缩短标题或调窄文字区'
+    ? (resizeFont
+      ? '标题按最小字号仍放不进安全区，已按最小溢出摆放 —— 建议缩短标题或调窄文字区'
+      : '标题超出安全区（字号保持你设的值）—— 可自行调小字号，或缩短标题')
     : ''
   if (relaxed) console.warn('[cover] 标题按最小字号仍放不进安全区', b, { maxW, maxH })
 }
@@ -1509,9 +1545,10 @@ async function generateTitleByLlm() {
     const lines = r?.title_lines || []
     if (lines.length) {
       titleLines.value = lines
-      // 标题内容整体换了一批 → 重新排一次并放回安全区（行数/字数变了，旧字号不再适用）。
-      // 这是"标题被获取"的第二种情形；手动改文字/拖滑杆**不走这里**。
-      await fitTitleIntoSafeArea()
+      // 标题内容整体换了一批 → 只**挪回安全区**，**不改字号**（2026-10-19 用户报「字号会被
+      // LLM 生成时更改」）：字号是用户的选择，换标题不该替他改。放不下时 `fitTitleIntoSafeArea`
+      // 会给提示条（`titleFitHint`），要缩由用户自己缩。
+      await fitTitleIntoSafeArea({ resizeFont: false })
     } else {
       toast('LLM 未返回标题')
     }
@@ -1538,6 +1575,14 @@ function removeHighlightKeyword(i) {
   hlFromFilter.value = false
 }
 
+/** 封面标题温度：清空/非数字 = 自动（null）；否则夹 0~1.5、保留两位。 */
+function setTitleTemperature(raw) {
+  if (raw === '' || raw == null) { titleTemperature.value = null; return }
+  const v = Number(raw)
+  if (!Number.isFinite(v)) return
+  titleTemperature.value = Math.round(Math.min(1.5, Math.max(0, v)) * 100) / 100
+}
+
 function coverConfigPayload() {
   return {
     // 关键帧时间点：与 `_cover_frame.jpg` **成对**保存 —— 只存图不存点，下次出片若重新截帧
@@ -1548,6 +1593,8 @@ function coverConfigPayload() {
     text_x: textX.value + '%',
     text_y: textY.value + '%',
     font_size: fontSize.value,
+    // null = 自动（服务端按 0.8 下限处理）；数字 = 就按它（0 = 完全稳定）
+    title_temperature: titleTemperature.value,
     // 封面字体：字体库里的 id，空串 = 系统字体栈（cover.rs 就是这么解释的）
     font: coverFont.value,
     stroke: stroke.value,
@@ -1632,6 +1679,7 @@ watch(
     JSON.stringify(titleLines.value),
     textX.value, textY.value, textWidth.value,
     fontSize.value, stroke.value,
+    titleTemperature.value,
     hlColor.value, JSON.stringify(highlightKeywords.value),
     // 封面字体（`[cover] font`）也走这条防抖保存 —— 换了字体不落盘，就只是设计器里看着变了
     coverFont.value,
@@ -1888,6 +1936,8 @@ async function loadCoverConfig(retrying = false) {
     textY.value = parsePct(cfg?.cover?.text_y, 50)
     textWidth.value = Math.round((cfg?.cover?.text_width ?? 0.62) * 100)
     fontSize.value = cfg?.cover?.font_size || 120
+    // 封面标题温度：给了数字就用它，缺省/null = 自动（旧工程走这条）
+    titleTemperature.value = typeof cfg?.cover?.title_temperature === 'number' ? cfg.cover.title_temperature : null
     coverFont.value = cfg?.cover?.font || ''
     // 关键帧的时间点：出片按 `frame_pos × 时长` 截帧，设计器必须用**同一个值**去 seek 舞台播放器，
     // 否则「打开设计器 = 第 0 秒那一帧、出片 = frame_pos 那一帧」（两边都不报错，只能比对产物发现）。

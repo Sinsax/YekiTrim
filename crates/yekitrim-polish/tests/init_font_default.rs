@@ -67,9 +67,12 @@ impl DataDir {
         Self { _guard: guard, root, old }
     }
 
-    /// 字体库落点 = `<数据目录>/resources/fonts`（`path::font_dir()` 的约定）。
+    /// 字体库落点 = **该 owner 的**字体库目录（`owner::asset_dirs` 的约定）。
+    ///
+    /// ⚠️ 2026-10-16 起资产按归属落 `users/<uid>/resources/fonts`，顶层 `resources/` 已不再是库
+    /// —— 这条测试原来写死顶层，于是「默认字体没生效」的**假红**（`cmd_init` 用的是 `fonts::dir_for`）。
     fn font_dir(&self) -> PathBuf {
-        self.root.join("resources").join("fonts")
+        yekitrim_core::fonts::dir_for(yekitrim_core::owner::Owner::Local)
     }
 }
 

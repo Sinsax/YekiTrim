@@ -425,7 +425,7 @@ pub async fn cmd_llm_for(
     }
 
     // 运行 LLM pipeline
-    let (segments, dm_filter, hl_words, gen_status, edl_clips) = llm::run_llm_pipeline(
+    let (segments, dm_filter, hl_words, gen_status, edl_clips, rhythm_auto) = llm::run_llm_pipeline(
         owner,
         &llm_cfg,
         &subtitles, &danmaku, &event_type, &config.sticker_source,
@@ -434,6 +434,9 @@ pub async fn cmd_llm_for(
         &config.mute_ranges,
         // 用户手排过的成片时间线：非空时落实意图只前插/后追，**不覆盖**（`cmd_llm` 写回时整份替换）。
         &config.edl.clips,
+        // 节奏调度（§26）：参数取自 `[rhythm]`，账本是上一趟的派生事件（先删后建 ⇒ 幂等）。
+        crate::process::rhythm::params(&config),
+        &config.rhythm.auto_events,
         Some(&project_path.join(yekitrim_core::path::PROJECT_STATE_DIR_NAME)),
         cancel,
     ).await?;
@@ -473,6 +476,11 @@ pub async fn cmd_llm_for(
         cfg.filter.highlight = hl_words;
         if let Some(clips) = edl_clips {
             cfg.edl.clips = clips;
+        }
+        // 节奏派生事件的账本：`None` = 本趟没动节奏 ⇒ **一个字节都不碰**（与 `clips` 同一条纪律）。
+        // `Some(vec![])` = 切到 `calm` 且刚清完 ⇒ 落一个空表（字段被 `skip_serializing_if` 吃掉）。
+        if let Some(ledger) = rhythm_auto {
+            cfg.rhythm.auto_events = ledger;
         }
     })
     .await?;
@@ -914,8 +922,9 @@ pub fn cmd_doctor(_project_path: &Path) -> anyhow::Result<()> {
     // 都已整条删除（2026-10-01），本仓不再需要外部浏览器。**别把它加回来**：doctor 里报一条
     // "✗ Chrome: NOT FOUND" 会让人去装一个已经没有任何消费者、也没有任何出片路径会用的东西。
 
-    // Check LLM config
-    let llm_cfg = yekitrim_core::config::load_llm_config();
+    // Check LLM config —— **按 owner 读**（无 owner 版读的是顶层 `.yekitrim/llm.toml`，那是单人时代的
+    // 旧位置；`doctor` 报的必须与设置页/精修链路**同一份**）。
+    let llm_cfg = yekitrim_core::config::load_llm_config_for(yekitrim_core::owner::Owner::from_env());
     if !llm_cfg.api_key.is_empty() && llm_cfg.api_key != "sk-your-api-key-here" {
         tracing::info!("  ✓ LLM: model={}, base={}", llm_cfg.model, llm_cfg.base_url);
     } else {

@@ -613,7 +613,59 @@ pub(super) fn keep_single_emoji(lines: &mut Vec<String>) {
     }
 }
 
-pub(super) async fn polish_cover_title(State(_state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
+/// 封面标题的 system prompt（**风格优先**：参考标题是「口吻基准」，不是资料）。
+///
+/// 2026-10-19 用户报「没有那种幽默串子、让人想点进去的欲望」：旧 prompt 只写
+/// 「参考标题用于提取信息点」+ 一列格式约束，模型于是写成四平八稳的概述。
+/// 现在把「必须模仿参考标题的口吻」写成硬要求，并明确禁止概述腔。
+pub(super) fn cover_title_system_prompt() -> String {
+    format!(r#"你是直播切片封面标题助手。为当前切片生成封面大字标题，必须沿用事件检测阶段的标题规则：
+{}
+封面补充要求（**风格优先于信息完整**）：
+- **风格基准 = 下面给出的「参考标题」**：必须模仿它们的口气与抖梗方式（口语、有钩子、有反差/反转、像评论区/弹幕串子），越像越对；只学语气，不要照抄原句
+- **硬性禁止平铺直叙**：「XX 在直播里聊了…」「XX 的精彩瞬间」「一次关于…的讨论」这类概述一律不合格，也不能是四平八稳的总结
+- **第一行必须是钩子**：悬念 / 反差 / 离谱 / 破防 / 嘴硬被打脸 任选其一；第 2~3 行可接反转或吐槽
+- **优先引用片段里最出圈的那句原话或梗**（那种能单独截图传播的句子），不要概括它
+- 输出 1~3 行，适合封面大字排版；整组标题总字数严格 8~40 字
+- 只输出封面标题本身，不要输出 ▶ / 事件 / 分段 / 备注 / 上下文原文
+- 必须且只能包含 1 个 emoji，放在句尾；参考标题有多个 emoji 也不要照搬
+- 不要引号、不要解释、不要 markdown
+- 只能依据输入的 polish.toml 逐个事件/分段与其对应的 clip.srt 字幕，不要引用输入之外的信息
+- 输出 JSON：{{"title_lines": ["第一行", "第二行"]}}
+"#, yekitrim_core::detection::TITLE_RULES)
+}
+
+/// 封面标题的 user prompt：参考标题在前（**它是风格基准**）、素材上下文在后。
+pub(super) fn cover_title_user_prompt(reference_text: &str, context: &str) -> String {
+    let mut out = String::new();
+    if !reference_text.is_empty() {
+        out.push_str("参考标题（这几条就是用户认可的口吻 —— **风格必须像它们**：口语、有梗、让人想点进去；只学语气，不要抄原句）：\n");
+        out.push_str(reference_text);
+        out.push_str("\n\n");
+    }
+    out.push_str("以下是 polish.toml 中的逐个事件/分段，以及 clip.srt 中对应字幕（优先找那句最出圈的原话）：\n");
+    out.push_str(context);
+    out.push_str("\n请按上述要求写封面标题：第一行是钩子，风格像参考标题，不要写概述。");
+    out
+}
+/// 封面标题取样温度的解析（**唯一一处**：设计器「温度」= `[cover] title_temperature`）。
+///
+/// - 显式设过 ⇒ **就是它**（夹 0~2）：想完全稳定就该拿到 0，不许再被下限顶回去；
+/// - 没设 ⇒ 链路温度（`[llm] temperature` / `[llm.overrides.utility]`）**抬到下限** 0.8。
+///   `[llm] temperature` 的模板默认是 0（确定性），拿它写标题只会得到四平八稳的概述。
+pub(super) fn cover_title_temperature(cover: Option<f64>, link: f64) -> f64 {
+    const COVER_TITLE_MIN_TEMPERATURE: f64 = 0.8;
+    match cover {
+        Some(t) => t.clamp(0.0, 2.0),
+        None => link.max(COVER_TITLE_MIN_TEMPERATURE),
+    }
+}
+
+pub(super) async fn polish_cover_title(
+    State(_state): State<Arc<AppState>>,
+    Extension(user): Extension<crate::auth::CurrentUser>,
+    Json(body): Json<serde_json::Value>,
+) -> ApiResult {
     let dir = body.get("dir").and_then(|v| v.as_str()).ok_or_else(|| err(StatusCode::BAD_REQUEST, "缺少 dir"))?;
     let path = validated_project_dir(dir)?;
     if !{
@@ -643,7 +695,11 @@ pub(super) async fn polish_cover_title(State(_state): State<Arc<AppState>>, Json
         return Err(err(StatusCode::BAD_REQUEST, "clip.srt 暂无字幕，无法生成标题"));
     }
     let context = cover_title_event_context(&cfg, &transcript.segments);
-    let global_cfg = yekitrim_core::config::load_global_config();
+    // ⚠️ **参考标题必须按 owner 读**（2026-10-19 用户问「LLM 真的用了设置里的参考标题吗」）：
+    // 设置页写的是 `users/<uid>/.yekitrim/config.toml`，而无 owner 的 `load_global_config()`
+    // 读顶层旧文件 —— 和封面那条 llm.toml 是同一个坑（那里也是 100% 复现）。
+    let cfg_owner = crate::auth::owner_of(&user);
+    let global_cfg = blocking(move || Ok(yekitrim_core::config::load_config_for(cfg_owner))).await?;
     let reference_titles = yekitrim_core::config::resolve_reference_titles(&global_cfg.detection);
     let reference_text = if !reference_titles.is_empty() {
         reference_titles.join("\n")
@@ -657,40 +713,34 @@ pub(super) async fn polish_cover_title(State(_state): State<Arc<AppState>>, Json
         }
     };
 
-    let llm = yekitrim_core::config::load_llm_config();
+    // ⚠️ **必须按账号读**（2026-10-19 用户报「用的和设置里的 API 服务不一致」）：
+    // `load_llm_config()` 读的是**顶层** `<数据>/.yekitrim/llm.toml`（单人时代的旧位置），
+    // 而设置页（`GET/PUT /api/config/llm`）与精修链路读写的都是
+    // `users/<uid>/.yekitrim/llm.toml` ⇒ 用错那一支就会拿一份**早就没人写**的旧配置
+    // （日志里 base_url/model 与设置页对不上，且 100% 复现）。
+    // 读配置是同步 IO ⇒ 走 blocking 池（`api/AGENTS.md` 的同步 IO 纪律）。
+    let owner = crate::auth::owner_of(&user);
+    let llm = blocking(move || Ok(yekitrim_core::config::load_llm_config_for(owner))).await?;
     if llm.base_url.is_empty() || llm.api_key.is_empty() {
         return Err(err(StatusCode::BAD_REQUEST, "LLM 未配置"));
     }
     // 链路解析：零散单发链路（见 [llm.overrides.utility]）；thinking 的默认关思考由它给出
     let linked = llm.for_link(yekitrim_core::config::LlmLink::Utility);
+    // ⚠️ **温度下限**（2026-10-19 用户报「没有幽默串子那种想点进去的欲望」）：
+    // `[llm] temperature` 的模板默认是 **0**（确定性）—— 拿它写标题只会得到四平八稳的概述。
+    // 只在**低于**下限时抬上来；用户自己配了更高温度就照用（不覆盖用户意图）。
+    let temp = cover_title_temperature(cfg.cover.title_temperature, linked.temperature);
     let client = yekitrim_core::llm::LlmClient::from_config(&linked)
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("LLM 配置错误: {e}")))?
+        .with_temperature(temp)
         .with_timeout(60)
         .with_usage_context(
             yekitrim_core::llm::usage::UsageContext::new("封面文案")
                 .project(Some(yekitrim_core::path::display(std::path::Path::new(&dir)))),
         );
 
-    let system = format!(r#"你是直播切片封面标题助手。为当前切片生成封面大字标题，必须沿用事件检测阶段的标题规则：
-{}
-封面补充要求：
-- 输出 1~3 行，适合封面大字排版；整组标题总字数严格 8~40 字，不要超长
-- 只输出封面标题本身，不要输出 ▶ / 事件 / 分段 / 备注 / 上下文原文
-- 必须且只能包含 1 个 emoji，放在句尾，不要放开头；参考标题有多个 emoji 也不要照搬
-- 不要引号、不要解释、不要 markdown
-- 参考标题只用于提取信息点，必须重新组织，不要照抄
-- 只能依据输入的 polish.toml 逐个事件/分段与其对应的 clip.srt 字幕，不要引用输入之外的信息
-- 输出 JSON：{{"title_lines": ["第一行", "第二行"]}}
-"#, yekitrim_core::detection::TITLE_RULES);
-    let mut prompt_text = String::new();
-    if !reference_text.is_empty() {
-        prompt_text.push_str("参考标题示例（来自内建/全局配置，只参考句式、信息密度和 emoji，不要照抄）：\n");
-        prompt_text.push_str(&reference_text);
-        prompt_text.push_str("\n\n");
-    }
-    prompt_text.push_str("以下是 polish.toml 中的逐个事件/分段，以及 clip.srt 中对应字幕：\n");
-    prompt_text.push_str(&context);
-    prompt_text.push_str("\n请按上述事件标题规则生成封面标题。");
+    let system = cover_title_system_prompt();
+    let prompt_text = cover_title_user_prompt(&reference_text, &context);
     let content = client.chat(&system, &prompt_text).await
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("LLM 生成失败: {e}")))?;
 
@@ -742,6 +792,11 @@ pub(super) async fn polish_cover_config(State(_state): State<Arc<AppState>>, Jso
         // 封面字体：值 = 字体库里的 id，空串 = 回到系统字体栈（与旧工程一致）
         if let Some(v) = cover.get("font").and_then(|v| v.as_str()) { cfg.cover.font = v.trim().to_string(); }
         if let Some(v) = cover.get("font_size").and_then(|v| v.as_u64()) { cfg.cover.font_size = v as u32; }
+        // 封面标题的取样温度（**null / 缺省 = 自动**）：只影响「LLM 生成标题」那一次调用。
+        // 显式给了就存（夹 0~2），不在这里套 0.8 下限 —— 想完全稳定就该能设 0。
+        if let Some(v) = cover.get("title_temperature") {
+            cfg.cover.title_temperature = v.as_f64().map(|t| t.clamp(0.0, 2.0));
+        }
         if let Some(v) = cover.get("stroke").and_then(|v| v.as_u64()) { cfg.cover.stroke = v as u32; }
         if let Some(v) = cover.get("hl_color").and_then(|v| v.as_str()) { cfg.cover.hl_color = v.to_string(); }
         // 高亮词相对字号：夹到 [0.5, 2.0]（超出这个区间不是排版、是事故）
@@ -2481,6 +2536,44 @@ mod tests {
     use crate::api::test_support::*;
     use axum::body::Body;
 
+
+
+    /// 封面标题温度：显式设了就是它（0 也要能拿到 0），没设才抬到 0.8 下限。
+    #[test]
+    fn cover_title_temperature_respects_explicit_value() {
+        assert_eq!(cover_title_temperature(None, 0.0), 0.8, "没设 = 下限 0.8");
+        assert_eq!(cover_title_temperature(None, 1.1), 1.1, "用户配得更高就照用");
+        assert_eq!(cover_title_temperature(Some(0.0), 0.0), 0.0, "显式 0 = 完全稳定，不许被下限顶回去");
+        assert_eq!(cover_title_temperature(Some(1.2), 0.0), 1.2);
+        assert_eq!(cover_title_temperature(Some(9.0), 0.0), 2.0, "夹到 2");
+    }
+    /// 封面标题的 prompt 必须**把参考标题当口吻基准**（2026-10-19 用户报「没有幽默串子那种想点进去的欲望」）。
+    ///
+    /// 旧 prompt 只写「参考标题用于提取信息点」+ 一列格式约束，模型于是写四平八稳的概述。
+    /// 这两条钉住的是**判据本身**：提风格、禁概述、第一行是钩子、优先引原话。
+    #[test]
+    fn cover_title_prompt_demands_reference_style() {
+        let s = cover_title_system_prompt();
+        for needle in ["风格基准", "模仿", "串子", "平铺直叙", "第一行必须是钩子", "最出圈的那句原话"] {
+            assert!(s.contains(needle), "封面标题 prompt 缺「{needle}」：{s}");
+        }
+        // 格式约束不能丢（封面排版靠它）
+        for needle in ["1~3 行", "8~40 字", "1 个 emoji", "title_lines"] {
+            assert!(s.contains(needle), "格式约束缺「{needle}」");
+        }
+    }
+
+    /// 参考标题要**真的进 user prompt**，并且排在素材之前（它是风格基准，不是附录）。
+    #[test]
+    fn cover_title_user_prompt_puts_reference_first() {
+        let u = cover_title_user_prompt("这也能赢？😂\n嘴硬到最后一秒", "[事件/分段 1] 0.00s-10.00s\n  有效字幕:\n  [1.00-2.00] 我裂开了");
+        assert!(u.contains("这也能赢"), "参考标题必须原样进 prompt：{u}");
+        assert!(u.contains("风格必须像它们"), "必须把参考标题说明成风格基准：{u}");
+        assert!(u.contains("最出圈的原话"), "要提示从字幕里挑原话：{u}");
+        let ref_at = u.find("这也能赢").unwrap();
+        let ctx_at = u.find("[事件/分段 1]").unwrap();
+        assert!(ref_at < ctx_at, "参考标题必须排在素材之前");
+    }
     /// 字体库只读接口的**载荷契约**（2026-10-02 字体职责分离新增两个字段的落点）。
     ///
     /// 前端有三处直接吃这个 JSON：

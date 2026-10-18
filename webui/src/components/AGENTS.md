@@ -104,8 +104,7 @@
   高亮色**静默**失效。⚠️ **高亮字号 `hl_font_scale` 同读 `--hl-fs`**。
 - **新建图层**（底部工具条，菜单向上弹）：可叠加六种（表情·光晕·模糊·暗角点·颜色覆盖·扫描线，落
   `[[cover.effects]]`、带稳定随机 `id`）+ 单层三种（背景·滤镜·文字；已有→标「已有」但**可点**）；
-  视频预览与安全区不在菜单里。**文字预设已删**（`presets`/`applyPreset`）；⚠️ CLI 侧
-  `polish cover --template` 还在。
+  视频预览与安全区不在菜单里。**文字预设已删**。
 - ⚠️ **内容层的 z-index 只在行内给**（`layerStyle()`）：CSS 里不许写
   `.stage-bg/.stage-media/.vignette-layer/.gradient-layer/.title-wrap` 的 z-index；设计器专属两层固定在上面
   （900 / 950）。
@@ -123,14 +122,15 @@
 - **安全区线框**：`.guide-169` = `width:95%; height:95%`（1824×1026）· `.guide-43` = `height:100%` +
   `aspect-ratio:4/3`（1440×1080）；⚠️ **别写 `inset:5%`**（百分比横竖不同基准，得 1728×972）；显隐 = 列表
   里那两行的眼睛，偏好 `localStorage['yekitrim.ui.coverGuides']`；⚠️ **只画在设计器**（③.5）。
-- **标题首次自动排版 `fitTitleIntoSafeArea()`**：只在两处触发（磁盘 `title_lines` 为空；LLM 拿到新标题）；
-  手动操作一律不触发（**别在 watch 里接**）；已有封面不碰（判据 = 磁盘上有无 `title_lines`），只动字号/位置。
+- **标题首次自动排版 `fitTitleIntoSafeArea()`**：① 磁盘无 `title_lines`（首次，可动字号/位置）；② **LLM 生成
+  标题（`resizeFont:false`，只挪位置不改字号**，用户报过「字号被 LLM 改」）；手动不触发。
+- **封面字体空 = 跟字体库默认位**：预览/出片都按 **id** 解析 + 注入 `@font-face`；别退回 `fallback_stack`（内部族名解析不到）。
 - ⚠️ **默认对齐 `left`**、`text_x = "35%"`：老工程字段存在就不走默认；**别改 `cover.rs::cover_text_align` 的
   `_ => ("center","center")` 兜底**（那个 `_` 也兜着合法值 `"center"`）。⚠️ `text` 进模板前必须 `escape_html`。
-- ⚠️ **镜像清单**（用户报过"设计器与成片不一致"）：字体栈 · 描边 `#2a2522` · 阴影
+- ⚠️ **镜像清单**：字体栈 · 描边 `#2a2522` · 阴影
   `0 5px 22px rgba(0,0,0,.78)`（×`stageScale`）· 渐变底色取自 `[style.subtitle].highlight_color` · **层序/z-index
   走同一个栈** · 特效公式（`blur`=`1+amount×14`、`overlay`=`rgba(hex,amount)`+blend、emoji=`48+amount×240`）·
-  emoji **描边环**（4 向 `drop-shadow`、**别加对角**；宽 = 标题联排 `描边/4`、特效层 `size×0.03`）·
+  emoji **描边环**（4 向 `drop-shadow`、别加对角；宽 = 联排 `描边/4`、特效层 `size×0.03`）·
   `liverOrigin()` 优先序 = `region_origin`（自由选框中心 > `origin_grid` > `origin` > `grid[0]` > `65% 50%`）·
   `bg_zoom` 0.5~3 · **高亮字号 `--hl-fs`**。
 - ⚠️ **取帧播放器常驻舞台**（`.stage-video-live`；`_cover_frame.jpg` 的 img 只兜底）：**不许按选中层门控**（曾

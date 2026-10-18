@@ -61,8 +61,7 @@
   这三个接口在**用户路由**上，而 `fonts::ensure_dir()` 是单人库入口 —— 2026-10-10 实测其后果是
   "传了却看不见"（字节落进别人的库）。改后实测 carol 上传 → `users/2/resources/fonts/`，
   admin 列表里没有它。`set_default`/`remove` 同样按 `asset_dir(owner, Fonts)`。
-  ⚠️ 这三条**有意不挂 `enforce_scope`**（见本卡「素材库」那条）；导入用"服务器上的路径"
-  而非上传，理由同 `/api/fs/list`。
+  ⚠️ 这三条**有意不挂 `enforce_scope`**；导入用"服务器上的路径"而非上传（同 `/api/fs/list`）。
 - **`POST /api/polish/cover`** 的 body 多了可选 **`renderer`**（现在**只有 `takumi`** —— `chrome` 那条截图腿 2026-10-01 整条删除，传它由 `cover.rs` **明确报错**）：服务端**只透传**成子进程的 `--renderer`，取值口径与白名单只在 `crates/yekitrim-polish/src/cover.rs`（**只此一份**，不在这一层抄第二份），认不出的值由那里**报错**。**能不能用**（编了 feature + 字体库非空）回在 `/api/health.cover_static`（`{compiled, fonts, fonts_dir, ready}`）—— 前端据此把「生成封面」置灰并在卡片里写原因（通道弹窗已删）；health 是公开接口，只回布尔 + 字体库路径（本机配置问题，不是账号/工程信息）。
 
 - ⚠️ **`/polish/dhampir-wasm/*` 的响应压缩与 ETag/304**（2026-10-02 首屏提速，只在这条路由上开）：
@@ -74,7 +73,6 @@
      对 206 做压缩会直接破坏播放；`/api/media/*`（视频）仍走老签名 `serve_file`，行为不变；
   ③ **ETag 取 `len+mtime`**（`media::file_etag`），**不是**「永不变」的常量 —— 这条路由的既有
      意图是「Dhampir 重建 wasm 后刷新即新」，靠 mtime 自然失效；写成 max-age 长缓存会破坏它。
-  `Cache-Control: no-cache` 是「用前先校验」，不是「不许缓存」。
 - **`routes` 是唯一的路由权威**；加接口 = 在 `routes.rs` 挂一条 + 在对应领域模块写 handler。
   ⚠️ **本地免登录（`--local-no-auth`）/ `POST /api/shutdown` 控制通道**：正文（两道闸、三道闸、
   互斥与开机守卫、哨兵会话、`local_no_auth` 布尔、令牌头名与托盘各写一份字面量）见 `docs/deploy.md`。
@@ -99,14 +97,13 @@
   因此所有出 JSON 的路径都过 `yekitrim_core::path::display()`（剥掉 `\\?\`/`\\?\UNC\`），前端拿到的永远是
   `F:\a\b` 这种可回传、可拼 URL 的形式。
   响应里的 **`volumes`**（2026-10）= 可浏览的盘符/卷候选，给“服务器文件”浏览器铺在目录树顶部。
-  ⚠️ 加它的原因：目录树只能靠 `parent` 往上展开，**到盘根就断了**（盘根的 parent 是空），
-  用户**换不了盘**；而配置根默认只有租户目录，管理员真要去的 `F:/media/...` 不在它下面。
-  ⚠️ `volumes` 只是**展示候选、不构成访问限制**（本接口本来就允许 admin 浏览任意绝对路径）。
+  ⚠️ 加它的原因：目录树靠 `parent` 上展开，**到盘根就断**，用户**换不了盘**。
+  ⚠️ `volumes` 只是**展示候选、不构成访问限制**。
   ⚠️ 探测要跟目录列举一起放 `spawn_blocking`（每个候选一次 `is_dir()`，是阻塞 IO）。
   ⚠️ 前端**别把 `roots` 当树根**：服务端会把**当前目录**追加进 `roots`（本意是给下拉框显示“当前位置”），
   拿它当根的话根会随用户走到哪而变。
 - `GET /api/admin/users` 只回展示字段（id / username / role / disabled / quota_bytes / created_at），
-  **不含口令哈希**，供"待分配池指派给谁"下拉使用。
+  **不含口令哈希**，供"待分配池指派给谁"下拉用。
 - **邀请码与注册**（`POST /auth/register`）：三重条件 = `[auth] registration_enabled` 开着 + 邀请码有效 +
   未过期；失败**一律 403**（不区分"码不对/码用过"，防被拿来枚举），限流按 IP（key `register|<ip>`，
   与登录**分开**）；账本 v5 的邀请码**明文落库、可重复查看**（与 `yekitrim ingest token`"明文只见一次"
@@ -119,6 +116,7 @@
   （遍历 `yekitrim_core::config::ASR_MODES` 调 `slot_bound`，前端**不自己从 `items` 推**）、
   ⚠️ **清单写入必须单次 `patch_config_file`**（生效值 + 整份清单走同一个 patch）—— 这两条以及
   清单落地形态 `[project.materials]` 的正文在 `webui/src/views/AGENTS.md`，本卡不重复搬运。
+- ⚠️ **按账号的配置只用 `load_*_for(owner)`**（无 owner 版读顶层旧位置）；`/polish/cover-title` 曾踩此坑（"API 服务和设置里的不一致"）。
 - `/api/polish/*` 的 `dir` 必须是非空且存在的目录；`polish.toml` / `events.json` / `yekitrim.toml` / 全局配置的读-改-写
   走 `yekitrim_core::filelock::with_path_lock` 串行化；**写 `polish.toml` 一律走路径锁**（编辑器保存、去静音、封面配置、
   `cmd_parse` 全在改同一份文件 —— 无锁的 read-modify-write 会静默丢改动）。

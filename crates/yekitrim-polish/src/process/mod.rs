@@ -23,6 +23,11 @@ mod placement;
 pub use placement::ElementColor;
 /// 爆点判据（总方案 §6）：一个纯函数、一份判据、一处阈值，供 §6/§7/§8 共用。
 pub mod punch;
+/// 节奏调度（§26）：节拍网格 + 三档重音 + 空档补位。
+///
+/// ⚠️ 生成的是**派生事件**，账本落在 `polish.toml` 的 `[rhythm] auto_events`，每趟重建 ⇒ 幂等。
+/// 与 `llm/mod.rs` Step 4d 成对（只改一处会让编辑器里看到的与出片时的不一样）。
+pub mod rhythm;
 /// 剪辑质量分（总方案 §3）：纯函数、无 IO。**不做成 `pub use`** —— 它不是后处理步骤，
 /// 不参与 `cmd_process`，只是"算出来给人看"的一层，调用方显式走 `process::quality::`。
 pub mod quality;
@@ -381,6 +386,8 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
     // ⚠️ **不许静默降级**（规格 §2 规则 2）：无弹幕时必须明说。
     //    `Signals::describe()` 就是那句话 —— 措辞在 `punch.rs` 里一处，
     //    别在这里另写一份（两处的措辞会漂移，而"降级有没有被说出来"是判据本身）。
+    // 爆点结果要传给 Step 1h（节奏调度）—— 声明在块外，本趟只算一次。
+    let punch_list: Vec<punch::Punch>;
     {
         let window = punch::PUNCH_WINDOW_SECS;
         let total_duration = config
@@ -436,6 +443,7 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
         if !punches.is_empty() {
             write_punch_report(&data_dir, &signals, &punches);
         }
+        punch_list = punches;
     }
 
     // Step 1g: 叙事形状守卫（§8）—— `role` 只是**给 LLM 的提示**，它不一定听话。
@@ -456,6 +464,55 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
         }
     }
 
+
+    // Step 1h: **节奏调度**（§26，2026-10-19 用户口径「整体升一档」）。
+    //
+    // 为什么排在这里：① 爆点表刚在 Step 1f 算完（重音要落在爆点上）；② 必须早于 Step 2b1/2b
+    // —— 贴纸对齐与落点都读**最终**的运镜状态（重音会改景别与不动点），排后面就会按旧机位排。
+    //
+    // ⚠️ 生成的是**派生事件**（带账本 `[rhythm] auto_events`）：每趟先删后建 ⇒ 幂等；
+    //    用户改过的事件字段变了 ⇒ 认不出 ⇒ 不删（那一条归用户）。
+    // ⚠️ `calm` 档 = **今天的行为**：不生成，只把上一趟的账本收干净（切换档位不能留残影）。
+    {
+        let params = rhythm::params(&config);
+        let old_ledger = config.rhythm.auto_events.clone();
+        if params.enabled {
+            let punch_pts: Vec<(f64, f64)> = punch_list.iter().map(|p| (p.at, p.score)).collect();
+            let accents = rhythm::plan(&config.segments, &punch_pts, params, &config.mute_ranges);
+            let (generated, ledger) = rhythm::apply(&mut config.segments, &accents, &old_ledger);
+            let duration = config.segments.iter().map(|s| s.end).fold(0.0_f64, f64::max);
+            let m = rhythm::metrics(&accents, duration);
+            if m.accents > 0 {
+                let (mut light, mut medium, mut heavy) = (0usize, 0usize, 0usize);
+                for a in &accents {
+                    match a.strength {
+                        rhythm::Strength::Light => light += 1,
+                        rhythm::Strength::Medium => medium += 1,
+                        rhythm::Strength::Heavy => heavy += 1,
+                    }
+                }
+                tracing::info!(
+                    "  🥁 节奏：{} 档 · 重音 {} 处（轻 {light} / 中 {medium} / 重 {heavy}，命中爆点 {}）· {:.1} 次/分 · 最长空档 {:.1}s → 生成 {} 条事件",
+                    config.rhythm.profile_name(),
+                    m.accents,
+                    m.on_punch,
+                    m.per_minute,
+                    m.max_gap_secs,
+                    generated
+                );
+            }
+            // 报告只读、不驱动任何东西（R4：`calm` 档不落这个文件）。
+            write_rhythm_report(&data_dir, &rhythm::report_json(&accents, &m, &params));
+            config.rhythm.auto_events = ledger;
+        } else if !old_ledger.is_empty() {
+            let removed = rhythm::clear(&mut config.segments, &old_ledger);
+            if removed > 0 {
+                tracing::info!("  🥁 节奏档已关闭（calm）：清掉上一趟派生事件 {removed} 条");
+            }
+            config.rhythm.auto_events.clear();
+            remove_rhythm_report(&data_dir);
+        }
+    }
     // Step 2: 根据 sticker_source 分配来源 + 解析 keyword → name (轮询 + 逐源兜底)
     {
         let sources = config.sticker_source.clone();
@@ -1553,6 +1610,25 @@ fn write_pacing_report(data_dir: &Path, gaps: &[pacing::IdleGap]) {
     }
 }
 
+/// **节奏报告**（§26）：只读诊断，**不驱动任何东西**。
+///
+/// ⚠️ 写盘失败只告警、不阻断 —— 与 `write_pacing_report` 同一条口径。
+fn write_rhythm_report(data_dir: &Path, json: &str) {
+    let p = data_dir.join("rhythm.json");
+    if let Err(e) = std::fs::write(&p, json) {
+        tracing::warn!("  ⚠ 节奏报告写盘失败（{e}）—— 本次不产出 data/rhythm.json");
+    }
+}
+
+/// 切回 `calm` 档时把上一趟的报告删掉（否则界面会显示一份早就作废的重音表）。
+fn remove_rhythm_report(data_dir: &Path) {
+    let p = data_dir.join("rhythm.json");
+    if p.exists() {
+        if let Err(e) = std::fs::remove_file(&p) {
+            tracing::warn!("  ⚠ 删除 data/rhythm.json 失败（{e}）");
+        }
+    }
+}
 /// **T5 真卡拉OK**：算对齐结论并落 `data/karaoke-cues.json`。
 ///
 /// ⚠️ **只在工程真的开了 `karaoke` 时才算** —— 没开的工程连算都不算，

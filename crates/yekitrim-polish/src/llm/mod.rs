@@ -47,6 +47,10 @@ pub async fn run_llm_pipeline(
     // 前插/后追。传 `&[]` = 没有 EDL ⇒ 先把 `mute_ranges` 补集种成正片时间线（否则只要有一支意图，
     // 非空 EDL 就让屏蔽区间整个被忽略 —— 用户报的「屏蔽段没被过滤」）。
     existing_edl: &[crate::project::EdlClip],
+    // 节奏调度（§26）：参数 + 上一趟的派生事件账本 —— 与 `process` Step 1h 共用
+    // `rhythm::plan/apply`。传 `Params::CALM` = 关闭（只清账本）。
+    rhythm_params: crate::process::rhythm::Params,
+    rhythm_ledger: &[crate::project::RhythmAuto],
     checkpoint_dir: Option<&PathBuf>,
     cancel: Option<yekitrim_core::llm::agent::CancelProbe>,
 ) -> anyhow::Result<(
@@ -55,6 +59,8 @@ pub async fn run_llm_pipeline(
     Vec<String>,
     Vec<SegmentGenStatus>,
     Option<Vec<crate::project::EdlClip>>,
+    // 节奏派生事件的账本：`None` = 本趟没动节奏（不写 `[rhythm]`）。
+    Option<Vec<crate::project::RhythmAuto>>,
 )> {
     let project = checkpoint_dir.map(|d| d.parent().unwrap_or(d).to_path_buf());
     // 链路解析：精修这一整条（分段 / 逐段事件 / 贴纸精挑 / 关键词）共用 `[llm.overrides.polish]`。
@@ -264,10 +270,46 @@ pub async fn run_llm_pipeline(
         }
     };
 
+
+    // Step 4d: **节奏调度**（§26，2026-10-19 用户口径「整体升一档」）——
+    // 与 `process/mod.rs` Step 1h 成对：只改一处的话，编辑器里看到的与出片时的不是同一份。
+    //
+    // ⚠️ **幂等靠账本**（先按账本删、再按新计划建）：这里拿得到 `rhythm_ledger`，
+    //    所以 `full=false`（续传）不会在没重做的段上叠出第二套重音。
+    // ⚠️ `calm` 档 = 今天的行为：只清账本、不生成。
+    let rhythm_auto: Option<Vec<crate::project::RhythmAuto>> = if rhythm_params.enabled {
+        let window = crate::process::punch::PUNCH_WINDOW_SECS;
+        let duration = segments.iter().map(|s| s.end).fold(0.0_f64, f64::max);
+        let dm: Vec<(f64, f64)> = danmaku.iter().map(|d| (d.start, 1.0)).collect();
+        let detector = crate::process::punch::PunchDetector {
+            subtitle_points: crate::process::punch::subtitle_signal(subtitles, window),
+            danmaku_points: crate::process::punch::danmaku_signal(&dm, window),
+            sfx_points: Vec::new(),
+        };
+        let punch_pts: Vec<(f64, f64)> = detector
+            .detect(&segments, duration, window)
+            .into_iter()
+            .map(|p| (p.at, p.score))
+            .collect();
+        let accents = crate::process::rhythm::plan(&segments, &punch_pts, rhythm_params, mute_ranges);
+        let (generated, ledger) = crate::process::rhythm::apply(&mut segments, &accents, rhythm_ledger);
+        if generated > 0 {
+            tracing::info!("  🥁 节奏：重音 {} 处 → 生成 {generated} 条事件", accents.len());
+        }
+        Some(ledger)
+    } else if !rhythm_ledger.is_empty() {
+        let removed = crate::process::rhythm::clear(&mut segments, rhythm_ledger);
+        if removed > 0 {
+            tracing::info!("  🥁 节奏档已关闭（calm）：清掉派生事件 {removed} 条");
+        }
+        Some(Vec::new())
+    } else {
+        None
+    };
     // Step 5: emoji/irasu 位置计算 ("auto" → 计算值, 未来实现)
     // LLM 输出的 x/y 如果是 "auto", 由 cmd_process 统一计算
 
-    Ok((segments, dm_filter, hl_words, statuses, materialized))
+    Ok((segments, dm_filter, hl_words, statuses, materialized, rhythm_auto))
 }
 
 /// **只重做某一段**的事件（编辑器里分段属性面板上的那颗按钮）。

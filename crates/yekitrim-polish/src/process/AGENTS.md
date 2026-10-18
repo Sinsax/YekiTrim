@@ -34,6 +34,7 @@
   （冷开场/回忆回溯意图 → `edl.clips` + 配额；**空 EDL 先把 `mute_ranges` 补集种成正片时间线**）；常量 `MAX_COLD_OPEN = 1` / `MAX_RECALL = 2` /
   `MIN_COLD_OPEN_SECS = 1.0` / `INTENT_COLD_OPEN = "cold_open"` / `INTENT_RECALL = "recall"` /
   `EDL_KIND_COLD_OPEN` / `EDL_KIND_RECALL`；`mod.rs::writeback_edl(materialized, clips)`。
+- `rhythm`（§26）：`params` / `plan` / `apply` / `clear` / `metrics` / `report_json`；`Params::{CALM,BALANCED,INTENSE}`（默认 balanced）。
 - `download`：`sanitize_sticker_name(keyword)`、`cmd_download(project_path)`、`download_keyword_assets(...)`、
   `ensure_assets(project_path)`（`api/polish.rs` 的预览/出片前都会调）；`try_resolve_sticker` 是 `pub(super)` 实现。
 - `placement`（`mod placement;` **私有**，外部一律走 `cmd_process`）：
@@ -141,16 +142,15 @@
   **别再退回"靠 prompt/界面拦"**：LLM 会写错景别、用户也会改景别，守卫是唯一兜底。
 - **预算**：`content_budget` 密度 = 每 5 条字幕/12s 一个贴纸、每 8 条字幕/15s 一个 sfx；
   `seg_count = Some(n)` 时上限 `max(1, n-1)`（至少留一个 segment 无特效），`None`（LLM prompt）时省略。
-  `cap_events` 是均匀分布保留，**手工事件不参与抽稀**（额度只约束 LLM 生成量）。
+  `cap_events` 均匀保留，**手工事件不参与抽稀**（额度只约束 LLM 生成量）。
 - **运镜（camera）**：`process` 给每个 ≥1s 且没有运镜的段补 `zoom="中", anchor="liver"`（整段）——
   所以运镜是**全程开着**的，不是点缀。改默认档位/默认锚点就在这一处
   （`process/mod.rs` Step 1 与 `llm/mod.rs` Step 4 是两个重复实现，要一起改）。Step 2d 的
   `resolve_camera_anchors` 把 `anchor`/`anchor_to` 解析成 `origin`/`to_origin`（**每次运行都覆盖**），
   渲染侧只认这些结果坐标。
   - **三档倍率的当前值：中 1.3 / 近 1.5 / 画中画 0.55**（用户定：中 1.3、近 1.5）。
-    **放大档位不存在「推出框露背景」的风险**：运镜是绕不动点做 `scale`，`s ≥ 1` 时画面四周
-    一律向外扩张，任何倍率都盖满整帧，露底只发生在画中画（`zoom_wide < 1`，刻意留黑边
-    `(1-factor)/2×1920 = 432px`）。所以再调大是安全的，别再拿「怕露出背景底色」当理由往下压。
+    **放大档位不会露底**：绕不动点 scale，`s ≥ 1` 时四周外扩；露底只发生在画中画（刻意留黑边）。
+    再调大是安全的，别再拿「怕露出背景底色」当理由往下压。
   - **旧内建默认按值迁移**：`process/mod.rs::migrate_camera_zoom` 在 Step 0a 把
     中 `1.15 → 1.3`、近 `1.3 → 1.5`、远 `0.7 → 0.55`（**只认这几个旧默认值**，手改过的不动，
     日志逐条报）。三处兜底默认值（`default_zoom_mid/close/wide()`、模板 `camFactor`、
@@ -173,13 +173,14 @@
 - **手工屏蔽区间内的字幕不参与后续预算/位置计算**：`cmd_process` 读 `data/subtitles.json` 后先按
   `config.mute_ranges` 过滤（`MuteRange::overlaps`），后续 position/budget 全基于清理后的字幕。
   ⚠️ **但屏蔽区间不再切段、也不再删事件**（用户要求：屏蔽只做标记）：段表与事件原样留着，
-  出片合流后由 `Ffmpeg::cut_ranges` 剪掉、预览跳过。以前这里还会
-  `split_segments_by_mute_ranges` 把屏蔽区内的事件从 `polish.toml` 删掉（而 process 会被预览/出片
-  隐式触发）—— 已删除，**别再加回来**。回归：`cargo test -p yekitrim-polish --lib mute_range_keeps_events`
-  （`process::tests`，临时工程真跑 `cmd_process`，把删事件钉红）。
+  出片合流后由 `Ffmpeg::cut_ranges` 剪掉、预览跳过。以前这里还会用 `split_segments_by_mute_ranges`
+  把屏蔽区事件删掉（process 会被预览/出片隐式触发）—— 已删除，**别再加回来**。
+  回归：`mute_range_keeps_events`（真跑 `cmd_process`，把删事件钉红）。
 - ⚠️ **屏蔽区间只跳过、不删事件**（用户 2026-10-19 报「LLM 剪辑和后处理没过滤屏蔽段」）：
   判据 `project::event_starts_muted`（左闭右开、只看**起点**；`Camera`/`Overlay` 例外）。
   用在 `cap_events` 额度、2b/2b2 落点、2c 延长、音效规则（屏蔽段音效要留着）、文字守卫、LLM 生成与精挑。
+- **节奏 = 节拍网格 + 三档重音**（Step 1h，§26；见 `rhythm.rs`）：账本 `auto_events` **先删后建 ⇒ 幂等**；
+  `calm` = 今天。改密度只动 `Params`，别在 prompt 里加。
 - **文字元素是候补**（用户 2026-10-19：文字突出、指向性强，滥用适得其反）：`cap_text_elements`（Step 1d2b）
   兜底 —— 与贴纸（两个载体都算）重叠就删、每段 1 条（留最早）、`manual` 豁免、屏蔽段的不占名额。
   prompt 同步：写**关键词 2~8 字**、不与贴纸同段、只在没合适贴纸/其它效果已密时用。
@@ -203,7 +204,6 @@
   端到端那条 `process_without_edl_intent_never_writes_edl` **照样绿** —— 空 `Edl` 会被
   `ProjectFile::edl` 的 `skip_serializing_if = "Edl::is_empty"` 静默吃掉，症状完全相同
   ⇒ 写回门必须有**纯谓词**判据（`process_writeback_gate_only_touches_edl_when_materialized`）。
-  同一条教训见 `docs/plan/edl-retiming-spec.md` §11.14（`ensure_assets_should_run`）。
   回归：`cold_open_only_one_per_clip`（3 候选 → 只剩 1）/ `cold_open_materialize_is_idempotent` /
   `cold_open_on_empty_edl_seeds_the_mute_complement` / `non_empty_edl_is_never_reseeded` /
   `intent_only_edl_from_old_version_is_rebuilt` /

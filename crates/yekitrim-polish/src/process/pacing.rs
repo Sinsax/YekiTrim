@@ -100,22 +100,12 @@ pub fn find_idle_gaps(duration: f64, events: &[Event]) -> Vec<IdleGap> {
     if !duration.is_finite() || duration <= 0.0 {
         return vec![];
     }
-    // 视觉事件的**可见区间**（起点 + 终点）。
-    //
-    // ⚠️ 用 `end()` 而不是"只拿起点"：一个从 1s 铺到 5s 的运镜，
-    //    中间那 4 秒画面**一直在变**，不算"死着"。
-    //    ⚠️ `end()` 返回 `Option`（没写 `end` 的按 `default_end` 补，
-    //    但那是 `process` Step 0 的活）⇒ 这里对 `None` 退回"起点 + 一个很短的长度"，
-    //    免得一个没写 `end` 的事件把后面整片都盖住。
+    // 视觉变化的**可感知窗口** —— 注意不是事件的整段跨度（见 [`change_spans`]）。
     let mut spans: Vec<(f64, f64)> = events
         .iter()
-        .filter(|e| is_visual(e))
-        .map(|e| {
-            let start = e.get_time();
-            let end = e.end().unwrap_or(start + 0.5).max(start);
-            (start.max(0.0), end.min(duration))
-        })
-        .filter(|(s, e)| e > s || (*s < duration && *e >= *s))
+        .flat_map(change_spans)
+        .map(|(s, e)| (s.max(0.0), e.min(duration)))
+        .filter(|(s, e)| e > s)
         .collect();
     spans.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
@@ -154,6 +144,44 @@ pub fn find_idle_gaps(duration: f64, events: &[Event]) -> Vec<IdleGap> {
 /// 但 `kind = "sticker"` 的元素归贴纸那条路（也是视觉），一并算。
 fn is_visual(event: &Event) -> bool {
     !matches!(event, Event::Sfx { .. })
+}
+/// 过渡窗口宽度（秒）—— 与模板/engine 的运镜过渡同一个量级（`min((end-time)*0.5, 0.6)`）。
+///
+/// ⚠️ 它同时是「一次变化被眼睛看见多久」的近似：短于它，两次变化会被知觉成一次
+/// （`quality.rs::MIN_VISUAL_GAP_SECS` 说的是反过来那一头：太近算打断）。
+pub const CHANGE_WINDOW_SECS: f64 = 0.6;
+
+/// 事件真正**让画面在变**的窗口（而不是它铺了多久）。
+///
+/// # 为什么必须区分（2026-10-19 修）
+///
+/// 此前把 `time..end` 整段都当成「画面一直在变」。而 `process` 会给**每个 ≥1s 的段**
+/// 补一条铺满整段的默认运镜（`zoom=中`，画面其实是**静止的裁剪**）⇒ 视觉区间铺满全片，
+/// [`find_idle_gaps`] **恒为空**，§23「每 3–6 秒一次视觉变化」这条纪律**从未生效**
+/// （常规工程 `data/pacing.json` 从不产出）。
+///
+/// 判据：
+/// - **静态运镜**（无 `handheld`、无 `anchor_to`、无 `speed`）：只有过渡窗口在变 ——
+///   起点后 [`CHANGE_WINDOW_SECS`] 与终点前 [`CHANGE_WINDOW_SECS`]；
+/// - **持续运动**（手持呼吸 / 位移 / 推拉）：整段都在变；
+/// - 其余视觉事件（瞬时特效 / 元素 / 覆盖层）：整段。
+fn change_spans(event: &Event) -> Vec<(f64, f64)> {
+    if !is_visual(event) {
+        return Vec::new();
+    }
+    let start = event.get_time();
+    let end = event.end().unwrap_or(start + 0.5).max(start);
+    match event {
+        Event::Camera { handheld, anchor_to, speed, .. } => {
+            let moving = *handheld || anchor_to.is_some() || speed.is_some();
+            if moving || end - start <= CHANGE_WINDOW_SECS * 2.0 {
+                vec![(start, end)]
+            } else {
+                vec![(start, start + CHANGE_WINDOW_SECS), (end - CHANGE_WINDOW_SECS, end)]
+            }
+        }
+        _ => vec![(start, end)],
+    }
 }
 
 /// 给一个工程补出 §23 的建议事件（**不落盘、纯计算**）。
@@ -201,6 +229,18 @@ mod tests {
             manual: false,
             speed: None,
             tilt: None,
+        }
+    }
+
+    /// 瞬时特效：**整段**都算画面在变（`change_spans` 对非运镜事件不拆窗口）。
+    fn shake(time: f64, end: f64) -> Event {
+        Event::Shake {
+            time,
+            intensity: 14.0,
+            end: Some(end),
+            anchor: None,
+            sfx: None,
+            sfx_volume: None,
         }
     }
 
@@ -312,14 +352,17 @@ mod tests {
         );
     }
 
-    /// 重叠/相接的视觉事件要**并起来**（两个相邻运镜之间那 0.1s 不是空档）。
+    /// 重叠/相接的视觉事件要**并起来**（两个相邻特效之间那 0.1s 不是空档）。
+    ///
+    /// ⚠️ 这条曾经用两条 8s 运镜来钉 —— 2026-10-19 起静态运镜不再算「持续变化」，
+    /// 那个形状本身就带 6.7/6.8s 的空档了（那不是 bug，正是这次要修的东西）。
+    /// 所以改用**整段算变化**的瞬时特效来钉「缝要被并起来」。
     #[test]
     fn 相邻事件之间的缝不算空档() {
-        let evs = vec![camera(0.0, Some(8.0)), camera(8.1, Some(16.0))];
-        assert!(
-            find_idle_gaps(20.0, &evs).len() <= 1,
-            "0.1s 的缝不该被当成空档（只有片尾那 4 秒是真空档）"
-        );
+        let evs = vec![shake(0.0, 3.0), shake(3.1, 6.0)];
+        let gaps = find_idle_gaps(20.0, &evs);
+        assert_eq!(gaps.len(), 1, "只有片尾 6..20 是空档：{gaps:?}");
+        assert!((gaps[0].start - 6.0).abs() < 1e-6, "空档应从 6.0s 起：{gaps:?}");
     }
 
     /// `suggest_punch_ins` 的时长恒为 `PUNCH_DURATION_SECS`。
@@ -344,5 +387,38 @@ mod tests {
                 "时长必须恒为 {PUNCH_DURATION_SECS}s"
             );
         }
+    }
+    /// **静态运镜不算持续变化**（2026-10-19 修）：铺满整段的默认运镜 + 静止画面 ⇒ 仍然有空档。
+    ///
+    /// 修之前这里恒为空 —— 而 `process` 会给每个段补一条铺满整段的默认运镜，
+    /// 于是 §23 那条纪律**从未生效**。
+    #[test]
+    fn 静态运镜不能掩盖空档() {
+        let evs = vec![camera(0.0, Some(20.0))];
+        let gaps = find_idle_gaps(20.0, &evs);
+        assert_eq!(gaps.len(), 1, "20s 静态机位中间必须报出空档，实得 {gaps:?}");
+    }
+
+    /// 持续运动（手持/位移/推拉）**整段**都算画面在变 ⇒ 不该报空档。
+    #[test]
+    fn 持续运动算整段变化() {
+        let mut ev = camera(0.0, Some(20.0));
+        if let Event::Camera { handheld, .. } = &mut ev {
+            *handheld = true;
+        }
+        assert!(find_idle_gaps(20.0, &[ev]).is_empty(), "手持呼吸全程都在变");
+        let mut moved = camera(0.0, Some(20.0));
+        if let Event::Camera { anchor_to, .. } = &mut moved {
+            *anchor_to = Some("danmaku".into());
+        }
+        assert!(find_idle_gaps(20.0, &[moved]).is_empty(), "位移全程都在变");
+    }
+
+    /// 变化窗口的宽度是 `CHANGE_WINDOW_SECS`：4s 一个机位 ⇒ 相邻窗口之间的缝小于阈值。
+    #[test]
+    fn 变化窗口宽度固定() {
+        let evs = vec![camera(0.0, Some(4.0)), camera(4.0, Some(8.0)), camera(8.0, Some(12.0))];
+        // 每段只在首尾 0.6s 算变化 ⇒ 最大缝 4.0-1.2 = 2.8s < 6s
+        assert!(find_idle_gaps(12.0, &evs).is_empty(), "4s 一个机位不该报空档");
     }
 }

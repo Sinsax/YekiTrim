@@ -241,25 +241,43 @@ struct CoverFont {
     face: String,
 }
 
+/// 库里**默认位**那支的 id（没设默认 / 不可用 ⇒ `None`）。
+///
+/// ⚠️ 用 **id** 而不是内部族名：浏览器侧的 `@font-face` 声明的族名 = **id**
+/// （`server::font_face_css`），栈首写内部族名就永远匹配不上 ⇒ 预览/设计器落回系统字体，
+/// 而出片（Takumi 按内部族名注册）用的是库默认那支 —— 正是用户报的
+/// 「没应用素材库设置的默认字体」。
+fn cover_default_font_id() -> Option<String> {
+    let roots = font_roots_owned();
+    yekitrim_core::fonts::scan_all_roots(&roots)
+        .into_iter()
+        .find(|e| e.is_default && e.installed && !e.emoji && !e.id.trim().is_empty())
+        .map(|e| e.id)
+}
+
 fn cover_font_css(cc: &crate::project::CoverConfig) -> CoverFont {
     let id = cc.font.trim();
     // ⚠️ **emoji 那支也要注入 @font-face**：标题里的 emoji 段（`emoji_run_span`）按库 id 请求它，
     // 不注入就是"浏览器解析不到 → 静默落回系统 Segoe"，而出片（Takumi）用库里的 Noto ——
     // 正是用户报的"前端与出片的 emoji 字体不一致"。
     let emoji = cover_emoji_font_id();
-    let face_ids: Vec<&str> = std::iter::once(id)
+    // ⚠️ **空白 = 跟随字体库的默认位**（2026-10-19 用户报「没应用素材库设置的默认字体」）。
+    // 以前这里直接给 `fallback_stack()`：首项是默认那支的**内部族名**，而浏览器只认库内字体的
+    // **id**（`@font-face` 声明的名字 = id）⇒ 设计器/预览落回系统字体、出片却是库默认那支。
+    // 现在统一按 id：注入它的 `@font-face`、栈首也写 id —— 与「选了具体字体」完全同一条路。
+    let default_id = if id.is_empty() { cover_default_font_id() } else { None };
+    let effective = if id.is_empty() { default_id.as_deref().unwrap_or("") } else { id };
+    let face_ids: Vec<&str> = std::iter::once(effective)
         .chain(std::iter::once(emoji.as_str()))
         .filter(|s| !s.trim().is_empty())
         .collect();
-    if id.is_empty() {
-        // 老工程 / 没选：字体栈 = **动态兜底栈**（`fallback_stack`：首项 = 库里默认那支的
-        // 内部族名；库里没有可用中文时与老的 `SYSTEM_FONT_STACK` 常量同族名同序 —— 单测钉着）。
-        // ⚠️ 不能写死常量：「设为默认」对封面要真的生效。
+    if effective.trim().is_empty() {
+        // 库里连默认位都没有（空库）⇒ 动态兜底栈（与老的 `SYSTEM_FONT_STACK` 同族名同序）。
         return CoverFont { family: server::fallback_stack(), face: server::font_face_css(&face_ids) };
     }
     // 值不在字体库里时也照写（当系统字体族名用），与字幕字体同一条规矩
     CoverFont {
-        family: server::font_family_with_stack(id),
+        family: server::font_family_with_stack(effective),
         face: server::font_face_css(&face_ids),
     }
 }
@@ -1175,14 +1193,31 @@ pub async fn cmd_cover(project_path: &Path, existing_video: Option<&str>, render
 mod tests {
     use super::*;
 
-    /// 封面字体：没选（空串）→ **动态兜底栈** + 不注入；选了库外的值 → 当系统族名用、仍要有兜底栈，
+    /// 封面字体：没选（空串）→ **跟随字体库默认位**（按 **id**：注入它的 @font-face、栈首也是它）；
+    /// 库里连默认都没有 → 动态兜底栈；选了库外的值 → 当系统族名用、仍要有兜底栈，
     /// 而且**不注入 @font-face**（注了就是一条 404）。
     #[test]
-    fn cover_font_css_falls_back_to_system_stack() {
+    fn cover_font_css_follows_library_default() {
         let mut cc = crate::project::CoverConfig::default();
         let off = cover_font_css(&cc);
-        // 首项随"库里默认那支"走（动态栈），别断言常量 —— 开发机装了默认字体时两者不同
-        assert_eq!(off.family, server::fallback_stack(), "没选 = 兜底栈");
+        // ⚠️ 2026-10-19：没选 ≠ 直接用兜底栈。用户报「没应用素材库设置的默认字体」——
+        // 兜底栈首项是默认那支的**内部族名**，而浏览器只认 `@font-face` 声明的 **id**，
+        // 于是预览落回系统字体、出片却是库默认那支。现在两边都按 id。
+        match cover_default_font_id() {
+            Some(id) => {
+                assert!(
+                    off.family.starts_with(&format!("\"{id}\",")),
+                    "没选封面字体时栈首 = 库默认那支的 id（{id}）：{}",
+                    off.family
+                );
+                assert!(
+                    off.face.contains(&format!("font-family:\"{id}\"")),
+                    "库默认那支必须注入 @font-face（否则浏览器解析不到）：{}",
+                    off.face
+                );
+            }
+            None => assert_eq!(off.family, server::fallback_stack(), "空库 = 兜底栈"),
+        }
         // ⚠️ 比**族名与顺序**，不比引号风格：本文件的运行时串走 `quote_css`（**双引号**），
         // 而 `TAIL_STACK` 常量保留单引号（与真模板一致）—— 直接 `ends_with` 逐字比**必红**。
         // 这条断言第一版就是那么写错的，只是当时库里**没有默认字体**、`fallback_stack()` 的首项
