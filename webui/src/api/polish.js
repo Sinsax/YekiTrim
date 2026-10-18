@@ -168,7 +168,9 @@ export const runSilence = (pid, dir, extra = {}) => startJob('/api/polish/silenc
 // ⚠️ `versions`（§9 多版本成片）**已整条删除**（2026-10-18 用户口径：「为什么要一次渲染
 //    多个同样的视频？没有理由吧，版本号 _n 是之前就完成的，这个没有意义」）。
 //    注意：`_n` 后缀与它**无关** —— 那是 `unique_output_path`（同名不覆盖），保留。
-export const runRender = (pid, dir, outputFile = 'export.mp4') =>
+// ⚠️ 默认参数是**空串**（= 让服务端用工程里的 `[project] output`，缺省 `vtuber-clip.mp4`）。
+//    以前写死 `'export.mp4'` —— 那只是文档里的举例，与真实默认名不符。
+export const runRender = (pid, dir, outputFile = '') =>
   startJob('/api/polish/render', pid, dir, { output_file: outputFile })
 /** 生成封面。`renderer`：只有 `takumi`（静态渲染，不出浏览器、内存小）；不传 = 服务端默认。
  *  ⚠️ 老脚本里的 `chrome` 已整条删除，传了会由 `cover.rs` **明确报错**（不是"认不出"）。 */

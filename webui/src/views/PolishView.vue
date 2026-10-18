@@ -630,7 +630,10 @@
     <!-- 渲染导出弹窗 -->
     <AppModal :show="renderModal" title="渲染导出" @close="renderModal = false">
       <label>输出文件（项目内相对路径，留空用默认）</label>
-      <input v-model="renderOutput" placeholder="output/clips/clip-01/export.mp4">
+      <!-- ⚠️ 示例用**真实默认名**（`vtuber-clip.mp4`，见 `project/config.rs::default_output`）。
+           以前写的是 `export.mp4` —— 那只是文档里的举例，实际产物叫 vtuber-clip，
+           用户照着示例找文件会**找不到**（2026-10-18 实际问过一次「为什么有好几版本」）。 -->
+      <input v-model="renderOutput" placeholder="vtuber-clip.mp4">
       <p class="hint mt-6">
         只接受项目内相对路径<span class="muted">（同名自动改名）</span> <span class="mono">名字_1.mp4</span>。
       </p>
