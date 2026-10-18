@@ -23,7 +23,7 @@ const props = defineProps({
   /** 直接绑定的参数对象（父层 reactive；只改属性） */
   target: { type: Object, required: true },
   /** 画哪几个控件（按链路那几行没有 json_mode：它写的是全局 extra_params） */
-  fields: { type: Array, default: () => ['thinking', 'temperature', 'max_tokens', 'json_mode'] },
+  fields: { type: Array, default: () => ['reasoning', 'temperature', 'max_tokens', 'json_mode'] },
   /** json_mode 的**真值**由父层算（那是 extra_params.response_format 的一个视图） */
   jsonMode: { type: Boolean, default: false },
   /** 同一页会出现多份（全局 + 四条链路）⇒ id 要能区分 */
@@ -50,7 +50,7 @@ const maxOutHint = computed(() => {
 /** 能力表里**没收录**这对 (host, model)（hit:false）—— 与"还没拿到能力"(caps=null) 是两回事 */
 const capsUnlisted = computed(() => !!props.caps && props.caps.hit === false)
 
-const cur = computed(() => String(props.target.thinking ?? ''))
+const cur = computed(() => String(props.target.reasoning ?? ''))
 /** 指定了档位（写这个键）还是跟随默认（删这个键） */
 const hasLevel = computed(() => !!cur.value)
 /** 手改出来的、这个模型没有的档位：照实显示（补一条），不静默改写 */
@@ -59,39 +59,40 @@ const strayLevel = computed(() => (hasLevel.value && !levels.value.includes(cur.
 const thinkingTitle = computed(() => {
   if (props.caps == null) return '还没拿到这个模型的能力（先「获取模型」或填好 base_url + model）'
   if (!levels.value.length) return '能力表里这个模型没有推理档位，所以没有这个控件'
-  return '档位清单来自模型能力表；勾「跟随默认」= 不写 [llm] thinking 这个键（由链路默认 / extra_params 决定）'
+  return '档位清单来自模型能力表；勾「跟随默认」= 不写 [llm.params] reasoning 这个键（由链路默认 / extra_params 决定）'
 })
 const thinkNote = computed(() => {
   if (props.caps == null) return '能力未知，未列推理档位'
   if (!levels.value.length) return '该模型没有推理档位'
   return ''
 })
-const jsonTitle = computed(() => '写 [llm] extra_params.response_format = {"type":"json_object"}；清掉它就是不要求 JSON')
+const jsonTitle = computed(() => '写 [llm] extra_params.response_format = {"type":"json_object"}；清掉它就是不要求 JSON'
+  + '（[llm.params] json_mode 是一等公民键，可在「编辑源文件」里写）')
 
 function toggleInherit(inherit) {
-  if (inherit) { props.target.thinking = ''; return }
+  if (inherit) { props.target.reasoning = ''; return }
   // 取消「跟随默认」= 真的写一个档位：取服务端给的第一个（通常 off），用户随即可以改
-  props.target.thinking = levels.value[0] || ''
+  props.target.reasoning = levels.value[0] || ''
 }
 </script>
 
 <template>
   <div class="lpf">
     <!-- 推理档位：清单 = caps.levels 的键（数据驱动）；「跟随默认」用勾选框（= 删键） -->
-    <div v-if="show('thinking') && levels.length" class="lpf-line">
+    <div v-if="show('reasoning') && levels.length" class="lpf-line">
       <span class="lpf-name">推理档位</span>
       <label class="lpf-inherit" :title="thinkingTitle">
         <input type="checkbox" :checked="!hasLevel" @change="toggleInherit($event.target.checked)">
         <span>跟随默认</span>
       </label>
-      <select v-if="hasLevel" :id="idPrefix + '-thinking'" v-model="target.thinking"
+      <select v-if="hasLevel" :id="idPrefix + '-reasoning'" v-model="target.reasoning"
               class="lpf-sel" :title="thinkingTitle" aria-label="推理档位">
         <option v-for="lv in levels" :key="lv" :value="lv">{{ LEVEL_ZH[lv] || lv }}</option>
         <option v-if="strayLevel" :value="strayLevel">{{ LEVEL_ZH[strayLevel] || strayLevel }}（当前值）</option>
       </select>
       <span v-else class="muted small lpf-note">用链路默认</span>
     </div>
-    <div v-else-if="show('thinking')" class="muted small lpf-note" :title="thinkingTitle">{{ thinkNote }}</div>
+    <div v-else-if="show('reasoning')" class="muted small lpf-note" :title="thinkingTitle">{{ thinkNote }}</div>
 
     <!-- 温度：不支持就**禁用 + 行内原因**（不是只挂 title） -->
     <SliderField v-if="show('temperature')" v-model="target.temperature" label="温度"
@@ -109,8 +110,8 @@ function toggleInherit(inherit) {
       <span>要求 JSON 输出</span>
     </label>
 
-    <div v-if="capsUnlisted && show('thinking')" class="muted small lpf-note">
-      能力表未收录，按通用参数
+    <div v-if="capsUnlisted && show('reasoning')" class="muted small lpf-note">
+      能力表未收录，按通用参数（可在「高级」里手填能力）
     </div>
   </div>
 </template>

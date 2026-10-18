@@ -651,8 +651,8 @@ pub(super) fn cover_title_user_prompt(reference_text: &str, context: &str) -> St
 /// 封面标题取样温度的解析（**唯一一处**：设计器「温度」= `[cover] title_temperature`）。
 ///
 /// - 显式设过 ⇒ **就是它**（夹 0~2）：想完全稳定就该拿到 0，不许再被下限顶回去；
-/// - 没设 ⇒ 链路温度（`[llm] temperature` / `[llm.overrides.utility]`）**抬到下限** 0.8。
-///   `[llm] temperature` 的模板默认是 0（确定性），拿它写标题只会得到四平八稳的概述。
+/// - 没设 ⇒ 链路温度（`[llm.params] temperature` / `[llm.overrides.utility]`）**抬到下限** 0.8。
+///   v2 里"省略"= 不表态（不发送）⇒ 调用方按 0 传进来，于是照样落到下限 —— 与 v1 的模板默认 0 同效。
 pub(super) fn cover_title_temperature(cover: Option<f64>, link: f64) -> f64 {
     const COVER_TITLE_MIN_TEMPERATURE: f64 = 0.8;
     match cover {
@@ -729,7 +729,8 @@ pub(super) async fn polish_cover_title(
     // ⚠️ **温度下限**（2026-10-19 用户报「没有幽默串子那种想点进去的欲望」）：
     // `[llm] temperature` 的模板默认是 **0**（确定性）—— 拿它写标题只会得到四平八稳的概述。
     // 只在**低于**下限时抬上来；用户自己配了更高温度就照用（不覆盖用户意图）。
-    let temp = cover_title_temperature(cfg.cover.title_temperature, linked.temperature);
+    // v2：`[llm.params] temperature` 省略 = 不表态 ⇒ 按 0 交给下面那条下限规则（0.8）
+    let temp = cover_title_temperature(cfg.cover.title_temperature, linked.params.temperature.unwrap_or(0.0));
     let client = yekitrim_llm::LlmClient::new(&linked)
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("LLM 配置错误: {e}")))?
         .with_temperature(temp)

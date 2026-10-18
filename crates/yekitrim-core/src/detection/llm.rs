@@ -1903,7 +1903,7 @@ mod tests {
         llm.base_url = base;
         llm.api_key = "k".into();
         llm.model = "m".into();
-        llm.max_tokens = 16384;
+        llm.params.max_tokens = Some(16384);
         llm.overrides.detect.max_tokens = Some(8192);
 
         let segs = vec![seg(0.0, "第一句"), seg(30.0, "第二句")];

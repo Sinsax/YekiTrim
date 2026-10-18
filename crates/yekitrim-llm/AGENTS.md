@@ -53,8 +53,7 @@
 
 ### 按链路参数（2026-09）
 
-- ⚠️ **所有构造 `LlmClient` / `Agent` 的地方都必须走 `LlmConfig::for_link(LlmLink)`**：它解出该链路的
-  `max_tokens` / `temperature` / `thinking`，优先级 = `[llm.overrides.<link>]` > `[llm]` > 链路代码默认；
+- ⚠️ **所有构造 `LlmClient` / `Agent` 的地方都必须走 `LlmConfig::for_link(LlmLink)`**：它解出该链路那一套**请求参数**（`temperature` / `max_tokens` / `reasoning` / `top_p` / `json_mode`），优先级 = `[llm.overrides.<link>]` > `[llm]` > 链路代码默认；
   配置形态的正文在 `crates/yekitrim-core/src/config/AGENTS.md`。**在 `for_link` 之外再写
   `with_max_tokens` / `with_temperature` / `with_thinking`，就是把同一个旋钮掰成两半** ——
   从前精修那两处写死的 `with_thinking(Some("disabled"))` 就是这么来的（已收进 `default_thinking`）。
@@ -62,7 +61,7 @@
   `Correct`（订正）、`Utility`（贴纸包与扫描标签、封面文案、连通测试）。
   检测窗口请求体真带上覆盖值的回归钉子：`detection::llm::tests::detect_window_request_carries_link_max_tokens`。
 - ⚠️ **`[correct] thinking`（`AgentTask::thinking`，订正那条老开关）只在 LLM 层没表态时生效**
-  （`agent.rs` 默认 `process_window` 里判 `llm_cfg.thinking.is_none()`）—— 不这么写，
+  （`agent.rs` 默认 `process_window` 里判 `!params.reasoning_explicit`）—— 不这么写，
   它会把 `for_link` 解出来的 thinking 顶掉。
 
 ### 用量记账（token / 缓存命中 / 耗时）
