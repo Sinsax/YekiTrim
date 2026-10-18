@@ -10,6 +10,8 @@ use crate::{assets, parse, project};
 mod sfx;
 mod download;
 mod fx;
+/// 体检（规格 §4 B1）：**只报告、不阻断**。六项检查 + data/process-report.json（只在有 findings 时写）。
+pub mod audit;
 /// §23 节奏约束求解器：>6s 没有视觉变化的区间自动补一个最低强度的推近。
 /// 纯函数（扫区间 + 给补位点），**不落盘**；判据在 `process`。
 pub mod pacing;
@@ -41,6 +43,12 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
 
     let mut config = project::load_project(project_path)?;
     let data_dir = project_path.join("data");
+
+    // B3（**只在 debug**）：ownership 断言 —— 先给 manual 事件的 time/end/origin/x/y 拍一份快照。
+    // 后处理**不许**改这五个字段（规格 §2.2 的 ownership 表："manual 只读"）；
+    // release 里这段整个不存在（零开销、也不 panic）。
+    #[cfg(debug_assertions)]
+    let manual_before = snapshot_manual(&config);
 
     // 音效屏蔽列表: 全局 (.yekitrim/config.toml) ∪ 项目 (polish.toml [sfx])
     let sfx_blacklist = load_sfx_blacklist(&config);
@@ -1162,6 +1170,40 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
         }
     }
 
+    // 体检（规格 §4 B1）：**只报告、不阻断** —— 算出来的问题落 data/process-report.json，
+    //    一个事件都不改。⚠️ 只在**有 findings 时**写盘（R4：无条件写会让每个存量工程多一个文件，
+    //    "本来就很干净"这个结论由下面那句日志承载）。
+    {
+        let findings = audit::audit(&config);
+        if findings.is_empty() {
+            tracing::info!(
+                "  ✓ 体检 0 项（相机重叠 / 同刻多状态 / 瞬时效密度 / 镜头总量 / 元素越界 / 跨静音）"
+            );
+        } else {
+            tracing::info!("  ⚠ 体检 {} 项（详见 data/process-report.json）", findings.len());
+            for f in findings.iter().take(8) {
+                tracing::info!("     · [{}] @{:.1}s {}", f.kind, f.at, f.detail);
+            }
+            if findings.len() > 8 {
+                tracing::info!("     · …… 其余 {} 项见报告", findings.len() - 8);
+            }
+            let _ = audit::write_report(&data_dir, &config, &findings);
+        }
+    }
+
+    // B3（**只在 debug**）：后处理**不许**改 manual 事件的 time/end/origin/x/y
+    // （规格 §2.2 ownership 表 + §1 硬边界："manual 只读"）。改了就直接 panic ——
+    // 这类违规的默认症状是"用户拖过的位置跑一次 process 就回去了"，而**没有任何报错**。
+    #[cfg(debug_assertions)]
+    {
+        let violations = ownership_violations(&manual_before, &snapshot_manual(&config));
+        assert!(
+            violations.is_empty(),
+            "process 改写了 manual 事件（ownership 违例，规格 §2.2）：{}",
+            violations.join("；")
+        );
+    }
+
     // 标记 process 已完成（preview 依赖此标记决定是否先跑 process）。
     // 只写回 process 负责的字段：这中间用户存的选框 / 封面 / 屏蔽轨道不能被吞掉。
     let segments = config.segments;
@@ -1200,6 +1242,91 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
 /// 所以这个门不负责保用户数据，负责保的是"**没意图时别去动它**"。
 fn writeback_edl(materialized: bool, clips: Vec<project::EdlClip>) -> Option<Vec<project::EdlClip>> {
     materialized.then_some(clips)
+}
+
+// ── B3：ownership 断言（debug only）───────────────────────────────────────────
+
+/// manual 事件的**所有权字段快照**（规格 §2.2 的 ownership 表）。
+///
+/// ⚠️ 只收**归用户**的那几个：`time`/`end`（手工定过时间）、相机的 `origin`
+/// （process 只写 origin/to_origin，manual 不覆盖）、以及 `manual_pos`
+/// （用户点的落点；**它的派生值 x/y 归 process** —— 几何求解是 process 的活，
+/// 拿 x/y 当判据会把"求解器正常工作"误判成违例）。
+#[derive(Debug, Clone, PartialEq)]
+struct ManualFields {
+    time: f64,
+    end: Option<f64>,
+    origin: Option<String>,
+    manual_pos: Option<String>,
+}
+
+/// 把所有 manual 事件（贴纸 / 文字元素 / 运镜）的五个字段按**文件顺序**拍下来。
+///
+/// ⚠️ 按"文件顺序"而不是 (段下标, 事件下标)：`cap_events` 会删事件、下标会整体前移，
+/// 用下标当身份会造出**假违例**。manual 事件本身后处理一条都不删（`cap_events` 跳过它们），
+/// 所以只比"顺序 + 字段"就够。
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
+fn snapshot_manual(config: &project::ProjectFile) -> Vec<ManualFields> {
+    let mut out = Vec::new();
+    for seg in &config.segments {
+        for ev in &seg.events {
+            if !ev.is_time_manual() {
+                continue;
+            }
+            let origin = match ev {
+                project::Event::Camera { origin, .. } => Some(origin.clone()),
+                _ => None,
+            };
+            out.push(ManualFields {
+                time: ev.get_time(),
+                end: ev.end(),
+                origin,
+                manual_pos: ev.manual_pos().map(str::to_owned),
+            });
+        }
+    }
+    out
+}
+
+/// 纯函数：manual 事件的五个字段有没有被后处理改过（B3 的判据本体；
+/// `cmd_process` 在 debug 下拿它 assert）。
+///
+/// **唯一豁免**：`end` 从 `None` 补成某个值 —— 规格 §1 明确把「`end` 缺省补齐」列为
+/// process 的**允许**行为（`normalize_event_ends` 对所有事件一视同仁，不区分 manual）。
+/// 除此之外（含 `Some(a) → Some(b)`，以及 time/origin/x/y 的任何变化）都算违例。
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
+fn ownership_violations(before: &[ManualFields], after: &[ManualFields]) -> Vec<String> {
+    let mut out = Vec::new();
+    if before.len() != after.len() {
+        out.push(format!(
+            "manual 事件条数 {} → {}（后处理不许删/加手工事件）",
+            before.len(),
+            after.len()
+        ));
+        return out;
+    }
+    for (i, (b, a)) in before.iter().zip(after).enumerate() {
+        let mut diff: Vec<String> = Vec::new();
+        if (b.time - a.time).abs() > 1e-9 {
+            diff.push(format!("time {:.3} → {:.3}", b.time, a.time));
+        }
+        match (b.end, a.end) {
+            (Some(x), Some(y)) if (x - y).abs() > 1e-9 => diff.push(format!("end {x:.3} → {y:.3}")),
+            (Some(_), None) => diff.push("end 被清空".to_string()),
+            // None → Some = 「end 缺省补齐」（规格 §1 允许），不算违例
+            _ => {}
+        }
+        if b.origin != a.origin {
+            diff.push(format!("origin {:?} → {:?}", b.origin, a.origin));
+        }
+        if b.manual_pos != a.manual_pos {
+            diff.push(format!("manual_pos {:?} → {:?}", b.manual_pos, a.manual_pos));
+        }
+        if !diff.is_empty() {
+            out.push(format!("第 {} 条 manual 事件：{}", i + 1, diff.join("，")));
+        }
+    }
+    out
 }
 
 /// 贴纸避让上下文：按项目算一次，逐张贴纸再按自己的可见窗口取障碍。
@@ -2035,12 +2162,22 @@ fn layout_text_elements(
             if crate::project::event_starts_muted(mute_ranges, ev) {
                 continue;
             }
-            let crate::project::Event::Element { kind, text, style, pos, x, y, source, color, .. } = ev else {
+            let crate::project::Event::Element {
+                kind, text, style, pos, x, y, source, color, manual, manual_pos, ..
+            } = ev
+            else {
                 continue;
             };
             if kind.trim().to_lowercase() != "text" {
                 continue;
             }
+            // C3（规格 §5）：**手工摆过位置/时间的文字不排版写回** —— 落点归用户
+            //（manual = 手工定过时间，manual_pos = 手工定过落点；任一条成立都不覆盖 x/y）。
+            // ⚠️ 但下面仍然写 source：那是**解析出来的样式参数**（字号/描边/颜色/倾斜…），
+            //    消费方（转译器/预览）只读它 —— 不写就等于让手工摆位的文字丢掉样式
+            //    （另一种"改了没生效"，而这正是 B3 要防的那类静默错误）。
+            let layout_owned =
+                !*manual && manual_pos.as_deref().map(str::trim).unwrap_or("").is_empty();
             if text.trim().is_empty() {
                 continue;
             }
@@ -2079,10 +2216,13 @@ fn layout_text_elements(
             };
             let anchor = TextAnchor::parse(pos.as_deref().unwrap_or(""));
             let layout = TextLayout::solve_with(text, ts, anchor, f, stroke_px);
-            let (px, py) = layout.anchor_origin(f);
-            // 写**百分比**（与贴纸的 `x`/`y` 同一种表示）。
-            *x = Some(format!("{:.2}%", px / f.w * 100.0));
-            *y = Some(format!("{:.2}%", py / f.h * 100.0));
+            // C3：手工事件只解样式、**不动落点**（见上面 layout_owned 的说明）
+            if layout_owned {
+                let (px, py) = layout.anchor_origin(f);
+                // 写**百分比**（与贴纸的 `x`/`y` 同一种表示）。
+                *x = Some(format!("{:.2}%", px / f.w * 100.0));
+                *y = Some(format!("{:.2}%", py / f.h * 100.0));
+            }
             // ⚠️ 把**解析后的样式参数**一起写回去，让转译器**读**而不是自己再存一份。
             //
             // 为什么必须这样：四档的数值（字号/描边/颜色/字重）如果 Rust 与 JS
@@ -2151,6 +2291,9 @@ fn resolve_camera_anchors(config: &mut project::ProjectFile, data_dir: &Path) {
     let mut unknown: Vec<String> = Vec::new();
     let mut resolved = 0usize;
     let mut migrated = 0usize;
+    // C3（规格 §5）：手工摆过的运镜**整条跳过**（origin 与 to_origin 都不解析）——
+    // 用户拖过/改过的运镜归用户；这里覆盖回去的症状是"改完运镜跑一次 process 就回去了"。
+    let mut manual_skipped = 0usize;
 
     for seg in &mut config.segments {
         for ev in &mut seg.events {
@@ -2160,11 +2303,16 @@ fn resolve_camera_anchors(config: &mut project::ProjectFile, data_dir: &Path) {
                 anchor_to,
                 origin,
                 to_origin,
+                manual,
                 ..
             } = ev
             else {
                 continue;
             };
+            if *manual {
+                manual_skipped += 1;
+                continue;
+            }
             // 老工程迁移：`"50% 50%"` 从来不是用户能设的值——它是 LLM prompt 示例与两个
             // 默认生成器硬编码的常量，一直被当作「没指定」。补成聚焦主播，让这次新增的
             // 「聚焦」对**已有**工程也生效（否则老切片重跑还是对着画面正中推）。
@@ -2197,6 +2345,9 @@ fn resolve_camera_anchors(config: &mut project::ProjectFile, data_dir: &Path) {
         }
     }
 
+    if manual_skipped > 0 {
+        tracing::info!("  · 手工摆过的运镜 {manual_skipped} 条：跳过锚点解析（manual 只读）");
+    }
     if migrated > 0 {
         tracing::info!("  🎯 {migrated} 条默认运镜已改为聚焦主播（原 origin 50% 50% 是历史常量，非用户设置）");
     }
@@ -2714,6 +2865,443 @@ y = "10%"
 
         let spans: Vec<(f64, f64)> = after.segments.iter().map(|s| (s.start, s.end)).collect();
         assert_eq!(spans, vec![(0.0, 10.0)], "屏蔽区间不许把分段切碎");
+    }
+
+    // ── C3：manual 字段不被覆盖（规格 §5）+ B3 的判据本体 ──────────────────
+
+    fn text_el(time: f64, end: Option<f64>, x: Option<&str>, y: Option<&str>, manual: bool, manual_pos: Option<&str>) -> Event {
+        Event::Element {
+            anim: None,
+            style_anim: None,
+            effect_anim: None,
+            transition_anim: None,
+            layout_angle_deg: None,
+            time,
+            end,
+            kind: "text".into(),
+            text: "手工摆位".into(),
+            style: Some("hook".into()),
+            pos: None,
+            color: None,
+            sticker_tag: None,
+            x: x.map(str::to_string),
+            y: y.map(str::to_string),
+            manual,
+            name: None,
+            source: None,
+            manual_pos: manual_pos.map(str::to_string),
+        }
+    }
+
+    fn manual_camera(t: f64, origin: &str) -> Event {
+        Event::Camera {
+            time: t,
+            end: Some(t + 2.0),
+            zoom: "近".into(),
+            origin: origin.into(),
+            anchor: Some("center".into()),
+            anchor_to: None,
+            to_origin: None,
+            cut: false,
+            handheld: false,
+            manual: true,
+            speed: None,
+            tilt: None,
+        }
+    }
+
+    fn plain_camera(t: f64, origin: &str) -> Event {
+        let mut ev = manual_camera(t, origin);
+        if let Event::Camera { manual, .. } = &mut ev {
+            *manual = false;
+        }
+        ev
+    }
+
+    /// **C3 相机半边**：`manual` 的运镜**整条跳过** —— origin 一个字都不改；
+    /// 同一条件的非 manual 版本（同样的 anchor）必须被解析（证明解析器真的在工作，
+    /// 而不是"这个锚点本来就解析不出来"）。
+    #[test]
+    fn manual_camera_origin_survives_anchor_resolution() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let data_dir = dir.path().join("data");
+        std::fs::create_dir_all(&data_dir).expect("建 data/");
+        let mut cfg = ProjectFile::example();
+        cfg.segments = vec![Segment {
+            start: 0.0,
+            end: 10.0,
+            fx: "med".into(),
+            note: String::new(),
+            role: String::new(),
+            events: vec![manual_camera(1.0, "33% 44%"), plain_camera(5.0, "10% 20%")],
+            extra: Default::default(),
+        }];
+        resolve_camera_anchors(&mut cfg, &data_dir);
+        let origins: Vec<String> = cfg.segments[0]
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                Event::Camera { origin, .. } => Some(origin.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(origins[0], "33% 44%", "manual 运镜的 origin 被覆盖了（C3 回归）");
+        assert_eq!(
+            origins[1], "50.00% 50.00%",
+            "对照组必须被解析（anchor=center）—— 否则上面那条是空转：{origins:?}"
+        );
+    }
+
+    /// **C3 文字半边**：`manual` 或 `manual_pos` 的文字**不排版写回 x/y**，
+    /// 但 source（解析出来的样式参数）照写 —— 不写就等于让手工摆位的文字丢掉字号/描边。
+    #[test]
+    fn manual_text_layout_skips_position_write() {
+        let mut segs = vec![Segment {
+            start: 0.0,
+            end: 10.0,
+            fx: "med".into(),
+            note: String::new(),
+            role: String::new(),
+            events: vec![
+                text_el(1.0, Some(3.0), Some("11%"), Some("22%"), true, None),
+                text_el(4.0, Some(6.0), Some("31%"), Some("32%"), false, Some("70% 30%")),
+                text_el(7.0, Some(9.0), None, None, false, None),
+            ],
+            extra: Default::default(),
+        }];
+        let done = layout_text_elements(&mut segs, 1920.0, 1080.0, 12.0, &[]);
+        assert_eq!(done, 3, "三条都该解出样式（source）");
+        let et = |i: usize| {
+            let Event::Element { x, y, source, .. } = &segs[0].events[i] else { panic!() };
+            (x.clone(), y.clone(), source.clone())
+        };
+        assert_eq!(et(0).0.as_deref(), Some("11%"), "manual 的 x 被排版改掉了（C3 回归）");
+        assert_eq!(et(0).1.as_deref(), Some("22%"));
+        assert_eq!(et(1).0.as_deref(), Some("31%"), "manual_pos 的 x 被排版改掉了（C3 回归）");
+        assert_eq!(et(1).1.as_deref(), Some("32%"));
+        assert_eq!(
+            et(2).0.is_some() && et(2).1.is_some(),
+            true,
+            "对照组（自动落点）必须被排版写回 —— 否则上面两条是空转"
+        );
+        for i in 0..3 {
+            assert!(et(i).2.is_some(), "第 {i} 条的 source（样式）不许丢");
+        }
+    }
+
+    /// **端到端 C3 判据**（规格 §5 的 `manual_event_fields_survive_process`）：
+    /// 一条 manual 的贴纸 / 运镜 / 文字，跑完真 `cmd_process` 之后
+    /// **time / end / origin / manual_pos 一个字都不许变**；文字的 x/y 必须来自 manual_pos
+    /// （而不是排版求出来的锚点位置）。
+    #[tokio::test]
+    async fn manual_event_fields_survive_process() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let path = dir.path();
+        let mut cfg = ProjectFile::example();
+        cfg.duration = Some(20.0);
+        cfg.sticker_source = Vec::new();
+        cfg.segments = vec![Segment {
+            start: 0.0,
+            end: 20.0,
+            fx: "med".into(),
+            note: String::new(),
+            role: String::new(),
+            extra: Default::default(),
+            events: vec![
+                Event::Sticker {
+                    time: 2.0,
+                    end: Some(4.0),
+                    keyword: "ysyk".into(),
+                    sticker_tag: None,
+                    name: Some("生气".into()),
+                    source: Some("ysyk".into()),
+                    x: "12%".into(),
+                    y: "34%".into(),
+                    sfx: None,
+                    sfx_volume: None,
+                    manual: true,
+                    manual_pos: Some("20% 30%".into()),
+                },
+                manual_camera(5.0, "33% 44%"),
+                text_el(8.0, Some(10.0), None, None, true, Some("70% 30%")),
+            ],
+        }];
+        write_matrix_project(path, &cfg);
+        cmd_process(path).await.expect("后处理");
+
+        let after = read_project(path);
+        let evs = &after.segments[0].events;
+        let sticker = evs.iter().find(|e| matches!(e, Event::Sticker { .. })).expect("贴纸还在");
+        assert_eq!(sticker.get_time(), 2.0, "manual 贴纸的 time 变了");
+        assert_eq!(sticker.end(), Some(4.0), "manual 贴纸的 end 变了");
+        assert_eq!(sticker.manual_pos(), Some("20% 30%"), "manual_pos 变了");
+
+        let cam = evs.iter().find(|e| matches!(e, Event::Camera { manual: true, .. })).expect("运镜还在");
+        if let Event::Camera { origin, to_origin, .. } = cam {
+            assert_eq!(origin, "33% 44%", "manual 运镜的 origin 变了");
+            assert_eq!(to_origin, &None, "manual 运镜的 to_origin 不该被写");
+        } else {
+            unreachable!()
+        }
+
+        let text = evs.iter().find(|e| matches!(e, Event::Element { .. })).expect("文字还在");
+        assert_eq!(text.get_time(), 8.0, "manual 文字的 time 变了");
+        assert_eq!(text.end(), Some(10.0), "manual 文字的 end 变了");
+        assert_eq!(text.manual_pos(), Some("70% 30%"), "manual_pos 变了");
+        let Event::Element { x, y, source, .. } = text else { unreachable!() };
+        let px: f64 = x.as_deref().unwrap_or("").trim_end_matches('%').parse().unwrap_or(-1.0);
+        let py: f64 = y.as_deref().unwrap_or("").trim_end_matches('%').parse().unwrap_or(-1.0);
+        assert!(px > 60.0, "文字的 x 不是 manual_pos（70% 盒子中心）换算来的，实得 {x:?} —— 排版把它盖掉了");
+        assert!(py > 15.0 && py < 30.0, "文字的 y 不是 manual_pos（30%）换算来的，实得 {y:?}");
+        assert!(source.is_some(), "样式 source 必须照写（否则手工文字丢掉字号/描边）");
+    }
+
+    /// B3 的**判据本体**：五个用户字段里任何一个变了都要被指出来（含条数变化）。
+    /// `end: None → Some` 是规格 §1 允许的「缺省补齐」，不算违例。
+    #[test]
+    fn ownership_violation_detects_each_user_owned_field() {
+        let base = || ManualFields {
+            time: 1.0,
+            end: Some(2.0),
+            origin: Some("10% 20%".into()),
+            manual_pos: Some("30% 40%".into()),
+        };
+        let before = vec![base()];
+        // 没改 ⇒ 干净
+        assert!(ownership_violations(&before, &[base()]).is_empty());
+        // 五个字段各改一次，都要被抓到（且报出字段名）
+        let cases: [(&str, ManualFields); 5] = [
+            ("time", { let mut a = base(); a.time = 9.0; a }),
+            ("end", { let mut a = base(); a.end = Some(9.0); a }),
+            ("origin", { let mut a = base(); a.origin = Some("99% 99%".into()); a }),
+            ("manual_pos", { let mut a = base(); a.manual_pos = Some("1% 1%".into()); a }),
+            ("end 被清空", { let mut a = base(); a.end = None; a }),
+        ];
+        for (label, after) in cases {
+            let v = ownership_violations(&before, &[after]);
+            assert_eq!(v.len(), 1, "{label} 没被抓到：{v:?}");
+            assert!(v[0].contains(label), "报错要点名字段 {label}：{v:?}");
+        }
+        // 条数变化（删/加手工事件）
+        assert_eq!(ownership_violations(&before, &[]).len(), 1);
+        // end 缺省补齐：None → Some 豁免
+        let mut no_end = base();
+        no_end.end = None;
+        let mut filled = no_end.clone();
+        filled.end = Some(3.0);
+        assert!(ownership_violations(&[no_end], &[filled]).is_empty(), "end 缺省补齐是允许的");
+    }
+
+    /// **B1 的 R4 口径**：干净工程**不落**体检报告；有 findings 才落（且内容含 kind）。
+    #[tokio::test]
+    async fn process_report_is_only_written_when_findings_exist() {
+        // ① 干净工程 ⇒ 一个文件都不多
+        let dir = tempfile::tempdir().expect("临时目录");
+        let path = dir.path();
+        write_matrix_project(path, &idempotency_matrix("default"));
+        cmd_process(path).await.expect("后处理");
+        assert!(
+            !path.join("data").join("process-report.json").exists(),
+            "干净工程不该落体检报告（R4）"
+        );
+
+        // ② 有重叠相机 ⇒ 落报告，且能读到那条 kind
+        let dir2 = tempfile::tempdir().expect("临时目录");
+        let path2 = dir2.path();
+        let mut cfg = idempotency_matrix("default");
+        cfg.segments[0].events = vec![plain_camera(1.0, "50% 50%"), plain_camera(2.0, "50% 50%")];
+        write_matrix_project(path2, &cfg);
+        cmd_process(path2).await.expect("后处理");
+        let report = path2.join("data").join("process-report.json");
+        assert!(report.exists(), "有 findings 就必须落报告");
+        let text = std::fs::read_to_string(&report).expect("读报告");
+        assert!(text.contains(audit::CAMERA_OVERLAP), "报告里要有相机重叠那条：{text}");
+        let v: serde_json::Value = serde_json::from_str(&text).expect("报告是合法 JSON");
+        assert!(v["counts"]["cameras"].as_u64().unwrap_or(0) >= 2);
+    }
+
+    // ── A2：幂等探针（规格 §3）─────────────────────────────────────────────
+
+    /// 从磁盘读一份工程（**不是比字符串**：`to_toml_commented` 的排版会抖）。
+    fn read_project(dir: &Path) -> project::ProjectFile {
+        crate::project::load_project(dir).expect("读回 polish.toml")
+    }
+
+    /// 递归找两棵 TOML 值树的**第一处差异**（带字段路径）；相同返回 None。
+    ///
+    /// 为什么要路径：`assert_eq!` 会把整份工程打出来（几千行），等于没判据。
+    fn first_diff(a: &toml::Value, b: &toml::Value, path: &str) -> Option<String> {
+        match (a, b) {
+            (toml::Value::Table(ta), toml::Value::Table(tb)) => {
+                let mut keys: Vec<&String> = ta.keys().chain(tb.keys()).collect();
+                keys.sort();
+                keys.dedup();
+                for k in keys {
+                    let p = if path.is_empty() { k.clone() } else { format!("{path}.{k}") };
+                    match (ta.get(k), tb.get(k)) {
+                        (Some(x), Some(y)) => {
+                            if let Some(d) = first_diff(x, y, &p) {
+                                return Some(d);
+                            }
+                        }
+                        (x, y) => {
+                            return Some(format!("{p}: 一侧缺失（{} vs {}）", x.is_some(), y.is_some()))
+                        }
+                    }
+                }
+                None
+            }
+            (toml::Value::Array(xa), toml::Value::Array(xb)) => {
+                if xa.len() != xb.len() {
+                    return Some(format!("{path}: 条数 {} → {}", xa.len(), xb.len()));
+                }
+                for (i, (x, y)) in xa.iter().zip(xb).enumerate() {
+                    if let Some(d) = first_diff(x, y, &format!("{path}[{i}]")) {
+                        return Some(d);
+                    }
+                }
+                None
+            }
+            _ => {
+                if a == b {
+                    None
+                } else {
+                    Some(format!("{path}: {a} → {b}"))
+                }
+            }
+        }
+    }
+
+    /// A2 的五套矩阵（规格 §3）：默认 / 有 mute / 有 EDL / 有 manual 事件 / 有 rhythm 账本。
+    fn idempotency_matrix(tag: &str) -> project::ProjectFile {
+        use crate::project::RhythmAuto;
+        let mut cfg = ProjectFile::example();
+        cfg.duration = Some(20.0);
+        // 空来源表：Step 2 不解析关键字、不联网（判据只问幂等）
+        cfg.sticker_source = Vec::new();
+        cfg.segments = vec![
+            Segment { start: 0.0, end: 10.0, fx: "low".into(), note: String::new(), role: String::new(), events: vec![], extra: Default::default() },
+            Segment { start: 10.0, end: 20.0, fx: "med".into(), note: String::new(), role: String::new(), events: vec![], extra: Default::default() },
+        ];
+        match tag {
+            "mute" => cfg.mute_ranges = vec![MuteRange { start: 15.0, end: 17.0 }],
+            "edl" => {
+                cfg.edl.clips = vec![EdlClip {
+                    source_start: 0.0,
+                    source_end: 10.0,
+                    speed: 1.0,
+                    kind: None,
+                    label: None,
+                    source_kind: None,
+                    asset_id: None,
+                    transition_in: None,
+                }]
+            }
+            "manual" => {
+                cfg.segments[0].events = vec![
+                    Event::Sticker {
+                        time: 2.0,
+                        end: Some(4.0),
+                        keyword: "ysyk".into(),
+                        sticker_tag: None,
+                        name: Some("生气".into()),
+                        source: Some("ysyk".into()),
+                        x: "12%".into(),
+                        y: "34%".into(),
+                        sfx: None,
+                        sfx_volume: None,
+                        manual: true,
+                        manual_pos: Some("20% 30%".into()),
+                    },
+                    Event::Camera {
+                        time: 5.0,
+                        end: Some(7.0),
+                        zoom: "近".into(),
+                        origin: "33% 44%".into(),
+                        anchor: Some("liver".into()),
+                        anchor_to: None,
+                        to_origin: None,
+                        cut: false,
+                        handheld: false,
+                        manual: true,
+                        speed: None,
+                        tilt: None,
+                    },
+                ];
+            }
+            "rhythm" => {
+                cfg.rhythm.profile = "calm".into();
+                cfg.rhythm.auto_events = vec![RhythmAuto {
+                    kind: "camera".into(),
+                    time: 3.0,
+                    end: Some(5.0),
+                    zoom: Some("近".into()),
+                    param: None,
+                    tilt: None,
+                }];
+            }
+            _ => {}
+        }
+        cfg
+    }
+
+    /// 写一份最小工程（`data/subtitles.json` + `polish.toml`）。
+    fn write_matrix_project(path: &Path, cfg: &project::ProjectFile) {
+        std::fs::create_dir_all(path.join("data")).expect("建 data/");
+        let subs = serde_json::json!([
+            {"index": 1, "start": 1.0, "end": 3.0, "text": "第一句", "html": ""},
+            {"index": 2, "start": 4.0, "end": 6.0, "text": "第二句", "html": ""},
+            {"index": 3, "start": 12.0, "end": 14.0, "text": "第三句", "html": ""},
+        ]);
+        std::fs::write(path.join("data").join("subtitles.json"), subs.to_string()).expect("写字幕");
+        std::fs::write(path.join("polish.toml"), cfg.to_toml_commented().expect("序列化"))
+            .expect("写 polish.toml");
+    }
+
+    /// **A2 幂等探针**（整份规格的地基）：同一份输入连跑两遍 `process`，
+    /// 产出的 `polish.toml` **字段级 diff = 0**。
+    ///
+    /// ⚠️ 比的是**反序列化后的值**（`toml::Value` 树），不是文本 —— 文本会因为排版抖动
+    /// （`to_toml_commented` 的注释/空行/键序）假红，而那跟"两趟结果不一样"是两件事。
+    /// 不等时打印**第一处差异的字段路径**（只打印整份工程等于没判据）。
+    #[tokio::test]
+    async fn diagnose_process_idempotent() {
+        for tag in ["default", "mute", "edl", "manual", "rhythm"] {
+            let dir = tempfile::tempdir().expect("临时目录");
+            let path = dir.path();
+            write_matrix_project(path, &idempotency_matrix(tag));
+
+            cmd_process(path).await.unwrap_or_else(|e| panic!("[{tag}] 第一趟 process 失败: {e:#}"));
+            let after1 = read_project(path);
+            cmd_process(path).await.unwrap_or_else(|e| panic!("[{tag}] 第二趟 process 失败: {e:#}"));
+            let after2 = read_project(path);
+
+            let v1 = toml::Value::try_from(&after1).expect("第一趟结果可序列化");
+            let v2 = toml::Value::try_from(&after2).expect("第二趟结果可序列化");
+            if let Some(diff) = first_diff(&v1, &v2, "") {
+                panic!("[{tag}] 两趟 process 的 polish.toml 不一致，第一处差异：{diff}");
+            }
+        }
+    }
+
+    /// A2 的**收敛**那半边：第 2、3 趟相同（不是"两两都不同"，也不是"只有前两趟碰巧相同"）。
+    #[tokio::test]
+    async fn diagnose_process_three_runs() {
+        for tag in ["default", "manual"] {
+            let dir = tempfile::tempdir().expect("临时目录");
+            let path = dir.path();
+            write_matrix_project(path, &idempotency_matrix(tag));
+            cmd_process(path).await.expect("第一趟");
+            cmd_process(path).await.expect("第二趟");
+            let after2 = read_project(path);
+            cmd_process(path).await.expect("第三趟");
+            let after3 = read_project(path);
+            let v2 = toml::Value::try_from(&after2).expect("可序列化");
+            let v3 = toml::Value::try_from(&after3).expect("可序列化");
+            if let Some(diff) = first_diff(&v2, &v3, "") {
+                panic!("[{tag}] 第 2、3 趟结果不同（没收敛），第一处差异：{diff}");
+            }
+        }
     }
 
     /// **§1 决策理由真的落盘了**（端到端，走真 `cmd_process` + 真 `polish.toml`）。

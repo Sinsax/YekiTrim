@@ -18,6 +18,8 @@
 
 - `process::cmd_process(project_path)`；`content_budget(subtitle_count, duration, seg_count) -> (sticker, sfx)`；
   `cap_events(segments, is_target, budget) -> usize`（均匀抽稀，返回删除数）。
+- `audit`（规格 §4 B1）：`Finding { kind, at, detail }` / `audit(cfg) -> Vec<Finding>`（**六项检查**，纯函数）/ `write_report`。
+  ⚠️ `data/process-report.json` **只在有 findings 时写**（R4：干净工程不许多一个文件）。
 - `sfx`：`match_sfx_rule(text) -> Option<&'static str>`（规则表按顺序匹配、首个命中生效）；
   `event_sfx_ref` / `event_has_sfx_ref` / `event_has_sound` / `find_uncovered_sfx_moments` /
   `subtitle_context(subtitles, t)`；`resolve_event_sfx(event, blacklist, used)` /
@@ -49,22 +51,21 @@
 
 ## 边界
 
-- ⚠️ **弹幕窗口归一化只在"真的变了"时写回**（`normalize_danmaku_windows`）：首页「切片总览」按片段目录里
-  最新文件的 mtime 排序（`yekitrim_service::project_data::last_touched_secs`），无条件重写
-  `data/danmaku.json` 会把老片段一直顶到最前面。归一化本身是幂等的，**但比较必须带容差** ——
-  `serde_json` 读 f64 会差 1 ulp（见 `yekitrim_core::danmaku::WINDOW_EPS_SECS`），写严格相等就变成
-  "每次 process 都重写一次"。回归：`clamp_display_windows_is_idempotent_across_json_roundtrip`。
+- ⚠️ **弹幕窗口归一化只在"真的变了"时写回**（`normalize_danmaku_windows`）：首页「切片总览」按最新文件
+  mtime 排序，无条件重写 `data/danmaku.json` 会把老片段一直顶到最前面。**比较必须带容差** ——
+  `serde_json` 读 f64 差 1 ulp（`WINDOW_EPS_SECS`），写严格相等就变成"每次 process 都重写一次"。
+  回归：`clamp_display_windows_is_idempotent_across_json_roundtrip`。
 - **Step 顺序是硬约束**：2b1（贴纸对齐字幕）**必须排在 2b（落点）之前** —— 落点是按贴纸的时间窗口
   算相机/字幕/其它贴纸障碍，时间挪了就得重算；2d（锚点解析）**必须排在 2b 与 2c 之后** ——
   `anchor="sticker"` 要读最终位置。1c 的配额守卫必须排在 Step 1 补默认运镜之后。
 - **片头淡入是普通 overlay 事件，只在初次后处理补一次**（Step 3c：`mod.rs::ensure_intro_fade_in` +
   `INTRO_FADE_SECS = 0.5`，2026-09-22 起内建 `intro-black` 整条退役）：给**时间最早**且起点 < 0.5s 的段补一条
   `fade_in` 覆盖事件（`#000000` / `opacity 1` / `end = min(start+0.5, seg.end)`）；段跨度 < 0.2s、或**整片**
-  已有与该窗口重叠的覆盖事件则**不补**（按时间挑段 —— 段之间时间会重叠，不能拿文件顺序当片头）。
+  已有与该窗口重叠的覆盖事件则**不补**（按时间挑段 —— 段之间会重叠）。
   **判据是 `polish.toml` 的 `intro_fade_seeded`**：判定过片头（补了、或已有覆盖事件盖着）就置位落盘，
   往后时间轴上改/拖/删全归用户 —— 删掉再跑 process **不许**补回来（用户报过"删了又回来了"）；
-  段表空 / 最早段起点 ≥ 0.5s / 段太短**不**置位（那时片头还不存在，下次仍可补）。逃生门：删掉
-  polish.toml 那一行。⚠️ **别退回"看窗口有没有覆盖事件"** —— 那等于用户每删一次就再补一次。**不打 `manual`**。
+  段表空 / 最早段起点 ≥ 0.5s / 段太短**不**置位（那时片头还不存在，下次仍可补）。
+  ⚠️ **别退回"看窗口有没有覆盖事件"** —— 那等于用户每删一次就再补一次。**不打 `manual`**。
   ⚠️ 必须排在 **Step 3 音效规则之后**：规则引擎会扫覆盖事件，排前面这条纯视觉黑场每跑一次都会多报一句
   「特效无匹配、移除音效」，字幕恰好命中规则时还会被挂上音效。
 - ⚠️ **手工放的事件不受后处理改写**（用户报过「调整贴纸的结束时间没有成功」）：事件带
@@ -74,25 +75,23 @@
   自动后处理就把值吸回去了 —— 看上去就是"改了没生效"。
   回归：`cargo test -p yekitrim-polish --lib cap_events_never_removes_manual_events`；
   真实工程：`VT_POLISH_DIR=<片段目录> cargo test -p yekitrim-polish --lib diagnose_manual_events_survive_process -- --ignored --nocapture`（**会写回该工程的 polish.toml**，只在临时工程上用）。
-- **元素（贴纸/文字）的时长规矩 —— 最短 / 最长 / 不跨静音空隙**（2026-10-11 用户口径：
-  「需要最小时间，不足就延续到超过最小时间的且覆盖下一个字幕的结尾，同时也有最长时间，
-  不然前面时零碎的字幕，后面满足时一句话很长就显得很奇怪」）。
-  实现在 `fx.rs::fit_element_span`，由 `align_stickers_to_subtitles` 在**吸完字幕之后**调一次。
+- ⚠️ **ownership（规格 §2.2）与幂等是两条地基判据**（2026-10-19）：`manual` 的 `time/end`、相机 `origin`、
+  `manual_pos` 归用户 —— C3 让 `layout_text_elements` 不写 manual 文字的 x/y（**照写 `source`**，否则丢样式）、
+  `resolve_camera_anchors` 跳过 manual 运镜；B3 在 debug 下由 `cmd_process` 用 `ownership_violations` **assert**
+  （release 零开销）。A2 的 `diagnose_process_idempotent`（5 矩阵 × 两趟，**字段级** diff = 0，比 `toml::Value`
+  树不比文本）+ `diagnose_process_three_runs`（收敛）—— process 会被预览/出片**隐式触发**，改任何一步先跑它。
+- **元素（贴纸/文字）的时长规矩 —— 最短 / 最长 / 不跨静音空隙**（2026-10-11 用户口径：碎片要撑够、
+  长句要封顶，否则时间轴上碎一块长一块"很奇怪"）。实现在 `fx.rs::fit_element_span`，
+  由 `align_stickers_to_subtitles` 在**吸完字幕之后**调一次。
   **只动元素的 `time`/`end`，一个字节都不碰字幕**（用户明确：「不对字幕处理，只对其他元素处理」——
   字幕截短会吃字，元素是贴图/贴字，截短不丢内容）。四条规矩：
   ① **起点不动**（元素挂哪句话是 LLM 的意图，不因为时长不够就往前挪）；
-  ② **不足 `ELEMENT_MIN_SECS`(1.2s) 就往后吞**字幕，直到「累计够长 **且** 落在某条字幕的结尾上」
-  —— 后半句别省，只看够不够长的话元素会断在半句话中间；
-  ③ **不跨静音空隙**（`ELEMENT_MAX_GAP_SECS` 0.5s）：下一段字幕起点离当前 end 超过它就**停下、
-  接受现状**。⚠️ 没有这道闸，"吞到够长"会一头扎进静音段 —— 实测真实碎片链
-  `…→22.67`、下一条 `23.20→25.80`，跨过去就是**在没人说话的画面上悬 3.88s**，
-  正是用户要避免的"很奇怪"从另一头冒出来；
+  ② **不足 `ELEMENT_MIN_SECS`(1.2s) 就往后吞**字幕，直到「累计够长 **且** 落在某条字幕的结尾上」；
+  ③ **不跨静音空隙**（`ELEMENT_MAX_GAP_SECS` 0.5s）：下一段字幕起点离当前 end 超过它就**停下**。
+  ⚠️ 没有这道闸会一头扎进静音段（实测真实碎片链 `…→22.67` 跳到 `23.20`，等于在没人说话的画面上悬 3.88s）；
   ④ **超过 `ELEMENT_MAX_SECS`(5.0s) 硬截**。
-  ⚠️ 同时**删掉了旧的 `sub 短于 0.2s 就跳过` 守卫**：那是"没有补救手段"年代的产物，
-  留着会把**最该被治的碎片**（实测 0.05s 的占 2.6%，ASR 把一口气重复的音节切成连续碎片，
-  如 `21.92→21.97→22.02`）全部放过。
-  现网实测（73 片段 / 909 条字幕）字幕时长 min 0.05s / max 16.30s（跨度 326×，>5s 占 9.6%）——
-  四条规矩一起把最大值压到 5.0s 封顶、把碎片撑到字幕边界上。
+  ⚠️ 旧的「sub 短于 0.2s 就跳过」守卫**已删**：它把**最该被治的碎片**（ASR 把一口气重复的音节
+  切成 `21.92→21.97→22.02` 那种）全部放过。
   回归：`element_extends_past_min_duration_and_lands_on_subtitle_end`（用**真实碎片链**）/
   `element_is_capped_at_max_duration`（16.30s 那条真实样本）/
   `element_accepts_short_span_when_no_more_subtitles` / `element_fit_is_idempotent`
@@ -135,8 +134,7 @@
   其余降级成「中」（**只改 zoom**，anchor/origin 留着）。调用点两处成对：`cmd_process` Step 1c 与
   LLM 落盘前（`llm/mod.rs` Step 4b）。`align_pip_shots` 把起止吸到字幕边界、结果夹在所属分段内、
   不足 `MIN_PIP_SECS`(1.5s) 往后借下一条字幕；`close_pip_shots` 在画中画终点补一条**回镜头**事件。
-  ⚠️ **前后镜头按时间算，不按文件顺序**：段之间时间上会重叠（LLM 按窗口生成 + 去静音切段），
-  求值器也是先按时间排序再走的。
+  ⚠️ **前后镜头按时间算、不按文件顺序**（段之间会重叠）。
 - **`cap_handheld_sway` 把非近景上的 `handheld` 剥掉**（只剥不补、幂等、日志报条数），排在画中画收工
   **之后** —— 收工补出来的回镜头承接了前一条的 `handheld`，一起吃这道守卫。
   **别再退回"靠 prompt/界面拦"**：LLM 会写错景别、用户也会改景别，守卫是唯一兜底。
