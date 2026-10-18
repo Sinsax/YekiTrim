@@ -1008,8 +1008,21 @@ A 的 `polish.toml` 逐字节不变、B 的磁盘标题仍是 B 自己的）。
 那是逐字节幂等的；真正要防的是跨片段覆盖，所以探针那条判据写的是"**两份文件互不串**"、
 不是"一个字节都不动"。
 
----
+### 3.7 封面标题温度（2026-10-19）
 
+「LLM 生成标题」那一次调用的取样温度，控制在**文字面板 · 字号下面那一行「温度」**（滑块 0~1.5 step 0.05 +
+行尾可填数字）；**数字框清空 = 自动**（显示成占位符 `自动`）。落盘在 `polish.toml` 的
+`[cover] title_temperature`（`Option<f64>`，缺键 = 自动，**老工程零迁移**）。
+
+- 语义（唯一实现在 `yekitrim-server/src/api/polish.rs::cover_title_temperature`）：
+  **显式设了就是它**（夹 0~2，设 0 就真的是 0）；**没设 ⇒ 链路温度抬到下限 0.8** ——
+  `[llm] temperature` 的模板默认是 **0**（确定性），拿它写标题只会得到四平八稳的概述。
+- 只影响封面标题，**不动 `[llm] temperature` / `[llm.overrides.utility]`**（其它零散单发照旧）。
+- `/api/polish/cover-config` 的 PUT 白名单里有它：传数字 = 存（夹 0~2），传 `null` = 回到自动。
+- 判据：`cover_title_temperature_respects_explicit_value`（显式 0 不许被下限顶回去）+
+  `cover_title_prompt_demands_reference_style`（风格要求）+ `cover_title_user_prompt_puts_reference_first`。
+
+---
 ## ④ 运镜（camera）
 
 **三个能力**：**聚焦**（`anchor` = liver/danmaku/sticker/center）、**位移**（再写 `anchor_to` 即从 origin 平移到

@@ -24,6 +24,10 @@ pub struct RhythmConfig {
     /// 节拍间隔（秒）。None = 用档位默认值。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub beat_secs: Option<f64>,
+    /// **「呼吸」预设整片最多几次**（推近→回位；0 = 一次都不用）。
+    /// None = 档位默认（1 次）—— 用户口径 2026-10-19：「只应用于一次事件，不要频繁出现」。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub breath_max: Option<usize>,
     /// **上一趟自动生成的事件账本**：重建时先按它逐条删除，再按新计划生成。
     /// 空 = 没有派生事件 ⇒ 不落盘（R4）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -60,6 +64,9 @@ pub struct RhythmAuto {
     /// shake 的 intensity / flash 的 opacity。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub param: Option<f64>,
+    /// camera 专用：倾斜（荷兰角，度）。用户改过这个值 ⇒ 认不出 ⇒ 不删。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tilt: Option<f64>,
 }
 /// 完整项目文件 (polish.toml)
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -658,6 +665,12 @@ pub struct CoverConfig {
     pub frame_pos: f64,
     #[serde(default = "default_cover_font_size")]
     pub font_size: u32,
+    /// 「LLM 生成标题」那一次的取样温度（0 = 稳定保守，1.5 = 很放飞）。
+    ///
+    /// `None` = 自动（服务端下限 0.8，见 `polish_cover_title`）；显式设了就用它，**不再夹下限**
+    /// —— 用户想完全稳定就该拿到 0。只影响封面标题这一条链路，不动 `[llm] temperature`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title_temperature: Option<f64>,
     #[serde(default = "default_cover_stroke")]
     pub stroke: u32,
     #[serde(default = "default_cover_hl_color")]
@@ -807,6 +820,7 @@ impl Default for CoverConfig {
             font: String::new(),
             frame_pos: default_cover_frame_pos(),
             font_size: default_cover_font_size(),
+            title_temperature: None,
             stroke: default_cover_stroke(),
             hl_color: default_cover_hl_color(),
             hl_font_scale: default_cover_hl_font_scale(),

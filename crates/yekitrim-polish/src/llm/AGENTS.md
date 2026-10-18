@@ -90,6 +90,9 @@
   **关键词 / 短词组（2~8 字）**，不是整句；**不要与贴纸同时出现**（同一段时间二选一）；
   只在「这一段没有合适的贴纸/特效」或「其它效果已经用得比较密」时才写，**同一段最多 1 条**。
   `cap_text_elements` 在落盘前再兜一次（与 `process` 成对）。
+- **节奏调度在落盘前也跑一遍**（§26，Step 4d）：与 `process` Step 1h 成对（`rhythm::plan/apply`，
+  账本 `[rhythm] auto_events` 先删后建 ⇒ 幂等）；`calm` 档只清账本。`cmd_llm` 拿到 6 元组
+  （末项 `Option<Vec<RhythmAuto>>`），`None` = 本趟没动节奏 ⇒ 不写 `[rhythm]`。
 - **覆盖层提示词示例**：LLM 提示词里的示例长期只写 `{"overlay_type":"gradient","color":"#ff0000"}`，
   而四处求值器都只认 `colors` —— 实测 4 个项目 **8/8 覆盖层全都没画出来**。所以提示词示例现在给
   `colors` 数组 + 纯色两个写法（`llm/segment.rs`，另有单测锁住），且写了 `colors`/`color` 却漏掉
