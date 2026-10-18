@@ -1265,3 +1265,42 @@ ffmpeg 与底座都不在本仓手里 ⇒ **只能保证库内落盘的路径是
 - 端到端：迁移后的 ASCII 路径跑同一段 240 帧 = **3.96s、216 行 + 239 条全画上、exit 0**；
   原始中文路径做对照 = 37.1s、0 行 0 条、exit 1。
 - 手工探针留在 `fonts::tests_v2::migrate_probe`（`#[ignore]`，与 `diagnose_sticker_cache` 同规矩）。
+
+---
+
+## §22 · 2026-10-16：`font` 那串值**可能是族名**，解析必须认三种名字
+
+用户报：「在字体库内设置的默认字体没有正确应用，而且字体本身也应用错误 ——
+`Noto Sans SC（不在字体库）` 这个明明是存在的。」
+
+### 根因（两条，都在这一串值上）
+
+1. **库里一切按 id 找，而配置里那串值可能是族名**：
+   * `[style.subtitle].font` / `[style.cover].font` / `[style.danmaku].font` 里既可能是库 id
+     （`NotoSansSC-Regular`，界面里选出来的），也可能是**族名** —— `default_font()` 写下的是
+     `Noto Sans SC`，而 `cmd_init` 把「库里设为默认那支」写的也是**族名**（原文注释）
+     「写族名而不是 id：`SubtitleStyle::font` 两条路都认（库内按 id 解析、库外当系统族名）」——
+     ⚠️ **"库内按族名解析"这一半从来没实现过**。
+   * 症状三条，**全都不报错**：① 出片 `resolve_file_for` 落空 ⇒ 静默改用兜底栈里第一支能用的
+     （用户看到的正是「选的字没用上」）；② 预览的 `@font-face` 不注入 ⇒ 浏览器回退系统字体；
+     ③ 三处下拉把明明装着的字体标成「（不在字体库）」。
+2. `cmd_init` 读的是 `fonts::dir()`（单人/当前管理员那条入口）而不是**按归属**的库 ——
+   server 为别的账号切片段时会读错库。
+
+### 修法（一处收口）
+
+* `yekitrim_core::fonts::find_entry_roots(roots, value)`：**id → 内部族名 → 显示名**（忽略大小写）；
+* `resolve_all` / `resolve_all_roots`：直查落空后走它拿到规范 id 再解析一次（预览的
+  `/api/polish/font` 也走 `resolve_all_roots`，所以 `@font-face` 一并修好）；**库外仍然返回 None**
+  （不猜：猜了会让老工程的系统族名被顶成库内某支）；
+* 前端 `webui/src/polish/fonts.js::fontInLibrary(fonts, value)`：三处下拉（字幕 / 弹幕 / 封面）
+  共用同一份"三种名字"判据；
+* `cmd_init` 改按 `fonts::dir_for(Owner::from_env())` 取库。
+
+### 判据
+
+* `fonts::tests_v2::resolves_by_id_family_and_display_name`（四种名字 + 库外 None + 多根版本）；
+* `render::dhampir::artifact_tests::字体按族名也能解析到自带那支`（`#[ignore]` 本机自检，
+  对**真实程序目录**跑；库/字体不存在时明说跳过）；
+* 真机自检实测（`YEKITRIM_DATA_DIR=target/debug`）：按 id 与按族名都解析到
+  `global/resources/fonts/NotoSansSC-Regular/font.ttf` ✔。

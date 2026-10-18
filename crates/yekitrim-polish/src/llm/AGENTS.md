@@ -77,8 +77,19 @@
   ⚠️ 它**清掉** `anchor = "cold_open"` / `"recall"` 这两个值，别的 anchor 一律不碰；
   清掉之后落盘的段表里就没有意图了 ⇒ `cmd_process` 不会再落实一次（幂等靠这一条，见 `process/AGENTS.md`）。
 - **落盘前的守卫与 `process` 成对**：`llm/mod.rs` Step 4/4b 会补默认运镜（`zoom="中", anchor="liver"`）、
-  跑 `cap_pip_shots` / `align_pip_shots` / `close_pip_shots` / `align_stickers_to_subtitles`
-  —— 与 `process/mod.rs` Step 1/1c 是**两个重复实现，要一起改**；让编辑器里看到的就已经合规。
+  跑 `cap_pip_shots` / `align_pip_shots` / `close_pip_shots` / `align_stickers_to_subtitles(…, mute_ranges)` /
+  `cap_text_elements(…, mute_ranges)` —— 与 `process/mod.rs` Step 1/1c 是**两个重复实现，要一起改**；
+  让编辑器里看到的就已经合规。
+- ⚠️ **屏蔽段里的事件不生成、不精挑**（2026-10-19 用户报「LLM 剪辑没过滤屏蔽段」）：
+  `EventGenTask` 带 `mute_ranges`，`parse_output` 与 `load_windows` 用
+  `project::event_starts_muted` 把**起点落在屏蔽区**的事件剔掉（日志「✂ 屏蔽区间内不生成事件：剔除 N 条」）；
+  `run_sticker_choice_step` 跳过屏蔽段里的贴纸。⚠️ **只剔「这一趟生成 / 待精挑」的候选，不动已有事件**
+  —— 屏蔽只做标记（`project/AGENTS.md` 第一条）。别以为「字幕已经按屏蔽过滤过」就够了：
+  被滤掉的只是字幕，**事件本身还在**，照样会参与落点与预算。
+- ⚠️ **文字元素 = 候补**（`segment.rs::build_events_system_prompt`，2026-10-19 用户口径）：填的是
+  **关键词 / 短词组（2~8 字）**，不是整句；**不要与贴纸同时出现**（同一段时间二选一）；
+  只在「这一段没有合适的贴纸/特效」或「其它效果已经用得比较密」时才写，**同一段最多 1 条**。
+  `cap_text_elements` 在落盘前再兜一次（与 `process` 成对）。
 - **覆盖层提示词示例**：LLM 提示词里的示例长期只写 `{"overlay_type":"gradient","color":"#ff0000"}`，
   而四处求值器都只认 `colors` —— 实测 4 个项目 **8/8 覆盖层全都没画出来**。所以提示词示例现在给
   `colors` 数组 + 纯色两个写法（`llm/segment.rs`，另有单测锁住），且写了 `colors`/`color` 却漏掉

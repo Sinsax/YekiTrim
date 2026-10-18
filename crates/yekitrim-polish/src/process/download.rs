@@ -87,8 +87,11 @@ pub async fn download_keyword_assets(
 ) -> usize {
     let mut total_errors = 0;
 
+    // ⚠️ **两个载体都要认**（见 `process/AGENTS.md` 的「贴纸有两个载体」）：编辑器「贴纸轨」
+    // 建的贴纸是 `Element{kind:"sticker"}`，关键词在 `text` 上。只认 `Event::Sticker` 的话，
+    // 手动加的贴纸**一个文件都不会被复制进项目** ⇒ 转译器找不到图 ⇒ 成片里那条静默消失。
     let has_stickers = config.segments.iter().any(|seg| {
-        seg.events.iter().any(|ev| matches!(ev, project::Event::Sticker { keyword: kw, .. } if !kw.is_empty()))
+        seg.events.iter().any(|ev| ev.sticker_keyword().is_some_and(|kw| !kw.trim().is_empty()))
     });
     // ⚠️ **不再用「`sticker_source` 非空」当门控**：只要事件引用了贴纸，就要把它**实际用的那个文件**
     // 复制进 `<项目>/assets/stickers/` —— 出片与预览只读项目内那份（`prepare_sticker_data` /
@@ -103,14 +106,15 @@ pub async fn download_keyword_assets(
         let mut no_source = 0usize;
         for (si, seg) in config.segments.iter().enumerate() {
             for (ei, event) in seg.events.iter().enumerate() {
-                let project::Event::Sticker { source, keyword, .. } = event else {
+                let Some(keyword) = event.sticker_keyword() else {
                     continue;
                 };
+                let source = event.sticker_source();
                 if keyword.trim().is_empty() {
                     continue;
                 }
                 match source {
-                    Some(src) if !src.is_empty() => assignments.push((si, ei, src.clone())),
+                    Some(src) if !src.is_empty() => assignments.push((si, ei, src.to_string())),
                     // 老工程没写 source：只能按来源列表轮询
                     _ if !sources.is_empty() => {
                         let src = sources[assignments.len() % sources.len()].clone();

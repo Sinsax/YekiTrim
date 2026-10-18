@@ -468,6 +468,72 @@ pub fn cap_dutch_angle(segments: &mut [Segment]) -> usize {
     changed
 }
 
+// ── 文字元素的**候补**守卫（2026-10-19 用户口径）────────────────────
+//
+// 用户的定位：文字效果**突出且指向性强**（写一句话，观众一定会读它），滥用会适得其反。
+// 它应当是**候补**——只有在「没有更合适的贴纸/特效」或「其它效果已经用得太密、再叠一个会腻」
+// 时才拿来换一种表达。LLM 是按段窗口生成的、数不出「这一段已经放了几张贴纸」，
+// 所以互斥与配额只能在这里兜（与 `cap_pip_shots` 同一条先例：LLM 只有表达权）。
+
+/// 文字元素与贴纸**同一时刻**时谁留下：**贴纸优先**（用户原话「尽量不要和贴纸同时出现」）。
+///
+/// 三条守卫（只碰文字，贴纸/运镜一个字都不动）：
+/// 1. 文字窗口与任何贴纸窗口**有交叠** ⇒ 删掉文字（贴纸是具象的，文字是解释性的；
+///    两个一起上就是「一句话盖在表情包上」，比只有其中一个更乱）；
+/// 2. **同一段最多留一条**（留最早的那条）：一段里连刷两句字，等于把字幕又写了一遍；
+/// 3. `manual` 的一律不参与（用户自己摆的文字不被后处理改写）；
+/// 4. **屏蔽区间里的文字不参与**（它在这一趟里看不见，不该占名额、也不该被改写）。
+///
+/// ⚠️ 这是**删事件**，与「屏蔽只做标记」不冲突：那条规矩说的是**屏蔽区间**不得删事件；
+/// 这里是配额/互斥守卫，与 `cap_pip_shots`（降级）、`cap_handheld_sway` / `cap_dutch_angle`
+/// （剔除）同一类，而且 `manual` 有豁免。
+///
+/// ⚠️ **调用点成对**：`cmd_process` Step 1d2b 与 `llm/mod.rs` Step 4b（落盘前那一遍）——
+/// 只改一处的话，编辑器里看到的与出片时的不一样。
+pub fn cap_text_elements(segments: &mut [Segment], mute_ranges: &[MuteRange]) -> usize {
+    // 全片贴纸窗口（**两个载体都要收**：老 `Sticker` 与 `Element{kind:"sticker"}`）。
+    let mut sticker_spans: Vec<(f64, f64)> = Vec::new();
+    for seg in segments.iter() {
+        for ev in &seg.events {
+            // 屏蔽区间里的贴纸这一趟看不见 ⇒ 不该把可见区里的文字挤掉
+            if crate::project::event_starts_muted(mute_ranges, ev) {
+                continue;
+            }
+            if let Some((_, _, s, e)) = ev.sticker_span() {
+                sticker_spans.push((s, e));
+            }
+        }
+    }
+
+    let mut removed = 0usize;
+    for seg in segments.iter_mut() {
+        let mut slot_taken = false;
+        let old = std::mem::take(&mut seg.events);
+        let mut kept: Vec<Event> = Vec::with_capacity(old.len());
+        for ev in old {
+            if !ev.is_text_element() || ev.is_time_manual() {
+                kept.push(ev);
+                continue;
+            }
+            // 屏蔽区间里看不见 —— 不占名额、不改写（留在文件里，撤销屏蔽后原样还在）
+            if crate::project::event_starts_muted(mute_ranges, &ev) {
+                kept.push(ev);
+                continue;
+            }
+            let (s, e) = (ev.get_time(), ev.end().unwrap_or(ev.get_time() + 1.0));
+            let clashes_sticker = sticker_spans.iter().any(|(ss, se)| *ss < e && *se > s);
+            if clashes_sticker || slot_taken {
+                removed += 1;
+                continue;
+            }
+            slot_taken = true;
+            kept.push(ev);
+        }
+        seg.events = kept;
+    }
+    removed
+}
+
 // ── 冷开场 / 回忆回溯（第 5 批）──────────────────────────────────────
 //
 // 「爆点提前播一次」（冷开场）与「爆点后面重提」（回忆回溯）在本仓是**同一件事的两个落点**：
@@ -509,12 +575,14 @@ pub struct MaterializedEdl {
     pub cold_open: bool,
     /// 回忆回溯加了几条
     pub recalls: usize,
+    /// 修掉了一份**只有重放段、没有正片时间线**的旧版 EDL（2026-10-19）
+    pub repaired: bool,
 }
 
 impl MaterializedEdl {
     /// 本趟有没有真的改 EDL（`false` ⇒ 调用方**一个字节都不许写**）。
     pub fn changed(&self) -> bool {
-        self.cold_open || self.recalls > 0
+        self.cold_open || self.recalls > 0 || self.repaired
     }
 }
 
@@ -817,11 +885,21 @@ pub fn dedup_decisions(list: &mut Vec<Decision>) {
 /// ⚠️ 有 EDL 时 `mute_ranges` **整个被忽略**（`ProjectFile::resolve_edl`、规格 §2.3），
 /// 所以"生成 EDL"= **把老工程的时间线无声地换掉**。因此这里有一条硬前提：
 ///
-/// > **`existing` 非空时只增不改**；`existing` 为空时**只看本轮意图**：
-/// > 一支意图都没有 ⇒ 返回 [`MaterializedEdl::default`]（`changed() == false`）
-/// > ⇒ 调用方**不写 `polish.toml`** ⇒ `edl.clips` 保持为空 ⇒ 老工程逐字节零回归（R4）。
+/// > **`existing` 非空时只增不改**；一支意图都没有 ⇒ 返回 [`MaterializedEdl::default`]
+/// > （`changed() == false`）⇒ 调用方**不写 `polish.toml`** ⇒ `edl.clips` 保持为空
+/// > ⇒ 老工程逐字节零回归（R4）。
+///
+/// ⚠️ **`existing` 为空、但有意图要落实时，先按 `mute_ranges` 的补集把正片时间线种进去**
+/// （2026-10-19）。不种的话：`clips` 一旦非空，`mute_ranges` 就**整个被忽略**（规则见上），
+/// 成片只剩冷开场那几秒、而原来屏蔽掉的段**全部回来** —— 用户报的「LLM 剪辑之后屏蔽段没被
+/// 过滤」就是这一条。种进去之后：`clips` = 正片补集 + 意图段，与「没有 EDL 时」的成片时间线一致。
 ///
 /// 用户在前端手拖过的 `edl.clips` 一律**原样保留**（只在它前面插冷开场、不改它一根毫毛）。
+///
+/// ⚠️ **唯一例外：修复旧版的坏 EDL**（2026-10-19）。旧版落实时只写意图段、不种正片，
+/// 于是存量工程里可能留着「每一段都是 `cold_open`/`recall`」的时间线 —— 那不是用户能排出来的
+/// 形状（手排的段 `kind` 为空），判据安全。清空后当作「没有 EDL」重建（没活意图 ⇒ 写回空 EDL
+/// ⇒ 自动退回 `mute_ranges` 补集），并在 [`MaterializedEdl::repaired`] 里报给调用方去落盘。
 ///
 /// # 配额与幂等
 ///
@@ -850,7 +928,29 @@ pub fn materialize_edl_intents(
     segments: &mut [Segment],
     edl: &mut Vec<EdlClip>,
     total_duration: f64,
+    mute_ranges: &[MuteRange],
 ) -> MaterializedEdl {
+    // 0) **修复旧版留下的坏 EDL**（2026-10-19）。旧版的落实只写意图段、不种正片时间线，
+    //    于是一支冷开场就把整条片子换成那几秒（有屏蔽时更糟：屏蔽段全部回来）——
+    //    用户报的「LLM 剪辑之后屏蔽段没被过滤」很多就是这种存量工程。
+    //    形状只有一种：**每一段都是意图 kind**（`cold_open` / `recall`）；用户手排/手拖的
+    //    EDL 不可能长这样（`kind` 为空），所以按这个判据修不会误伤。
+    //    清空之后：没有活意图 ⇒ 调用方写回空 EDL（字段被 `skip_serializing_if` 吃掉）⇒
+    //    自动退回 `mute_ranges` 补集，正是正确的成片时间线。
+    let only_intent_clips = !edl.is_empty()
+        && edl
+            .iter()
+            .all(|c| matches!(c.kind.as_deref(), Some(EDL_KIND_COLD_OPEN) | Some(EDL_KIND_RECALL)));
+    let mut repaired = false;
+    if only_intent_clips {
+        tracing::warn!(
+            "  ⚠ 旧版 EDL 只有重放段、没有正片时间线（{} 段）：按屏蔽补集重建",
+            edl.len()
+        );
+        edl.clear();
+        repaired = true;
+    }
+
     // 1) 收集全部候选（按时间序）：要能分辨"哪条最早" —— 与 `cap_pip_shots` 同一套做法。
     let mut intents: Vec<(usize, Intent, f64, f64)> = Vec::new();
     for (si, seg) in segments.iter().enumerate() {
@@ -907,12 +1007,12 @@ pub fn materialize_edl_intents(
     }
 
     if live.is_empty() {
-        return MaterializedEdl::default();
+        return MaterializedEdl { repaired, ..Default::default() };
     }
 
     // 4) 落实。新段一律 `speed = 1.0`（本批只做"再放一次"，变速是第 4 批的独立维度）、
     //    `source_kind`/`asset_id`/`transition_in` 留 `None`（= 本条片段、硬切）。
-    let mut result = MaterializedEdl::default();
+    let mut result = MaterializedEdl { repaired, ..Default::default() };
     // 冷开场：**插在数组最前**。数组顺序 = 成片播放顺序（§2.1），所以插最前就是"提前播"。
     let colds: Vec<_> = live.iter().filter(|c| c.1 == Intent::ColdOpen).collect();
     let (mut cold_clip, mut recall_clips) = (None, Vec::new());
@@ -942,6 +1042,32 @@ pub fn materialize_edl_intents(
                 asset_id: None,
                 transition_in: None,
             });
+        }
+    }
+
+
+    // 4b) **一个能落实的都没有 ⇒ 一个字节都不动**（含「不往下种正片」）：
+    //     `clamp_span` 失败（时长未知 / 意图短于下限）时返回 `changed() == false`，
+    //     调用方据此不写盘 —— 这里如果先把正片种进 `edl`，就变成「没落实却改了时间线」。
+    if cold_clip.is_none() && recall_clips.is_empty() {
+        return result;
+    }
+
+    // 4c) **空 EDL 先把正片时间线种进去**（2026-10-19）。
+    //
+    // ⚠️ 这一步就是「LLM 剪辑有没有正确过滤屏蔽段」的判据本身：
+    //     `ProjectFile::resolve_edl` 的规则 3 是「`clips` 非空 ⇒ `mute_ranges` **整个被忽略**」
+    //     （规格 §2.3）。所以一支冷开场意图落到**本来没有 EDL** 的工程上时，若只写进那一条
+    //     意图，正片时间线会被无声换成「只剩冷开场那几秒」，而原来屏蔽掉的段**全部回来了**
+    //     —— 用户看到的正是「LLM 剪辑之后屏蔽段没被过滤」。
+    //     空 EDL 的正确起点 = `mute_ranges` 的补集（即今天没有 EDL 时的成片时间线），
+    //     意图只是在它前后多插一段。
+    //
+    // ⚠️ 只在 `edl` 为空时种：用户手拖过的 `edl.clips`（非空）**一个字节都不碰**。
+    if edl.is_empty() {
+        let main = crate::project::edl_clips_from_mute_complement(mute_ranges, total_duration);
+        if !main.is_empty() {
+            *edl = main;
         }
     }
 
@@ -1092,7 +1218,7 @@ pub const ELEMENT_MAX_GAP_SECS: f64 = 0.5;
 ///
 /// 只有 `end` 会变（`start` 由调用方决定），返回的是**四舍五入到厘秒**之后的值，
 /// 与其余时间字段同一精度口径。
-fn fit_element_span(start: f64, end: f64, subs: &[Subtitle]) -> f64 {
+fn fit_element_span(start: f64, end: f64, subs: &[Subtitle], mute_ranges: &[MuteRange]) -> f64 {
     let mut e = end;
     // ②/③ 不足最短：顺着字幕往后吞，直到「够长 且 停在字幕结尾」，但不跨静音空隙
     if e - start < ELEMENT_MIN_SECS {
@@ -1103,6 +1229,12 @@ fn fit_element_span(start: f64, end: f64, subs: &[Subtitle]) -> f64 {
         for s in cands {
             // 空隙太宽 ⇒ 停下（接受现状，别在静音段上悬着）
             if s.start - e > ELEMENT_MAX_GAP_SECS {
+                break;
+            }
+            // **不要跨进屏蔽区间**（2026-10-19）：那一段在成片里根本不存在，
+            // 元素撑过去等于在半空里悬着 —— 与「不跨静音空隙」是同一条理由的另一半。
+            // 判据用 `overlaps(e, s.end)`：屏蔽区间的起点落在 (e, s.end) 里就停下。
+            if mute_ranges.iter().any(|r| r.overlaps(e, s.end)) {
                 break;
             }
             e = s.end;
@@ -1129,12 +1261,21 @@ fn fit_element_span(start: f64, end: f64, subs: &[Subtitle]) -> f64 {
 /// ≤ [`ELEMENT_MAX_SECS`]。
 ///
 /// 只改 `time`/`end`；排在 `process` Step 2c（尾帧自适应）之前，2c 还能往后接一句。
-pub fn align_stickers_to_subtitles(segments: &mut [Segment], subtitles: &[Subtitle]) -> usize {
+pub fn align_stickers_to_subtitles(
+    segments: &mut [Segment],
+    subtitles: &[Subtitle],
+    mute_ranges: &[MuteRange],
+) -> usize {
     let mut aligned = 0usize;
     for seg in segments.iter_mut() {
         for ev in seg.events.iter_mut() {
             // 手工定过时间的贴纸不动（面板上「跟随字幕」清掉标记后才恢复自动吸附）
             if ev.is_time_manual() {
+                continue;
+            }
+            // **屏蔽区间里的贴纸不参与**（2026-10-19）：那一段在成片里不存在，
+            // 把它的时间吸到字幕上只会让它「跨进」可见区（撤销屏蔽后还会变成另一条）。
+            if crate::project::event_starts_muted(mute_ranges, ev) {
                 continue;
             }
             let Event::Sticker { time, end, .. } = ev else { continue };
@@ -1150,7 +1291,7 @@ pub fn align_stickers_to_subtitles(segments: &mut [Segment], subtitles: &[Subtit
             let len = sub.end - sub.start;
             let old_end = end.unwrap_or(*time + len);
             let start = (sub.start * 100.0).round() / 100.0;
-            let fitted = fit_element_span(start, sub.end, subtitles);
+            let fitted = fit_element_span(start, sub.end, subtitles, mute_ranges);
             if (*time - start).abs() < 1e-6 && (old_end - fitted).abs() < 1e-6 {
                 continue;
             }
@@ -1546,6 +1687,7 @@ mod tests {
                     sfx: None,
                     sfx_volume: None,
                     manual: false,
+                    manual_pos: None,
                 },
                 Event::Camera {
                     time: 0.0,
@@ -1594,6 +1736,7 @@ mod tests {
                     sfx: None,
                     sfx_volume: None,
                     manual: false,
+                    manual_pos: None,
                 },
                 Event::Camera {
                     time: 4.0,
@@ -1952,6 +2095,7 @@ mod tests {
             sfx: None,
             sfx_volume: None,
             manual: false,
+            manual_pos: None,
         }
     }
 
@@ -1984,21 +2128,21 @@ mod tests {
 
         // 起点落在第一条字幕里、时长比它短 → 头尾都吸到这条字幕（10.0~12.5）
         let mut segs = sticker_seg(sticker(10.4, 1.5));
-        assert_eq!(align_stickers_to_subtitles(&mut segs, &subs), 1);
+        assert_eq!(align_stickers_to_subtitles(&mut segs, &subs, &[]), 1);
         assert_eq!(sticker_span(&segs), (10.0, 12.5));
 
         // 起点落在两条之间的空隙、离后一条更近（13.8 → 14.0 差 0.2，离前一条 1.3）→ 吸到后一条
         let mut segs = sticker_seg(sticker(13.8, 2.0));
-        assert_eq!(align_stickers_to_subtitles(&mut segs, &subs), 1);
+        assert_eq!(align_stickers_to_subtitles(&mut segs, &subs, &[]), 1);
         assert_eq!(sticker_span(&segs), (14.0, 16.0));
 
         // 已经对齐 → 不动
         let mut segs = sticker_seg(sticker(14.0, 2.0));
-        assert_eq!(align_stickers_to_subtitles(&mut segs, &subs), 0);
+        assert_eq!(align_stickers_to_subtitles(&mut segs, &subs, &[]), 0);
 
         // 离最近字幕超过 2s（纯视觉反应）→ 保持原位
         let mut segs = sticker_seg(sticker(20.0, 2.0));
-        assert_eq!(align_stickers_to_subtitles(&mut segs, &subs), 0);
+        assert_eq!(align_stickers_to_subtitles(&mut segs, &subs, &[]), 0);
         assert_eq!(sticker_span(&segs), (20.0, 22.0));
 
         // 很碎的字幕（0.1s）**不再跳过，而是被最短时长规矩撑开**（2026-10-11 改）：
@@ -2007,12 +2151,12 @@ mod tests {
         // `element_accepts_short_span_when_no_more_subtitles`）。
         let short = vec![sub(1, 30.0, 30.1)];
         let mut segs = sticker_seg(sticker(30.05, 2.0));
-        assert_eq!(align_stickers_to_subtitles(&mut segs, &short), 1);
+        assert_eq!(align_stickers_to_subtitles(&mut segs, &short, &[]), 1);
         assert_eq!(sticker_span(&segs), (30.0, 30.1));
 
         // 没有字幕 → 原样
         let mut segs = sticker_seg(sticker(5.0, 2.0));
-        assert_eq!(align_stickers_to_subtitles(&mut segs, &[]), 0);
+        assert_eq!(align_stickers_to_subtitles(&mut segs, &[], &[]), 0);
     }
 
     /// **最短时长**：吸到碎字幕上的元素要往后「吞」到「够长 **且** 停在字幕结尾」。
@@ -2043,7 +2187,7 @@ mod tests {
         ];
         // 元素吸到第一条碎片：起点 21.92，原 end 21.97（只有 0.05s）
         let mut segs = sticker_seg(sticker(21.95, 0.02));
-        align_stickers_to_subtitles(&mut segs, &subs);
+        align_stickers_to_subtitles(&mut segs, &subs, &[]);
         let (t0, t1) = sticker_span(&segs);
         assert_eq!(t0, 21.92, "起点吸到那条碎片字幕的开始");
         assert!(
@@ -2070,7 +2214,7 @@ mod tests {
             sub(4, 31.60, 32.30), // 30.00 + 1.2 = 31.20 ⇒ 第一条够长的是 32.30? 不：31.50 就够
         ];
         let mut segs = sticker_seg(sticker(30.05, 0.3));
-        align_stickers_to_subtitles(&mut segs, &tight);
+        align_stickers_to_subtitles(&mut segs, &tight, &[]);
         assert_eq!(
             sticker_span(&segs),
             (30.0, 31.5),
@@ -2090,7 +2234,7 @@ mod tests {
         // 真实样本：16.30s 那条（`[141.96, 158.26]`）
         let subs = vec![sub(1, 141.96, 158.26)];
         let mut segs = sticker_seg(sticker(142.0, 1.0));
-        assert_eq!(align_stickers_to_subtitles(&mut segs, &subs), 1);
+        assert_eq!(align_stickers_to_subtitles(&mut segs, &subs, &[]), 1);
         let (t0, t1) = sticker_span(&segs);
         assert_eq!(t0, 141.96);
         assert_eq!(t1 - t0, ELEMENT_MAX_SECS, "应硬截到最长 {ELEMENT_MAX_SECS}s");
@@ -2108,7 +2252,7 @@ mod tests {
         // 只有一条 0.6s 的字幕，后面再没有别的 → 吞不动，停在它自己的结尾
         let subs = vec![sub(1, 50.0, 50.6)];
         let mut segs = sticker_seg(sticker(50.05, 0.5));
-        align_stickers_to_subtitles(&mut segs, &subs);
+        align_stickers_to_subtitles(&mut segs, &subs, &[]);
         assert_eq!(sticker_span(&segs), (50.0, 50.6), "没有更多字幕可吞就接受现状");
     }
 
@@ -2128,14 +2272,108 @@ mod tests {
         ];
         for t in [21.95f64, 22.24, 142.0, 50.0] {
             let mut segs = sticker_seg(sticker(t, 1.0));
-            align_stickers_to_subtitles(&mut segs, &subs);
+            align_stickers_to_subtitles(&mut segs, &subs, &[]);
             let first = sticker_span(&segs);
-            let n = align_stickers_to_subtitles(&mut segs, &subs);
+            let n = align_stickers_to_subtitles(&mut segs, &subs, &[]);
             assert_eq!(sticker_span(&segs), first, "第二轮不该再变（t={t}）");
             assert_eq!(n, 0, "第二轮不该再报对齐条数（t={t}）");
         }
     }
 
+    // ── 文字元素的**候补**守卫（2026-10-19 用户口径）──────────────────
+    //
+    // 用户对文字效果的定位：突出、指向性强 ⇒ 只当**候补**（没有更合适的贴纸/特效时才用），
+    // 而且**不要和贴纸同时出现**。LLM 在段窗口里数不出这些，所以由 `cap_text_elements` 兜。
+    /// 造一条文字元素 —— 走**真**反序列化（`type = "element"` 就是盘上的写法）。
+    fn text_el(time: f64, dur: f64, s: &str) -> Event {
+        toml::from_str(&format!(
+            "type = \"element\"\ntime = {time}\nend = {}\nkind = \"text\"\ntext = \"{s}\"\nstyle = \"comment\"\n",
+            time + dur
+        ))
+        .expect("text element")
+    }
+
+    /// 编辑器「贴纸轨」新建的那一支（`Element{kind:"sticker"}`）—— 守卫也必须认它。
+    fn element_sticker_el(time: f64, dur: f64) -> Event {
+        toml::from_str(&format!(
+            "type = \"element\"\ntime = {time}\nend = {}\nkind = \"sticker\"\ntext = \"emoji\"\n",
+            time + dur
+        ))
+        .expect("element sticker")
+    }
+
+    fn text_seg(events: Vec<Event>) -> Vec<Segment> {
+        vec![Segment {
+            start: 0.0,
+            end: 60.0,
+            fx: "med".into(),
+            note: String::new(),
+            role: String::new(),
+            events,
+            extra: Default::default(),
+        }]
+    }
+
+    fn text_bodies(segs: &[Segment]) -> Vec<String> {
+        segs.iter()
+            .flat_map(|s| s.events.iter())
+            .filter_map(|e| match e {
+                Event::Element { kind, text, .. } if kind == "text" => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn text_element_yields_to_sticker() {
+        // ① 老载体 `Event::Sticker`
+        let mut segs = text_seg(vec![text_el(2.0, 2.0, "名场面"), sticker(3.0, 1.5)]);
+        assert_eq!(cap_text_elements(&mut segs, &[]), 1, "与贴纸时间重叠 ⇒ 文字让位");
+        assert!(text_bodies(&segs).is_empty(), "文字被删掉，贴纸留下");
+        assert_eq!(segs[0].events.len(), 1, "贴纸一条都不许动");
+        // ② 编辑器新建的 `Element{kind:"sticker"}` —— 只认老载体的话这里会漏
+        let mut segs = text_seg(vec![text_el(2.0, 2.0, "名场面"), element_sticker_el(2.5, 1.0)]);
+        assert_eq!(cap_text_elements(&mut segs, &[]), 1, "两个载体都要认");
+        assert!(text_bodies(&segs).is_empty());
+    }
+
+    #[test]
+    fn text_element_is_capped_to_one_per_segment() {
+        let mut segs = text_seg(vec![
+            text_el(2.0, 1.0, "第一条"),
+            text_el(10.0, 1.0, "第二条"),
+            text_el(20.0, 1.0, "第三条"),
+        ]);
+        assert_eq!(cap_text_elements(&mut segs, &[]), 2, "一段最多留一条");
+        assert_eq!(text_bodies(&segs), vec!["第一条".to_string()], "留最早那条");
+        assert_eq!(cap_text_elements(&mut segs, &[]), 0, "幂等（process 会被隐式重跑）");
+    }
+
+    #[test]
+    fn manual_text_element_is_never_touched() {
+        let mut manual = text_el(2.0, 2.0, "用户写的");
+        manual.set_time_manual(true);
+        let mut segs = text_seg(vec![manual, sticker(2.5, 1.0)]);
+        assert_eq!(cap_text_elements(&mut segs, &[]), 0, "manual 不参与守卫");
+        assert_eq!(text_bodies(&segs), vec!["用户写的".to_string()]);
+    }
+
+    #[test]
+    fn muted_text_element_does_not_take_the_slot() {
+        // 0~10s 被屏蔽：里面的文字看不见 —— 不该被删，也不该挤掉可见区里的名额
+        let mutes = [MuteRange { start: 0.0, end: 10.0 }];
+        let mut segs = text_seg(vec![text_el(2.0, 1.0, "看不见"), text_el(20.0, 1.0, "看得见")]);
+        assert_eq!(cap_text_elements(&mut segs, &mutes), 0);
+        assert_eq!(
+            text_bodies(&segs),
+            vec!["看不见".to_string(), "看得见".to_string()]
+        );
+
+        // 屏蔽区里的**贴纸**同样看不见 —— 不许把可见区里的文字挤掉
+        let mut segs = text_seg(vec![sticker(2.0, 1.0), text_el(20.0, 1.0, "看得见")]);
+        assert_eq!(cap_text_elements(&mut segs, &mutes), 0, "屏蔽段的贴纸不算障碍");
+        assert_eq!(text_bodies(&segs), vec!["看得见".to_string()]);
+    }
     /// 手工定过时间的贴纸**既不吸附也不延长**（用户报过"调整结束时间没成功"：
     /// 编辑器每次改动后自动跑一次 process，那时这里会把他的时间吸回字幕边界）。
     #[test]
@@ -2149,12 +2387,12 @@ mod tests {
         let mut ev = sticker(10.4, 1.5);
         ev.set_time_manual(true);
         let mut segs = sticker_seg(ev);
-        assert_eq!(align_stickers_to_subtitles(&mut segs, &subs), 0, "manual 不该被吸附");
+        assert_eq!(align_stickers_to_subtitles(&mut segs, &subs, &[]), 0, "manual 不该被吸附");
         assert_eq!(sticker_span(&segs), (10.4, 11.9), "时间原样保留");
 
         // 清掉标记 → 恢复自动吸附（面板「跟随字幕」走的就是这条）
         segs[0].events[0].set_time_manual(false);
-        assert_eq!(align_stickers_to_subtitles(&mut segs, &subs), 1);
+        assert_eq!(align_stickers_to_subtitles(&mut segs, &subs, &[]), 1);
         assert_eq!(sticker_span(&segs), (10.0, 12.5));
     }
 
@@ -2392,13 +2630,21 @@ mod tests {
                 events: vec![intent_cam(42.0, 46.0, INTENT_COLD_OPEN)], extra: Default::default() },
         ];
         let mut clips: Vec<EdlClip> = Vec::new();
-        let m = materialize_edl_intents(&mut segs, &mut clips, 60.0);
+        let m = materialize_edl_intents(&mut segs, &mut clips, 60.0, &[]);
         assert_eq!(m.recalls, 0, "这一趟一条回忆回溯都没有");
         assert!(m.cold_open, "有一条活下来");
-        assert_eq!(clips.len(), 1, "3 个候选 ⇒ 只剩 1 个：{clips:?}");
-        assert_eq!(clips[0].kind.as_deref(), Some(EDL_KIND_COLD_OPEN));
-        assert_eq!((clips[0].source_start, clips[0].source_end), (2.0, 6.0),
+        let cold: Vec<&EdlClip> = clips
+            .iter()
+            .filter(|c| c.kind.as_deref() == Some(EDL_KIND_COLD_OPEN))
+            .collect();
+        assert_eq!(cold.len(), 1, "3 个候选 ⇒ 只剩 1 个：{clips:?}");
+        assert_eq!((cold[0].source_start, cold[0].source_end), (2.0, 6.0),
             "留下的是**最早**那条（与 cap_pip_shots 留最早一条「远」同规则）");
+        // ⚠️ 空 EDL 的起点 = `mute_ranges` 补集（这里没有屏蔽 ⇒ 整条正片一段）。
+        // 不种的话 `clips` 就只有冷开场那几秒 —— 正片时间线**整条消失**，
+        // 而 `mute_ranges` 也会随着 EDL 非空被整个忽略（用户报的「屏蔽段没被过滤」）。
+        assert_eq!(clips.len(), 2, "冷开场 + 正片补集：{clips:?}");
+        assert_eq!((clips[1].source_start, clips[1].source_end), (0.0, 60.0));
         // 全部意图都被清掉（活的死的都清）—— 幂等的前提
         let leftover: Vec<&str> = segs.iter().flat_map(|s| s.events.iter())
             .filter_map(|e| match e { Event::Camera { anchor, .. } => anchor.as_deref(), _ => None })
@@ -2425,19 +2671,23 @@ mod tests {
         }];
         let mut clips: Vec<EdlClip> = Vec::new();
 
-        let first = materialize_edl_intents(&mut segs, &mut clips, 30.0);
+        let first = materialize_edl_intents(&mut segs, &mut clips, 30.0, &[]);
         assert!(first.cold_open);
         assert_eq!(first.recalls, 2);
-        assert_eq!(kinds(&clips), vec![Some(EDL_KIND_COLD_OPEN), Some(EDL_KIND_RECALL), Some(EDL_KIND_RECALL)]);
+        // 冷开场插在最前、**正片补集紧跟其后**（无屏蔽 ⇒ 整条一段），回忆回溯追加在末尾
+        assert_eq!(
+            kinds(&clips),
+            vec![Some(EDL_KIND_COLD_OPEN), None, Some(EDL_KIND_RECALL), Some(EDL_KIND_RECALL)]
+        );
         let after_first = clips.clone();
 
         // 第二趟：没有任何意图了 ⇒ 一个字节都不加，`changed()` 必须为假
-        let second = materialize_edl_intents(&mut segs, &mut clips, 30.0);
+        let second = materialize_edl_intents(&mut segs, &mut clips, 30.0, &[]);
         assert!(!second.changed(), "第二趟不许再落实任何东西");
         assert_eq!(clips, after_first, "EDL 逐值不变（不叠加）");
 
         // 第三趟以防万一（幂等要能反复成立，不是"两次碰巧一样"）
-        let third = materialize_edl_intents(&mut segs, &mut clips, 30.0);
+        let third = materialize_edl_intents(&mut segs, &mut clips, 30.0, &[]);
         assert!(!third.changed());
         assert_eq!(clips, after_first);
     }
@@ -2453,7 +2703,7 @@ mod tests {
         // 普通运镜（没有 cold_open/recall）—— 都不算意图
         let mut segs = segs_of(&[(0.0, "中"), (10.0, "远"), (20.0, "近")]);
         let mut clips: Vec<EdlClip> = Vec::new();
-        let m = materialize_edl_intents(&mut segs, &mut clips, 60.0);
+        let m = materialize_edl_intents(&mut segs, &mut clips, 60.0, &[]);
         assert!(!m.changed(), "没有意图 ⇒ 不许改 EDL");
         assert!(clips.is_empty());
         let cams = cam_spans(&segs);
@@ -2473,7 +2723,7 @@ mod tests {
             .filter_map(|e| match e { Event::Camera { anchor, .. } => Some(anchor.clone()), _ => None })
             .collect();
         let mut clips: Vec<EdlClip> = Vec::new();
-        assert!(!materialize_edl_intents(&mut segs, &mut clips, 30.0).changed());
+        assert!(!materialize_edl_intents(&mut segs, &mut clips, 30.0, &[]).changed());
         let after: Vec<Option<String>> = segs.iter().flat_map(|s| s.events.iter())
             .filter_map(|e| match e { Event::Camera { anchor, .. } => Some(anchor.clone()), _ => None })
             .collect();
@@ -2485,7 +2735,7 @@ mod tests {
             start: 0.0, end: 30.0, fx: "med".into(), note: String::new(),
             events: vec![intent_cam(5.0, 9.0, INTENT_COLD_OPEN)], extra: Default::default() }];
         let mut clips = vec![clip_of(0.0, 30.0, Some("main"))];
-        let m = materialize_edl_intents(&mut segs, &mut clips, 30.0);
+        let m = materialize_edl_intents(&mut segs, &mut clips, 30.0, &[]);
         assert!(m.cold_open);
         assert_eq!(clips.len(), 2);
         assert_eq!(kinds(&clips), vec![Some(EDL_KIND_COLD_OPEN), Some("main")],
@@ -2503,7 +2753,7 @@ mod tests {
             start: 0.0, end: 30.0, fx: "med".into(), note: String::new(),
             events: vec![ev], extra: Default::default() }];
         let mut clips: Vec<EdlClip> = Vec::new();
-        let m = materialize_edl_intents(&mut segs, &mut clips, 30.0);
+        let m = materialize_edl_intents(&mut segs, &mut clips, 30.0, &[]);
         assert!(!m.changed(), "手工事件不参与（也不替用户清 anchor）");
         assert!(clips.is_empty());
         assert!(
@@ -2523,24 +2773,135 @@ mod tests {
             role: String::new(),
             events: vec![intent_cam(2.0, 6.0, INTENT_COLD_OPEN)], extra: Default::default() }];
         let mut clips: Vec<EdlClip> = Vec::new();
-        assert!(!materialize_edl_intents(&mut segs, &mut clips, 0.0).changed(), "时长未知 ⇒ 不落实");
+        assert!(!materialize_edl_intents(&mut segs, &mut clips, 0.0, &[]).changed(), "时长未知 ⇒ 不落实");
         assert!(clips.is_empty());
 
         // 窗口短于 MIN_COLD_OPEN_SECS：
         let mut segs = vec![Segment { start: 0.0, end: 30.0, fx: "med".into(), note: String::new(),
             role: String::new(),
             events: vec![intent_cam(2.0, 2.4, INTENT_COLD_OPEN)], extra: Default::default() }];
-        assert!(!materialize_edl_intents(&mut segs, &mut clips, 30.0).changed(), "太短 ⇒ 不落实");
+        assert!(!materialize_edl_intents(&mut segs, &mut clips, 30.0, &[]).changed(), "太短 ⇒ 不落实");
         assert!(clips.is_empty());
 
         // 端点夹到 [0, total_duration]：起点为负、终点越界都夹回来
         let mut segs = vec![Segment { start: 0.0, end: 30.0, fx: "med".into(), note: String::new(),
             role: String::new(),
             events: vec![intent_cam(-3.0, 99.0, INTENT_COLD_OPEN)], extra: Default::default() }];
-        assert!(materialize_edl_intents(&mut segs, &mut clips, 30.0).cold_open);
+        assert!(materialize_edl_intents(&mut segs, &mut clips, 30.0, &[]).cold_open);
         assert_eq!((clips[0].source_start, clips[0].source_end), (0.0, 30.0), "夹进 [0, 总时长]");
     }
 
+    /// **屏蔽段必须被过滤**（2026-10-19 用户报「LLM 剪辑之后屏蔽段没被过滤」）。
+    ///
+    /// 判据落在**空 EDL + 一支意图**这个组合上：`clips` 一旦非空，`mute_ranges` 就整个被
+    /// 忽略（`ProjectFile::resolve_edl` 规则 3）。所以落实意图时必须先把**正片补集**种进去，
+    /// 否则成片只剩下冷开场那几秒（正片消失）+ 原来屏蔽掉的段**全部回来**。
+    #[test]
+    fn cold_open_on_empty_edl_seeds_the_mute_complement() {
+        let mut segs = vec![Segment {
+            role: String::new(),
+            start: 0.0, end: 10.0, fx: "med".into(), note: String::new(),
+            events: vec![intent_cam(5.0, 7.0, INTENT_COLD_OPEN)],
+            extra: Default::default(),
+        }];
+        let mutes = vec![MuteRange { start: 2.0, end: 4.0 }];
+        let mut clips: Vec<EdlClip> = Vec::new();
+        let m = materialize_edl_intents(&mut segs, &mut clips, 10.0, &mutes);
+        assert!(m.cold_open);
+        let got: Vec<(f64, f64, Option<&str>)> = clips
+            .iter()
+            .map(|c| (c.source_start, c.source_end, c.kind.as_deref()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (5.0, 7.0, Some(EDL_KIND_COLD_OPEN)),
+                (0.0, 2.0, None),
+                (4.0, 10.0, None),
+            ],
+            "冷开场插最前 + 正片 = 屏蔽补集（[2,4] 被剪掉）：{clips:?}"
+        );
+    }
+
+    /// 用户手拖过的 EDL **非空**时，一个字节都不许被补集覆盖（只在最前面插冷开场）。
+    #[test]
+    fn non_empty_edl_is_never_reseeded() {
+        let mut segs = vec![Segment {
+            role: String::new(),
+            start: 0.0, end: 10.0, fx: "med".into(), note: String::new(),
+            events: vec![intent_cam(5.0, 7.0, INTENT_COLD_OPEN)],
+            extra: Default::default(),
+        }];
+        let mut clips = vec![clip_of(1.0, 9.0, Some("main"))];
+        let mutes = vec![MuteRange { start: 2.0, end: 4.0 }];
+        let m = materialize_edl_intents(&mut segs, &mut clips, 10.0, &mutes);
+        assert!(m.cold_open);
+        assert_eq!(
+            kinds(&clips),
+            vec![Some(EDL_KIND_COLD_OPEN), Some("main")],
+            "用户那条原样保留，屏蔽补集**不参与**（EDL 非空时 mute_ranges 本来就被忽略）"
+        );
+        assert_eq!((clips[1].source_start, clips[1].source_end), (1.0, 9.0));
+    }
+    /// **旧版留下的坏 EDL**（只有重放段、没有正片）必须被修掉（2026-10-19）——
+    /// 不修的话这种存量工程永远是「整片只剩那几秒 + 屏蔽段全部回来」。
+    #[test]
+    fn intent_only_edl_from_old_version_is_rebuilt() {
+        // 意图早被旧版清掉了（`anchor` 已空）⇒ 这一趟没有活意图，但坏形状要认出来
+        let mut segs = vec![Segment {
+            role: String::new(),
+            start: 0.0, end: 10.0, fx: "med".into(), note: String::new(),
+            events: vec![], extra: Default::default(),
+        }];
+        let mut clips = vec![clip_of(5.0, 7.0, Some(EDL_KIND_COLD_OPEN))];
+        let m = materialize_edl_intents(&mut segs, &mut clips, 10.0, &[]);
+        assert!(m.changed(), "修好也是一次写盘（把 `[edl]` 整段去掉）");
+        assert!(m.repaired);
+        assert!(clips.is_empty(), "清空 ⇒ 写回空 EDL ⇒ 自动退回屏蔽补集：{clips:?}");
+    }
+
+    /// 坏 EDL + 新意图：先修成正片补集，再把意图插进去（顺序与没有 EDL 时一致）。
+    #[test]
+    fn intent_only_edl_is_repaired_then_seeded() {
+        let mut segs = vec![Segment {
+            role: String::new(),
+            start: 0.0, end: 10.0, fx: "med".into(), note: String::new(),
+            events: vec![intent_cam(5.0, 7.0, INTENT_RECALL)],
+            extra: Default::default(),
+        }];
+        let mutes = vec![MuteRange { start: 2.0, end: 4.0 }];
+        let mut clips = vec![clip_of(8.0, 9.0, Some(EDL_KIND_COLD_OPEN))];
+        let m = materialize_edl_intents(&mut segs, &mut clips, 10.0, &mutes);
+        assert!(m.repaired);
+        assert_eq!(m.recalls, 1);
+        let got: Vec<(f64, f64, Option<&str>)> = clips
+            .iter()
+            .map(|c| (c.source_start, c.source_end, c.kind.as_deref()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![(0.0, 2.0, None), (4.0, 10.0, None), (5.0, 7.0, Some(EDL_KIND_RECALL))],
+            "正片补集在前、回忆回溯追加在末尾：{clips:?}"
+        );
+    }
+
+    /// **混合 EDL 一律不修**（用户手排的段 `kind` 为空，形状永远不是「全是意图段」）。
+    #[test]
+    fn mixed_edl_is_never_treated_as_broken() {
+        let mut segs = vec![Segment {
+            role: String::new(),
+            start: 0.0, end: 10.0, fx: "med".into(), note: String::new(),
+            events: vec![], extra: Default::default(),
+        }];
+        let mut clips = vec![
+            clip_of(5.0, 7.0, Some(EDL_KIND_COLD_OPEN)),
+            clip_of(0.0, 10.0, Some("main")),
+        ];
+        let before = clips.clone();
+        let m = materialize_edl_intents(&mut segs, &mut clips, 10.0, &[]);
+        assert!(!m.changed(), "没有意图、也不是坏形状 ⇒ 一个字节都不许动");
+        assert_eq!(clips, before);
+    }
     /// 回忆回溯上限是 [`MAX_RECALL`]（比冷开场松一档，但也是有上限的）。
     #[test]
     fn recall_is_capped() {
@@ -2549,11 +2910,15 @@ mod tests {
             role: String::new(),
             events, extra: Default::default() }];
         let mut clips: Vec<EdlClip> = Vec::new();
-        let m = materialize_edl_intents(&mut segs, &mut clips, 60.0);
+        let m = materialize_edl_intents(&mut segs, &mut clips, 60.0, &[]);
         assert_eq!(m.recalls, MAX_RECALL, "5 个候选 ⇒ 只剩 MAX_RECALL 个");
-        assert_eq!(clips.len(), MAX_RECALL);
+        let recall_clips: Vec<&EdlClip> = clips
+            .iter()
+            .filter(|c| c.kind.as_deref() == Some(EDL_KIND_RECALL))
+            .collect();
+        assert_eq!(recall_clips.len(), MAX_RECALL);
         // 留最早的几条
-        let starts: Vec<f64> = clips.iter().map(|c| c.source_start).collect();
+        let starts: Vec<f64> = recall_clips.iter().map(|c| c.source_start).collect();
         assert_eq!(starts, vec![0.0, 10.0], "按时间序取最早的那几条");
     }
 

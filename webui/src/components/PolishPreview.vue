@@ -501,10 +501,26 @@ function dhampirFrameAt(seconds) {
   // `source_in` 是**素材帧号** ⇒ 源位置用素材帧率换算；段落长度是序列帧 ⇒ 换算回素材帧再比。
   // ⚠️ **位置不取整**（见下面那段说明）：取整会把段内换算也钉在素材帧上。
   const srcPos = Math.max(0, (seconds || 0) * srcFps)
+  // ⚠️ **段起点比较必须留半个素材帧的容差**（2026-10-19 修「播放头落在屏蔽段里 = 持续卡顿」）。
+  //
+  // `dhampirNextSourceStart` 算出来的跳转目标是 `sourceIn / srcFps` 这个**秒**值，
+  // 调用方把它当新的源位置、再用 `秒 × srcFps` 换回素材帧 —— 这一步**不保证回到整数**：
+  //     123/30*30 = **122.99999999999999 < 123**
+  // 于是"目标明明就是段起点、判定却说这里没有帧" ⇒ `tick` / `scheduleDhampir` 每帧都
+  // 重新 seek 到同一个位置 ⇒ 画面永远跳不进可播放区，观感就是**永久卡顿**。
+  // 实测 30fps 下 0..200000 帧里有 **3270** 个帧满足该不等式（25fps **9174** 个、
+  // 60fps **3270** 个、24fps 0 个 —— 帧率越接近 1/3 越容易踩）。也就是说这不是
+  // "某个片段碰巧有问题"，而是几十分之一的段落起点都会中。
+  //
+  // 第二个来源：`video.currentTime = 秒` 会被浏览器**量化到帧/采样边界**，落点可能比
+  // 目标小一丝。半个素材帧同时盖住这两者。
+  // ⚠️ **容差只加在段起点这一侧**：段尾仍是严格 `<`。放宽段尾会把下一段的开头当成
+  // 上一段的尾巴（跨屏蔽区间时会多放出本该掐掉的内容），那是另一个方向的错误。
+  const edgeTol = 0.5
   for (const seg of dhampirSegments) {
     const lenSeq = seg.frameEnd - seg.frameStart
     const lenSrc = Math.max(1, Math.round((lenSeq * srcFps) / seqFps))
-    if (srcPos >= seg.sourceIn && srcPos < seg.sourceIn + lenSrc) {
+    if (srcPos >= seg.sourceIn - edgeTol && srcPos < seg.sourceIn + lenSrc) {
       // ⚠️ **段内换算走秒，不走素材帧**（2026-10-06 修「5/30fps · 丢 30」）：
       // 用素材帧算的话，5fps 素材的工程帧只能落在 `round(src)*seqFps/srcFps` = **6 的倍数**上
       // ⇒ 一秒只有 5 个不同的帧号 ⇒ `tick()` 里 `f === dhampirFrameShown` 把另外 5/6 帧全挡掉
@@ -537,6 +553,90 @@ function dhampirNextSourceStart(seconds) {
   return next === undefined ? null : next / srcFps
 }
 
+/**
+ * 把跳转目标**向前收敛到"真的有帧"的位置**（纯函数：只读段落表，不碰任何视频元素）。
+ *
+ * 为什么不能只靠 `dhampirFrameAt` 里那半个素材帧的容差：
+ * 容差是**边界判据**的补丁；这里收敛的是**跳转目标本身**。目标由 `sourceIn / srcFps`
+ * 算出，落到浏览器里还要经过 `currentTime` 的帧/采样边界量化，落点可能比目标小一丝 ——
+ * 只放宽判据的话，跳过去之后的第一帧仍可能被判 "没有帧"，下一帧再跳一次（观感是抖一下，
+ * 严重时又回到"每帧重跳"）。
+ *
+ * 步长取 **1/4 素材帧**、最多前挪 **2 帧**：
+ *   · 该窗口足够吞掉浮点误差（~1e-14 帧）、`currentTime` 量化（通常 ≤1 帧）与 seek 落点；
+ *   · 再大就会把"下一段开头"挪成"下一段第 3 帧" —— 用户看到的是**丢内容**。
+ * 返回第一个 `dhampirFrameAt(x) !== null` 的位置；**到顶还没找到返回 null**
+ * —— 调用方拿到 null 就**不许 seek**（否则就是那个"每帧重跳同一个位置"的死循环）。
+ * 正常输入走不到这条分支：目标本身就是某段的 `sourceIn`，容差 + 1/4 帧内必然命中。
+ */
+const DHAMPIR_SNAP_STEP_FRAMES = 0.25
+const DHAMPIR_SNAP_MAX_FRAMES = 2
+
+function dhampirSnapForward(t) {
+  if (dhampirFrameAt(t) !== null) return t
+  const srcFps = dhampirSourceFps || dhampirFps.value || 30
+  const step = DHAMPIR_SNAP_STEP_FRAMES / srcFps
+  const maxSteps = Math.round(DHAMPIR_SNAP_MAX_FRAMES / DHAMPIR_SNAP_STEP_FRAMES)
+  for (let i = 1; i <= maxSteps; i += 1) {
+    const x = t + i * step
+    if (dhampirFrameAt(x) !== null) return x
+  }
+  return null
+}
+
+/**
+ * **跳转目标的唯一入口** = `dhampirNextSourceStart` 的结果再经 `dhampirSnapForward` 收敛。
+ *
+ * `tick` / `scheduleDhampir` / `dhampirPrerollTarget` / `playableJumpTarget` **都从这里取**：
+ * 预滚与真正的跳必须吃同一个值 —— 分开算迟早会错开一丁点，而错开的表现就是
+ * "备用源明明备好了，到点还是黑一帧 / 卡一下"。
+ */
+function dhampirJumpTarget(seconds) {
+  const raw = dhampirNextSourceStart(seconds)
+  return raw === null ? null : dhampirSnapForward(raw)
+}
+
+/**
+ * **防呆闸：同一个跳转目标 400ms 内被第二次要求时，不许再无脑 seek**。
+ *
+ * 为什么需要（这条是给"未来回归"准备的，不是给当前代码）：
+ * 上面容差 + snap 一起保证了"目标落进去一定有帧"。但这套保证只要有人改回任一环，
+ * 失败模式就是**每帧 seek 到同一个位置** —— 浏览器每帧都打断解码器 ⇒ 画面永久卡顿，
+ * 而且**不报错**。用户能感知、日志看不出来。
+ * 所以这里加一道与算法无关的护栏：同一处（tick / scheduleDhampir 各自一份状态，
+ * 它们是两条独立消费者）在 400ms 内第二次要跳到**同一个**目标（差 < 1e-6 秒）时，
+ * 这次直接**放行**（不 seek）并记一条 debug —— 最多是这一段跟着时钟走过去，
+ * 而不是把预览焊死在原地。
+ *
+ * ⚠️ 状态**按调用点分开**：tick 要落"时钟 + 引擎源"，scheduleDhampir 只落引擎源，
+ * 两者都 seek 一次是**正常**的；共用一个状态会让其中一个被误判成"重复"而漏跳。
+ */
+const DHAMPIR_JUMP_GUARD_MS = 400
+const dhampirJumpGuard = new Map()
+
+function dhampirJumpGuardAllows(where, target) {
+  const now = performance.now()
+  const st = dhampirJumpGuard.get(where) || { target: null, at: 0, logged: null }
+  if (st.target !== null && Math.abs(target - st.target) < 1e-6 && now - st.at < DHAMPIR_JUMP_GUARD_MS) {
+    // 每"一串重复"只记一条：每帧记一条会把日志刷爆（而这条恰恰是排查时才看的）
+    if (st.logged !== target) {
+      st.logged = target
+      addClient(
+        'debug',
+        '预览跳屏蔽区间：' + Math.round(now - st.at) + 'ms 内第二次要求跳到 ' + target.toFixed(4) + 's（' + where + '）'
+          + ' —— 上一次 seek 没把判定带进可播放区，这一次放行、不再 seek（防无限重跳）',
+        'preview',
+      )
+    }
+    return false
+  }
+  st.target = target
+  st.at = now
+  st.logged = null
+  dhampirJumpGuard.set(where, st)
+  return true
+}
+
 // ---- Dhampir 那条腿的 A/B 预滚（2026-09-30）----
 //
 // 见 `dhampirTwins` 上面那段：跟播时引擎不 await seek，源在 seeking 时合出来就是整块黑，
@@ -563,7 +663,9 @@ function dhampirPrerollTarget(t) {
   if (!dhampirSegments.length || !dhampirTwins.size) return null
   if (dhampirFrameAt(t) === null) return null                      // 已经在被掐掉的区间里
   if (dhampirFrameAt(t + PREROLL_SECS) !== null) return null       // 还没到"马上要切"
-  return dhampirNextSourceStart(t)
+  // **与真正的跳转吃同一个目标**（`dhampirJumpTarget` 里已经过 snap）：预滚备 A、跳却跳到 B
+  // 就是"白备一趟 + 到点还是黑一下"，而这正是 A/B 预滚唯一要消灭的那件事。
+  return dhampirJumpTarget(t)
 }
 
 /** 备用那块 seek 到我们要的位置了就标记就绪（`want` 变了要重新等一次）。 */
@@ -1863,8 +1965,10 @@ function scheduleDhampir() {
     // `null` = 当前源位置落在**被掐掉的区间**里（工程里没有这一段）：不画，
     // 把源视频挪到下一段的源起点（与 tick 里同一处说明）。
     if (f === null) {
-      const target = dhampirNextSourceStart(el ? el.currentTime : current.value)
-      if (target !== null) syncDhampirTime(target)
+      const target = dhampirJumpTarget(el ? el.currentTime : current.value)
+      // 防呆闸按**调用点**各一份状态（见 `dhampirJumpGuardAllows`）：同一个目标 400ms 内
+      // 第二次被要求 = 上一次 seek 没把判定带进可播放区，这次放行、不再打断解码器。
+      if (target !== null && dhampirJumpGuardAllows('schedule', target)) syncDhampirTime(target)
       return
     }
     if (f === dhampirFrameShown) return // 帧号没变就别重画（30fps 内容在 60Hz rAF 上会画两次）
@@ -3147,8 +3251,11 @@ function tick() {
       if (ahead !== null) dhampirArmPreroll(ahead)
     }
     if (!v.paused && !v.ended && dhampirFrameAt(v.currentTime) === null) {
-      const target = dhampirNextSourceStart(v.currentTime)
-      if (target !== null) {
+      const target = dhampirJumpTarget(v.currentTime)
+      // 防呆闸：同一个目标 400ms 内第二次被要求 = 上一次 seek 没把判定带进可播放区
+      // （浮点 / 量化上的回归）。这时**放行**（不 seek）比再跳一次安全 —— 再跳就是
+      // 用户报的那个"持续卡顿"，放行最多是这一段跟着时钟走过去（画面停一拍）。
+      if (target !== null && dhampirJumpGuardAllows('tick', target)) {
         // ① **A/B 命中**：备用那套源已经在下一段起点、帧也解好了 ⇒ 换绑，引擎那一帧立刻有像素。
         //    画布这边不需要遮罩（下一帧就会画出正确的画面），DOM 时钟这次 seek 在画布后面看不见。
         if (dhampirSwapSources()) {
@@ -3205,10 +3312,12 @@ function tick() {
         return
       }
       // ② 没备好（刚拖过进度条 / 区间太近）→ 回落定格的旧路
-      const target = Math.min(v.duration || (r.end + 0.01), r.end + 0.01)
+      // 目标与预滚 / 换台 / 起播跳**是同一个算式**（`skipCutTime`）：以前在这里重写一遍
+      // `Math.min(... r.end + 0.01)`，只要有人改了提前量，预滚就会备到另一个时刻。
+      const target = skipCutTime(r)
       // 定格遮罩：**先拍再跳**（seek 之后拍到的就是黑的那一帧了）
       beginSkipFreeze()
-      v.currentTime = Math.max(target, r.end)
+      v.currentTime = target
       syncDhampirTime(v.currentTime)
       armFreezeRelease()
       if (bgOn.value && bgRef.value) bgRef.value.currentTime = v.currentTime
@@ -3229,6 +3338,46 @@ function tick() {
   if (!v.paused && !v.ended) rafId = requestAnimationFrame(tick)
 }
 
+/**
+ * **起播前该跳到哪一秒**（没有要跳的就 `null`）。
+ *
+ * 用户报的「如果当前在屏蔽段开始播放会持续卡顿，没有直接跳到后面可播放的位置」
+ * 是两件事叠在一起：
+ *   ① 根因在 `dhampirFrameAt` 的边界判定（`sourceIn / srcFps` 乘回去会略小于
+ *      `sourceIn`，实测见那里）—— 不修它，这里算出来的目标会每帧被重新要求；
+ *   ② 体验在 `togglePlay`：以前它**直接 play()**，要等下一次 tick 才发现落在屏蔽段里 ——
+ *      先放出一帧本该掐掉的画面、再走"定格遮罩 + seek"。起播这一下用户是看得见的。
+ *      所以落位被提前到 `play()` **之前**（时钟 / 引擎源 / 读数 / 音效由调用方落）。
+ *
+ * 判据与 tick 里那份**同一个口径**（各写一份就会在边界上差一帧）：
+ *   · Dhampir：'有没有帧'由段落表算（`dhampirFrameAt`）；目标是下一段起点再经
+ *     `dhampirJumpTarget`（= `dhampirSnapForward(dhampirNextSourceStart(t))`）。
+ *   · DOM：`muteRangeAt(…, SKIP_LOOKAHEAD)` + `skipCutTime(r)` —— 与预滚 / 换台 / tick
+ *     回落三处是同一个算式。
+ *
+ * ⚠️ **片尾屏蔽（后面没有保留段）返回 `null`，不是 `duration`**：媒体元素一旦处于
+ * ended 状态，`play()` 的语义是"回到最早位置重播"（HTML 规范 play() 里对 ended 的处理）
+ * ⇒ 用户点一次播放会把整段从头放一遍。返回 null 时由 tick 用既有路径走完（Dhampir 那条腿
+ * 不 seek、画面停在最后一帧；DOM 那条腿边播边 seek 到末尾），两条路都不经过"在末尾 play()"。
+ * 同理，目标落点离 `duration` 不足 50ms 时也不在起播时跳（让 tick 去收尾）。
+ */
+function playableJumpTarget() {
+  const v = videoRef.value
+  if (!v) return null
+  const t = Number(v.currentTime) || 0
+  const dur = Number(v.duration) || 0
+  if (dhampirMode.value) {
+    if (dhampirFrameAt(t) !== null) return null
+    const next = dhampirJumpTarget(t)
+    if (next === null) return null
+    return dur > 0 && next >= dur - 0.05 ? null : next
+  }
+  const r = muteRangeAt(t, SKIP_LOOKAHEAD)
+  if (!r) return null
+  const target = skipCutTime(r)
+  return dur > 0 && target >= dur - 0.05 ? null : target
+}
+
 function togglePlay() {
   // ⚠️ **Dhampir 加载期间不许播**（第二道闸；第一道是模板上那颗按钮置灰）：
   // `togglePlay` 还经 `defineExpose` 给父级（PolishView 的快捷键 / 时间轴的 toggle）用 ——
@@ -3237,6 +3386,21 @@ function togglePlay() {
   const v = videoRef.value
   if (!v) return
   if (v.paused) {
+    // **起播前先离开屏蔽段**（用户报的「从屏蔽段开始播放会持续卡顿、没有直接跳到后面」）：
+    // 这一跳发生在 play() **之前** ⇒ 旧画面根本没上屏，所以**不上定格遮罩**
+    // （`beginSkipFreeze` 是"已经在播、必须遮住正在显示的那一帧"才用的）。
+    // 落位顺序照抄 tick / tryStageSwap：时钟 → 引擎源 → 时间轴读数 / 音效 → 背景视频，
+    // 最后才 play —— 播出去的第一帧就是目标位置那一帧。
+    const jumpTarget = playableJumpTarget()
+    if (jumpTarget !== null) {
+      v.currentTime = jumpTarget
+      syncDhampirTime(jumpTarget)
+      current.value = v.currentTime
+      player.seek(current.value)
+      prerollReset()        // 手动跳位后上一趟预滚的目标就作废了（与 seekTo 同一条纪律）
+      emit('time', v.currentTime)
+      if (bgOn.value && bgRef.value) bgRef.value.currentTime = jumpTarget
+    }
     if (bgOn.value && bgRef.value) bgRef.value.play().catch(() => {})
     v.play().catch(() => {})
     setPlaying(true)

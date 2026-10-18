@@ -91,6 +91,9 @@ pub fn load_config_from(project_path: &Path, filename: &str) -> anyhow::Result<P
         text: raw.clone(),
         from: 0,
         changed: false,
+        // ⚠️ 兜底那一支**没有迁移**，所以没有"清掉的键"可报（这条读路径本来也不打日志：
+        //    工程级配置不写回，键会一直在，报一次就够且由 `config migrate` 负责真清）。
+        retired: Vec::new(),
     });
     // 老工程的 `duration` → `end` 在反序列化前升级（见 project/legacy.rs）
     let text = yekitrim_core::config::version::strip_version_key(&migrated.text)?;

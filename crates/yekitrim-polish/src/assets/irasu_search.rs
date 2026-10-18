@@ -264,11 +264,11 @@ fn sanitize_filename(keyword: &str) -> String {
 
 /// 从项目的所有 segments 中收集 irasu keywords
 pub fn collect_keywords(segments: &[crate::project::Segment]) -> Vec<String> {
-    use crate::project::Event;
     let mut keywords: Vec<String> = vec![];
     for seg in segments {
         for event in &seg.events {
-            if let Event::Sticker { keyword, .. } = event {
+            // 两个载体都认（编辑器「贴纸轨」建的是 `Element{kind:"sticker"}`）
+            if let Some(keyword) = event.sticker_keyword() {
                 let kw = keyword.trim().to_string();
                 if !kw.is_empty() && !keywords.contains(&kw) {
                     keywords.push(kw);

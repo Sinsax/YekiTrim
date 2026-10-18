@@ -432,6 +432,8 @@ pub async fn cmd_llm_for(
         sticker_budget, sfx_budget, &sfx_blacklist,
         // §17 跳切的接缝判据要读它 —— 与 `cmd_process` 同一份 `mute_ranges`。
         &config.mute_ranges,
+        // 用户手排过的成片时间线：非空时落实意图只前插/后追，**不覆盖**（`cmd_llm` 写回时整份替换）。
+        &config.edl.clips,
         Some(&project_path.join(yekitrim_core::path::PROJECT_STATE_DIR_NAME)),
         cancel,
     ).await?;
@@ -463,7 +465,8 @@ pub async fn cmd_llm_for(
     let (segments, dm_filter, hl_words) = (new_config.segments, new_config.filter.danmaku, new_config.filter.highlight);
     // 冷开场/回忆回溯落到 `edl.clips`（第 5 批）：`None` = 本轮没有意图 ⇒ **不许碰** `cfg.edl`。
     // ⚠️ 有 EDL 时 `mute_ranges` 整个被忽略（`ProjectFile::resolve_edl`、规格 §2.3），
-    // 所以"没意图就别写"是 R4 存量零回归的判据本身；用户手拖过的 clips 在这里被 `None` 保住。
+    // 所以"没意图就别写"是 R4 存量零回归的判据本身；用户手拖过的 clips 在 `None` 时原样不动，
+    // `Some` 也一定是**用户 clips ∪ 意图**（pipeline 以 `config.edl.clips` 打底），不会被补集冲掉。
     project::update_polish_toml(project_path, move |cfg| {
         cfg.segments = segments;
         cfg.filter.danmaku = dm_filter;
@@ -566,6 +569,7 @@ pub async fn cmd_llm_segment_for(
         &mut segments,
         index,
         Some(project_path),
+        &config.mute_ranges,
         cancel,
     )
     .await?;

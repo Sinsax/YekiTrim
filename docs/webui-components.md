@@ -41,6 +41,10 @@ emits `seek`/`toggle`/`preview`/`done`/`reprocess`/`retried`/`redo-segment`。
 为什么是 202px：7 条泳道各 26px 是用户给出的"紧凑"上限（原 34px 时整块高度挤掉首屏的预览），
 标尺 20px 是刻度的最小可读高度；卡片头被取消是因为它与 `.tl-head` 里的按钮行语义重复。
 
+⚠️ **2026-10 起标尺带里多了一条 16px 的热度曲线**（见 ①.8）：曲线开着时总高 **202 → 218px**，
+点那枚眼睛关掉即**缩回 202px**（不留空槽）。"7 条泳道 / 不要新增泳道"这条口径**没变** ——
+曲线是**叠在标尺带里**的，不是第 8 条泳道。
+
 ### 1.2 响度包络线：两个独立缺陷叠加
 
 **响度显示 = 按像素列取峰值的包络线，压在不透明的字幕块之上**（2026-09 重做）。**两个独立缺陷叠加**，
@@ -87,8 +91,13 @@ wasm 预览配置。三处求值器统一走各自的 `evDur()` / `evDuration()`
 （`openFxMenu`，点别处关闭；`closeFxMenu` 里用 `closest('.fx-menu')` 放行，别让 document 上的 capture pointerdown
 提前清掉菜单）；想换轨道就删掉重加，别再退回 15 种全类型下拉。
 
-**属性面板 = 标配块 + 类型专属块**：标配永远是 `开始（秒）/ 结束（秒）` + 「设为入点 / 设为出点 / 定位 / 删除」
-（拆分只给字幕/屏蔽、复制只给事件）；**「保存修改」按钮已删** —— 面板容器上 `@input/@change` 事件委托 → `touch(kind)`。
+**属性面板 = 标配块 + 类型专属块**：标配永远是 `开始（秒）/ 结束（秒）` + **一行**「入点 / 出点 / 定位」
+再按类型加「拆分」（只给字幕/屏蔽）；**删除走双击块**、**没有「复制」按钮**（2026-10-15 用户口径「不需要复制」）。
+⚠️ 标签是**两字**（2026-10-15 用户口径：「整合为一行」+「设为」删去）：`.props-panel` 只有 **232px**
+（padding 10 + 1px 边框 ⇒ **行内容宽 210px**）。四个两字按钮 = `48×4 + 4×3 = 204px`，一行放得下；
+写成「设为入点 / 设为出点」时那两颗各 72px，四个共 **252px ⇒ 折成两行**（真 Chrome 量过）。
+完整说法（"把「开始」设为当前播放时间"）留在按钮的 `title` 里。
+**「保存修改」按钮已删** —— 面板容器上 `@input/@change` 事件委托 → `touch(kind)`。
 
 ### 1.4 落盘、后处理与 `manual`
 
@@ -103,7 +112,7 @@ wasm 预览配置。三处求值器统一走各自的 `evDur()` / `evDuration()`
   （卸载前先 `flushSave()`）。**250ms** 防抖 PUT 落盘（2026-10-05 由 700ms 收短：触发点都是离散
   `change`，窗口只需盖住连点合并）；页面侧 `onEditDone` 再 1.5s 合并防抖 →
   `startJob('process', …, {silent:true, keepPreview:true})`。忙时走 `pendingProcess`（存 **dir**），空闲补跑一次。
-- **手工放的事件（`manual`）后处理一律不改写**：新建（`addEventAt`）、复制（`duplicateSelected`）与改时间都打这个标记；
+- **手工放的事件（`manual`）后处理一律不改写**：新建（`addEventAt`）与改时间都打这个标记；
   `process` 侧三处吸附（`align_stickers_to_subtitles` / Step 2c / `align_pip_shots`）跳过它，
   **`cap_events` 的数量抽稀也跳过它**。面板 chip 写明语义（`手动` = 不吸附、不抽稀 / `自动对齐` = 会被吸附），
   「跟随字幕」清标记交回自动处理。
@@ -254,6 +263,73 @@ wasm 预览配置。三处求值器统一走各自的 `evDur()` / `evDuration()`
   7 条变异：整类门、`laneDefaults.camera/effects/sfx`、显式开关失效、字幕/弹幕轨门）+ Rust
   `project::config::canvas_stage_tests::{lane_switches_default_by_orientation_and_explicit_wins, stage_lanes_round_trip_and_stay_absent_when_auto}`
   与 `render::sound::tests::sfx_lane_switch_gates_audio`。
+---
+
+### 1.8 热度曲线（标尺带，2026-10）
+
+**用户口径**：在时间轴**底部的时间区域**（= 「时间」标尺带）叠一条曲线，信息 = **弹幕按条 + 字幕按字量**
+算出来的热度；"实时"指的是**视频的实时**（跟着播放头看这一刻多热），**不做随编辑即时重算** ——
+按 `polish init` / 装载时的数据算**一次**就冻住。弹幕权重比字幕**高**、窗口要更细、小一点没关系
+（参考字幕泳道上那条响度曲线）、开关照其他轨道那枚眼睛、**默认常显**。
+**追加口径（2026-10，看到初版之后）**：「**曲线起伏大一点**」⇒ ① 带高 12 → **16px**（同样的形状放大了 1/3）；
+② 加一层**显示对比拉伸**（`heatDisplay`，x²）—— 台阶之间的落差被拉开，峰值仍顶格（详见 ② 末段）。
+
+**① 形态与几何**
+
+| 项 | 值 | 说明 |
+|---|---|---|
+| 曲线带高度 | **16px**（`HEAT_H`） | 标尺带 20 → 36px；关掉曲线缩回 20px（不留空槽） |
+| 纵轴 | **相对本片最热那一刻**，再做 x² 对比拉伸 | `heatDisplay(heat / peak)` 画线；**读数走同一个映射**（否则界面在说谎）|
+| 横轴 | 与泳道共用 `t × scale` / `trackWidth` | 峰值与上面的块左右严格对齐 |
+| 画法 | 按 `HEAT_COL_STEP`(2px) 像素列取该列峰值、折线只描边 | 同 `.wave-layer`：柱状图缩小糊成一片、放大出缝 |
+| 颜色 | `--main` 线 + `--card` halo | 一律走 tokens（双主题）；halo 把线从刻度线上「抠」出来 |
+
+⚠️ **`pointer-events:none` 不能去掉**（标尺的 `pointerdown` 是 seek / 拖播放头，曲线挡一下就是"点不中"）；
+⚠️ 三条 `.heat-on` 高度（`.ruler-label` / `.ruler-lane` / `.ruler-track`）**必须成对**，少一条就与轨道列
+错位 16px —— 而画面上只是"刻度比泳道矮一点"，**不报错**。两条都由 `check-heat-curve.mjs` 的装配判据钉着。
+⚠️ **时间标签不许再叠一次位移**：`.ruler-time` 的 containing block 就是 `.ruler-tick`（Span 在绝对定位的
+Div 里）—— 刻度整体下移 16px 之后，标签保持原来那个 `top:1px` 就正好落在曲线下面那 20px 里。再补一条
+`.heat-on .ruler-time { top:13px }` 就是 16 + 13 + 字号 9 ≈ 38px > 36px 带高 ⇒ **标签被裁掉半行**
+（2026-10 实测踩过：静态判据、以及"刻度已下移 16px"的读数**全是绿的**，是截图放大才看见）。
+判据 = `check-heat-curve.mjs` 里的标签几何算术（`刻度偏移 + 标签偏移 + 字号 ≤ 带高`）。
+
+**② 口径（唯一一份在 `webui/src/polish/heat.js`）**
+
+- 桶宽 **0.5s**（比 `punch::PUNCH_WINDOW_SECS`(5s) **细**：那是**判据窗**，这是画线的桶）；
+- 字幕 = **码点数**（去空白；`String.length` 把 emoji 算 2，必须按码点）× 与桶的**重叠秒数 ÷ 桶宽**；
+  弹幕 = **条数**，按 `start` 归桶；
+- 两路各自按**本片段最大值**归一后加权：**弹幕 0.6 / 字幕 0.4**（用户口径"弹幕权重大一点"）；
+  **没有弹幕时字幕独占 1.0**（缺席的那路不参与归一 —— 不是当 0 分，那会把字幕判出的高热度整体压平）；
+- 数据源：`data/danmaku.json`（`polish init`/`parse` 写的那份，与 `process` 爆点判据**同源**）+ 已读进来的字幕。
+  404 = **正常空态**（老工程没有这份文件），其它失败只 `warn`、**只用字幕**，并写在 `title` 里（不静默降级）。
+
+⚠️ **与 `process/punch.rs` 的关系**：按字 / 按条 / 自基准归一 / 缺席的那路不参与归一 —— 这四条是**继承**来的；
+"窗口更细 + 权重反过来"是**有意不同**（理由写在 `heat.js` 模块头）。门禁**从 `punch.rs` 源码里逐条对拍**
+那四条 —— 那边改了而这边没跟就红。
+
+⚠️ **"起伏大一点"那把旋钮 = 显示对比拉伸（`HEAT_DISPLAY_GAMMA` = 2）**，不是把数据改大：
+字幕那一路的桶值是"这条字幕说话时的**字/秒**"，而它在**一条字幕之内是常数** ⇒ 原始曲线天生是一串**台阶**
+（实测某片段：`1 1 1 1 1 1 0.48 0 0.32 0.33×5 …`），台阶之间又只有两三成的落差，画在 12px 带里就像一条平线。
+x² 把落差拉开（0.33 → 0.11、0.6 → 0.36、**1.0 → 1.0** ⇒ 峰值照样顶格，读数 100% 的含义不变）。
+⚠️ 它**只影响画多高 / 读多少**：`heat` 的数值一个都不动（`heatSeries` 的整套对拍不受影响，门禁里有一条专门钉这个）。
+⚠️ 画线与读数**必须走同一个 `heatDisplay`** —— 只在画线上做拉伸，就会出现"线冲上去了、数字还在 73%"，
+那是界面在说谎（装配判据 ⑧ + 变异自证 G 钉着）。
+⚠️ **弹幕很密的片段曲线仍可能贴顶**（那是数据本身"一直很热"）：真要再拉开，下一个旋钮是"按本片分位
+（P05–P95）自动增益"，别去动权重或桶宽 —— 那两样是**口径**，不属于显示。
+
+**③ 开关与读数**
+
+- 开关 = 「时间」标签列里那枚眼睛，形状/位置与其他轨道一致，**默认常显**。
+  ⚠️ **它不进 `[stage.lanes]`**：那六个键的语义是"**整类不渲染**"、由预览 / 出片 / 转译器消费，
+  而这座曲线**只在编辑器里看** —— 写进去就是往配置里塞一个没人读的键。它走
+  `localStorage['yekitrim.ui.heatCurve']`（与其他界面偏好同一个做法）。
+- 读数在标签列右端：悬停时 = 鼠标处那一桶，否则 = **播放头**那一桶（"视频的实时热度"就是这一档）；
+  明细（弹幕条数 / 字幕字每秒 / 桶宽 / 口径）进 `title`。
+
+**④ 判据**：`node webui/scripts/check-heat-curve.mjs`（38 项；`--mutate` 再加 7 处变异自证：按桶记满 /
+按 UTF-16 码元 / 权重反转 / 少一条 `.heat-on` 高度 / 关掉对比拉伸 / 读数漏 `heatDisplay` / 描边写死颜色）。
+页面上还要验"**曲线真的在起伏**"（headless 量描出来的高度跨度 ≥ 带子的 70%）：本片段实测 14.00 / 14px。
+
 ---
 
 ## ② 精修预览（`PolishPreview.vue`）
@@ -1173,9 +1249,22 @@ to_origin）、**画中画**（`zoom="远"`），外加**附加变种：手持�
   **不许静默回退到系统字体假装换好了** —— 详见 `docs/plan/font-library.md` §12/§21。
   ⚠️ 素材库的写路径**刻意不挂 `enforce_scope`**（库不在任何工程内，挂进去 `fonts/import` 的 `{dir}`
   会被按"在不在你项目里"判掉回 404）。
-- `polish/StickerPicker`：贴纸两级列表（keyword 一级 → 缩略图二级）；选中写 `keyword/sticker_tag/name/source`，
+- `polish/StickerPicker`：**行递进三段式 + 固定高度**（2026-10-15 用户口径「以行形式递进」「固定高度」）：
+  上面**恒 3 行路径区**（已选 ✎ / 正在选… ● / 未选），下面是正在选那一级的选项
+  （包列表 → 分类 → 3 列缩略图；`emoji` 是包列表里的一行）；**整块 330 = 路径 78 + 标题/筛选 50 + 正文 192**，
+  切页面/切状态都不跳。点已选行（✎）**只换页、字段不动**；**换值才清更深的选择**（重选同一个值保留）；
+  「全部（不限）」= `sticker_tag` 清空。选中写 `keyword/sticker_tag/name/source`，
   **`name` 必须是去扩展名的文件名**（后处理与出片按 stem 匹配）；数据来自**只读**接口
-  `GET /api/polish/sticker-library`（写操作只在 admin 侧，别把库管理接口开到 `/polish/*`）。
+  `GET /api/polish/sticker-library`（写操作只在素材库侧，别把库管理接口开到 `/polish/*`）。
+  库读失败**必须报错 + 重试**（`:lib-error` / `@retry-lib`），不许退化成「库是空的」。
+  钉子：① `node scripts/check-sticker-picker-flow.mjs`（静态：24 项 + 3 处变异自证）；
+  ② `node scripts/check-sticker-picker-layout.mjs`（**真 Chrome headless 几何**：挂真组件、宿主 = 真 `.props-panel`（232 外框 / 210 内容），
+  逐个状态真点真量 `getBoundingClientRect` —— 整块 330 / 路径 78 / 正文 196 / 3 行 × 24 / 无横向溢出，
+  并要求**十种状态的整块高度完全一致**；截图落 `.workbuddy/sticker-picker-headless-*.png`）。
+  ⚠️ headless 那条**零依赖**：CDP 走 Node 内建 `WebSocket` + `fetch`（Node ≥ 22），不要装 puppeteer/playwright；
+  夹具在 `scripts/fixtures/sticker-picker/`（vite 用 `webui/node_modules` 构建到
+  `webui/node_modules/.sticker-picker-harness`），找不到 Chrome/Edge 时 **SKIP 退出 0**，`CHROME_PATH` 可指定。
+  它第一次跑就抓到过真缺陷：emoji 来源的「分类」页只列了「全部（不限）」（组件只有表情墙读了 `emojiGroups`）。
 - `polish/SfxPicker`：音效选择器，数据来自 `GET /api/polish/sfx-catalog`（已按全局 `[sfx] blacklist` 过滤），
   选中 emit `pick(id)`，空串 = 清空。
 - `JobList` / `jobs/JobDrawer`：`JobList` 把「读取中 / 读取失败（带重试按钮）/ 真的没有任务」**分三态**显示；

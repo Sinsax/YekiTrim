@@ -230,15 +230,31 @@ pub(super) async fn follow_render_output(
     }
 }
 
-/// 渲染中途失败/取消后清掉半成品：`_chunk_*.mp4` / `_temp_*`（成片与封面不动）。
+/// 渲染中途失败/取消后清掉半成品：`_chunk_*.mp4` / `_temp_*` / `_dhampir_project*`
+/// （成片与封面不动）。
+///
+/// ⚠️ **取消 = 整个进程树被杀，Rust 侧的 `dhampir::cleanup_project` 根本没机会跑** ——
+/// 转译草稿就靠这里兜底：`_dhampir_project<tag>.json` 与同名 `.assets/` 文字轨目录
+/// （2026-10-18「渲染导出时中间文件过多」之后转译产物都叫这两个名字）。
+/// 它们**不是 `_temp_` 前缀**（转译器自己按 `--out` 命名），所以必须单独列一条；
+/// 而且目录要 `remove_dir_all` —— `remove_file` 对目录静默失败，等于没清。
 pub(super) fn cleanup_render_leftovers(dir: &Path) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        if name.starts_with("_chunk_") || name.starts_with("_temp_") {
-            let _ = std::fs::remove_file(entry.path());
+        if !(name.starts_with("_chunk_")
+            || name.starts_with("_temp_")
+            || name.starts_with("_dhampir_project"))
+        {
+            continue;
+        }
+        let path = entry.path();
+        if path.is_dir() {
+            let _ = std::fs::remove_dir_all(&path);
+        } else {
+            let _ = std::fs::remove_file(&path);
         }
     }
 }
@@ -384,6 +400,40 @@ mod tests {
 
 
 
+
+/// 取消/失败后收尾：`_dhampir_project*` 的**目录**也必须删掉。
+///
+/// 2026-10-18「渲染导出时中间文件过多」之后，转译草稿 = `_dhampir_project<tag>.json`
+/// + 同名 `.assets/` 目录。取消 = **整个进程树被杀**，Rust 侧的 `dhampir::cleanup_project`
+/// 根本没机会跑，只剩这里兜底。⚠️ 目录必须 `remove_dir_all` —— `remove_file` 对目录是
+/// 静默失败（等于没清，而且报告里看不出来）。
+#[test]
+fn cleanup_render_leftovers_removes_dhampir_scratch_dirs() {
+    let dir = std::env::temp_dir().join(format!("yekitrim-cleanup-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("_dhampir_project.a1.assets")).unwrap();
+    std::fs::write(dir.join("_dhampir_project.a1.json"), b"{}").unwrap();
+    std::fs::write(dir.join("_temp_video.mp4"), b"x").unwrap();
+    std::fs::write(dir.join("_chunk_1.mp4"), b"x").unwrap();
+    std::fs::write(dir.join("vtuber-clip.mp4"), b"keep").unwrap();
+    std::fs::write(dir.join("dhampir-text_look.ass"), b"keep").unwrap();
+
+    cleanup_render_leftovers(&dir);
+
+    assert!(
+        !dir.join("_dhampir_project.a1.assets").exists(),
+        "文字轨目录必须整目录删（remove_file 对它无效）"
+    );
+    assert!(!dir.join("_dhampir_project.a1.json").exists());
+    assert!(!dir.join("_temp_video.mp4").exists());
+    assert!(!dir.join("_chunk_1.mp4").exists());
+    assert!(dir.join("vtuber-clip.mp4").exists(), "成片不许动");
+    assert!(
+        dir.join("dhampir-text_look.ass").exists(),
+        "同类但不在收尾名单里的文件一律不动"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
 
 /// 渲染进度行解析：4 个分块各报各的，父进程按最小值聚合。
 ///

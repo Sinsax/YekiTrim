@@ -11,7 +11,7 @@
 //   ② 直接把 `ANIM_KINDS` 抽出来数一遍档数与轴归属；
 //   ③/④ 断言三栏接线 + 被否决的那套方案不许回来；
 //   ⑤ 把 `kindsOnAxis` / `kindLabelOn` 的**真函数体逐字抠出来真跑**
-//      （三栏档集合 · "空"排最后 · 只属一栏不加后缀 · **三栏"空"显示名互不相同**）；
+//      （三栏档集合 · "空"排最后 · 只属一栏不加后缀 · **排版栏的"空"独一份、
 //   ⑥ 反向断言 `AXIS_SUFFIX` **不再存在**；
 //   ⑦ 把 `setKindOnAxis` / `setVariantOnAxis` 抠出来**真跑**（只动自己那一轴）；
 //   ⑧ 把 `kindOnAxis` 抠出来**真跑**（认不出的档名不许被静默归成"无"）。
@@ -206,7 +206,14 @@ ok(new Set(nonEmpty).size === nonEmpty.length, '② 有重复档名')
 
 // ---- ③ 模板真的用了这些标识符（而不只是定义了）----
 //
-// ⚠️ **三轴 × 两级**：排版 / 过渡 / 动效**各**一个"种类"下拉 + 一个"细分"下拉。
+// ⚠️ **两级只属于排版轴**（2026-10-15 改）。
+//
+//    排版轴：一个"种类"下拉（倾斜/斜扫/竖排）+ 一个"细分"下拉 —— 两级**各有信息**。
+//    过渡轴：**只有一个下拉**，选项就是 `pop` / `fade` 两档本身。
+//    ⚠️⚠️ 它原先**照抄**了排版那套两级 ⇒ 种类框只能把自己重复一遍显示成「过渡」、
+//       细分框显示「弹出」，面板上就是「过渡 / 弹出」两个框 —— 用户原话
+//       「过渡：过渡：弹出，不觉得很蠢吗」「过渡只留弹出和淡入淡出」。
+//       **别再给过渡轴补回种类框/细分框**。
 //    以前那条 `v-for="g in ANIM_GROUPS"` + `<optgroup>` 的断言**已经作废**
 //    （那正是用户说"还是这个"的形态）。
 const tpl = parsed.descriptor.template?.content ?? ''
@@ -216,13 +223,27 @@ const tpl = parsed.descriptor.template?.content ?? ''
 //    （否则下一个人会把它加回来），而只匹配文本的判据会**把说明当成违规**。
 //    ⇒ 断言只对**真标记**生效。`(?<!--)` 不做可变长回看，所以直接整体剥掉。
 const tplMarkup = tpl.replace(/<!--[\s\S]*?-->/g, '')
-// ⚠️ 三条轴**各自**要有种类下拉（`kindsOnAxis('style'/'transition'/'effect')`）。
-for (const ax of AXES) {
+// ⚠️ **排版轴是两级**（种类 + 细分）；过渡轴**只有一级**（直接列两档）。
+//    过渡轴那条两级结构已于 2026-10-15 删除 —— 症状见上面那段注释。
+for (const ax of ['style', 'effect']) {
   ok(new RegExp(`v-for="k in kindsOnAxis\\('${ax}'\\)"`).test(tplMarkup),
     `③ 「${ax}」那条轴没有种类下拉（\`v-for="k in kindsOnAxis('${ax}')"\`）—— 那一栏是空的`)
 }
-for (const v of ['styleVariants', 'transitionVariants', 'effectVariants']) {
+for (const v of ['styleVariants', 'effectVariants']) {
   ok(new RegExp(`v-for="a in ${v}"`).test(tplMarkup), `③ \`${v}\` 那条细分下拉是空的`)
+}
+// ⚠️⚠️ **过渡轴：一个框、两个档**（2026-10-15）。三条一起断言才拦得住"又拆回两级"：
+//    ① 不许再有 `kindsOnAxis('transition')` 的种类框；
+//    ② 不许再有 `transitionVariants` 的细分框；
+//    ③ 必须有一个直接列出两档的下拉（`TRANSITION_OPTIONS`）。
+{
+  ok(!new RegExp(`v-for="k in kindsOnAxis\\('transition'\\)"`).test(tplMarkup),
+    '③ 过渡轴**又出现了种类下拉**（`kindsOnAxis(\'transition\')`）—— 面板上会变成' +
+    '「过渡 / 弹出」两个框（用户报过不止一次）')
+  ok(!/v-for="a in transitionVariants"/.test(tplMarkup),
+    '③ 过渡轴**又出现了细分下拉**（`transitionVariants`）—— 同上，两级只属于排版轴')
+  ok(/v-for="a in TRANSITION_OPTIONS"/.test(tplMarkup),
+    '③ 过渡轴没有那个"直接列两档"的下拉（`v-for="a in TRANSITION_OPTIONS"`）—— 那一栏是空的')
 }
 ok(/ANIM_KNOWN\.includes\(/.test(tplMarkup), '③ 模板没有用 `ANIM_KNOWN` 判断未知档')
 // ⚠️ 三栏**各**要有一条"认不出档名就落到未知支"的判据 —— 少一栏，那一栏的
@@ -244,12 +265,25 @@ ok(/const AXIS_FIELDS = \{[^}]*style:[^}]*transition:[^}]*effect:/.test(src),
 // ⚠️ **只对真标记断言**（`tplMarkup`）—— 见上面"先剥注释"那段。
 ok(!/<optgroup/.test(tplMarkup),
   '③ 又出现了 `<optgroup>` —— 那是"四十项平铺进一个下拉"的旧形态，用户报过"还是这个"')
-// ⚠️ 未知档必须**有 option**（否则 `<select>` 的值匹配不上任何一项，
-//    浏览器会显示成第一项——用户以为自己没选错）。**三栏各一条**。
+// ⚠️ 值匹配不上任何一项时必须有兜底 option（否则 `<select>` 会显示第一项 ——
+//    用户以为自己没选错）。**三栏各一条**。
+//
+// ⚠️⚠️ 判据走 `tplMarkup`（**已剥 HTML 注释**），但那只剥掉模板注释 ——
+//    `<script setup>` 里的 `//` 注释**剥不掉**，于是"注释里提到这个词"
+//    也会被数进来。2026-10-15 实测踩到：我在 `TRANSITION_OPTIONS` 的文档注释里
+//    写了一次「未知档」，计数就从 3 变成 4，判据**照样绿** —— 而过渡轴那一栏
+//    其实已经不再用这个文案了。**"判据因为注释而满足"等于判据没生效。**
+//    ⇒ 这里只数**真的 `<option ...>值里有它`** 的那些行。
 {
-  const unknownCount = (tplMarkup.match(/未知档/g) ?? []).length
-  ok(unknownCount >= 3,
-    `③ "未知档"那条 option 只有 ${unknownCount} 条 —— 三栏各要一条（否则某栏会静默显示成"无"）`)
+  const optionLines = (tplMarkup.match(/<option[^>]*>[\s\S]*?(?=<\/option>)/g) ?? [])
+  const unknownCount = optionLines.filter((l) => /未知档/.test(l)).length
+  ok(unknownCount >= 2,
+    `③ 带"未知档"的兜底 option 只有 ${unknownCount} 条 —— 排版/动效两栏各要一条` +
+    '（否则某栏的值匹配不上时会静默显示成第一项）')
+  // ⚠️ 过渡轴那一条兜底**不许**写「未知档」：空串是**正常状态**（没设过），
+  //    不是坏数据。写成"未知档"会让用户以为工程坏了。
+  ok(!/未知档（\{\{ selItem\.transition_anim/.test(tplMarkup),
+    '③ 过渡轴的兜底 option 又写成"未知档"了 —— 空值应当显示成"没设过"，不是坏数据')
 }
 
 // ---- ④ ⚠️ **面板上只许有"排版 / 过渡 / 动效"这三栏**（用户口径 2026-10-14）----
@@ -395,8 +429,14 @@ ok(!/<optgroup/.test(tplMarkup),
     //
     //    为什么要单独一条：`none` 那一项**三栏都出现**，而它三栏的**语义不同** ——
     //      排版栏 =「默认」（回到没有任何排版变换 —— 它是一个**状态**）
-    //      过渡栏 =「默认弹出」（用户口径「默认为弹出」—— 也是一个**状态**）
+    //      过渡栏 =「不设」（过渡轴于 2026-10-15 收敛成单框，「默认弹出」那个叫法已删 ——
+    //                "弹出为默认"改由 `defaultEvent` 落盘 `transition_anim='pop'` 表达）
     //      动效栏 =「不设」（不额外加动效 —— 一个有意为之的**选择**）
+    //
+    //    ⚠️⚠️ **过渡栏与动效栏现在同名（都是「不设」）**，所以下面那条"三栏不许重名"
+    //       的断言**必须相应放宽成"排版栏那一档必须独一份"**（见 ⑤d-2）——
+    //       两栏同名在旧口径下是 bug（那时过渡栏的"空"是另一个词），
+    //       而现在它们是**同一种语义**："我不额外指定这一栏的效果"。
     //
     //    ⚠️ 三栏都写同一个词的症状：用户在动效栏读到「默认」，会把整栏读成
     //       "这里没什么可设的"（**以为没有动效这回事**）；在排版栏读到「不设」
@@ -406,14 +446,22 @@ ok(!/<optgroup/.test(tplMarkup),
       const noneItem = KINDS.find((k) => k.kind === 'none')
       ok(!!noneItem, '⑤ `ANIM_KINDS` 里找不到 `kind: \'none\'` 那一项（判据的前提没了）')
       if (noneItem) {
+        // ⚠️⚠️ **2026-10-15：过渡栏的"空"= 动效栏的"空"=「不设」**（用户把过渡轴收敛成
+        //    单框之后，「默认弹出」这个叫法失去出口）。所以再要求"三栏两两不同"就是
+        //    在要求一个**假**的区别 —— 改成：**排版栏那一档独一份**，其余两栏同名且为「不设」。
         const texts = AXES.map((ax) => shown(ax, noneItem))
-        ok(new Set(texts).size === texts.length,
-          '⑤ 三栏的"空"显示名**有重复**：' +
+        const byAx = Object.fromEntries(AXES.map((ax, i) => [ax, texts[i]]))
+        ok(byAx.style !== byAx.transition && byAx.style !== byAx.effect,
+          '⑤ 「排版」栏的"空"（默认）**与另外两栏重名了**：' +
           AXES.map((ax, i) => `${ax}="${texts[i]}"`).join(' / ') +
-          ' —— 三栏的"空"语义本来就不同，重名会让用户把某栏读成"没有这回事"')
-        // ⚠️ 逐个钉**具体词**（不只是"两两不同"）：三个都改成「空」也满足"两两不同"，
-        //    但那样三栏都成了没话说的占位词，用户照样读不出差别。
-        const want = { style: '默认', transition: '默认弹出', effect: '不设' }
+          ' —— "回到出厂排版"与"不额外加效果"是两回事，混用会让用户读错')
+        ok(byAx.transition === byAx.effect,
+          '⑤ 过渡栏与动效栏的"空"应当同名（都叫「不设」），实得 ' +
+          `transition="${byAx.transition}" / effect="${byAx.effect}" —— ` +
+          '过渡轴已收敛成单框（2026-10-15），它俩现在是同一种语义')
+        // ⚠️ 逐个钉**具体词**："两栏都改成空"也满足上面的判据，
+        //    但那样两栏都成了没话说的占位词，用户照样读不出差别。
+        const want = { style: '默认', transition: '不设', effect: '不设' }
         for (const ax of AXES) {
           const got = shown(ax, noneItem)
           ok(got === want[ax],
@@ -429,18 +477,25 @@ ok(!/<optgroup/.test(tplMarkup),
     // ⑤e **三栏的显示标签集合两两不相交**（这就是"看起来重复"的可检形式）。
     //
     //     ⚠️ 收敛后这**不可能**因为"两栏都有的档"而违反（没有 `both` 了）——
-    //        能违反的只剩**"空"那一项重名**（⑤d 已单独钉死）与
-    //        "两条轴上有两档真重名"。后者是数据事故，这里兜住。
+    //        能违反的只剩**"空"那一项重名**与"两条轴上有两档真重名"。
+    //
+    //    ⚠️⚠️ **2026-10-15："空"那一项要从这条里豁免**。
+    //       过渡轴收敛成单框之后，「不设」在**过渡栏与动效栏**是有意同名的
+    //       （同一种语义："我不额外指定这一栏"）⇒ 它**该重名**，
+    //       详情与"该不该"的判据都在 ⑤d（那条现在钉的是"排版栏独一份"）。
+    //       这里只拦**真的档位**重名 —— 那仍是数据事故。
     {
       const sets = AXES.map((ax) => ({
         ax,
-        set: new Set(kindsOnAxis(ax).map((k) => shown(ax, k))),
+        set: new Set(kindsOnAxis(ax)
+          .filter((k) => k.kind !== 'none')   // "空"的显示名归 ⑤d 管
+          .map((k) => shown(ax, k))),
       }))
       for (let i = 0; i < sets.length; i++) {
         for (let j = i + 1; j < sets.length; j++) {
           const overlap = [...sets[i].set].filter((l) => sets[j].set.has(l))
           ok(overlap.length === 0,
-            `⑤ 「${sets[i].ax}」栏与「${sets[j].ax}」栏有同名条目：${overlap.join('、')} —— ` +
+            `⑤ 「${sets[i].ax}」栏与「${sets[j].ax}」栏有同名档：${overlap.join('、')} —— ` +
             '用户读到的就是"这两栏重复了"')
         }
       }
@@ -448,10 +503,19 @@ ok(!/<optgroup/.test(tplMarkup),
     // ⑤f **源码侧的接线判据**：模板必须真的把 axis 传进去。
     //     只判"算出来的标签不同"是不够的 —— 模板里万一调的是不带 axis 的旧签名，
     //     算得再对也不生效（本仓反复踩过"测到函数、没测到调用方"）。
-    for (const ax of AXES) {
+    //
+    //    ⚠️ **只查 `style` / `effect` 两栏**（2026-10-15）：过渡轴已收敛成单框，
+    //       它那个 `<select>` 直接列 `TRANSITION_OPTIONS`、**不再调 `kindLabelOn`**
+    //       （它的选项标签是那份常量自带的 `label`）。要求它必须调 = 强迫把
+    //       两级结构加回来。
+    for (const ax of ['style', 'effect']) {
       ok(new RegExp(`kindLabelOn\\('${ax}', k\\)`).test(tplMarkup),
         `⑤ 模板里「${ax}」那一栏没有把 axis 传给 kindLabelOn（显示会退回不带轴的名字）`)
     }
+    // ⚠️ 反向：过渡轴**不许**再用 `kindLabelOn` 出选项（用回来 = 两级结构回来了）。
+    ok(!new RegExp(`kindLabelOn\\('transition', k\\)`).test(tplMarkup),
+      '⑤ 过渡轴又用 `kindLabelOn(\'transition\', k)` 出选项了 —— 那是种类下拉的形态，' +
+      '它应当在 `TRANSITION_OPTIONS` 上直接 `v-for`（用户报过「过渡 / 弹出」两个框）')
     // ⑤g **"判据自己空转"的兜底**：档数为 0 时上面那些 `for` 一条都不跑。
     ok(KINDS.every((k) => typeof k.label === 'string' && k.label.length > 0),
       '⑤ 有档位没扒到 `label` —— 显示名对拍会拿 `undefined` 去比，看着像"全过"')
@@ -653,7 +717,7 @@ ok(!/<optgroup/.test(tplMarkup),
 if (fails.length === 0) {
   console.log(
     `✓ 三轴动效下拉真的接上了（${checks} 项：SFC 编译绑定 + 三轴 ${WANT_KINDS} 种类 / ` +
-    `${WANT_TIERS} 档 + 三栏"空"显示名互不相同 + 模板接线 + 真函数行为）`,
+    `${WANT_TIERS} 档 + 排版栏"空"独一份（过渡/动效同为「不设」）+ 过渡轴单框 + 模板接线 + 真函数行为）`,
   )
   process.exit(0)
 }

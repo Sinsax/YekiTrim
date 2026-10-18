@@ -55,7 +55,7 @@
   `silence [files...] [--duration 3.5] [--threshold]` / `download` / `status` / `usage [--days N]` /
   `doctor [--url <base>]` / `ingest token [--disable]` / `ingest status` /
   `user list|info|add|passwd|check|disable|init-admin|reset-admin-password|invite|invites|invite-revoke` /
-  `config init [--path]` / `config show` / `correct [-t <transcript>]` / `server <ServerArgs>` /
+  `config init [--path]` / `config show` / `config migrate [路径…]` / `correct [-t <transcript>]` / `server <ServerArgs>` /
   `polish init|llm|process|render|cover|preview|doctor|test` / `polish stickers list|test|scan|build`。
   `stage_name(num)`（1..4 → AudioExtractor/Transcriber/EventDetector/Cutter）在 `cli.rs`。
   所有 stage 命令的 `-i` 可选，默认从 `yekitrim.toml` 的 `input_file` 读取。
@@ -64,6 +64,7 @@
   （`detect`/`cut` 的自动发现顺序：参数 > config > `output_dir` 里的 json > `*.srt`）；
   `process` 全自动管线（`--dry-run` = 只到 Stage 3）；`silence`「去静音」**只写 `polish.toml`、不改视频**；
   `download` 把全部 ASR 模型下到 `<程序>/.yekitrim/models/`；`status` 看当前进度；
+  `config migrate` = **把已下线的键从配置文件里真清掉并写回**（工程级配置按设计不自动写回，见 core/config 卡）；
   `usage` LLM 用量（token/缓存命中/耗时，账本 `llm_usage`）；`doctor` 安全与运行状况摘要；
   `ingest` 录播姬 webhook / 采集配置概览；`user invite|invites|invite-revoke` = 邀请码
   （**明文落库、可重复查看**）+ 注册开关；`config` 全局配置生成 / 显示；`correct` LLM 订正转录文本；

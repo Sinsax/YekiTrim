@@ -1023,13 +1023,34 @@ function init(){
     var src=STICKER_MAP[en]||'';
     var box=stickerBox(stickerAnchor(ev));
     var stLeft=box.left, stTop=box.top, stSize=box.size;
-    // emoji 来源的 name 是 codepoint: 本地缺失时回退到 Noto Emoji CDN
-    if(!src&&/^[0-9a-f]+$/i.test(en)){src='https://fonts.gstatic.com/s/e/notoemoji/latest/'+en+'/512.gif';}
+    // emoji 来源的 name 有**两种写法**（与 `engine.js::isEmojiName` / `safeEmoji` 同口径，
+    // 2026-10-15 用户报「添加表情后没有正确显示」）：
+    //   ① hex 码点（process 解析 emoji 来源后写回）⇒ 本地缺图时回退 Noto Emoji CDN；
+    //   ② **直接就是 emoji 字符**（用户在手填框里粘的那个）⇒ 不走 CDN，直接当字画。
+    // ⚠️ 老实现只认①，粘字符会让 `el.src=''` ⇒ 触发 onerror ⇒ `parseInt('😭',16)` 是 NaN
+    //    ⇒ span 也不生成 ⇒ **什么都不画**（用户看到的正是这个）。
+    // ⚠️ **可能是多码点序列**，用 `_` 分隔（目录 881 条里 343 条是这种）：
+    //    `203c_fe0f`（‼️）、`1f642_200d_2195_fe0f`（🙂↕️）。与 `engine.js::safeEmoji` 同口径。
+    var enIsHex=/^[0-9a-f]+(_[0-9a-f]+)*$/i.test(en);
+    var enIsChar=!enIsHex&&/^\p{Extended_Pictographic}/u.test(en);
+    if(!src&&enIsHex){src='https://fonts.gstatic.com/s/e/notoemoji/latest/'+en+'/512.gif';}
     el.src=src;
     el.onerror=function(){
-      var code=parseInt(en,16);
+      // ⚠️ 越界要挡住：`deadbeef` 能过 hex 正则但 > 0x10FFFF，`fromCodePoint` 会**抛错**，
+      // 而这一抛是在逐帧渲染路径里 ⇒ 整块 chunk 失败。
+      var ch='';
+      if(enIsChar){ch=en;}
+      else if(enIsHex){
+        var ok=true, parts=en.split('_'), acc=[];
+        for(var pi=0;pi<parts.length;pi++){
+          var code=parseInt(parts[pi],16);
+          if(isNaN(code)||code<=0||code>0x10FFFF){ok=false;break;}
+          acc.push(String.fromCodePoint(code));
+        }
+        if(ok){ch=acc.join('');}
+      }
       // 把落点一起搬进 span（outerHTML 换掉元素后拿不到 el.style，落点会丢）
-      if(!isNaN(code))this.outerHTML='<span style="left:'+stLeft+'px;top:'+stTop+'px;font-size:'+(200*SK)+'px;text-align:center;line-height:'+stSize+'px;font-family:\'Noto Color Emoji\',\'Apple Color Emoji\',\'Segoe UI Emoji\',sans-serif;opacity:0;position:absolute;width:'+stSize+'px;height:'+stSize+'px" id="'+eid+'">'+String.fromCodePoint(code)+'</span>';
+      if(ch)this.outerHTML='<span style="left:'+stLeft+'px;top:'+stTop+'px;font-size:'+(200*SK)+'px;text-align:center;line-height:'+stSize+'px;font-family:\'Noto Color Emoji\',\'Apple Color Emoji\',\'Segoe UI Emoji\',sans-serif;opacity:0;position:absolute;width:'+stSize+'px;height:'+stSize+'px" id="'+eid+'">'+ch+'</span>';
     }.bind(el);
     el.alt=''; el.style.left=stLeft+'px'; el.style.top=stTop+'px';
     document.getElementById('emoji-layer').appendChild(el);

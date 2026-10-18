@@ -16,19 +16,59 @@ use std::path::{Path, PathBuf};
 
 const INDEX_HTML: &str = include_str!("../../templates/index.html");
 
-/// 构建 sticker 映射: stem → URL 路径
+/// 构建 sticker 映射: stem → URL 路径。
+///
+/// ⚠️⚠️ **必须递归、且必须只收图片**（2026-10-14 修，用户报「某个项目里贴纸不出现」）：
+///
+/// 贴纸库实测有两种落盘布局，**都真实存在**：
+///   * **扁平**：`assets/stickers/小丑_1.gif`
+///   * **带版本子目录**：`assets/stickers/ysyk_0.9.0/*.gif`（实测某工程 210 张图全在子目录）
+///
+/// 老实现**只扫顶层、且不筛扩展名**，于是子目录那个工程算出**恰好 1 个键**：
+/// `"ysyk_0.9" -> "/assets/stickers/ysyk_0.9.0"` —— 一个**目录**被当成图片登记，
+/// 而 210 张真图一张都没进映射。下游 `stickerSrc(name)` 查不到名字 ⇒ 恒返回 `""`
+/// ⇒ **预览里贴纸一张都不出现，且不报错**。
+///
+/// `ServeDir` 的根是整个项目目录，所以子目录**本来就取得到** —— 坏的只有这张映射表。
+/// ⚠️ URL 必须是**相对 `assets/stickers/` 的整条相对路径**（含子目录），
+/// 否则 ServeDir 按真实路径找不到（返回 404，症状与"不显示"一样）。
 pub fn build_sticker_map(project_path: &Path) -> serde_json::Map<String, serde_json::Value> {
+    use crate::assets::sticker_index::is_image_file_name;
     let sticker_dir = project_path.join("assets").join("stickers");
     let mut map = serde_json::Map::new();
-    if sticker_dir.exists()
-        && let Ok(entries) = std::fs::read_dir(&sticker_dir) {
-            for entry in entries.flatten() {
-                if let Some(name) = entry.file_name().to_str()
-                    && let Some(stem) = Path::new(name).file_stem().and_then(|s| s.to_str()) {
-                        map.insert(stem.to_string(), serde_json::Value::String(format!("/assets/stickers/{}", name)));
-                    }
+    let mut stack = vec![sticker_dir.clone()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
             }
+            let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+                continue;
+            };
+            // 只收真图片（唯一判据 `is_image_file_name`）：不筛的话
+            // `ysyk.toml` 之类的非图文件也会被登记成"贴纸"。
+            if !is_image_file_name(&name) {
+                continue;
+            }
+            let Some(stem) = Path::new(&name).file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            let rel = path
+                .strip_prefix(&sticker_dir)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            map.insert(
+                stem.to_string(),
+                serde_json::Value::String(format!("/assets/stickers/{rel}")),
+            );
         }
+    }
     map
 }
 
@@ -763,4 +803,65 @@ mod tests {
         let other: serde_json::Value = toml::from_str("[style]\nfoo = 1\n").unwrap();
         assert_eq!(subtitle_font_of(&other), "");
     }
+    /// ⚠️⚠️ 2026-10-14：贴纸「带版本子目录」布局必须能建出映射。
+    ///
+    /// 真事故：某工程把 210 张 gif 放在 `assets/stickers/ysyk_0.9.0/` 下，
+    /// 而老实现**只扫顶层** ⇒ 算出的唯一键是 `"ysyk_0.9" -> "...ysyk_0.9.0"`
+    /// （一个**目录**被当成图片），真图一张都没进映射 ⇒
+    /// `stickerSrc(name)` 恒返回 `""` ⇒ **预览里贴纸一张都不显示，且不报错**。
+    #[test]
+    fn sticker_map_scans_versioned_subdir() {
+        let dir = temp_root("sticker-subdir");
+        let sdir = dir.join("assets").join("stickers");
+        std::fs::create_dir_all(sdir.join("ysyk_0.9.0")).unwrap();
+        // 子目录里两张真图
+        std::fs::write(sdir.join("ysyk_0.9.0").join("Popcat_帧.gif"), b"g").unwrap();
+        std::fs::write(sdir.join("ysyk_0.9.0").join("到达(拿勺子).gif"), b"g").unwrap();
+        // 顶层一张扁平图（老布局必须仍然支持）
+        std::fs::write(sdir.join("小丑_1.gif"), b"g").unwrap();
+        // 非图片必须被排除（否则 `ysyk.toml` 会被登记成"贴纸"）
+        std::fs::write(sdir.join("ysyk.toml"), b"t").unwrap();
+
+        let map = build_sticker_map(&dir);
+        let keys: Vec<&str> = map.keys().map(String::as_str).collect();
+        assert!(keys.contains(&"Popcat_帧"), "子目录里的图必须进映射，实得 {keys:?}");
+        assert!(keys.contains(&"到达(拿勺子)"), "子目录里的图必须进映射，实得 {keys:?}");
+        assert!(keys.contains(&"小丑_1"), "顶层扁平布局必须仍然支持，实得 {keys:?}");
+        assert!(!keys.iter().any(|k| k.starts_with("ysyk_0")), "目录不能被当成图片登记，实得 {keys:?}");
+        assert!(!keys.contains(&"ysyk"), "非图片文件（toml）不许进映射，实得 {keys:?}");
+
+        // URL 必须带**含子目录的相对路径**，否则 ServeDir 找不到（症状同"不显示"）
+        assert_eq!(
+            map["Popcat_帧"].as_str().unwrap(),
+            "/assets/stickers/ysyk_0.9.0/Popcat_帧.gif"
+        );
+        assert_eq!(map["小丑_1"].as_str().unwrap(), "/assets/stickers/小丑_1.gif");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 变异自证：把递归拿掉（退回"只扫顶层"）⇒ 上一条必须红。
+    #[test]
+    fn sticker_map_recursion_is_load_bearing() {
+        let dir = temp_root("sticker-mut");
+        let sdir = dir.join("assets").join("stickers");
+        std::fs::create_dir_all(sdir.join("ysyk_0.9.0")).unwrap();
+        std::fs::write(sdir.join("ysyk_0.9.0").join("Popcat_帧.gif"), b"g").unwrap();
+
+        let full = build_sticker_map(&dir);
+        assert!(full.contains_key("Popcat_帧"), "递归版应找得到");
+
+        // 老行为（只扫顶层）：模拟出来，证明"少了递归就找不到"
+        let mut top_only = serde_json::Map::new();
+        for e in std::fs::read_dir(&sdir).unwrap().flatten() {
+            let n = e.file_name().to_str().unwrap().to_string();
+            top_only.insert(n.replace(".gif", ""), serde_json::Value::String(n));
+        }
+        assert!(
+            !top_only.contains_key("Popcat_帧"),
+            "变异版（只扫顶层）**不该**找得到 —— 否则上一条判据是空转的"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
+

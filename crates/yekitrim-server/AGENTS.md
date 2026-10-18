@@ -21,10 +21,9 @@
   现在信号之后再给 3 秒，到点停止监听（日志一条 WARN），锁照样正常释放。**别把这段时限去掉。**
   `ServerArgs { host, port, open, config, webui_dir, allow_remote, trust_proxy, data_dir, admin_password_file, force, open_path }`；
   `first_bindable_port` / `bind_conflict_hint`（绑失败**实测试绑**再报；`10013`=系统拒绝，`10048`=真被占用）。
-- `AppState`（`src/model.rs`）：共享句柄（`AuthService` / `JobManager` / 日志总线）。
-  ⚠️ **里面没有"当前工程"** —— 见下面那条不变式。
-- `jobs.rs`：`JobManager`（`create` / `wait_start` / `cancel` / `complete` / `fail` / `busy_with` / `spawn_housekeeping`）、
-  `JobSpec`、`JobHandle`、`JobSummary`、`JobEvent`、`JobClass`、`JobPriority`。
+- `AppState`（`src/model.rs`）：共享句柄（`AuthService`/`JobManager`/日志总线）。⚠️ **里面没有"当前工程"**。
+- `jobs.rs`：`JobManager`（`create`/`wait_start`/`cancel`/`complete`/`fail`/`busy_with`/`spawn_housekeeping`）与
+  `JobSpec`/`JobHandle`/`JobSummary`/`JobEvent`/`JobClass`/`JobPriority`。
 - 其余模块见「边界」。`docs/job-queue.md` = 任务队列说明书，**改档位或上限要一起改**。
 
 ## 边界
@@ -52,6 +51,8 @@
 - ⚠️ **WebUI 两个来源，按构建形态自动选**（2026-10-03）：**release 内嵌**（`build.rs` 把
   `webui/dist` 用 `include_bytes!` 编进 exe）· **debug 读盘** · `--webui-dir`/`YEKITRIM_WEBUI_DIR`
   两种形态都覆盖。规则 = `web.rs::choose()`（纯函数，四种组合都有判据）。
+  ⚠️ **`build.rs` 只在 release 内嵌/查新鲜度**：debug 生成空表、`rerun-if-changed` 只跟随自己 ⇒ 改前端不牵动后端编译
+  （开关 `YEKITRIM_EMBED_WEBUI=1/0`）。
   ⚠️ **release 即便磁盘上有 dist 也用内嵌那份** —— 否则在开发机上打 release 会"内嵌一份、跑的是
   仓库里那份"，**测的与发的分家**（这是本次改动的全部意义）。⚠️ `dist` 缺失或比 `webui/src` 旧 ⇒
   **编译失败**（原先只在 `cargo xtask package` 里查）。
@@ -175,8 +176,7 @@
   **不记录请求体**；必须 `redact_path` 掉 webhook 的 token 段（它是**路径段**）。高频接口成功路径降级为 `debug`：
   `/api/media/*`、`/api/health`、`/api/stream`、`GET /api/jobs`、`/api/admin/logs/events`。
 
-**多用户服务进度**：P1～P4 均 ✅ 已落地（设计稿 `docs/superpowers/specs/2026-09-12-multi-user-server-design.md`）；
-**P5 容量与运维 ⏳ 待做**。
+**多用户服务进度**：P1～P4 ✅（设计稿 `docs/superpowers/specs/2026-09-12-multi-user-server-design.md`）；P5 ⏳。
 
 > 改动只允许落在本目录；跨模块改动先读对方卡，并跑两条门禁。
 

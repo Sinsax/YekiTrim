@@ -125,6 +125,13 @@ pub struct Prepared {
     pub from: u32,
     /// 是否改动过
     pub changed: bool,
+    /// **这一趟清掉了哪些键**（`["cutting", "silence_noise_db"]` 这种点号形式，已就绪可直接打印）。
+    ///
+    /// ⚠️ **纯函数不打日志**（2026-10-16）：工程级配置（`yekitrim.toml` / `polish.toml`）按设计
+    /// **只在内存里升、不写回磁盘** ⇒ 那个键**永远在**，于是**每读一次就报一次**
+    /// —— 实测 100ms 内刷了 10 条一模一样的「清掉了没人读的键」。
+    /// 报不报、怎么报交给调用方（它才知道路径、也才知道这次到底写没写盘）。
+    pub retired: Vec<String>,
 }
 
 /// 纯函数：把文本升到 [`CONFIG_VERSION`]。**不碰磁盘**（写回由 [`prepare`] / `edit` 那条路负责）。
@@ -137,19 +144,17 @@ pub fn migrate_text(kind: ConfigKind, raw: &str) -> Result<Prepared> {
     let from = version_of(&doc);
     if from >= CONFIG_VERSION {
         // 同版本不动；**更高版本也不动**（那是更新的程序写的，见模块注释）
-        return Ok(Prepared { text: raw.to_string(), from, changed: false });
+        return Ok(Prepared { text: raw.to_string(), from, changed: false, retired: Vec::new() });
     }
 
     // 逐级迁移。现在只有 v0 → v1 一步；将来加 `if from < 2 { … }` 这样一条一段。
+    let mut retired: Vec<String> = Vec::new();
     for step in from..CONFIG_VERSION {
         for path in kind.retired_in(step) {
             if remove_path(&mut doc, path) {
-                tracing::info!(
-                    "配置迁移 v{step}→v{}：{} 里清掉了没人读的键 `{}`",
-                    step + 1,
-                    kind.label(),
-                    path.join(".")
-                );
+                // 只**收集**，不打日志 —— 见 `Prepared::retired` 的注释（工程级文件不写回，
+                // 每读一次都会走到这里，在纯函数里打日志就是刷屏）。
+                retired.push(path.join("."));
             }
         }
     }
@@ -157,7 +162,7 @@ pub fn migrate_text(kind: ConfigKind, raw: &str) -> Result<Prepared> {
 
     // 版本行摆在最前面（`toml_edit` 插根键会落到哪儿不好保证，而"第一行是版本"最好读）。
     let text = ensure_version_line(&doc.to_string());
-    Ok(Prepared { text, from, changed: true })
+    Ok(Prepared { text, from, changed: true, retired })
 }
 
 /// 保证文本里有且只有"当前版本"那一行（没有就补在最前面）。
@@ -202,11 +207,61 @@ pub fn migrate_doc_in_place(kind: ConfigKind, doc: &mut DocumentMut) -> u32 {
     from
 }
 
+/// 报「这一趟清掉了哪些没人读的键」——**每个文件每进程只报一次**（2026-10-16）。
+///
+/// ⚠️ **为什么需要去重**：工程级配置（`yekitrim.toml` / `polish.toml`）按设计**不写回磁盘**
+/// （工程可能几百个、还可能在网络盘上）⇒ 那几行**永远在**，于是**每读一次都会重新发现它**。
+/// 实测：100ms 内刷了 10 条一模一样的「清掉了没人读的键 `cutting.silence_noise_db`」——
+/// 一条真信息被重复成噪音。第二次起降到 `debug`：不是藏起来，是"这条你已经看过了"。
+///
+/// ⚠️ **别把它挪回 `migrate_text`**（那是个纯函数，连路径都不知道）：日志要带"写没写回"这半句，
+/// 而那取决于 `kind.persists()`。
+/**
+ * 返回**这次是不是该文件在本进程里的第一次**（`true` = 第一次，已按 INFO 报过；`false` = 之后那次，降到 debug）。
+ *
+ * ⚠️ 做成返回值是为了**能测**：日志要挂订阅者才看得到，而"去重这件事本身"是纯决策 ——
+ * 判据直接问它两遍（第一遍 true、第二遍 false），不必去抓日志。
+ */
+pub(super) fn report_retired(path: &Path, kind: ConfigKind, prepared: &Prepared) -> bool {
+    if prepared.retired.is_empty() {
+        return false;
+    }
+    let keys = prepared.retired.join("` / `");
+    let first_time = {
+        static SEEN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<PathBuf>>> =
+            std::sync::OnceLock::new();
+        let set = SEEN.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+        // 锁中毒也照常继续：这只是"报过没有"的记账，不该让它拦下配置读取。
+        let mut guard = match set.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        guard.insert(path.to_path_buf())
+    };
+    if kind.persists() {
+        // 程序级：下面就会写回，key 真的没了 —— 这条只会出现一次。
+        tracing::info!(
+            "配置迁移：{} 里清掉了没人读的键 `{keys}`（已写回）",
+            kind.label()
+        );
+    } else if first_time {
+        tracing::info!(
+            "配置迁移：{} 里清掉了没人读的键 `{keys}` —— ⚠️ 工程级配置**只在内存里升、不写回**，\
+             磁盘上那几行会留着（想彻底清掉：删掉那几行，或跑一次 `yekitrim config migrate`）",
+            kind.label()
+        );
+    } else {
+        tracing::debug!("配置迁移：{} 里仍有无人在读的键 `{keys}`（本次不再重复提示）", kind.label());
+    }
+    first_time
+}
+
 /// 读盘 + 迁移；**程序级文件在需要时备份并写回**（工程级只返回迁移后的文本）。
 pub fn prepare(path: &Path, kind: ConfigKind) -> Result<Prepared> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read {}", path.display()))?;
     let prepared = migrate_text(kind, &raw)?;
+    report_retired(path, kind, &prepared);
     if prepared.from > CONFIG_VERSION {
         tracing::warn!(
             "{} 的 config_version={} 比本程序认识的 {} 更新 —— 按现状读，**不会**改它。\
@@ -241,6 +296,31 @@ pub fn prepare(path: &Path, kind: ConfigKind) -> Result<Prepared> {
         }
     }
     Ok(prepared)
+}
+
+/// **把一份配置文件里已下线的键清掉并写回磁盘**（带 `.bak-v<旧>` 备份）。返回清掉的键。
+///
+/// ⚠️ 为什么需要它：工程级配置（`yekitrim.toml` / `polish.toml`）**按设计不写回**
+/// （`ConfigKind::persists()` 为假 —— 工程可能几百个、还可能在网络盘上）⇒ 那些死键会
+/// **永远留在文件里**，每次读都重新发现它（日志改成"每文件每进程报一次"只是别让它刷屏，
+/// 键**并没有**被清掉）。用户要一个"按一下就真的清掉"的出口 —— 就是这一条
+/// （CLI：`yekitrim config migrate <工程目录|toml 文件>`）。
+///
+/// 返回空 = 这份文件本来就没有死键 ⇒ **不动磁盘**（也不备份、不打日志）。
+pub fn clean_retired_keys_in(path: &Path) -> Result<Vec<String>> {
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("读不出 {}", path.display()))?;
+    let kind = ConfigKind::of_path(path);
+    let prepared = migrate_text(kind, &raw)?;
+    if prepared.retired.is_empty() {
+        return Ok(Vec::new());
+    }
+    if let Err(e) = backup_before_upgrade(path, prepared.from) {
+        // 备份失败不拦：清键本身是幂等的，下次还能再来一遍。
+        tracing::warn!("清理前备份 {} 失败（继续）：{e:#}", path.display());
+    }
+    write_atomic(path, &prepared.text)?;
+    Ok(prepared.retired)
 }
 
 /// 升级前备份成 `<名>.bak-v<旧版本>`；已经存在就不覆盖（保留**最早**那份原始文件）。
@@ -318,6 +398,52 @@ silence_noise_db = -42            # 死键
 overwrite = false
 "#;
 
+    /// ⚠️ **工程级配置不会自动写回**（设计如此：工程可能几百个、还可能在网络盘上），
+    /// 所以那些死键会永远留在文件里、每次读都重新发现它。`clean_retired_keys_in` 是
+    /// "按一下就真的清掉"的出口（CLI `config migrate` 走它）—— 这条测试钉住三件事：
+    /// **真写回**、**幂等**（第二遍返回空且不再备份）、**没有死键时一个字节都不碰**。
+    #[test]
+    fn clean_retired_keys_writes_back_and_is_idempotent() {
+        let dir = std::env::temp_dir().join(format!("yekitrim-clean-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // ⚠️ 用**工程级**那个 kind（`yekitrim.toml`）—— 正是"不会自动写回"的那一类。
+        let file = dir.join("yekitrim.toml");
+        std::fs::write(&file, V0_GLOBAL).unwrap();
+
+        let cleaned = clean_retired_keys_in(&file).unwrap();
+        assert!(cleaned.iter().any(|k| k == "cutting.silence_noise_db"), "实得 {cleaned:?}");
+        let after = std::fs::read_to_string(&file).unwrap();
+        assert!(!after.contains("silence_noise_db"), "死键必须真的从磁盘上没了：\n{after}");
+        assert!(after.contains("num_workers = 0"), "活键与注释都要在：\n{after}");
+        assert!(
+            std::fs::read_to_string(dir.join("yekitrim.toml.bak-v0")).is_ok(),
+            "清键前要留一份 `.bak-v0`（原样回退的唯一手段）"
+        );
+
+        // 第二遍：没有死键了 ⇒ 返回空、**不再备份**（备份文件名带旧版本号，会被 `.exists()` 挡住）。
+        let again = clean_retired_keys_in(&file).unwrap();
+        assert!(again.is_empty(), "第二遍不该再报任何键，实得 {again:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ⚠️ **同一条信息只该报一次**（2026-10-16 用户报的日志刷屏：100ms 内 10 条一模一样的
+    /// 「清掉了没人读的键 `cutting.silence_noise_db`」）。工程级配置按设计不写回 ⇒ 那个键
+    /// **永远在** ⇒ 每读一次都会重新发现它。判据问的是**去重决策本身**：同一路径第一遍 true、
+    /// 第二遍 false（不同路径则各自是第一次）。
+    #[test]
+    fn retired_keys_are_reported_once_per_file() {
+        // 夹具直接用 `V0_GLOBAL`：`retired_in` 对 Global/Project 是**同一张表**
+        // （四个死键两个 kind 都清），不必再抄一份工程级夹具。
+        let p = migrate_text(ConfigKind::Project, V0_GLOBAL).unwrap();
+        assert!(!p.retired.is_empty(), "夹具里应当有死键，实得 {:?}", p.retired);
+        let a = PathBuf::from("/tmp/yekitrim-once-a/yekitrim.toml");
+        let b = PathBuf::from("/tmp/yekitrim-once-b/yekitrim.toml");
+        assert!(report_retired(&a, ConfigKind::Project, &p), "第一次应当报");
+        assert!(!report_retired(&a, ConfigKind::Project, &p), "同一个文件的第二次不许再报");
+        assert!(report_retired(&b, ConfigKind::Project, &p), "另一个文件是它自己的第一次");
+    }
+
     #[test]
     fn migrate_v0_cleans_dead_keys_and_stamps_version() {
         let p = migrate_text(ConfigKind::Global, V0_GLOBAL).unwrap();
@@ -327,6 +453,11 @@ overwrite = false
         for dead in ["align_model", "max_segment_duration", "segment_merge_gap", "silence_noise_db"] {
             assert!(!p.text.contains(dead), "死键 {dead} 没清掉：\n{}", p.text);
         }
+        // ⚠️ **清掉了哪些键要能报出来**（2026-10-16）：日志从纯函数里挪到了调用方 ——
+        //    工程级文件不写回，在纯函数里报就是"每读一次刷一条"（实测 100ms 刷了 10 条）。
+        //    这条判据钉住"信息本身没丢"：调用方拿得到那串键名。
+        assert_eq!(p.retired.len(), 4, "清掉的键要逐个报出来，实得 {:?}", p.retired);
+        assert!(p.retired.iter().any(|k| k == "cutting.silence_noise_db"), "实得 {:?}", p.retired);
         // 活的键与**注释**都在（toml_edit 保格式；换成 toml 重序列化这里就全没了）
         for keep in ["num_workers = 0", "output_dir = \"./output\"", "overwrite = false"] {
             assert!(p.text.contains(keep), "活键 {keep} 被误删：\n{}", p.text);

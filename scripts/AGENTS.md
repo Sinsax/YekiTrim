@@ -45,15 +45,11 @@
 - **`check-yekitrim-translator.mjs`** —— 转译器守卫（**node，不是 python**），四段：
   **348 曲线 + 13 颜色 + 44 映射 + 6 画面构成 + 25 几何 + 4 密集键 + 9 字体族名
   + 2 夹取 + 8 变速 + 9 TOML 父级 + 13 素材 + 10 片头/片尾**。
-  曲线 348 项钉 `backOut3` 的过冲峰值 1.25、`shakeOffsetAt` 四级阶梯**每档的边界两侧**、
-  `handheldSway` 的 2×4 正弦与"线性于 amp"、`stickerStateAt` 的四段相位与那条**够不到的**淡出、
-  弹幕在屏窗口 `danmakuExitMs` 与 Rust `clamp_display_windows` 常数对拍；
-  颜色 13 项钉 `hexColor` 四种写法 + 垃圾输入必须 `null`；字体族名 9 项钉「库内 id→真族名、库外原样」
-  （libass 按族名找字体，传 id 会**静默**落 ArialMT）；
-  几何 25 项抽 `stageDrawRect` 闭包、与模板逐值对拍（两轴 xy 插值）。
-  **映射那 44 项**拿**合成工程**过一遍 `translate`，钉三类
-  "报告里一行、成片里没有"的旧伤：`overlay_type="color"/"fade_in"` 两档、只有 `name` 没有
-  `sticker_tag` 的贴纸、以及 `style.camera` 没配时的**按档位默认倍率**（§18-A 起四档）。
+  曲线项钉过冲峰值、抖动四级阶梯的**每档边界两侧**、手持 2×4 正弦、贴纸四段相位、
+  弹幕在屏窗口（与 Rust `clamp_display_windows` 对拍）；
+  颜色 13 项钉 `hexColor` 四种写法 + 垃圾输入必须 `null`；字体族名 9 项钉「库内 id→真族名、库外原样」；
+  几何抽 `stageDrawRect` 闭包与模板逐值对拍；**映射**拿合成工程过 `translate`，钉三类
+  "报告里一行、成片里没有"的旧伤（overlay 两档 / 只有 `name` 的贴纸 / 缺 `style.camera` 的默认倍率）。
   `--mutate` 把 **59 处变异**逐一真改源码、加载变异体跑**同一份**检查，要求**全部打红**；
   每处先断言"替换命中一次"（少了这条，没匹配上的变异体原样跑绿，看着像"抓不住"）。
   ⚠️ **新加的检查要抽成函数并在 `mutate` 里一起调** —— 只写在顶层的检查变异台根本不会跑，
@@ -75,7 +71,7 @@
   那一族求值器 + 断言 `videoFxAt` 的返回字段齐、`ui` 是数组、**桶清单与 `templates/index.html` 同集合**。
   19 项；`--self-test` 故意删桶，要求那两族**必须抛**（判据不许空转）。
   **它存在的理由**：这类崩溃的症状是"预览整块消失、服务端日志全是 200"，静态读源码抓不住。
-  用法：`node scripts/check-preview-engine.mjs [--self-test]`（已进 `.workbuddy/gates.mjs`）。
+  用法：`node scripts/check-preview-engine.mjs [--self-test]`。
 - **`check-preview-audio.mjs`** —— **精修预览的「出声」契约**（2026-10-02）：
   `55f2f16` 让 **Dhampir 默认开启**，而声音那条链上三处仍按"它是可选模式、预览不带声音"写 ⇒
   **预览完全没有声音**（画面完全正常，所以极难归因）。三处 = ① `startDhampir` 建源时
@@ -85,8 +81,9 @@
   ④ 还有一条是修①时**由行为测试实测抓出来的**：`applyAudio` 只遍历 `dhampirVideos` 不够 ——
   换绑中间态里旧元素会**掉出**那个数组却**仍在播** ⇒ **两路同源同时在轨、声音翻倍**；
   判据必须覆盖 `dhampirSourceVideos` ∪ `dhampirTwins`。
-  **20 项 + 10 处变异自证**；已进 `.workbuddy/gates.mjs`。
+  **20 项 + 10 处变异自证**。
   用法：`node scripts/check-preview-audio.mjs`（改了 `PolishPreview.vue` 的播放/音量面就跑它）。
+- **`check-dhampir-preview-ring.mjs`** —— 底座预览画字顺序/白环宽度（扒 `engine.js::rasterizeLineUncached` 喂"记录型 ctx"；底座不在 ⇒ SKIP，`--self-test` 2 处）。
 - **`check-dhampir-drop-list.mjs`** —— **转译报告清单的门禁**（M2，2026-09-30）：把演示工程的
   **DROP/CLAMP 清单钉成基线**（基线里每条都写着"为什么它还在"）。清单变一条就红：
   多了 = 某次改动把一档转丢了；少了 = 修好了（改基线）或**报告被削弱**（更要查）。
@@ -145,14 +142,14 @@
   配套：台账 `docs/plan/dhampir-parity-register.md`（M1 的实测数字、口径理由与"下一轮做什么"）。
 - **`route_manifest.py`** —— 把服务端的 axum 路由表 dump 成稳定、可 diff 的清单。
   用途是**重构对拍**：`server/` 拆 crate 时的验收线是"`(method, path)` 集合前后一致"，
-  而 `cargo test` 只能证明 handler 还过、证明不了**没有路由搬走**。它是**源代码级抽取器**（`axum::Router`
-  运行时不暴露路由表，另一个办法是写一个重建 router 的测试，那得住在被搬动的 crate 里）。
-  **exit code 始终 0** —— 比较是调用方的事（`diff` 两次输出）。**它抓不到** handler 体、中间件顺序与
-  `.route_layer(...)` 的挂载语义（那些靠 router 单测）。用法：`python3 scripts/route_manifest.py [--root .] [--out manifest.txt]`。
-- **`render_phase_report.py`** —— 出片日志的**阶段报告**（只读）：把 `render-*.log` 拆成
-  「墙钟 / 分块渲染 / 抽帧 / 编码 / 固定开销」与「发帧 / 启动 / 页面循环 / 回读」两张表
-  （配套文档 `docs/plan/polish-render-speed.md`）。默认目录 `<仓库>/target/debug/.yekitrim/cloud/logs`。零依赖、只读。
-  用法：`python3 scripts/render_phase_report.py [日志目录]`。
+  **exit code 始终 0**（比较是调用方的事）；**它抓不到** handler 体、中间件顺序与 `.route_layer(...)`
+  语义。用法：`python3 scripts/route_manifest.py [--root .] [--out manifest.txt]`。
+- **`render_phase_report.py`** —— 出片日志的**阶段报告**（只读）：`render-*.log` 拆成两张表，
+  细节见 `docs/plan/polish-render-speed.md`。用法：`python3 scripts/render_phase_report.py [日志目录]`。
+- **`check-render-visible.mjs`** —— **真渲染+数像素**：文字/贴纸画进画面没有（摘掉目标轨重渲，逐帧数差异像素）。见 `docs/plan/text-layer-wasm-pixel-proof-2026-10-14.md`。
+- **`check-dom-camera-parity.mjs`** —— **DOM 腿运镜 = 底座求值器**（P1，2026-10-15）：受控工程逐档位对拍
+  `dhampir_project_frame().layers[].transform.scale` ↔ `engine.js::camFactor`，外加"底座确实按
+  keyframe 插值"的反自证（少了它，相等可能只是恒等式的巧合）。`--mutate` 2 处。
 
 ### 贴纸 / 音效目录生成（一次性工程）
 

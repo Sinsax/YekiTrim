@@ -25,13 +25,13 @@
   （全局 `.yekitrim/config.toml [sfx] blacklist` ∪ 项目 `polish.toml [sfx] blacklist`）。
 - `fx`：`transient_duration_cap(event_type)` / `transient_default_duration(event_type)` /
   `normalize_event_ends(segments)`；`cap_pip_shots` / `align_pip_shots(segments, subtitles)` /
-  `close_pip_shots` / `cap_handheld_sway` / `align_stickers_to_subtitles(segments, subtitles)` /
-  `fit_element_span(start, end, subs)`（元素时长规矩，私有）；
+  `close_pip_shots` / `cap_handheld_sway` / `align_stickers_to_subtitles(segments, subtitles, mute_ranges)` /
+  `cap_text_elements(segments, mute_ranges)`（文字元素**候补**守卫）/ `fit_element_span(start, end, subs, mute_ranges)`（元素时长规矩，私有）；
   常量 `MAX_PIP_SHOTS = 1` / `MIN_PIP_SECS = 1.5` / `MIN_RETURN_SECS = 0.5` /
   `STICKER_SNAP_MAX_SECS = 2.0` / `ELEMENT_MIN_SECS = 1.2` / `ELEMENT_MAX_SECS = 5.0` /
   `ELEMENT_MAX_GAP_SECS = 0.5` / `LEGACY_ZOOM_{MID,CLOSE,WIDE}`；
-  **第 5 批**：`materialize_edl_intents(segments, &mut edl_clips, total_duration) -> MaterializedEdl`
-  （冷开场/回忆回溯意图 → `edl.clips` + 配额）；常量 `MAX_COLD_OPEN = 1` / `MAX_RECALL = 2` /
+  **第 5 批**：`materialize_edl_intents(segments, &mut edl_clips, total_duration, mute_ranges) -> MaterializedEdl`
+  （冷开场/回忆回溯意图 → `edl.clips` + 配额；**空 EDL 先把 `mute_ranges` 补集种成正片时间线**）；常量 `MAX_COLD_OPEN = 1` / `MAX_RECALL = 2` /
   `MIN_COLD_OPEN_SECS = 1.0` / `INTENT_COLD_OPEN = "cold_open"` / `INTENT_RECALL = "recall"` /
   `EDL_KIND_COLD_OPEN` / `EDL_KIND_RECALL`；`mod.rs::writeback_edl(materialized, clips)`。
 - `download`：`sanitize_sticker_name(keyword)`、`cmd_download(project_path)`、`download_keyword_assets(...)`、
@@ -40,7 +40,7 @@
   `Frame`（`sticker_scale()` = `min(W,H)/1080`）、`Rect`、`Blocked`、`ObstacleKind`、`CameraShot`、
   `Pick`；`pick_sticker_position(blocked, allow, seed, f) -> Pick`、`sticker_box(x, y, f)`、
   `camera_states_for(...)`、`transition_secs(label, prev_label, cut)`、`camera_expand`、`parse_origin_in_stage`、`parse_px`、
-  `caption_band(f, font_size, stroke_px)`、`danmaku_band(f, font_size, stroke_px, ys)`、`main_frame_rect(...)`、
+  `caption_band(f, font_size, stroke_px, position_pct)`、`danmaku_band(f, font_size, stroke_px, ys)`、`main_frame_rect(...)`、
   `stage_rect(stage, src, canvas)`（主画面矩形 `sr`，唯一真源是 `project::stage_draw_rect`）、
   `layout_region_rects(region, sr)` / `stage_region_rect(tl, br, sr)`（`layout.<区域>` 的百分比是 **`sr`** 的百分比）；
   常量 `FRAME_W|H = 1920|1080` / `STICKER_SIZE = 280.0` / `STICKER_MARGIN = 32.0` /
@@ -96,11 +96,25 @@
   `element_is_capped_at_max_duration`（16.30s 那条真实样本）/
   `element_accepts_short_span_when_no_more_subtitles` / `element_fit_is_idempotent`
   （process 每次预览/出片都被隐式触发，必须收敛）。三条规矩分别做过变异自证。
+- ⚠️⚠️ **贴纸有两个载体，凡"按贴纸处理"处必须同时认**（2026-10-15 用户报「加表情后不显示」）：
+  `Event::Sticker`（老，**LLM/老工程**）与 `Event::Element{kind:"sticker"}`（**编辑器「贴纸轨」点＋新建的**，
+  `addElementAt` 有意一律产 `element`）。字段名不同：关键词 `keyword` vs **`text`**、`x`/`y`
+  `String` vs **`Option<String>`**。**读走** `Event::is_sticker()/sticker_keyword()/sticker_name()/
+  `sticker_source()/sticker_span()`（`render-core/src/types.rs` 一处），**写走** `set_sticker_resolved()/
+  `set_sticker_position()`。⚠️ **别在每个消费点各写一遍 `match`** —— 这次正是那样漏的：Step 2、2b、
+  `cap_events`、2c、`sticker_obstacles` **五处全只认老载体** ⇒ 手动贴纸拿不到落点/`name` 永不解析/
+  不互斥/逃过上限，**而 LLM 放的老载体一切正常**（两边各自看都正常，故极难归因）。⚠️ `sticker_span()`
+  坐标是 `Option`：落点是**写**，不能 `continue` 掉"还没落点"的条目；障碍表相反。
+  回归 `element_sticker_goes_through_the_same_pipeline_as_legacy_sticker`（跑**真** `cmd_process`
+  钉"消费点有没有用访问器"；变异自证：退回只认老载体 ⇒ 当场红）。
 - **落点规则**（`placement.rs`，Step 2b）：帧坐标固定 1920×1080，贴纸固定 280×280，`ev.x/ev.y` 是**盒子左上角**
   百分比（模板 DOM/canvas 与 `engine.js` 都按左上角消费，模板再钳制到 `[32,1608]×[32,768]`）。
   障碍 = ①人物 `layout.liver`、②弹幕区域 `layout.danmaku_area`（都在**源帧**坐标里框选，出片时视频整体被
   运镜缩放 → 先按该贴纸可见窗口的相机状态投到输出帧，zoom 取模板 Canvas 路径的 1.5/1.8 × 瞬时特效预留 1.10，
-  窗口内的缩放过渡两端都算）、③字幕带（Canvas `cy=960` 与 DOM `bottom:80px` 两条路径取并集）、
+  窗口内的缩放过渡两端都算）、③字幕带（Canvas `cy=960` 与 DOM `bottom:80px` 两条路径取并集；
+  ⚠️ **2026-10-15 起还读 `[style.subtitle].position_pct`** —— 此前只有出片模板与转译器读它，
+  落点求解器读的是写死的历史带位，于是"用户把字幕拖到中部 ⇒ 文字压上字幕"。
+  三处必须同口径；`None`（老工程没写过）走历史公式 = 零回归）、
   ④真实弹幕带（只有 `data/danmaku.json` 非空时才是障碍，按模板 `y=(d.y/1920)*540` 映射）、
   ⑤同刻已落位的其他贴纸（互不相压）。
   候选 = 16px 网格 + 各障碍边缘的「临界位」；先取 clearance 最高的一档（×0.9），在该档里按「盒心到帧心距离」
@@ -163,6 +177,12 @@
   `split_segments_by_mute_ranges` 把屏蔽区内的事件从 `polish.toml` 删掉（而 process 会被预览/出片
   隐式触发）—— 已删除，**别再加回来**。回归：`cargo test -p yekitrim-polish --lib mute_range_keeps_events`
   （`process::tests`，临时工程真跑 `cmd_process`，把删事件钉红）。
+- ⚠️ **屏蔽区间只跳过、不删事件**（用户 2026-10-19 报「LLM 剪辑和后处理没过滤屏蔽段」）：
+  判据 `project::event_starts_muted`（左闭右开、只看**起点**；`Camera`/`Overlay` 例外）。
+  用在 `cap_events` 额度、2b/2b2 落点、2c 延长、音效规则（屏蔽段音效要留着）、文字守卫、LLM 生成与精挑。
+- **文字元素是候补**（用户 2026-10-19：文字突出、指向性强，滥用适得其反）：`cap_text_elements`（Step 1d2b）
+  兜底 —— 与贴纸（两个载体都算）重叠就删、每段 1 条（留最早）、`manual` 豁免、屏蔽段的不占名额。
+  prompt 同步：写**关键词 2~8 字**、不与贴纸同段、只在没合适贴纸/其它效果已密时用。
 - **冷开场 / 回忆回溯：LLM 表达意图、`process` 落实成 `edl.clips`**（第 5 批，Step 5）。
   LLM 在**运镜事件**上写 `anchor = "cold_open"` / `"recall"` 表示"这段值得在成片里再放一次"
   （**不是**景别 —— 见 `llm/segment.rs` 的提示词段）。落实 = 往 `edl.clips` 里加一段**与它源区间
@@ -175,8 +195,9 @@
   别的 anchor 一律不碰），所以第二趟没有任何候补。**别改成"看 EDL 里有没有这一段"去判重** ——
   用户删掉重放段之后再跑 process 就会把它复活（`intro_fade_seeded` 那条教训一模一样的形状）。
   带 `manual` 的运镜不参与（用户自己摆的事件不被后处理改写）。
-  ⚠️ **触发条件 = 老工程零回归的判据本身**：`edl.clips` 一旦非空，`mute_ranges` 就**整个被忽略**
-  （`ProjectFile::resolve_edl`、规格 §2.3）。所以 `cmd_process` 只在**真的落实了**时才写
+  ⚠️ **触发条件 = 老工程零回归的判据本身**：`edl.clips` 非空 ⇒ `mute_ranges` **整个被忽略**
+  （`resolve_edl`、规格 §2.3）⇒ 落实前必须先把**补集**种进空 EDL（`edl_clips_from_mute_complement`），
+  否则正片消失、屏蔽段全回来；所以只在**真的落实了**时才写
   （`writeback_edl(edl_intent_done, clips)`），没意图的工程**一个字节都不碰** `cfg.edl`。
   ⚠️ **这一条是两层挡的、两层各有各的观察点**：把 `writeback_edl` 改成无条件 `Some` 之后，
   端到端那条 `process_without_edl_intent_never_writes_edl` **照样绿** —— 空 `Edl` 会被
@@ -184,6 +205,8 @@
   ⇒ 写回门必须有**纯谓词**判据（`process_writeback_gate_only_touches_edl_when_materialized`）。
   同一条教训见 `docs/plan/edl-retiming-spec.md` §11.14（`ensure_assets_should_run`）。
   回归：`cold_open_only_one_per_clip`（3 候选 → 只剩 1）/ `cold_open_materialize_is_idempotent` /
+  `cold_open_on_empty_edl_seeds_the_mute_complement` / `non_empty_edl_is_never_reseeded` /
+  `intent_only_edl_from_old_version_is_rebuilt` /
   `no_intent_keeps_edl_untouched` / `manual_camera_intent_is_ignored` /
   `materialize_skips_impossible_spans` / `recall_is_capped`。
   ⚠️ 改内建 prompt 对**已有配置无效**（`.yekitrim/config.toml` 里是 `config init` 填的副本）。

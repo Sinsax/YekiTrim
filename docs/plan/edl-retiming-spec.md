@@ -180,6 +180,22 @@ cargo test -p yekitrim-polish --lib -- --test-threads=1  \u2192  290 passed; 0 f
 
 ---
 
+### 🔁 2026-10-19 补：**落实前必须先把正片时间线种进去**（用户报「屏蔽段没被过滤」）
+
+第 5 批最初只写意图段，漏掉了一条更早的规则：**`edl.clips` 非空 ⇒ `mute_ranges` 整个被忽略**（§2.3）。
+于是「一支冷开场」就把整条成片换成那 4 秒，而且屏蔽掉的段**全部回来**。三处修正：
+
+1. `materialize_edl_intents` 在 `clips` 为空时**先种 `edl_clips_from_mute_complement(mute_ranges, total)`**
+   （= 没有 EDL 时的那条成片时间线），意图只是在它前后多插一段；
+2. **修存量坏 EDL**：旧版落下的「每一段都是 `cold_open`/`recall`」形状（用户手排的段 `kind` 为空，
+   不会误伤）先清空、再按 1) 重建；`MaterializedEdl.repaired` 让 `cmd_process` / `cmd_llm` 照样落盘
+   （清空 ⇒ 空 `Edl` 被 `skip_serializing_if` 吃掉 ⇒ 自动退回 `mute_ranges` 补集）；
+3. `run_llm_pipeline` 新增 `existing_edl` 形参：**用户手拖过的 `clips` 打底**，意图只前插/后追 ——
+   `cmd_llm` 写回时不再用补集覆盖用户的时间线。
+
+回归：`cold_open_on_empty_edl_seeds_the_mute_complement` / `non_empty_edl_is_never_reseeded` /
+`intent_only_edl_from_old_version_is_rebuilt` / `intent_only_edl_is_repaired_then_seeded` /
+`mixed_edl_is_never_treated_as_broken`。
 ## 11.16 \u2705 \u7b2c 7 \u6279\uff08\u53e0\u5316\u8f6c\u573a\uff09\u2014\u2014 **Lead \u72ec\u7acb\u590d\u73b0\u4e86\u5168\u90e8\u5173\u952e\u6570\u5b57**
 
 ### \u914d\u65b9\uff08task-10\uff09

@@ -6,6 +6,61 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// **节奏调度**（[rhythm] 表，§26 / docs/plan/rhythm-richness-plan.md）。
+///
+/// 用户口径（2026-10-19）：「整体升一档」—— 默认档 = balanced（比最初的提案再高一档），
+/// calm 是用来**回退到今天的行为**的对照档（不产生任何重音）。
+///
+/// ⚠️ **它不驱动渲染**：这里是「调度开关 + 上一趟派生事件的账本」，真正的事件由
+/// process::rhythm 生成。派生事件必须可整批重建（幂等），所以账本要落盘 ——
+/// 只靠「看段表里有没有类似事件」去判重会在用户改过之后复活（intro_fade_seeded 那条教训）。
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(deny_unknown_fields)]
+pub struct RhythmConfig {
+    /// calm | balanced | intense。**空串 = 默认档（balanced）** ——
+    /// 空串不落盘 ⇒ 老工程零迁移（R4）。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub profile: String,
+    /// 节拍间隔（秒）。None = 用档位默认值。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub beat_secs: Option<f64>,
+    /// **上一趟自动生成的事件账本**：重建时先按它逐条删除，再按新计划生成。
+    /// 空 = 没有派生事件 ⇒ 不落盘（R4）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub auto_events: Vec<RhythmAuto>,
+}
+
+impl RhythmConfig {
+    /// 空 = 一个键都不写（老工程重存一次也是零字节变化）。
+    ///
+    /// ⚠️ profile 为空串 ⇒ 走默认档，**不算「脏」**；只有账本或显式节拍才算。
+    pub fn is_empty(&self) -> bool {
+        self.auto_events.is_empty() && self.beat_secs.is_none()
+    }
+
+    /// 实际档位（空串 = balanced）。
+    pub fn profile_name(&self) -> &str {
+        if self.profile.trim().is_empty() { "balanced" } else { self.profile.trim() }
+    }
+}
+
+/// 账本里的一条派生事件：**字段全部与生成时逐值相同**才认（用户改过 ⇒ 认不出 ⇒ 不删，
+/// 那一条就归用户了）。
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RhythmAuto {
+    /// camera | shake | flash
+    pub kind: String,
+    pub time: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end: Option<f64>,
+    /// camera 专用：景别（近 / 中 / 特写）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zoom: Option<String>,
+    /// shake 的 intensity / flash 的 opacity。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub param: Option<f64>,
+}
 /// 完整项目文件 (polish.toml)
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
@@ -126,6 +181,11 @@ pub struct ProjectFile {
     /// `Edl` 是一张**表**，内部字段被跳过之后 toml 仍然会写出空的 `[edl]` 段头（实测过）。
     #[serde(default, skip_serializing_if = "Edl::is_empty")]
     pub edl: Edl,
+
+    /// 16b. **节奏调度**（§26，2026-10-19）—— 见 [`RhythmConfig`]。
+    /// 默认档 balanced：老工程**下次跑 process** 就会拿到重音表（用户口径「整体升一档」）。
+    #[serde(default, skip_serializing_if = "RhythmConfig::is_empty")]
+    pub rhythm: RhythmConfig,
 
     /// 是否已执行过 process（preview 用它判断是否需要先 process）
     #[serde(default, skip_serializing_if = "is_false")]
@@ -254,6 +314,43 @@ impl MuteRange {
         let Some((s, e)) = self.normalized() else { return false; };
         start < e && end > s
     }
+
+    /// 某个时刻是否落在这段屏蔽区间里（**左闭右开**，与 [`MuteRange::overlaps`] 同一口径）。
+    ///
+    /// 为什么要单独一条：后处理与 LLM 要回答的是「**这一刻**在不在被剪掉的那段里」，
+    /// 而不是「两个区间有没有交叠」。见 [`event_starts_muted`]。
+    pub fn contains(&self, t: f64) -> bool {
+        let Some((s, e)) = self.normalized() else { return false; };
+        t >= s && t < e
+    }
+}
+
+/// 时刻 `t` 是否落在任一屏蔽区间里。
+///
+/// ⚠️ **这是「看不见」的判据，不是「要删掉」的判据**：屏蔽只做标记（见 `project/AGENTS.md`
+/// 边界第一条）—— 事件留在 `polish.toml` 里，撤销屏蔽之后原样还在。
+pub fn time_is_muted(ranges: &[MuteRange], t: f64) -> bool {
+    ranges.iter().any(|r| r.contains(t))
+}
+
+/// 这条事件的**起点**落在屏蔽区间里 ⇒ 这一趟（预览/出片）根本看不到它。
+///
+/// 判据用起点、不用「有交叠」：屏蔽区间整段会被剪掉，而所有事件都是在起点触发的
+/// （贴纸/文字/音效/瞬时特效）。起点在屏蔽之前的照样能看见（它已经触发了）。
+///
+/// ⚠️ **运镜与覆盖层例外**：它们是**状态**（跨整段生效、不是到点触发一下），
+/// 起点落在屏蔽里也照样可见 —— 把整段运镜一起忽略的话，屏蔽之后那半截会突然变景别。
+/// 这条例外与 `sticker_obstacles` / `pacing` 读整段事件的口径一致。
+///
+/// ⚠️ 调用方**只能拿它跳过计算**（预算/落点/音效规则/LLM 生成），**不许据此删事件**。
+pub fn event_starts_muted(ranges: &[MuteRange], ev: &Event) -> bool {
+    if ranges.is_empty() {
+        return false;
+    }
+    if matches!(ev, Event::Camera { .. } | Event::Overlay { .. }) {
+        return false;
+    }
+    time_is_muted(ranges, ev.get_time())
 }
 
 fn is_false(v: &bool) -> bool {
@@ -2057,6 +2154,8 @@ impl ProjectFile {
             // ⚠️ 示例工程**故意留空**：空 EDL = 今天的行为（R4）。别在这里塞一段示例 clips，
             //    那会让"新建工程"就带上一条成片时间线。
             edl: Edl::default(),
+            // ⚠️ 示例工程**不带账本**（空 ⇒ 不写这个表）；默认档仍然生效（balanced）。
+            rhythm: RhythmConfig::default(),
             processed: false,
             // ⚠️ 决策理由**默认空**：示例工程不该带一条假理由（空 = 老行为，R4）。
             decisions: Vec::new(),
@@ -2869,6 +2968,35 @@ mod edl_tests {
         assert_eq!(got[0].out_end_frame, edl_test_frame_at(114.383, 30.0));
     }
 
+    /// 屏蔽判据（2026-10-19）：`contains` **左闭右开**、`event_starts_muted` 只看**起点**，
+    /// 且**运镜/覆盖层例外**（它们是跨整段生效的状态，起点落在屏蔽里也照样可见）。
+    #[test]
+    fn muted_predicates_are_start_based_and_skip_state_events() {
+        let ranges = [MuteRange { start: 10.0, end: 20.0 }];
+        assert!(time_is_muted(&ranges, 10.0), "左端点算在屏蔽里");
+        assert!(time_is_muted(&ranges, 19.999));
+        assert!(!time_is_muted(&ranges, 20.0), "右端点不算（右开）");
+        assert!(!time_is_muted(&ranges, 9.999));
+        assert!(!time_is_muted(&[], 10.0));
+
+        let mut sfx = Event::Sfx { time: 12.0, name: "pop".into(), volume: None, end: Some(13.0) };
+        assert!(event_starts_muted(&ranges, &sfx), "起点落在屏蔽区 ⇒ 这一趟看不见");
+        if let Event::Sfx { time, .. } = &mut sfx { *time = 5.0; }
+        assert!(!event_starts_muted(&ranges, &sfx), "起点在屏蔽之前 ⇒ 已经触发了");
+
+        let cam = Event::Camera {
+            time: 12.0, end: Some(30.0), zoom: "中".into(), origin: "50% 50%".into(),
+            anchor: None, anchor_to: None, to_origin: None, cut: false, handheld: false,
+            manual: false, speed: None, tilt: None,
+        };
+        assert!(!event_starts_muted(&ranges, &cam), "运镜是状态 ⇒ 永不跳过");
+        let ov = Event::Overlay {
+            time: 12.0, end: Some(13.0), overlay_type: "color".into(),
+            color: Some("#000000".into()), opacity: Some(0.2), colors: None, shape: None,
+            angle: None, sfx: None, sfx_volume: None, anchor: None,
+        };
+        assert!(!event_starts_muted(&ranges, &ov), "覆盖层是状态 ⇒ 永不跳过");
+    }
     /// 时长未知（`<= 0`）时补集推不出来 ⇒ 返回**空**，不瞎编一个右端。
     #[test]
     fn empty_edl_without_duration_is_empty() {

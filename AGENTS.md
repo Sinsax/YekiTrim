@@ -152,8 +152,8 @@ README 的「架构」一节有同一张图的展开版；分层决策的来龙�
   细节与"新增路径字段要做什么"在 `crates/yekitrim-server/src/api/AGENTS.md`。
 - ⚠️ **WebUI 在 release 里是内嵌的**（`yekitrim-server/build.rs` 把 `webui/dist` 编进 exe）：**升级只需换
   exe**，"新 exe + 旧界面"这种错配在物理上不存在。debug 走读盘（改前端不必重链接），`--webui-dir` /
-  `YEKITRIM_WEBUI_DIR` 可显式覆盖。⚠️ `webui/dist` **仍要入库**、改了 `src` 仍要重建 —— 它是**编译期输入**
-  （缺失或比 `src` 旧都让编译失败），不是运行时依赖。
+  `YEKITRIM_WEBUI_DIR` 可显式覆盖。⚠️ **只有 release 才内嵌/查新鲜度**：debug 下改前端**不**牵动后端编译。
+  ⚠️ `webui/dist` **仍要入库**、改了 `src` 仍要重建（release 的编译期输入，缺失/过期即编译失败）。
 - ⚠️ **本仓不再自带任何 GPU 渲染**：wgpu 管线 / `native/` / `yekitrim-wasm` / `render-frame` 接口**整条已
   删除**，GPU 那侧归独立的 **Dhampir 底座**。⚠️ **出片默认就是底座**（`dhampir`），画面归底座、音轨归本仓。
   **别再往本仓加回 GPU 管线** —— 细节与删除清单见 `polish-render` 卡。
