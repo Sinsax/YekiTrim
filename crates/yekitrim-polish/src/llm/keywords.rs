@@ -1,5 +1,5 @@
-use yekitrim_core::llm::agent::extract_json_object;
-use yekitrim_core::llm::LlmClient;
+use yekitrim_llm::agent::extract_json_object;
+use yekitrim_llm::LlmClient;
 
 /// 调用 LLM 提取关键词
 pub async fn extract_keywords(

@@ -1271,3 +1271,35 @@ mod current_stage_tests {
         assert_eq!(cfg.current_stage(&output), 4);
     }
 }
+
+/// **配置 → LLM 传输层参数**的唯一换算（2026-10-19 起 LLM 抽成独立 crate）。
+///
+/// # 为什么转换写在这一侧
+///
+/// `yekitrim-llm` **不认识配置文件**（机器判据 `llm_is_a_leaf`）：它只吃
+/// [`yekitrim_llm::LlmParams`]。配置的形状（TOML、四条链路的 overrides、版本迁移）属于本模块，
+/// 所以「配置 → 参数」这一步只能在这里做 —— 于是依赖方向是 **config → llm**，反过来就成环。
+///
+/// ⚠️ 调用方仍然必须先 `for_link(LlmLink)` 再转：`for_link` 解的是**链路覆盖**，
+/// 本 impl 只是把解完的结果换一个类型，**不改任何取值**。
+impl From<LlmConfig> for yekitrim_llm::LlmParams {
+    fn from(c: LlmConfig) -> Self {
+        (&c).into()
+    }
+}
+
+impl From<&LlmConfig> for yekitrim_llm::LlmParams {
+    fn from(c: &LlmConfig) -> Self {
+        Self {
+            api_key: c.api_key.clone(),
+            base_url: c.base_url.clone(),
+            model: c.model.clone(),
+            temperature: c.temperature,
+            max_tokens: c.max_tokens,
+            // `extra_params` 是 TOML 表，传输层只认 JSON —— 在这里转一次。
+            extra_params: c.extra_params.as_ref().and_then(|t| serde_json::to_value(t).ok()),
+            thinking: c.thinking.clone(),
+            max_concurrent: c.concurrency(None),
+        }
+    }
+}

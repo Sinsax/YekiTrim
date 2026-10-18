@@ -125,12 +125,12 @@
       "verify": ["cargo test -p yekitrim-core --lib cutting"]
     },
     {
-      "id": "core-llm",
-      "title": "统一 LLM 客户端与用量记账",
-      "dir": "crates/yekitrim-core/src/llm",
-      "card": "crates/yekitrim-core/src/llm/AGENTS.md",
-      "kind": "module",
-      "verify": ["cargo test -p yekitrim-core --lib llm"]
+      "id": "llm",
+      "title": "LLM 传输层：协议 / 方言 / 模型能力 / 用量采集",
+      "dir": "crates/yekitrim-llm",
+      "card": "crates/yekitrim-llm/AGENTS.md",
+      "kind": "crate",
+      "verify": ["cargo test -p yekitrim-llm --lib"]
     },
     {
       "id": "render-core",

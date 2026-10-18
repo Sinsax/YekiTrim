@@ -11,7 +11,7 @@
 `fonts` / `download` / `progress` / `filelock` / `tenant`（没有专卡的都看这里）。
 
 `lib.rs` 的模块表（**就是全表，新增模块必须在这里登记**）：
-`types` / `config` / `fonts` / `path` / `srt` / `pipeline` / `audio` / `asr` / `llm` / `download` /
+`types` / `config` / `fonts` / `path` / `srt` / `pipeline` / `audio` / `asr` / `download` /
 `detection` / `danmaku` / `cutting` / `progress` / `filelock` / `tenant` / `owner`。
 
 ## 入口
@@ -60,7 +60,7 @@
 分层是单向的 core → polish → service → server → cli，底层一旦反向引用，两层就粘回去。
 需要上层能力时由调用方**注入**（sink / 回调 / 参数），不是在 core 里 `use` 上来。
 
-⚠️ core 只 `emit` LLM 用量记录，**写库由 CLI/server 侧装的 sink 负责**（见 `src/llm/AGENTS.md`）。
+⚠️ core 只 `emit` LLM 用量记录，**写库由 CLI/server 侧装的 sink 负责**（见 `crates/yekitrim-llm/AGENTS.md`）。
 
 - **Stage 1（`audio/`，没有专卡，规矩在这里）**：输入视频 → ffmpeg 16kHz mono WAV + ffprobe
   `VideoInfo`；命令是 `ffmpeg -y -vn -acodec pcm_s16le -ar 16000 -ac 1` → `output/video.wav`，

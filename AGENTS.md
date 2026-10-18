@@ -14,7 +14,7 @@
   超预算时它**先整份丢掉较宽的文件** —— 根文件一旦膨胀，全局规矩会连模块索引一起消失（拆卡之前根文件
   237 KB，被静默截到 65 KB，底下的安全规矩全没进上下文）。**别再往这里加模块级内容**。
 
-### 六个 crate 与依赖方向（单向，硬规矩）
+### 七个 crate 与依赖方向（单向，硬规矩）
 
 ```
 yekitrim-render-core ←── yekitrim-polish ──┐
@@ -24,7 +24,8 @@ yekitrim-render-core ←── yekitrim-polish ──┐
 
 | crate | 干什么 |
 |---|---|
-| `crates/yekitrim-core` | 管线编排 + ASR / 事件检测 / 剪切 + 配置 / LLM 客户端 / 弹幕 |
+| `crates/yekitrim-core` | 管线编排 + ASR / 事件检测 / 剪切 + 配置 / 弹幕 |
+| `crates/yekitrim-llm` | **LLM 传输层**（叶子 crate）：协议 / 方言 / 模型能力 / 用量采集；不认识配置与业务 |
 | `crates/yekitrim-polish` | GSAP 精修引擎（从 vtedit 合并）：字幕/贴纸/音效/特效 → 出片与封面 |
 | `crates/yekitrim-render-core` | 事件/时间线**类型**与时间线数学（被 polish 用），不认识业务；**不含任何 GPU 管线** |
 | `crates/yekitrim-service` | CLI 与 WebUI 共用的领域逻辑（账号账本 / 项目 / 录播姬 / B站 / 用量） |
@@ -83,7 +84,7 @@ README 的「架构」一节有同一张图的展开版；分层决策的来龙�
 | `core-detection` | `crates/yekitrim-core/src/detection` | `crates/yekitrim-core/src/detection/AGENTS.md` | 改事件检测之前 |
 | `core-danmaku` | `crates/yekitrim-core/src/danmaku` | `crates/yekitrim-core/src/danmaku/AGENTS.md` | 改弹幕之前 |
 | `core-cutting` | `crates/yekitrim-core/src/cutting` | `crates/yekitrim-core/src/cutting/AGENTS.md` | 改剪切之前 |
-| `core-llm` | `crates/yekitrim-core/src/llm` | `crates/yekitrim-core/src/llm/AGENTS.md` | 改 LLM 之前 |
+| `llm` | `crates/yekitrim-llm` | `crates/yekitrim-llm/AGENTS.md` | 动 LLM 协议/方言/模型能力之前 |
 | `render-core` | `crates/yekitrim-render-core` | `crates/yekitrim-render-core/AGENTS.md` | 动绘制原语之前 |
 | `polish` | `crates/yekitrim-polish` | `crates/yekitrim-polish/AGENTS.md` | 动该目录之前 |
 | `polish-process` | `crates/yekitrim-polish/src/process` | `crates/yekitrim-polish/src/process/AGENTS.md` | 动后处理之前 |

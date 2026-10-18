@@ -403,7 +403,7 @@ async fn run_process(
                     let _ = std::fs::remove_file(&checkpoint);
                 }
                 let checkpoint_path = if checkpoint.exists() { Some(checkpoint.as_path()) } else { None };
-                let (tx, mut rx) = tokio::sync::mpsc::channel::<yekitrim_core::llm::agent::AgentProgress<Vec<yekitrim_core::llm::agent::AgentOutput>>>(64);
+                let (tx, mut rx) = tokio::sync::mpsc::channel::<yekitrim_llm::agent::AgentProgress<Vec<yekitrim_llm::agent::AgentOutput>>>(64);
                 let partial_path_writer = partial_path.clone();
                 let partial_task = tokio::spawn(async move {
                     use std::collections::BTreeMap;
@@ -416,9 +416,9 @@ async fn run_process(
                     }
                 });
                 // 取消探针：订正跑在管线里（分钟级），用户在阶段边界点的停止必须能穿透到窗口边界
-                let cancel: Option<yekitrim_core::llm::agent::CancelProbe> = progress.map(|p| {
+                let cancel: Option<yekitrim_llm::agent::CancelProbe> = progress.map(|p| {
                     let p = p.clone();
-                    std::sync::Arc::new(move || p.cancelled()) as yekitrim_core::llm::agent::CancelProbe
+                    std::sync::Arc::new(move || p.cancelled()) as yekitrim_llm::agent::CancelProbe
                 });
                 let result = yekitrim_core::asr::correct::correct_transcript_with_checkpoint(
                     &segments, &danmaku, &cfg.llm, &cfg.correct,

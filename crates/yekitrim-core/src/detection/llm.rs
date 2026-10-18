@@ -10,7 +10,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 
 use crate::config::{DetectionConfig, LlmConfig};
-use crate::llm::agent::{Agent, AgentItem, AgentProgress, AgentTask, AgentWindow};
+use yekitrim_llm::agent::{Agent, AgentItem, AgentProgress, AgentTask, AgentWindow};
 use crate::types::{Event, EventSource, EventType, Timestamp, TranscriptSegment};
 
 pub const DEFAULT_PROMPT: &str = r#"将直播转录切分为短视频切片。硬性要求：
@@ -547,7 +547,7 @@ pub async fn score_events_with_llm(
     llm: &LlmConfig,
     detect: &DetectionConfig,
     project: Option<&Path>,
-    cancel: Option<crate::llm::agent::CancelProbe>,
+    cancel: Option<yekitrim_llm::agent::CancelProbe>,
 ) -> Result<Vec<Option<f64>>> {
     if events.is_empty() {
         return Ok(Vec::new());
@@ -570,10 +570,10 @@ pub async fn score_events_with_llm(
     // 链路解析：热度评分与检测窗口同属一次检测，共用 `[llm.overrides.detect]`
     let llm = llm.for_link(crate::config::LlmLink::Detect);
     let client = Arc::new(
-        crate::llm::LlmClient::from_config(&llm)?
+        yekitrim_llm::LlmClient::new(&llm)?
             .with_timeout(120)
             .with_usage_context(
-                crate::llm::usage::UsageContext::new("事件热度LLM评分").project(usage_project),
+                yekitrim_llm::usage::UsageContext::new("事件热度LLM评分").project(usage_project),
             ),
     );
     let max_concurrent = llm.concurrency(detect.max_concurrent).max(1);
@@ -675,7 +675,7 @@ fn build_score_prompt(batch: &[(usize, String, String)]) -> String {
 
 /// 调用一批评分，兼容 content / reasoning 两种返回位置。
 async fn score_batch(
-    client: &crate::llm::LlmClient,
+    client: &yekitrim_llm::LlmClient,
     batch: &[(usize, String, String)],
 ) -> Result<Vec<(usize, f64)>> {
     let prompt = build_score_prompt(batch);
@@ -807,7 +807,7 @@ pub async fn call_with_progress(
     hot_windows: &[(f64, f64)],
     project: Option<&Path>,
     checkpoint_path: Option<&Path>,
-    cancel: Option<crate::llm::agent::CancelProbe>,
+    cancel: Option<yekitrim_llm::agent::CancelProbe>,
     progress_tx: Option<tokio::sync::mpsc::Sender<Vec<Event>>>,
     pass: DetectPass,
 ) -> Result<Vec<Event>> {
@@ -945,8 +945,8 @@ impl AgentTask<Vec<Event>> for DetectionTask {
         }
     }
 
-    fn usage_context(&self) -> crate::llm::usage::UsageContext {
-        crate::llm::usage::UsageContext::new(self.name()).project(self.project.clone())
+    fn usage_context(&self) -> yekitrim_llm::usage::UsageContext {
+        yekitrim_llm::usage::UsageContext::new(self.name()).project(self.project.clone())
     }
 
     fn thinking(&self) -> bool {
@@ -1000,7 +1000,7 @@ impl AgentTask<Vec<Event>> for DetectionTask {
             parts.push(format!("{s:.1}-{e:.1}"));
         }
         let refs: Vec<&str> = parts.iter().map(|p| p.as_str()).collect();
-        crate::llm::agent::fingerprint(&refs)
+        yekitrim_llm::agent::fingerprint(&refs)
     }
 
     fn user_prompt(&self, global: &str, window_context: &str, window: &[AgentItem]) -> String {
@@ -1027,7 +1027,7 @@ impl AgentTask<Vec<Event>> for DetectionTask {
         _all_items: &[AgentItem],
         window: &AgentWindow<Vec<Event>>,
         _global: &str,
-        llm_cfg: &LlmConfig,
+        llm_cfg: &yekitrim_llm::LlmParams,
     ) -> Result<Vec<Event>> {
         let segments: Vec<TranscriptSegment> = window
             .items
@@ -1041,7 +1041,7 @@ impl AgentTask<Vec<Event>> for DetectionTask {
             .collect();
 
         // 思考模式透传 [llm].extra_params 配置（enabled/disabled），不在此强制
-        let client = crate::llm::LlmClient::from_config(llm_cfg)?
+        let client = yekitrim_llm::LlmClient::new(llm_cfg)?
             .with_timeout(180)
             .with_usage_context(self.usage_context());
         process_window_inner(&client, &segments, &self.detect, &self.hot_windows, 0, self.pass)
@@ -1131,7 +1131,7 @@ const MAX_SPLIT_DEPTH: u8 = 2;
 
 /// 处理一个窗口：先完整尝试，失败且窗口还够大时拆半递归。`depth` 是拆窗层数（顶层 0）。
 fn process_window_inner<'a>(
-    client: &'a crate::llm::LlmClient,
+    client: &'a yekitrim_llm::LlmClient,
     segments: &'a [TranscriptSegment],
     detect: &'a DetectionConfig,
     hot_windows: &'a [(f64, f64)],
@@ -1243,7 +1243,7 @@ fn process_window_inner<'a>(
 }
 
 async fn attempt_call(
-    client: &crate::llm::LlmClient,
+    client: &yekitrim_llm::LlmClient,
     messages: serde_json::Value,
 ) -> Result<Vec<Event>> {
     let body = client.send(messages).await?;
@@ -1388,9 +1388,9 @@ pub async fn test_llm(llm: &LlmConfig, prompt: &str) -> Result<String> {
         {"role": "system", "content": "你是一个 AI 助手。"},
         {"role": "user", "content": prompt}
     ]);
-    let client = crate::llm::LlmClient::from_config(&llm.for_link(crate::config::LlmLink::Utility))?
+    let client = yekitrim_llm::LlmClient::new(&llm.for_link(crate::config::LlmLink::Utility))?
         .with_timeout(180)
-        .with_usage_context(crate::llm::usage::UsageContext::new("LLM 测试"));
+        .with_usage_context(yekitrim_llm::usage::UsageContext::new("LLM 测试"));
     client.send(messages).await.map(|v| v.to_string())
 }
 
@@ -1566,7 +1566,7 @@ mod tests {
         llm.api_key = "sk-test".into();
         let mut detect = DetectionConfig::default();
         detect.llm_score_weight = 0.3;
-        let cancel: Option<crate::llm::agent::CancelProbe> =
+        let cancel: Option<yekitrim_llm::agent::CancelProbe> =
             Some(std::sync::Arc::new(|| true));
         let err = score_events_with_llm(&events, &llm, &detect, None, cancel)
             .await
@@ -1849,7 +1849,7 @@ mod tests {
         })
         .to_string();
         let (base, hits, _bodies) = fake_llm(vec![truncated_body(), ok.clone(), ok]).await;
-        let client = crate::llm::LlmClient::new("k", &base, "m").with_max_tokens(4096);
+        let client = yekitrim_llm::LlmClient::raw("k", &base, "m").with_max_tokens(4096);
         let segs: Vec<TranscriptSegment> = (0..12)
             .map(|i| seg(i as f64 * 10.0, &format!("第 {i} 句")))
             .collect();
@@ -1872,7 +1872,7 @@ mod tests {
         use std::sync::atomic::Ordering;
 
         let (base, hits, _bodies) = fake_llm(vec![truncated_body()]).await;
-        let client = crate::llm::LlmClient::new("k", &base, "m").with_max_tokens(4096);
+        let client = yekitrim_llm::LlmClient::raw("k", &base, "m").with_max_tokens(4096);
         let segs: Vec<TranscriptSegment> = (0..4).map(|i| seg(i as f64 * 10.0, "短句")).collect();
 
         let err = process_window_inner(&client, &segs, &DetectionConfig::default(), &[], 0, DetectPass::Main)

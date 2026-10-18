@@ -1,23 +1,23 @@
-# yekitrim-core/src/llm — 统一 LLM 客户端（Agent 分批窗口 + 用量记账）
+# yekitrim-llm — LLM 传输层（统一客户端 + Agent 分批窗口 + 用量记账）
 
-> 范围：`crates/yekitrim-core/src/llm`/** ｜ 上游：`detection`、`asr::correct`、`yekitrim-polish`（段分割/关键词/贴纸/封面）、`yekitrim-server`（测试连接）｜ 验证：`cargo test -p yekitrim-core --lib llm`
+> 范围：`crates/yekitrim-llm`/** ｜ 上游：`yekitrim-core`（检测/订正）、`yekitrim-polish`（段分割/事件/关键词/贴纸/封面）、`yekitrim-server`（测试连接）｜ 验证：`cargo test -p yekitrim-llm --lib`
 
 ## 职责
 
-core 与 polish 共用的 LLM 出入口：`LlmClient` 负责 HTTP + 重试 + 用量采集，`Agent` 把长输入切成
+**LLM 传输层**（独立 crate，不认识配置文件、也不认识任何 yekitrim-* crate）：`LlmClient` 负责 HTTP + 重试 + 用量采集，`Agent` 把长输入切成
 窗口并发跑并支持 checkpoint 续传（事件检测、订正、精修段事件都走它），`usage` 定义记账记录与 sink。
 上层（CLI/server）只负责装 sink，core 只 `emit`。
 
 ## 入口
 
-- `llm::LlmClient`（`mod.rs`）：`new` / `from_config(&LlmConfig)` / `send(messages)` / `chat(system, user)`
+- `client::LlmClient`（`client.rs`）：`new(LlmParams)`（泛型：接受任何 `Into<LlmParams>`）/ `raw(api_key, base_url, model)` / `send(messages)` / `chat(system, user)`
   / `with_temperature` / `with_max_tokens` / `with_timeout` / `with_thinking` / `with_usage_context(ctx)`。
-- `llm::agent`：`AgentTask`（`name()`、`usage_context()`、`prompt_fingerprint()`、窗口/提示词构造）、
-  `Agent`（`new(&LlmConfig)` / `with_window_size` / `with_max_concurrent` / `with_cancel(probe)` /
+- `agent`：`AgentTask`（`name()`、`usage_context()`、`prompt_fingerprint()`、窗口/提示词构造）、
+  `Agent`（`new(LlmParams)` / `with_window_size` / `with_max_concurrent` / `with_cancel(probe)` /
   `build_windows` / `run` / `run_with_checkpoint` / `run_windows`）、`CancelProbe`、
   `AgentItem` / `AgentOutput` / `AgentWindow` / `AgentProgress`、
   `fingerprint(parts)`、`extract_json[_array|_object]`、`items_to_json`、`windows_from_checkpoint`。
-- `llm::usage`：`UsageRecord`、`UsageContext`（`new(label)` / `project(...)`）、`UsageSink`（trait）、
+- `usage`：`UsageRecord`、`UsageContext`（`new(label)` / `project(...)`）、`UsageSink`（trait）、
   `set_default_sink` / `clear_default_sink` / `default_sink`、`emit` / `emit_with`、`parse_usage`、
   `host_of`、`truncate_error`、`now_secs`。
 
@@ -47,7 +47,7 @@ core 与 polish 共用的 LLM 出入口：`LlmClient` 负责 HTTP + 重试 + 用
   （两份 llm.toml 实例与 `config init` 模板都已带上）。中转支持就保证不写解释性前言；不支持就删掉。
 - 排查偶发 `error sending request`：那是 reqwest 的**建连失败**（不是超时、不是 HTTP 状态码）。
   本机若挂着 Clash/Mihomo 的 TUN（DNS 返回 fake-ip `198.18.0.x`）就是代理那一侧的事。
-  `LlmClient` 的 HTTP 选项集中在 `llm/mod.rs::build_http_client`（connect_timeout 10s /
+  `LlmClient` 的 HTTP 选项集中在 `client.rs::build_http_client`（connect_timeout 10s /
   pool_idle_timeout 30s / tcp_keepalive 30s / 浏览器 UA），**所有选项只在那里设**——
   `with_timeout` 会重建客户端，散着写就会像 UA 那样被静默丢掉。
 
@@ -67,8 +67,8 @@ core 与 polish 共用的 LLM 出入口：`LlmClient` 负责 HTTP + 重试 + 用
 
 ### 用量记账（token / 缓存命中 / 耗时）
 
-- **采集点只有一个**：`LlmClient::send`（`yekitrim-core/src/llm/mod.rs`）。成功与**最终失败**都记一条
-  `UsageRecord`（`llm/usage.rs`），重试算同一次调用（`attempts` 记实际尝试次数，**不按尝试拆行**）。
+- **采集点只有一个**：`LlmClient::send`（`crates/yekitrim-llm/src/client.rs`）。成功与**最终失败**都记一条
+  `UsageRecord`（`usage.rs`），重试算同一次调用（`attempts` 记实际尝试次数，**不按尝试拆行**）。
   要加字段就改这一处 + `usage.rs`，别去 9 个调用点各写一遍。
 - **归因**：`label`（链路名）+ `project`（项目/切片目录）。Agent 系任务走
   `AgentTask::usage_context()`（默认取 `name()`，事件检测/订正/精修段事件各自补 project）；
@@ -93,13 +93,18 @@ core 与 polish 共用的 LLM 出入口：`LlmClient` 负责 HTTP + 重试 + 用
 - 每次调用还会打一行结构化日志 `LLM 调用 label=… prompt_tokens=… cached_tokens=… latency_ms=…`
   （logbus 渲染成 `k=v` 进设置页「运行日志」与文件日志；失败是 `LLM 调用失败` + status）。
 
+- ⚠️ **本 crate 有两条专属门禁**（`scripts/check_module_boundaries.py`）：
+  `llm_is_a_leaf`（不许出现 `yekitrim_core|yekitrim_polish|yekitrim_service|toml::`）与
+  `only_llm_knows_wire`（wire 字面量只许出现在这里）。两条都带变异自证 ——
+  它们守的正是「隔离」这件事本身，别为了让代码通过去放宽它们。
+
 > 改动只允许落在本目录；跨模块改动先读对方卡，并跑两条门禁。
 
 ## 验证
 
 ```bash
-cargo test -p yekitrim-core --lib llm
+cargo test -p yekitrim-llm --lib
 ```
 
-`mod::tests` / `agent::tests`（窗口、指纹、checkpoint、JSON 抽取）/ `usage::tests`（三种
+`client::tests` / `agent::tests`（窗口、指纹、checkpoint、JSON 抽取）/ `usage::tests`（三种
 `cached_tokens` 写法、`latency_ms`、失败也记一行）都要绿。

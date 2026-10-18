@@ -148,7 +148,7 @@ pub(super) async fn polish_spawn(
         // 判据与管线/贴纸构建同源：Job 的取消令牌 → `ProgressReporter::cancelled()`。
         let token = jobs.cancel_token(&job_id).await;
         let bridge = super::core::progress_bridge(job_id.clone(), jobs.clone(), token);
-        let cancel: Option<yekitrim_core::llm::agent::CancelProbe> = Some(std::sync::Arc::new(move || {
+        let cancel: Option<yekitrim_llm::agent::CancelProbe> = Some(std::sync::Arc::new(move || {
             yekitrim_core::progress::ProgressReporter::cancelled(&*bridge)
         }));
         let result = async {
@@ -730,12 +730,12 @@ pub(super) async fn polish_cover_title(
     // `[llm] temperature` 的模板默认是 **0**（确定性）—— 拿它写标题只会得到四平八稳的概述。
     // 只在**低于**下限时抬上来；用户自己配了更高温度就照用（不覆盖用户意图）。
     let temp = cover_title_temperature(cfg.cover.title_temperature, linked.temperature);
-    let client = yekitrim_core::llm::LlmClient::from_config(&linked)
+    let client = yekitrim_llm::LlmClient::new(&linked)
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("LLM 配置错误: {e}")))?
         .with_temperature(temp)
         .with_timeout(60)
         .with_usage_context(
-            yekitrim_core::llm::usage::UsageContext::new("封面文案")
+            yekitrim_llm::usage::UsageContext::new("封面文案")
                 .project(Some(yekitrim_core::path::display(std::path::Path::new(&dir)))),
         );
 

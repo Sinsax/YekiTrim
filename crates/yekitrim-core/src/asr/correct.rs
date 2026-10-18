@@ -10,7 +10,7 @@ use async_trait::async_trait;
 
 use crate::config::{CorrectConfig, LlmConfig};
 use crate::danmaku::DanmakuEntry;
-use crate::llm::agent::{
+use yekitrim_llm::agent::{
     extract_json, items_to_json, Agent, AgentItem, AgentOutput, AgentProgress, AgentTask,
     AgentWindow,
 };
@@ -70,8 +70,8 @@ impl AgentTask<Vec<AgentOutput>> for CorrectTask {
         "字幕订正"
     }
 
-    fn usage_context(&self) -> crate::llm::usage::UsageContext {
-        crate::llm::usage::UsageContext::new(self.name()).project(self.project.clone())
+    fn usage_context(&self) -> yekitrim_llm::usage::UsageContext {
+        yekitrim_llm::usage::UsageContext::new(self.name()).project(self.project.clone())
     }
 
     fn thinking(&self) -> bool {
@@ -225,7 +225,7 @@ pub async fn correct_transcript_with_checkpoint(
     project: Option<&Path>,
     checkpoint_path: Option<&Path>,
     progress_tx: Option<tokio::sync::mpsc::Sender<AgentProgress<Vec<AgentOutput>>>>,
-    cancel: Option<crate::llm::agent::CancelProbe>,
+    cancel: Option<yekitrim_llm::agent::CancelProbe>,
 ) -> Result<Vec<TranscriptSegment>> {
     if segments.is_empty() {
         return Ok(Vec::new());

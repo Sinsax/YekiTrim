@@ -6,8 +6,8 @@
 use crate::parse::srt::Subtitle;
 use yekitrim_core::danmaku::emotion::{Emotion, EmotionWindow};
 use crate::project::Segment;
-use yekitrim_core::llm::agent::extract_json_array;
-use yekitrim_core::llm::LlmClient;
+use yekitrim_llm::agent::extract_json_array;
+use yekitrim_llm::LlmClient;
 
 /// 调用 LLM 生成话题区间 + 段内事件 + 音效判断
 /// sticker_source 影响提示词中 sticker 事件的语言描述, 空数组则不提及 sticker

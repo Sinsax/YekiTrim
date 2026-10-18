@@ -107,7 +107,7 @@ impl Stage for EventDetector {
         // ⚠️ 上提到这里、两处共用一份 —— 检测窗口与**热度评分**必须是同一个探针，
         // 否则会出现"检测阶段停得下来、评分阶段停不下来"。
         let progress = ctx.progress.clone();
-        let cancel: Option<crate::llm::agent::CancelProbe> =
+        let cancel: Option<yekitrim_llm::agent::CancelProbe> =
             Some(std::sync::Arc::new(move || progress.cancelled()));
 
         let mut events = if llm_config.api_key.is_empty() {
@@ -494,7 +494,7 @@ async fn process_with_llm(
     hot_windows: &[(f64, f64)],
     output_dir: &std::path::Path,
     resume: Option<bool>,
-    cancel: Option<crate::llm::agent::CancelProbe>,
+    cancel: Option<yekitrim_llm::agent::CancelProbe>,
 ) -> Result<Vec<Event>> {
     // 预合并：相邻短段（间距 <2s）合并，减少 LLM 输入量
     let merged = merge_segments_for_detection(segments);
@@ -584,7 +584,7 @@ async fn process_scattered_with_llm(
     hot_windows: &[(f64, f64)],
     output_dir: &std::path::Path,
     resume: Option<bool>,
-    cancel: Option<crate::llm::agent::CancelProbe>,
+    cancel: Option<yekitrim_llm::agent::CancelProbe>,
     heatmap: Option<&[DensityWindow]>,
     video_duration: Option<f64>,
 ) -> Result<(Vec<Event>, ScatteredMergeStat)> {

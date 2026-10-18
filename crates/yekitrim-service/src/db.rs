@@ -394,7 +394,7 @@ pub struct Db {
                     used_at    INTEGER,
                     revoked    INTEGER NOT NULL DEFAULT 0
                 );
-                -- v7：LLM 用量（每次调用一行；采集点在 yekitrim_core::llm::LlmClient::send）
+                -- v7：LLM 用量（每次调用一行；采集点在 yekitrim_llm::LlmClient::send）
                 -- label = 链路名（事件检测 / 字幕订正 / 精修段事件…），project = 项目或切片目录。
                 -- attempts = 这一行包含了多少次 HTTP 尝试（重试不另起一行）。
                 CREATE TABLE IF NOT EXISTS llm_usage (
@@ -1573,7 +1573,7 @@ pub struct Db {
     // ===== v7：LLM 用量 =====
 
     /// 记一次 LLM 调用（`DbSink` 的唯一写入路径）。
-    pub fn insert_llm_usage(&self, u: &yekitrim_core::llm::usage::UsageRecord) -> Result<()> {
+    pub fn insert_llm_usage(&self, u: &yekitrim_llm::usage::UsageRecord) -> Result<()> {
         self.with(|conn| {
             conn.execute(
                 "INSERT INTO llm_usage
@@ -1672,7 +1672,7 @@ mod tests {
     /// v7 的 llm_usage：写入 + 汇总（总量 / 按链路 / 按项目 / 按天）。
     #[test]
     fn llm_usage_insert_and_summarize() {
-        use yekitrim_core::llm::usage::{now_secs, UsageRecord};
+        use yekitrim_llm::usage::{now_secs, UsageRecord};
         let (_d, db) = tmp_db();
         let mk = |label: &str, project: Option<&str>, prompt: u64, completion: u64, cached: u64, ok: bool| UsageRecord {
             ts: now_secs(),

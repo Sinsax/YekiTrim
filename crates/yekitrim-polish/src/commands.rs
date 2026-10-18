@@ -317,7 +317,7 @@ pub async fn cmd_parse(project_path: &Path) -> anyhow::Result<()> {
 pub async fn cmd_llm(
     project_path: &Path,
     full: bool,
-    cancel: Option<yekitrim_core::llm::agent::CancelProbe>,
+    cancel: Option<yekitrim_llm::agent::CancelProbe>,
 ) -> anyhow::Result<()> {
     cmd_llm_for(
         yekitrim_core::owner::Owner::from_env(),
@@ -337,7 +337,7 @@ pub async fn cmd_llm_for(
     owner: yekitrim_core::owner::Owner,
     project_path: &Path,
     full: bool,
-    cancel: Option<yekitrim_core::llm::agent::CancelProbe>,
+    cancel: Option<yekitrim_llm::agent::CancelProbe>,
 ) -> anyhow::Result<()> {
     tracing::info!("🤖  LLM config generation... (full={full})");
 
@@ -515,7 +515,7 @@ pub async fn cmd_llm_for(
 pub async fn cmd_llm_segment(
     project_path: &Path,
     index: usize,
-    cancel: Option<yekitrim_core::llm::agent::CancelProbe>,
+    cancel: Option<yekitrim_llm::agent::CancelProbe>,
 ) -> anyhow::Result<()> {
     cmd_llm_segment_for(
         yekitrim_core::owner::Owner::from_env(),
@@ -531,7 +531,7 @@ pub async fn cmd_llm_segment_for(
     owner: yekitrim_core::owner::Owner,
     project_path: &Path,
     index: usize,
-    cancel: Option<yekitrim_core::llm::agent::CancelProbe>,
+    cancel: Option<yekitrim_llm::agent::CancelProbe>,
 ) -> anyhow::Result<()> {
     tracing::info!("🤖  重做分段 #{index} 的事件...");
 
@@ -1146,13 +1146,13 @@ async fn llm_generate_package_tags(
     files: &[String],
     progress: &dyn yekitrim_core::progress::ProgressReporter,
 ) -> anyhow::Result<Vec<(String, Vec<String>)>> {
-    use yekitrim_core::llm::agent::extract_json_object;
-    use yekitrim_core::llm::LlmClient;
+    use yekitrim_llm::agent::extract_json_object;
+    use yekitrim_llm::LlmClient;
 
     // 链路解析：零散单发链路（见 [llm.overrides.utility]）；thinking 的默认关思考由它给出
     let linked = cfg.for_link(yekitrim_core::config::LlmLink::Utility);
-    let client = LlmClient::from_config(&linked)?
-        .with_usage_context(yekitrim_core::llm::usage::UsageContext::new("贴纸包标签"));
+    let client = LlmClient::new(&linked)?
+        .with_usage_context(yekitrim_llm::usage::UsageContext::new("贴纸包标签"));
     let system = "你是贴纸语义标签助手。分析贴纸文件名，输出一个精简的语义 tag 索引。要求：\
         \n- 输出 JSON 对象，key 为语义 tag（情绪/动作/场景词），value 为该 tag 下的文件列表\
         \n- tag 数量控制在 10~20 个，必须是常见情绪/动作词（如 笑、哭、生气、害怕、开心、害羞、呆、紧张、惊讶、得意 等）\
@@ -1244,7 +1244,7 @@ pub async fn cmd_emoji_build(
     // 补漏/换词表时不该再付一遍。要彻底重做就打开它。
     reclassify_all: bool,
 ) -> anyhow::Result<EmojiBuildReport> {
-    use yekitrim_core::llm::LlmClient;
+    use yekitrim_llm::LlmClient;
 
     let path = catalog.unwrap_or_else(|| {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1283,8 +1283,8 @@ pub async fn cmd_emoji_build(
         llm_cfg.model
     );
     let linked = llm_cfg.for_link(yekitrim_core::config::LlmLink::Utility);
-    let client = LlmClient::from_config(&linked)?
-        .with_usage_context(yekitrim_core::llm::usage::UsageContext::new("emoji 多维分类"));
+    let client = LlmClient::new(&linked)?
+        .with_usage_context(yekitrim_llm::usage::UsageContext::new("emoji 多维分类"));
 
     let system = emoji_classify_system_prompt();
     let mut report = EmojiBuildReport { total: entries.len(), ..Default::default() };
@@ -1384,14 +1384,14 @@ pub async fn cmd_emoji_build(
 /// 实测 881 条只落 478（未分类的是 6 段连续区 = 整批落空），而日志里一个字都没有。
 /// 静默的部分成功比彻底失败更坏。
 async fn classify_emoji_batch(
-    client: &yekitrim_core::llm::LlmClient,
+    client: &yekitrim_llm::LlmClient,
     system: &str,
     chunk: &mut [&mut serde_json::Value],
     drop_legacy_tags: bool,
     hit: &mut std::collections::HashMap<String, usize>,
     dropped: &mut Vec<String>,
 ) -> anyhow::Result<Vec<String>> {
-    use yekitrim_core::llm::agent::extract_json_object;
+    use yekitrim_llm::agent::extract_json_object;
 
     let input: Vec<serde_json::Value> = chunk
         .iter()
@@ -1755,15 +1755,15 @@ const TAG_BATCH_SIZE: usize = 40;
 async fn llm_generate_tags(
     cfg: &yekitrim_core::config::LlmConfig,
     metas: &mut [crate::assets::sticker_index::StickerMeta],
-    cancel: Option<yekitrim_core::llm::agent::CancelProbe>,
+    cancel: Option<yekitrim_llm::agent::CancelProbe>,
 ) -> anyhow::Result<()> {
-    use yekitrim_core::llm::LlmClient;
+    use yekitrim_llm::LlmClient;
     // 链路解析：零散单发链路（见 [llm.overrides.utility]）。
     // 以前这里是裸 `LlmClient::new`（不发送 max_tokens/temperature/extra_params）——
     // 于是这条链路既不受 [llm] 也不受链路覆盖约束，改成与其它调用点同一条路。
     let linked = cfg.for_link(yekitrim_core::config::LlmLink::Utility);
-    let client = LlmClient::from_config(&linked)?
-        .with_usage_context(yekitrim_core::llm::usage::UsageContext::new("贴纸扫描标签"));
+    let client = LlmClient::new(&linked)?
+        .with_usage_context(yekitrim_llm::usage::UsageContext::new("贴纸扫描标签"));
     let system = "你是贴纸标签生成助手。为每个贴纸生成 3-6 个英文 tags（情绪/动作/场景词，供英文 keyword 匹配，如 love happy laugh shock game）。";
 
     let mut tagged = 0;

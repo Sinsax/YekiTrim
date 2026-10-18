@@ -25,6 +25,7 @@ default = []
 cover-takumi = ["dep:takumi"]
 
 [dependencies]
+yekitrim-llm = { path = "../yekitrim-llm" }
 # yekitrim-core (用于 .yekitrim/llm.toml 路径)
 yekitrim-core = { path = "../yekitrim-core" }
 yekitrim-render-core = { path = "../yekitrim-render-core" }

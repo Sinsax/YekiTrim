@@ -1,7 +1,7 @@
 //! polish::llm：精修侧 LLM 流水线的串联（全局分段 → 逐段事件 → 关键词 → 逐段状态快照）。
 //!
 //! 入口：`run_llm_pipeline`、`regenerate_segment_events`；子模块 `segment` / `events` / `keywords` / `status`。
-//! 边界：一律走 `yekitrim_core::llm::LlmClient::from_config` 并挂 `with_usage_context`（不挂就是空 label）；空结果/失败一律不覆盖已有事件；落盘前的运镜与守卫与 `process` 是两份重复实现，要一起改 —— 见 `crates/yekitrim-polish/src/llm/AGENTS.md`
+//! 边界：一律走 `yekitrim_llm::LlmClient::from_config` 并挂 `with_usage_context`（不挂就是空 label）；空结果/失败一律不覆盖已有事件；落盘前的运镜与守卫与 `process` 是两份重复实现，要一起改 —— 见 `crates/yekitrim-polish/src/llm/AGENTS.md`
 
 pub mod segment;
 pub mod keywords;
@@ -14,7 +14,7 @@ use crate::parse::srt::Subtitle;
 use crate::project::{Segment, Event};
 use yekitrim_core::config::LlmConfig;
 use yekitrim_core::danmaku::DanmakuEntry;
-use yekitrim_core::llm::LlmClient;
+use yekitrim_llm::LlmClient;
 
 use status::SegmentGenStatus;
 
@@ -52,7 +52,7 @@ pub async fn run_llm_pipeline(
     rhythm_params: crate::process::rhythm::Params,
     rhythm_ledger: &[crate::project::RhythmAuto],
     checkpoint_dir: Option<&PathBuf>,
-    cancel: Option<yekitrim_core::llm::agent::CancelProbe>,
+    cancel: Option<yekitrim_llm::agent::CancelProbe>,
 ) -> anyhow::Result<(
     Vec<Segment>,
     Vec<String>,
@@ -69,12 +69,12 @@ pub async fn run_llm_pipeline(
     let llm_cfg = &linked;
     // 用量归因：链路名 + 项目（切片）目录
     let usage = |label: &str| {
-        yekitrim_core::llm::usage::UsageContext::new(label)
+        yekitrim_llm::usage::UsageContext::new(label)
             .project(project.as_ref().map(|p| yekitrim_core::path::display(p)))
     };
 
     let client = std::sync::Arc::new(
-        LlmClient::from_config(llm_cfg)?
+        LlmClient::new(llm_cfg)?
             .with_usage_context(usage("精修分段")),
     );
 
@@ -175,7 +175,7 @@ pub async fn run_llm_pipeline(
     let sub_texts: Vec<String> = subtitles.iter().map(|s| s.text.clone()).collect();
     let dm_texts: Vec<String> = danmaku.iter().map(|d| d.text.clone()).collect();
     // 单开一个带自身归因的客户端：与分段那一路在用量表里分开统计
-    let kw_client = LlmClient::from_config(llm_cfg)?
+    let kw_client = LlmClient::new(llm_cfg)?
         .with_usage_context(usage("精修关键词"));
     let (dm_filter, hl_words) = match keywords::extract_keywords(&kw_client, &sub_texts, &dm_texts).await {
         Ok(k) => { println!("  ✓ Keywords extracted"); k }
@@ -333,7 +333,7 @@ pub async fn regenerate_segment_events(
     index: usize,
     project: Option<&Path>,
     mute_ranges: &[crate::project::MuteRange],
-    cancel: Option<yekitrim_core::llm::agent::CancelProbe>,
+    cancel: Option<yekitrim_llm::agent::CancelProbe>,
 ) -> anyhow::Result<SegmentGenStatus> {
     let Some(seg) = segments.get(index) else {
         anyhow::bail!("分段下标越界: {index}（当前只有 {} 段）", segments.len());
@@ -484,7 +484,7 @@ async fn run_sticker_choice_step(
     mute_ranges: &[crate::project::MuteRange],
     llm_cfg: &LlmConfig,
     project: Option<&std::path::Path>,
-    cancel: Option<yekitrim_core::llm::agent::CancelProbe>,
+    cancel: Option<yekitrim_llm::agent::CancelProbe>,
 ) -> anyhow::Result<()> {
     use crate::assets::sticker_index::{load_package_meta, tag_files};
     use crate::llm::events::{choose_sticker_files_batch, StickerChoiceContext};
