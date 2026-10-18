@@ -151,6 +151,29 @@ RULES: list[tuple[str, list[str], str, str]] = [
         r'(?<!["\w])yekitrim_server::(?!(run|ServerArgs))',
         "服务端能力只能经 yekitrim_server::run() / ServerArgs 进；不许直接调 server 内部模块",
     ),
+    # ---- LLM 隔离（P3；见 crates/yekitrim-llm/AGENTS.md「本 crate 有两条专属门禁」）----
+    (
+        "llm_is_a_leaf",
+        ["crates/yekitrim-llm/src"],
+        r"yekitrim_core|yekitrim_polish|yekitrim_service|toml::",
+        "LLM 传输层是**叶子 crate**：它只吃 LlmParams —— 不认识配置文件、不认识任何 yekitrim-* crate。"
+        "配置 → 参数的换算在 yekitrim-core（impl From<&LlmConfig> for LlmParams）；"
+        "它一旦 use 上层或自己读 TOML，依赖方向就成环、「隔离」只剩散文里那句话",
+    ),
+    (
+        # **扫整棵 crates/，唯一的例外是规则自己点名的那个 crate**（见 EXEMPT）。
+        # 不写成"逐个列举其它 crate"是有意的：新加一个 crate 时会**自动**落进判据里，
+        # 而列举法会让它静默逃过（漏一条 = 那条不变式对新代码不存在）。
+        "only_llm_knows_wire",
+        ["crates"],
+        r"reasoning_effort|enable_thinking|max_completion_tokens|chat_template_kwargs",
+        "wire 字面量（推理参数怎么拼、输出上限发哪个字段名）**只许出现在 yekitrim-llm**："
+        "业务侧只表达「要什么」（LlmParams / ModelCaps），怎么发由 wire.rs 一处决定。"
+        "散出去就是「同一个旋钮在两处各写一半」—— 从前 [llm] temperature 在 build_body 写死、"
+        "extra_params 再盖一层、thinking 再盖第三层。"
+        "刻意**不**收 response_format / thinking：core 的 config 模板里有它们的合法文本。"
+        "（规则文案里别写 emoji：Windows 控制台是 GBK，印不出来会把违规报告吞掉）",
+    ),
     # ---- 前端边界（见 webui/src/AGENTS.md 与 webui/src/api/AGENTS.md）----
     (
         "components 不许 import views",
@@ -194,6 +217,20 @@ PAIRED_RULES: list[tuple[str, list[str], str, str, str]] = [
 ]
 
 
+def say(text: str) -> None:
+    """打印一行 —— **编不出来也要打得出来**。
+
+    ⚠️ Windows 控制台/管道默认是 GBK：规则文案里的 ⚠️ 这类字符会让 print 直接抛
+    UnicodeEncodeError，而抛出点正是"打印违规"那一行 —— 表现是**门禁崩了、违规清单没出来**
+    （实测：变异自证只看到 traceback，看不到是哪一条违规）。宁可退化成 "?"，也不能吞报告。
+    """
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        enc = sys.stdout.encoding or "utf-8"
+        print(text.encode(enc, "replace").decode(enc, "replace"))
+
+
 def strip_comments(line: str) -> str:
     """去掉 `//` 起的注释，但保留 `https://` 这类 URL。
 
@@ -229,6 +266,10 @@ EXEMPT: dict[str, list[str]] = {
         #    `CREATE_NO_WINDOW`（tray.rs 里两处：起 server / taskkill）。这是**刻意换体积**的取舍。
         "crates/yekitrim-cli/src/tray.rs",
     ],
+    # ⚠️ 这条的例外就是**规则名字自己点名的那个 crate**：wire 字面量的唯一合法住处。
+    # 它不是"业务代码开了个口子"，而是这条不变式的**另一面**（与上面 process.rs 同类）。
+    # 别往里加第二个目录 —— 那等于把这条规则作废。
+    "only_llm_knows_wire": ["crates/yekitrim-llm/"],
 }
 
 
@@ -283,7 +324,7 @@ def main() -> int:
             files.extend(source_files(rel))
 
         if not files:
-            print(f"[!!] {name}：规则指向的路径不存在（判据已失效，请修脚本）")
+            say(f"[!!] {name}：规则指向的路径不存在（判据已失效，请修脚本）")
             total += 1
             continue
         checked += len(files)
@@ -300,11 +341,11 @@ def main() -> int:
 
         if hits:
             total += len(hits)
-            print(f"[!!] {name}  —— {why}")
+            say(f"[!!] {name}  —— {why}")
             for h in hits:
-                print(f"       {h}")
+                say(f"       {h}")
         elif verbose:
-            print(f"[OK] {name}（{len(files)} 个文件）")
+            say(f"[OK] {name}（{len(files)} 个文件）")
 
     # 成对判据（文件级）：见 PAIRED_RULES 的说明
     for name, paths, trigger, need, why in PAIRED_RULES:
@@ -314,7 +355,7 @@ def main() -> int:
         for rel in paths:
             files.extend(source_files(rel))
         if not files:
-            print(f"[!!] {name}：规则指向的路径不存在（判据已失效，请修脚本）")
+            say(f"[!!] {name}：规则指向的路径不存在（判据已失效，请修脚本）")
             total += 1
             continue
         checked += len(files)
@@ -325,8 +366,8 @@ def main() -> int:
             )
             if tx.search(body) and not nx.search(body):
                 total += 1
-                print(f"[!!] {name}  —— {why}")
-                print(
+                say(f"[!!] {name}  —— {why}")
+                say(
                     f"       {f.relative_to(REPO).as_posix()}："
                     f"用了 `{trigger}` 但全文没有 `{need}`"
                 )

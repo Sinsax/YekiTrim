@@ -214,6 +214,42 @@ pub fn models_for(base_url: &str) -> Vec<(String, Option<String>)> {
         .collect()
 }
 
+/// 把 `(base_url, model)` 的能力渲染成**给界面用的 JSON**（设置页按能力渲染控件的唯一数据源）。
+///
+/// **只查表、不联网**（与 `models_for` 同一条口径）。键名就是前端契约：
+/// * `hit`：表里真的认识这对 (host, model)；`false` 时其余字段是**保守默认**（界面写明"未收录"）；
+/// * `levels`：推理**档位 → wire 拼写**。值是 `null` = 该档支持但这一档**不发送**；
+///   **缺档 = 这个模型不提供这一档** —— 界面下拉的选项就是它的键，别自己补齐；
+/// * `temperature`：`"supported"` / `"unsupported"`（后者界面要禁用温度控件并写明原因）；
+/// * `max_output_ceiling` / `context_window`：**能力上限**（不是每请求默认值，默认值归配置）。
+///
+/// ⚠️ **不外泄 `thinking_wire` / `max_output_wire`**：那是"怎么发"，是本 crate 的内部知识，
+/// 界面拿它也没用（该显示的只有档位与"能不能带温度"）。
+pub fn caps_json(base_url: &str, model: &str) -> serde_json::Value {
+    let caps = caps_for(base_url, model);
+    let mut levels = serde_json::Map::new();
+    for (level, wire) in &caps.levels {
+        levels.insert(
+            level.as_str().to_string(),
+            match wire {
+                Some(w) => serde_json::Value::String(w.clone()),
+                None => serde_json::Value::Null,
+            },
+        );
+    }
+    serde_json::json!({
+        "hit": find_model(base_url, model).is_some(),
+        "levels": levels,
+        "temperature": match caps.temperature {
+            Support::Supported => "supported",
+            Support::Unsupported => "unsupported",
+        },
+        "max_output_ceiling": caps.max_output_ceiling,
+        "context_window": caps.context_window,
+        "reasoning": caps.reasoning_supported(),
+    })
+}
+
 /// 表里登记了几家 provider / 多少支模型（诊断用）。
 pub fn stats() -> (usize, usize) {
     let cat = catalog();
@@ -257,5 +293,34 @@ mod tests {
         let b = caps_for("https://api.moonshot.ai/v1", "kimi-k2-0711-preview");
         assert_eq!(b.thinking_wire, ThinkingWire::parse("thinking_type"));
         assert_ne!(a.thinking_wire, b.thinking_wire, "两家不同方言必须能分辨");
+    }
+
+    /// 界面契约：`caps_json` 给的是**档位与温度**，不是方言。
+    ///
+    /// 回归钉子：设置页的下拉选项数 == `levels` 的条数（P4 的几何断言），所以这里必须钉住
+    /// "**缺档 = 不提供**、`null` = 支持但不发送"这两件事在 JSON 里长什么样。
+    #[test]
+    fn caps_json_给界面的是档位与温度() {
+        let v = caps_json("https://api.deepseek.com/v1", "deepseek-v4-pro");
+        assert_eq!(v["hit"], serde_json::json!(true), "{v}");
+        assert_eq!(v["temperature"], "supported", "{v}");
+        assert_eq!(v["max_output_ceiling"].as_u64(), Some(384_000), "{v}");
+        assert_eq!(v["context_window"].as_u64(), Some(1_000_000), "{v}");
+        let levels = v["levels"].as_object().expect("levels 必须是对象");
+        assert_eq!(levels.len(), 4, "deepseek-v4-pro 提供 4 档：{levels:?}");
+        assert!(levels["high"].is_string(), "high 有 wire 拼写：{levels:?}");
+        assert!(levels["medium"].is_null(), "medium 支持但不发送（null）：{levels:?}");
+        assert!(levels.get("off").is_none(), "缺档 = 不提供，界面别自己补一档：{levels:?}");
+        // 方言不外泄：界面照 keys 画就行，怎么发是本 crate 的事
+        assert!(v.get("thinking_wire").is_none(), "{v}");
+        assert!(v.get("max_output_wire").is_none(), "{v}");
+
+        // 表没命中：hit=false + 保守默认（**不是**让它画出一堆档位）
+        let u = caps_json("https://unknown.example.com/v1", "no-such-model");
+        assert_eq!(u["hit"], serde_json::json!(false), "{u}");
+        assert_eq!(u["reasoning"], serde_json::json!(false), "{u}");
+        assert_eq!(u["temperature"], "supported", "温度照发（最坏是对方拒）: {u}");
+        assert_eq!(u["levels"].as_object().map(|m| m.len()), Some(0), "{u}");
+        assert!(u["max_output_ceiling"].is_null(), "{u}");
     }
 }

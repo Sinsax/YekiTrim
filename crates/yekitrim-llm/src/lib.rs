@@ -17,12 +17,14 @@
 //!
 //! * [`params`] —— 一次调用的全部参数（归一化面）。
 //! * [`client`] —— HTTP + 重试 + 请求体 + **用量采集的唯一一处**。
+//! * [`discovery`] —— `GET {base}/models`：问中转"有哪些模型"（失败分类，四条文案互不串味）。
 //! * [`agent`] —— 长输入切窗口并发跑 + checkpoint 续传 + 取消探针。
 //! * [`usage`] —— 用量记录与 sink（落库由上层实现 trait）。
 
 pub mod agent;
 pub mod catalog;
 pub mod client;
+pub mod discovery;
 pub mod params;
 pub mod wire;
 pub mod usage;

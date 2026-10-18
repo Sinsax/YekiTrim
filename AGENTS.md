@@ -33,7 +33,7 @@ yekitrim-render-core ←── yekitrim-polish ──┐
 | `crates/yekitrim-cli` | 只剩入口（clap 命令 + tracing 装配），二进制名 `yekitrim` |
 | `crates/xtask` | 构建/打包/产物门禁（`xtask scan|package`） |
 
-硬规矩（`scripts/check_module_boundaries.py` 逐条机器检查，**17 条**：15 行级 + 1 成对判据 + 1 卫生）：
+硬规矩（`scripts/check_module_boundaries.py` 逐条机器检查，**19 条**：17 行级（新增 llm_is_a_leaf / only_llm_knows_wire）+ 1 成对判据 + 1 卫生）：
 
 - `yekitrim-service` **绝不能** `use yekitrim_server::*`（它能被抽出来的全部理由）；
 - `yekitrim-server` 只依赖 `yekitrim-service`，不碰 `yekitrim_cli`；
@@ -173,7 +173,7 @@ yekitrim-render-core ←── yekitrim-polish ──┐
 ```bash
 # 结构门禁（本文件与模块卡的预算/覆盖率/骨架/索引一致/⚠️ 下限）
 python3 scripts/check_module_map.py
-# 边界门禁（17 条：分层方向 + P4 隔离 + 前端 + 成对判据 + 工作区卫生）
+# 边界门禁（19 条：分层方向 + P4 隔离 + 前端 + LLM 隔离 + 成对判据 + 工作区卫生）
 python3 scripts/check_module_boundaries.py
 
 # 改任何 crate 之后
