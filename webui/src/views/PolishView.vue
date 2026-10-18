@@ -460,34 +460,8 @@
               该片段正在「{{ kindText(scopeBusyJob.kind) }}」，请稍候
             </div>
 
-            <!-- 任务状态栏：**常驻**（不再用 `v-if` 按任务有无出现/消失），只报「谁在跑 + 状态 + 进度」。
-                 同一件事不说三遍（jobLabel + chip + 「任务完成」），也不回显服务端日志（用户要求）。 -->
-            <!-- 任务栏 = **可折叠**（用户 2026-10-06：「任务改成折叠的模式，默认折叠，只显示当前是什么
-                 任务，展开显示详情，展开时不要挤占下方控件，是浮在上层的」）。
-                 ① 默认折叠：**一行** = 任务名 + 状态 chip（就是"当前是什么任务"）；
-                 ② 展开：`position:absolute` 浮在上层，**不参与布局** ⇒ 不挤占下方控件
-                    （所以下面那块卡片要 `position:relative` 当定位锚）；
-                 ③ 任务在跑时，折叠态也带进度条 —— 不然折叠了就看不到进展。 -->
-            <div class="job-wrap">
-              <button class="job-head" :class="{ open: jobOpen }" @click="jobOpen = !jobOpen">
-                <b class="flex-1 ellipsis">{{ job.kind ? jobLabel(job.kind) : '任务' }}</b>
-                <span class="chip" :class="jobChipClass">{{ jobStatusText }}</span>
-                <Icon name="chevron-down" :size="11" class="job-caret" />
-              </button>
-              <div v-if="jobOpen" class="row spread small mt-6">
-                <span v-if="jobRunning" class="muted small mono">{{ jobTimeText }}</span>
-                <button v-if="jobRunning" class="mini-btn danger" :disabled="canceling" @click="cancelJob"><Icon name="x" :size="10" /> 中断</button>
-                <span v-if="!jobRunning" class="muted small">空闲</span>
-              </div>
-              <div v-if="jobOpen && (job.error || (jobRunning && job.log))" class="muted small mt-6 mono job-log">{{ job.error || job.log }}</div>
-              <!-- ⚠️ **失败原因常驻**（2026-10-15）：它不许被折叠态藏起来。
-                   `webui/src/AGENTS.md` 写着"状态栏常驻…**唯一例外：失败原因必须显示**" ——
-                   而这里原先 condition 是 `jobOpen && …`，`jobOpen` 默认 false ⇒
-                   用户**只看到一枚红 chip「失败」**，必须手动展开才知道为什么失败。
-                   失败是"我要不要重试/改参数"的决策点，藏在一次点击之后等于没有。
-                   ⚠️ 只在**失败**时渲染这一条：成功/进行中不额外占高度（与"状态常驻"不冲突）。 -->
-              <div v-if="job.status === 'failed' && job.error" class="muted small mt-6 mono job-log job-err">{{ job.error }}</div>
-            </div>
+            <!-- 任务状态栏**已搬到时间轴编辑器右上角**（2026-10-18 用户要求）——
+                 见下面 `<TimelineEditor>` 的 `#status` 槽。这里不再重复一份。 -->
 
               </template>
 
@@ -594,6 +568,39 @@
             <template #head>
               <b>时间轴编辑器</b>
               <span class="muted small" title="特效轨先选细分类型；改动立即保存，后处理在结束编辑时跑">拖动移动 / 边缘缩放 / 双击删除 / ＋ 在播放头添加</span>
+            </template>
+            <!-- 任务状态 = **时间轴右上角**（2026-10-18 用户要求从右栏搬来）。
+                 ⚠️ 折叠态仍是一行（任务名 + chip），展开的详情是 `position:absolute` 浮层
+                 （`.job-wrap` 自己 `position:relative` 当锚）⇒ 不占、不挤时间轴的泳道高度。 -->
+            <template #status>
+              <!-- 任务状态栏：**常驻**（不再用 `v-if` 按任务有无出现/消失），只报「谁在跑 + 状态 + 进度」。
+                   同一件事不说三遍（jobLabel + chip + 「任务完成」），也不回显服务端日志（用户要求）。 -->
+              <!-- 任务栏 = **可折叠**（用户 2026-10-06：「任务改成折叠的模式，默认折叠，只显示当前是什么
+                   任务，展开显示详情，展开时不要挤占下方控件，是浮在上层的」）。
+                   ① 默认折叠：**一行** = 任务名 + 状态 chip（就是"当前是什么任务"）；
+                   ② 展开：`position:absolute` 浮在上层，**不参与布局** ⇒ 不挤占下方控件
+                      （所以下面那块卡片要 `position:relative` 当定位锚）；
+                   ③ 任务在跑时，折叠态也带进度条 —— 不然折叠了就看不到进展。 -->
+              <div class="job-wrap">
+                <button class="job-head" :class="{ open: jobOpen }" @click="jobOpen = !jobOpen">
+                  <b class="flex-1 ellipsis">{{ job.kind ? jobLabel(job.kind) : '任务' }}</b>
+                  <span class="chip" :class="jobChipClass">{{ jobStatusText }}</span>
+                  <Icon name="chevron-down" :size="11" class="job-caret" />
+                </button>
+                <div v-if="jobOpen" class="row spread small mt-6">
+                  <span v-if="jobRunning" class="muted small mono">{{ jobTimeText }}</span>
+                  <button v-if="jobRunning" class="mini-btn danger" :disabled="canceling" @click="cancelJob"><Icon name="x" :size="10" /> 中断</button>
+                  <span v-if="!jobRunning" class="muted small">空闲</span>
+                </div>
+                <div v-if="jobOpen && (job.error || (jobRunning && job.log))" class="muted small mt-6 mono job-log">{{ job.error || job.log }}</div>
+                <!-- ⚠️ **失败原因常驻**（2026-10-15）：它不许被折叠态藏起来。
+                     `webui/src/AGENTS.md` 写着"状态栏常驻…**唯一例外：失败原因必须显示**" ——
+                     而这里原先 condition 是 `jobOpen && …`，`jobOpen` 默认 false ⇒
+                     用户**只看到一枚红 chip「失败」**，必须手动展开才知道为什么失败。
+                     失败是"我要不要重试/改参数"的决策点，藏在一次点击之后等于没有。
+                     ⚠️ 只在**失败**时渲染这一条：成功/进行中不额外占高度（与"状态常驻"不冲突）。 -->
+                <div v-if="job.status === 'failed' && job.error" class="muted small mt-6 mono job-log job-err">{{ job.error }}</div>
+              </div>
             </template>
           </TimelineEditor>
         </div>

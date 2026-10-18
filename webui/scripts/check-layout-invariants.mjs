@@ -397,7 +397,8 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
   //   ①「轨道设置」面板**整块搬到右栏常驻**（以前住在左侧 `props-host`、点轨道名才出现）；
   //   ② 一块带页签的卡片：「项目设置」/「画面尺寸」**同一位置**切换（= 用户说的
   //      "画面尺寸退回原来的那个页面"）—— 页签另一半装着画面尺寸/缩放/主画面位置/背景；
-  //   ③ 输出（LLM 剪辑 / 渲染导出 / 任务栏）在「项目设置」页签里，**不许删**
+  //   ③ 输出（LLM 剪辑 / 渲染导出）在「项目设置」页签里，**不许删**；
+  //      任务栏 2026-10-18 搬到时间轴编辑器右上角（`#status` 槽），由 [jobBarInTimelineHead] 钉
   //      （用户原话：「你把项目设置全删了我是没想到的」）。
   //   ⚠️ 全在**同一个 grid 子节点** `.right-col` 里 —— `.edit-grid` 是两列（`1fr 300px`），
   //   摊成多个子节点时后面的会充当"第三列"**掉到下一行占满整宽**（本轮真踩到，实测 1045px）。
@@ -420,14 +421,36 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
     const body = s.slice(j, k)
     return body.includes('orientationOptions') && body.includes('stageScaleNum') && body.includes('positionAxes')
   }
-  /** 项目设置那一半必须还在（LLM 剪辑 + 渲染导出 + 任务栏都在里面）。 */
+  /** 项目设置那一半必须还在（**LLM 剪辑 + 渲染导出**）。
+   *
+   *  ⚠️ **2026-10-18：任务栏搬走了**（用户要求移到时间轴编辑器右上角）⇒ 这里**不再**要求
+   *  `job-head` 在页签里，改由 [`jobBarInTimelineHead`] 钉它的**新位置**。
+   *  这一条的价值仍在：右栏那半块是「用户说'没想到'的那件事」，不许再删。 */
   const projectInsideTab = (s) => {
     const i = s.indexOf("<template v-if=\"sideTab === 'project'\">")
     if (i < 0) return false
     // 取到页签的 v-else 为止（不是第一个 </template>：项目那半里还有内层 template）
     const j = s.indexOf('<template v-else>', i)
     const body = j < 0 ? s.slice(i) : s.slice(i, j)
-    return body.includes('runLlmJob') && body.includes('openRenderModal') && body.includes('job-head')
+    return body.includes('runLlmJob') && body.includes('openRenderModal')
+  }
+  /** **任务栏在时间轴编辑器右上角**（2026-10-18 用户要求从右栏搬来）。
+   *
+   *  三件同时成立才算：① 编辑器有 `status` 槽；② 页面把任务栏那个 `<template #status>` 传进去，
+   *  且 `job-head` **落在里面**；③ 槽位在 `.tl-head` 里（不是卡片外另起一行）。 */
+  const jobBarInTimelineHead = (view, editor) => {
+    if (!editor.includes('<slot name="status" />')) return false
+    if (!editor.includes('class="tl-head-status"')) return false
+    const i = view.indexOf('<template #status>')
+    if (i < 0) return false
+    const j = view.indexOf('</template>', i)
+    const body = view.slice(i, j)
+    if (!body.includes('job-head')) return false
+    // 右栏里**不许**再留一份（两份就会出现「同一个任务两处显示」）
+    const rc = view.indexOf('<div class="right-col">')
+    const tl = view.indexOf('        <!-- 时间轴编辑器')
+    const rightCol = rc >= 0 && tl > rc ? view.slice(rc, tl) : ''
+    return !rightCol.includes('job-head')
   }
   /** 轨道设置面板搬到右栏常驻：在 `.right-col` 里、且不再按 `openLane` 条件渲染。 */
   /** 右栏那块区域里的卡片数（合并后应为 1）。 */
@@ -517,7 +540,9 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
   check('⑰ 右栏包在同一个 grid 子节点里（否则后面的会掉到下一行占满整宽）', rightColWrapped(polishView), true)
   check('⑰ 右栏有「项目设置 / 画面尺寸」两个页签', hasSideTabs(polishView), true)
   check('⑰ 画面尺寸住在页签的另一半里（同一位置切换）', canvasInsideTab(polishView), true)
-  check('⑰ 项目设置那一半还在（LLM 剪辑 / 渲染导出 / 任务栏）', projectInsideTab(polishView), true)
+  check('⑰ 项目设置那一半还在（LLM 剪辑 / 渲染导出）', projectInsideTab(polishView), true)
+  check('⑰ 任务栏在时间轴编辑器右上角（2026-10-18 搬家，右栏不许再留一份）',
+    jobBarInTimelineHead(polishView, timelineEditor), true)
   check('⑰ 轨道设置面板搬到右栏常驻', lanePanelResident(polishView), true)
   // ⚠️ **右栏只能有一块卡片**（用户 2026-10-06：「你分这么多区域，都把时间轴都挤走了」）：
   //    上一版把右栏拆成 2~3 块独立卡片，堆到 237 行，时间轴被挤出首屏。

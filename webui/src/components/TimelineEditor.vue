@@ -26,12 +26,16 @@
         <button v-if="lastDeleted" class="mini-btn" :title="undoTitle" @click="undoDelete">
           撤销删除
         </button>
-        <span class="muted small">
-          {{ silenceApplied
-            ? `已自动屏蔽 ${silenceCount} 段静音 · 屏蔽轨道共 ${muteRanges.length} 段`
-            : `一键跳过片段里的长停顿${muteRanges.length ? `（当前已屏蔽 ${muteRanges.length} 段，会自动相加）` : ''}` }}
+        <!-- ⚠️ 「一键跳过片段里的长停顿（当前已屏蔽 N 段，会自动相加）」这句**已删除**
+             （2026-10-18 用户要求）。去静音的说明仍在按钮的 `title` 里，行内不再占字数。
+             ✅ 只有**已经应用过**去静音时才报一句「已自动屏蔽 N 段」（那是有信息量的状态）。 -->
+        <span v-if="silenceApplied" class="muted small">
+          已自动屏蔽 {{ silenceCount }} 段静音 · 屏蔽轨道共 {{ muteRanges.length }} 段
         </span>
       </div>
+      <!-- 调用方自带的**右上角状态区**（2026-10-18：任务状态/渲染导出的「运行中」从右栏搬到这里）。
+           ⚠️ 用 `:deep()` 让槽里的 `.job-head` 收成内容宽 —— 它在右栏时是 `width:100%`。 -->
+      <div class="tl-head-status"><slot name="status" /></div>
     </div>
     <!-- 读取失败：这份时间轴的内容**不可信**（可能整个是空的，也可能是上一个片段的残留）。
          必须摆在这里（不放进 Teleport 的属性面板 —— 那个挂载点没解析到就整块不渲染），
@@ -3875,6 +3879,12 @@ async function loadData() {
 .tl-head { display:flex; align-items:center; justify-content:space-between; gap:10px;
   flex-wrap:wrap; margin-bottom:6px; }
 .tl-head-title { display:flex; align-items:center; gap:8px; flex-wrap:wrap; min-width:0; }
+/* 右上角状态区（任务状态/进度 chip）。`margin-left:auto` 把它顶到最右，
+   与 `.tl-head` 的 `justify-content:space-between` 叠加也不会挤走中间的按钮行。 */
+.tl-head-status { margin-left:auto; display:flex; align-items:center; min-width:0; }
+/* 槽里的任务头在右栏时是 `width:100%`（占满卡片）；搬来这里要收成内容宽，否则整行被撑开。 */
+.tl-head-status :deep(.job-head) { width:auto; }
+.tl-head-status :deep(.job-wrap) { margin-top:0; }
 .tl-head-title :deep(b) { font-size:13px; }
 /* 没有分段时的提示行：整条时间轴照常渲染，这里只给一句提示（按钮已删，见模板注释） */
 .tl-no-seg { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:4px 0 2px; }
