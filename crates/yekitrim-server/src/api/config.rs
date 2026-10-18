@@ -415,7 +415,8 @@ pub(super) async fn llm_models(
     Extension(user): Extension<crate::auth::CurrentUser>,
     Query(q): Query<BaseUrlQuery>,
 ) -> ApiResult {
-    let asked = q.base_url.unwrap_or_default().trim().to_string();
+    let BaseUrlQuery { base_url, api_key } = q;
+    let asked = base_url.unwrap_or_default().trim().to_string();
 
     // ① 内置表命中：**零网络请求**（连 api_key 都不需要 —— 也不需要读盘）
     let known = yekitrim_llm::catalog::models_for(&asked);
@@ -433,7 +434,12 @@ pub(super) async fn llm_models(
     let owner = crate::auth::owner_of(&user);
     let llm = blocking(move || Ok(yekitrim_core::config::load_llm_config_for(owner))).await?;
     let base = probe_request(&asked, &llm)?;
-    match yekitrim_llm::discovery::discover(&llm.api_key, &base).await {
+    // 草稿 key 优先（刚填还没保存的那种）；空串等于没给。
+    let key = api_key
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty())
+        .unwrap_or_else(|| llm.api_key.clone());
+    match yekitrim_llm::discovery::discover(&key, &base).await {
         // ⚠️ 200 + 空列表**不是失败**：连上了、地址也对，只是它没报模型 —— 别把它说成"不支持"
         Ok(models) if models.is_empty() => ok(serde_json::json!({
             "source": "probe",
@@ -489,6 +495,12 @@ pub(super) async fn llm_catalog(Query(q): Query<CatalogQuery>) -> ApiResult {
 pub(super) struct BaseUrlQuery {
     #[serde(default)]
     pub base_url: Option<String>,
+    /// **草稿 key**（可选）：用户刚填进界面、还没保存时，探针要用它。
+    ///
+    /// 不传就退回**已存的那把**（`llm.toml`）。为什么不强求：探针在保存前就该能用；
+    /// 但只传草稿会让「已配好、只是改地址」那一步 401。
+    #[serde(default)]
+    pub api_key: Option<String>,
 }
 
 /// `/api/config/llm/catalog` 的查询串。
