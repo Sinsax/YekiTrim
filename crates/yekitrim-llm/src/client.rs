@@ -9,7 +9,8 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use serde_json::Value;
 
-use crate::params::LlmParams;
+use crate::params::{LlmParams, ReasoningLevel};
+use crate::wire;
 
 
 use crate::usage::{UsageRecord, UsageSink};
@@ -55,13 +56,9 @@ fn build_http_client(total_timeout: Duration) -> reqwest::Client {
 }
 
 pub struct LlmClient {
-    api_key: String,
-    base_url: String,
-    model: String,
-    temperature: f64,
-    max_tokens: Option<u32>,
-    extra_params: Option<Value>,
-    thinking: Option<String>,
+    /// 一次调用的全部参数。**本 crate 不认识配置文件** —— 配置到参数的那一步在
+    /// `yekitrim-core::config`（`impl From<&LlmConfig>`）。
+    params: LlmParams,
     http: reqwest::Client,
     /// 用量归因（谁在调用）。不给就记成空 label（仍会记账，只是分不出链路）。
     usage_context: crate::usage::UsageContext,
@@ -74,21 +71,20 @@ impl LlmClient {
     /// 从裸参数构造（测试/探针用；生产走 [`LlmClient::new`]）。
     pub fn raw(api_key: &str, base_url: &str, model: &str) -> Self {
         Self {
-            api_key: api_key.to_string(),
-            base_url: if base_url.is_empty() {
-                "https://api.openai.com/v1".into()
-            } else {
-                base_url.to_string()
+            params: LlmParams {
+                api_key: api_key.to_string(),
+                base_url: if base_url.is_empty() {
+                    "https://api.openai.com/v1".into()
+                } else {
+                    base_url.to_string()
+                },
+                model: if model.is_empty() {
+                    "gpt-4o-mini".into()
+                } else {
+                    model.to_string()
+                },
+                ..Default::default()
             },
-            model: if model.is_empty() {
-                "gpt-4o-mini".into()
-            } else {
-                model.to_string()
-            },
-            temperature: 0.3,
-            max_tokens: None,
-            extra_params: None,
-            thinking: None,
             http: build_http_client(Duration::from_secs(120)),
             usage_context: crate::usage::UsageContext::default(),
             usage_sink: None,
@@ -119,19 +115,17 @@ impl LlmClient {
         // ⚠️ 这里**不**设 thinking：旧 from_config 也没设，thinking 由调用方按链路
         //    with_thinking(...) 显式给（搬迁期保持逐字节相同）。
         let mut client = Self::raw(&p.api_key, &p.base_url, &p.model);
-        client.temperature = p.temperature;
-        client.max_tokens = Some(p.max_tokens);
-        client.extra_params = p.extra_params;
+        client.params = p;
         Ok(client)
     }
 
     pub fn with_temperature(mut self, t: f64) -> Self {
-        self.temperature = t;
+        self.params.temperature = t;
         self
     }
 
     pub fn with_max_tokens(mut self, n: u32) -> Self {
-        self.max_tokens = Some(n);
+        self.params.max_tokens = Some(n);
         self
     }
 
@@ -147,12 +141,15 @@ impl LlmClient {
 
     /// 设置 thinking 参数（DeepSeek 等支持）。`Some("disabled")` 显式关闭深度思考。
     pub fn with_thinking(mut self, mode: Option<&str>) -> Self {
-        self.thinking = mode.map(|m| m.to_string());
+        self.params.reasoning = mode
+            .and_then(ReasoningLevel::from_thinking_flag)
+            .unwrap_or(ReasoningLevel::Off);
+        self.params.reasoning_explicit = mode.is_some();
         self
     }
 
     fn api_url(&self) -> String {
-        let base = self.base_url.trim_end_matches('/');
+        let base = self.params.base_url.trim_end_matches('/');
         if base.ends_with("/chat/completions") {
             base.to_string()
         } else {
@@ -161,24 +158,9 @@ impl LlmClient {
     }
 
     fn build_body(&self, messages: Value) -> Value {
-        let mut body = serde_json::json!({
-            "temperature": self.temperature,
-            "messages": messages,
-        });
-        if !self.model.is_empty() {
-            body["model"] = serde_json::json!(self.model);
-        }
-        if let Some(n) = self.max_tokens {
-            body["max_tokens"] = serde_json::json!(n);
-        }
-        if let Some(Value::Object(extra_map)) = &self.extra_params {
-            for (k, v) in extra_map {
-                body[k] = v.clone();
-            }
-        }
-        if let Some(ref mode) = self.thinking {
-            body["thinking"] = serde_json::json!({"type": mode});
-        }
+        // 请求体**只有这一处拼装**：全部方言都在 `wire::apply` 里（见那个模块的注释）。
+        let mut body = serde_json::json!({ "messages": messages });
+        wire::apply(&mut body, &self.params);
         body
     }
 
@@ -197,7 +179,7 @@ impl LlmClient {
             let resp = self
                 .http
                 .post(&url)
-                .header("Authorization", format!("Bearer {}", self.api_key))
+                .header("Authorization", format!("Bearer {}", self.params.api_key))
                 .json(&body)
                 .send()
                 .await;
@@ -281,8 +263,8 @@ impl LlmClient {
                 ts: crate::usage::now_secs(),
                 label: self.usage_context.label.clone(),
                 project: self.usage_context.project.clone(),
-                model: self.model.clone(),
-                host: crate::usage::host_of(&self.base_url),
+                model: self.params.model.clone(),
+                host: crate::usage::host_of(&self.params.base_url),
                 prompt_tokens: nums.prompt_tokens,
                 completion_tokens: nums.completion_tokens,
                 cached_tokens: nums.cached_tokens,

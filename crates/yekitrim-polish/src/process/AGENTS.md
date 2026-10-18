@@ -34,7 +34,7 @@
   （冷开场/回忆回溯意图 → `edl.clips` + 配额；**空 EDL 先把 `mute_ranges` 补集种成正片时间线**）；常量 `MAX_COLD_OPEN = 1` / `MAX_RECALL = 2` /
   `MIN_COLD_OPEN_SECS = 1.0` / `INTENT_COLD_OPEN = "cold_open"` / `INTENT_RECALL = "recall"` /
   `EDL_KIND_COLD_OPEN` / `EDL_KIND_RECALL`；`mod.rs::writeback_edl(materialized, clips)`。
-- `rhythm`（§26）：`params` / `plan` / `apply` / `clear` / `metrics` / `report_json`；`Params::{CALM,BALANCED,INTENSE}`（默认 balanced）。
+- `rhythm`（§26，**已冻结**）：`params` / `plan` / `apply` / `clear` / `metrics` / `report_json`；默认档 `calm`。
 - `download`：`sanitize_sticker_name(keyword)`、`cmd_download(project_path)`、`download_keyword_assets(...)`、
   `ensure_assets(project_path)`（`api/polish.rs` 的预览/出片前都会调）；`try_resolve_sticker` 是 `pub(super)` 实现。
 - `placement`（`mod placement;` **私有**，外部一律走 `cmd_process`）：
@@ -179,8 +179,8 @@
 - ⚠️ **屏蔽区间只跳过、不删事件**（用户 2026-10-19 报「LLM 剪辑和后处理没过滤屏蔽段」）：
   判据 `project::event_starts_muted`（左闭右开、只看**起点**；`Camera`/`Overlay` 例外）。
   用在 `cap_events` 额度、2b/2b2 落点、2c 延长、音效规则（屏蔽段音效要留着）、文字守卫、LLM 生成与精挑。
-- **节奏 = 节拍网格 + 三档重音**（Step 1h，§26；见 `rhythm.rs`）：账本 `auto_events` **先删后建 ⇒ 幂等**；
-  `calm` = 今天。改密度只动 `Params`，别在 prompt 里加。
+- **节奏已冻结**（§26）：默认 `calm`，process 不再生成派生事件 —— 节奏改由 LLM 的编排轮产出，
+  process 只做资源热加载与应用（账本仅供迁移期清理）。
 - **文字元素是候补**（用户 2026-10-19：文字突出、指向性强，滥用适得其反）：`cap_text_elements`（Step 1d2b）
   兜底 —— 与贴纸（两个载体都算）重叠就删、每段 1 条（留最早）、`manual` 豁免、屏蔽段的不占名额。
   prompt 同步：写**关键词 2~8 字**、不与贴纸同段、只在没合适贴纸/其它效果已密时用。

@@ -1197,4 +1197,16 @@ mod tests {
         );
         assert!(segs[0].events.iter().any(|e| matches!(e, Event::Flash { .. })), "重击要有白闪");
     }
+    /// **默认档位冻结在 `calm`**（2026-10-19 拍板）：process 不再自己生成节奏 ——
+    /// 用户口径「全靠 LLM 生产事件 + 意图和整体剪辑安排，process 只做资源热加载和应用」。
+    /// 显式写 `profile = "balanced"` 才跑（保留给对拍/迁移验证）。
+    #[test]
+    fn default_profile_is_frozen_to_calm() {
+        let cfg = ProjectFile::example();
+        assert_eq!(cfg.rhythm.profile_name(), "calm");
+        assert!(!params(&cfg).enabled, "空 profile 必须是「不生成」");
+        let mut on = cfg.clone();
+        on.rhythm.profile = "balanced".into();
+        assert!(params(&on).enabled, "显式写 balanced 才能开");
+    }
 }

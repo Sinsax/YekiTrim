@@ -17,8 +17,12 @@ use std::collections::HashMap;
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[serde(deny_unknown_fields)]
 pub struct RhythmConfig {
-    /// calm | balanced | intense。**空串 = 默认档（balanced）** ——
+    /// calm | balanced | intense。**空串 = `calm`（不生成）** ——
     /// 空串不落盘 ⇒ 老工程零迁移（R4）。
+    ///
+    /// ⚠️ **2026-10-19 冻结在 `calm`**：用户口径「全靠 LLM 生产事件 + 意图和整体剪辑安排，
+    /// process 只做资源热加载和应用」⇒ 节奏生成要从 process **搬去 LLM 的编排轮**。
+    /// 在那之前它默认关闭，只有显式写 `profile = "balanced"` 才跑（用于对拍/回归）。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub profile: String,
     /// 节拍间隔（秒）。None = 用档位默认值。
@@ -42,9 +46,9 @@ impl RhythmConfig {
         self.auto_events.is_empty() && self.beat_secs.is_none()
     }
 
-    /// 实际档位（空串 = balanced）。
+    /// 实际档位（空串 = **calm**：不生成任何派生事件）。
     pub fn profile_name(&self) -> &str {
-        if self.profile.trim().is_empty() { "balanced" } else { self.profile.trim() }
+        if self.profile.trim().is_empty() { "calm" } else { self.profile.trim() }
     }
 }
 

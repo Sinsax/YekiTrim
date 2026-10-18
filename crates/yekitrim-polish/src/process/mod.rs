@@ -2996,16 +2996,29 @@ y = "10%"
         let mut cfg = ProjectFile::example();
         cfg.sticker_source = Vec::new();
         cfg.duration = Some(10.0);
-        // ⚠️ 一段**铺满全程**的运镜 ⇒ 没有 >6s 的静止区间
+        // ⚠️ **真密集的变化**：静态运镜（铺满整段但不换档）不算「画面在变」——
+        //    2026-10-19 起 `change_spans` 只把过渡窗口算变化，所以这里用一串瞬时特效
+        //    把时间轴铺密；否则这条用例会退化成「静态快照必然报空档」的反向验证。
+        let mut events = vec![Event::Camera {
+            time: 0.0, end: Some(10.0), zoom: "中".into(), origin: "50% 50%".into(),
+            anchor: Some("liver".into()), anchor_to: None, to_origin: None,
+            cut: false, handheld: false, manual: false, speed: None,
+            tilt: None,
+        }];
+        for t in [0.5_f64, 3.0, 5.5, 8.0] {
+            events.push(Event::Shake {
+                time: t,
+                intensity: 10.0,
+                end: Some(t + 0.4),
+                anchor: None,
+                sfx: None,
+                sfx_volume: None,
+            });
+        }
         cfg.segments = vec![Segment {
             role: String::new(),
             start: 0.0, end: 10.0, fx: "low".into(), note: String::new(),
-            events: vec![Event::Camera {
-                time: 0.0, end: Some(10.0), zoom: "中".into(), origin: "50% 50%".into(),
-                anchor: Some("liver".into()), anchor_to: None, to_origin: None,
-                cut: false, handheld: false, manual: false, speed: None,
-                tilt: None,
-            }],
+            events,
             extra: Default::default(),
         }];
         std::fs::write(path.join("polish.toml"), cfg.to_toml_commented().expect("序列化"))

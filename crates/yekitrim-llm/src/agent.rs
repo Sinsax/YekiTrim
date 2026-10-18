@@ -12,7 +12,7 @@ use serde_json::Value;
 use tokio::sync::{mpsc, Semaphore};
 use tokio::task::JoinSet;
 
-use crate::params::LlmParams;
+use crate::params::{LlmParams, ReasoningLevel};
 use crate::client::LlmClient;
 
 /// 取消探针：返回 true = 任务已被请求取消。
@@ -151,17 +151,16 @@ pub trait AgentTask<T: Send + Sync + Clone + 'static>: Send + Sync {
         let system_prompt = self.system_prompt();
         let user_prompt = self.user_prompt(global, &window_context, &window.items);
 
-        let client = LlmClient::new(llm_cfg)?
+        // `AgentTask::thinking()` 是**订正那条链路的老开关**（`[correct] thinking`）。
+        // LLM 层已经表态时（`reasoning_explicit` 来自 `[llm].thinking` 或
+        // `[llm.overrides.<link>].thinking`）以 LLM 层为准 —— 否则它会把解析结果顶掉。
+        let mut params = llm_cfg.clone();
+        if self.thinking() && !params.reasoning_explicit {
+            params.reasoning = ReasoningLevel::High;
+        }
+        let client = LlmClient::new(params)?
             .with_timeout(120)
             .with_usage_context(self.usage_context());
-        // `AgentTask::thinking()` 是**订正那条链路的老开关**（`[correct] thinking`）。
-        // LLM 层已经表态时（`[llm].thinking` 或 `[llm.overrides.<link>].thinking`，由
-        // `LlmParams::for_link` 解析出来）以 LLM 层为准 —— 否则它会把解析结果顶掉。
-        let client = if self.thinking() && llm_cfg.thinking.is_none() {
-            client.with_thinking(Some("enabled"))
-        } else {
-            client
-        };
 
         let messages = serde_json::json!([
             {"role": "system", "content": system_prompt},
