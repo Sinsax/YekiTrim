@@ -9,7 +9,22 @@
 //! 字体早就是这个套路（`include_bytes!`，`xtask package` 甚至会把包里那份重复的删掉，
 //! 理由写着"同样的字节已经编在 exe 里了"）。这里只是把同一个做法用到 dist 上，**不引新依赖**。
 //!
-//! ## 新鲜度：过期就**编译失败**
+//! ## 只有 release 内嵌（2026-10-16 用户口径）
+//!
+//! | 形态 | 行为 |
+//! |---|---|
+//! | **release** | 内嵌 + **新鲜度检查（过期就编译失败）** —— 发布包只换 exe 就够 |
+//! | **debug**（`cargo run`） | **不内嵌、不检查、也不跟随前端改动重建**：前端在 debug 里本来就是
+//!   运行时读盘（`web.rs` 那四级候选），`npm run build` 之后刷新即生效 |
+//!
+//! ⚠️ **debug 那条以前不存在**：`rerun-if-changed` 无条件盯着 `webui/src` 与 `webui/dist`，
+//! 于是"改一行 CSS"会重编整个 server —— 用户的原话是「每次修改前端都要重编译后端」。
+//! 现在 debug 只跟随 `build.rs` 自己。
+//!
+//! 显式覆盖：`YEKITRIM_EMBED_WEBUI=1` 让 debug 也内嵌（排障用），`=0` 让 release 也不内嵌
+//! （趟查"发行包里是不是真在跑内嵌那份"用）。
+//!
+//! ## 新鲜度（release）：过期就**编译失败**
 //!
 //! 这比旧流程**强**：旧流程只在 `cargo xtask package` 时检查 dist 是否比 src 新，
 //! 而 `cargo build --release` 出来的 exe 照样可能内嵌/配套一份过期界面。
@@ -34,6 +49,23 @@ fn main() {
         .to_path_buf();
     let dist = root.join("webui").join("dist");
     let src = root.join("webui").join("src");
+
+    // ---- 内嵌与否：**只有 release**（2026-10-16）----
+    let profile = env::var("PROFILE").unwrap_or_default();
+    let embed = match env::var("YEKITRIM_EMBED_WEBUI").ok().as_deref() {
+        Some("0") => false,
+        Some("1") => true,
+        _ => profile == "release",
+    };
+    if !embed {
+        // debug：前端**运行时读盘**（`web.rs::choose`）⇒ 这个 crate 的编译**不许**被前端牵动。
+        // 生成一张**空表**（形态不变 ⇒ `web.rs` 侧一个 `cfg` 都不需要）。
+        // ⚠️ 只跟随 `build.rs` 自己：以前这里盯着 `webui/src` 与 `webui/dist`，
+        //    改一行 CSS 就要重编整个 server（用户报的就是这件事）。
+        write_table(&[]);
+        println!("cargo:rerun-if-changed=build.rs");
+        return;
+    }
 
     // 源侧任何改动都重跑（虽然 dist 才是判据，但这样"改了 src 忘了 build"能立刻反映出来）
     println!("cargo:rerun-if-changed={}", src.display());
@@ -79,13 +111,21 @@ fn main() {
     // 路径排序：让生成物在 dist 内容不变时**逐字节稳定**（否则每次重编都改 out_dir，
     // 会让 release 的链接缓存白失效）。
     files.sort();
+    write_table(&files);
+}
 
+/// 写出 `webui_dist.rs`。`files` 为空 ⇒ 生成一张合法的空表（debug 那条路）。
+fn write_table(files: &[(String, PathBuf)]) {
     let mut out = String::new();
     out.push_str("// 由 crates/yekitrim-server/build.rs 生成 —— 别手改。\n");
-    out.push_str("/// 编进二进制的 WebUI 资源：");
-    out.push_str(&format!("{} 个文件（键是相对 `webui/dist` 的 `/` 分隔路径）。\n", files.len()));
+    if files.is_empty() {
+        out.push_str("/// **空表**：debug 形态不内嵌（前端走磁盘，见 `build.rs` 与 `web.rs`）。\n");
+    } else {
+        out.push_str("/// 编进二进制的 WebUI 资源：");
+        out.push_str(&format!("{} 个文件（键是相对 `webui/dist` 的 `/` 分隔路径）。\n", files.len()));
+    }
     out.push_str("pub static WEBUI_DIST: &[(&str, &[u8])] = &[\n");
-    for (rel, abs) in &files {
+    for (rel, abs) in files {
         // `{:?}` 会把反斜杠 / 引号 / 非 ASCII 都转义成合法的 Rust 字面量
         out.push_str(&format!("    ({:?}, include_bytes!({:?})),\n", rel, abs));
     }

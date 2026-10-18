@@ -43,6 +43,10 @@ pub async fn run_llm_pipeline(
     sfx_blacklist: &[String],
     // 屏蔽区间（§17 跳切的接缝判据读它）。传 `&[]` = 没有屏蔽 ⇒ 不认任何跳切。
     mute_ranges: &[crate::project::MuteRange],
+    // 用户已有的成片时间线（`polish.toml` 的 `edl.clips`）：**非空就以它为底**，落实意图只做
+    // 前插/后追。传 `&[]` = 没有 EDL ⇒ 先把 `mute_ranges` 补集种成正片时间线（否则只要有一支意图，
+    // 非空 EDL 就让屏蔽区间整个被忽略 —— 用户报的「屏蔽段没被过滤」）。
+    existing_edl: &[crate::project::EdlClip],
     checkpoint_dir: Option<&PathBuf>,
     cancel: Option<yekitrim_core::llm::agent::CancelProbe>,
 ) -> anyhow::Result<(
@@ -139,6 +143,7 @@ pub async fn run_llm_pipeline(
         sticker_source,
         sfx_blacklist,
         local_sticker_text,
+        mute_ranges,
         llm_cfg,
         project.as_deref(),
         checkpoint_path.as_deref(),
@@ -156,7 +161,7 @@ pub async fn run_llm_pipeline(
         crate::assets::sticker_index::is_package_source(&sticker_root, s)
     });
     if has_local {
-        run_sticker_choice_step(owner, &mut segments, subtitles, llm_cfg, project.as_deref(), cancel.clone()).await?;
+        run_sticker_choice_step(owner, &mut segments, subtitles, mute_ranges, llm_cfg, project.as_deref(), cancel.clone()).await?;
     }
 
     // Step 3: 关键词提取
@@ -206,9 +211,18 @@ pub async fn run_llm_pipeline(
         if closed > 0 {
             tracing::info!("  · 画中画到点收工，已补回镜头 {} 条", closed);
         }
-        let stickers = crate::process::align_stickers_to_subtitles(&mut segments, subtitles);
+        let stickers = crate::process::align_stickers_to_subtitles(&mut segments, subtitles, mute_ranges);
         if stickers > 0 {
             tracing::info!("  · 贴纸已对齐最近字幕 {} 条", stickers);
+        }
+        // 文字元素**候补**守卫（与 `process/mod.rs` Step 1d2b 成对，2026-10-19 用户口径）：
+        // 文字突出且指向性强，只当候补 —— 与贴纸同时出现时贴纸优先、一段最多留一条。
+        // 排在这里：贴纸的时间窗口刚被 2b1 吸到字幕上，互斥判据用的必须是最新的那一份。
+        let dropped_text = crate::process::cap_text_elements(&mut segments, mute_ranges);
+        if dropped_text > 0 {
+            tracing::info!(
+                "  ✂ 文字元素超出候补配额/与贴纸冲突：删 {dropped_text} 条（文字只当候补，贴纸优先）"
+            );
         }
         // 句末边界守卫（总方案 §2）：与 `process/mod.rs` Step 0b 是**配对的两处**。
         // ⚠️ **排在 `cap_pip_shots` 那组之后**：那组按段边界对齐画中画，边界挪了就得重对齐；
@@ -231,13 +245,13 @@ pub async fn run_llm_pipeline(
     // **编辑器里看到的就已经是合规的**（意图被收走、配额已裁）；`cmd_process` 里还会再兜一次（幂等）。
     //
     // ⚠️ 这里**只在真的落实了才动 EDL**（`changed()`）：一支意图都没有 ⇒ 一个新段都不加，
-    // `edl.clips` 保持为空 —— 有 EDL 时 `mute_ranges` 整个被忽略（`ProjectFile::resolve_edl`），
-    // 所以"没意图就别写"是 R4 存量零回归的判据本身。用户手拖过的 `clips` 在这里**读不到**
-    // （本函数只拿得到 `segments`，写盘那一步在 `cmd_llm` 里按 `changed()` 决定要不要合并）。
+    // `edl.clips` 原样传回（空就还是空 ⇒ 走 `mute_ranges` 补集）。"没意图就别写"是 R4
+    // 存量零回归的判据本身。⚠️ 落实时**以 `existing_edl` 为底**：空时先把 `mute_ranges` 补集
+    // 种成正片时间线（否则非空 EDL 让屏蔽区间整个被忽略）；用户手拖过的 clips 原样保留，只前插/后追。
     let materialized = {
-        let mut edl = crate::project::Edl::default();
+        let mut edl = crate::project::Edl { clips: existing_edl.to_vec() };
         let total_duration = segments.last().map(|s| s.end).unwrap_or(0.0);
-        let m = crate::process::materialize_edl_intents(&mut segments, &mut edl.clips, total_duration);
+        let m = crate::process::materialize_edl_intents(&mut segments, &mut edl.clips, total_duration, mute_ranges);
         if m.changed() {
             tracing::info!(
                 "  ➕ 成片时间线意图：冷开场 {} · 回忆回溯 {} 条",
@@ -276,6 +290,7 @@ pub async fn regenerate_segment_events(
     segments: &mut [Segment],
     index: usize,
     project: Option<&Path>,
+    mute_ranges: &[crate::project::MuteRange],
     cancel: Option<yekitrim_core::llm::agent::CancelProbe>,
 ) -> anyhow::Result<SegmentGenStatus> {
     let Some(seg) = segments.get(index) else {
@@ -324,6 +339,7 @@ pub async fn regenerate_segment_events(
         sticker_source,
         sfx_blacklist,
         local_sticker_text,
+        mute_ranges,
         llm_cfg,
         project,
         None,
@@ -345,13 +361,15 @@ pub async fn regenerate_segment_events(
 
     // Step2b：本地贴纸精挑（只在这一段上跑）
     if has_local {
-        run_sticker_choice_step(owner, &mut one, subtitles, llm_cfg, project, cancel).await?;
+        run_sticker_choice_step(owner, &mut one, subtitles, mute_ranges, llm_cfg, project, cancel).await?;
     }
     // 与整片那条路同一批段级收尾：贴纸吸附最近字幕 + 画中画守卫
-    crate::process::align_stickers_to_subtitles(&mut one, subtitles);
+    crate::process::align_stickers_to_subtitles(&mut one, subtitles, mute_ranges);
     crate::process::cap_pip_shots(&mut one);
     crate::process::align_pip_shots(&mut one, subtitles);
     crate::process::close_pip_shots(&mut one);
+    // 文字元素候补守卫（与整片那条路 Step 4b 同一个调用点，2026-10-19）
+    crate::process::cap_text_elements(&mut one, mute_ranges);
 
     let events = std::mem::take(&mut one[0].events);
     let count = events.len();
@@ -421,6 +439,7 @@ async fn run_sticker_choice_step(
     owner: yekitrim_core::owner::Owner,
     segments: &mut [Segment],
     subtitles: &[Subtitle],
+    mute_ranges: &[crate::project::MuteRange],
     llm_cfg: &LlmConfig,
     project: Option<&std::path::Path>,
     cancel: Option<yekitrim_core::llm::agent::CancelProbe>,
@@ -437,6 +456,10 @@ async fn run_sticker_choice_step(
     let mut package_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     for (si, seg) in segments.iter().enumerate() {
         for (ei, ev) in seg.events.iter().enumerate() {
+            // 屏蔽区间里的贴纸看不见 —— 不为它花一次精挑（候选是有配额的）
+            if crate::project::event_starts_muted(mute_ranges, ev) {
+                continue;
+            }
             // ⚠️ **两个载体都要收**（`process/AGENTS.md`「贴纸有两个载体」）：只认 `Event::Sticker`
             // 时，编辑器「贴纸轨」建的贴纸**永远不参与 Step2b 精挑**。
             let Some(tag) = ev.sticker_tag() else { continue };

@@ -90,7 +90,13 @@ function extract(consumer, registry) {
       return new Set([...text.matchAll(/"([a-z_]+)"\s*=>/g)].map((m) => m[1]));
     }
     case 'js-switch-cases': {
-      return new Set([...text.matchAll(/case '([a-z_]+)':/g)].map((m) => m[1]));
+      // ⚠️ **P2（2026-10）：手写 `case` 之外，还要算上"声明式那条路"。**
+      //    `spec/effects.json` 里有 `dhampir_rule` 的效果**故意不再**留 `case`
+      //    （两处都算会让"改了词汇表没生效"，而症状是成片节奏与声明不符、报告零差异）。
+      //    ⇒ 这里把「有 `dhampir_rule`」的效果并进来，否则它们会被误判成"转译器缺这一档"。
+      const hand = new Set([...text.matchAll(/case '([a-z_]+)':/g)].map((m) => m[1]));
+      for (const e of registry?.effects ?? []) if (e.dhampir_rule) hand.add(e.id);
+      return hand;
     }
     case 'js-handlers': {
       // `handlers.shake = function(ev, et) {`
@@ -283,7 +289,7 @@ function checkDhampirCoverage(registry) {
 /// ⚠️ **刻意做粗**（"有没有别的文件用它"），不做数据流分析：
 ///    目的是拦住"导出了但没人用"这种一眼可见的洞，不是证明运行时一定执行到。
 ///    真正的"画得对不对"由各自的运行期判据管（`check-preview-engine.mjs` 等）。
-function checkAnchorsAreReached(site, meta, wanted, failures) {
+function checkAnchorsAreReached(site, meta, wanted, failures, registry) {
   let checks = 0;
   // 消费者范围：前端预览锚点找 `webui/src`，转译器/后处理锚点找它们各自的调用方。
   const CONSUMER_GLOBS = {
@@ -339,7 +345,31 @@ function checkAnchorsAreReached(site, meta, wanted, failures) {
       //     它**不是调用**、后面也不跟 `(` ⇒ 光找 `name(` 会把整个转译器判成死代码（实测假红）。
       //   * 其余的（`dom_preview`）是普通函数 ⇒ 找调用位 `name(`，且**不算它自己的定义行**。
       if (site === 'dhampir_case') {
+        // ⚠️ **P2（2026-10）：两条路都算"有调用位"** ——
+        //   ① 手写 `case 'flash':`（声明式表达不了的：发关键帧/图层、按帧循环、多档分支）；
+        //   ② `spec/effects.json` 里有 `dhampir_rule`（声明式那条路，转译器按形状求值）。
+        // 只认 ① 的话，P2 把四条 case 搬进词汇表之后会**假红**（"锚点没有消费者"）——
+        // 而它们其实由**更可靠**的一条路驱动（声明 + 门禁双向钉着）。
         insideUsed = new RegExp(`case\\s+'${esc}'\\s*:`).test(self);
+        if (!insideUsed) {
+          const rule = (registry.effects ?? []).find((e) => e.id === id)?.dhampir_rule;
+          if (rule) {
+            // 声明式：转译器里必须有那个形状的派发器。
+            // ⚠️ 认**两种写法**：`===`（正向支持表）与 `!==`（"只实现了这一种形状"的守卫）。
+            //    转译器用的是后者 —— 它把"认得但没实现"也变成**当场抛错**，比清单更不容易漏。
+            //    只认 `===` 会**假红**（实测就是这么撞上的）。
+            const shapeLit = rule.shape.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            insideUsed = new RegExp(
+              `shape\\s*(?:===|!==)\\s*'${shapeLit}'`,
+            ).test(self);
+            if (!insideUsed) {
+              failures.push(
+                `\`${id}\` 声明了 \`dhampir_rule.shape="${rule.shape}"\`，但 ${meta.file} 里` +
+                  `**没有形状为 "${rule.shape}" 的派发器** —— 声明了却没人执行，等于没接（且不报错）`,
+              );
+            }
+          }
+        }
       } else if (site === 'post_span') {
         insideUsed = new RegExp(`"${esc}"\\s*=>`).test(self);
       } else {
@@ -375,7 +405,7 @@ function checkAnchors(registry) {
         failures.push(`锚点对不上：${meta.file} 里找不到 \`${anchor}\`（词汇表 ${id} → ${site}）`);
       }
     }
-    checks += checkAnchorsAreReached(site, meta, wanted, failures);
+    checks += checkAnchorsAreReached(site, meta, wanted, failures, registry);
     // 孤儿：文件里有、词汇表没认领
     const orph = [...orphanNames(site, text)].filter((n) => !claimed.has(n));
     // `dom_preview` 的 `*At`/`sfxVolume` 形态不在 `get*` 正则里 ⇒ 天然不会误报；
@@ -470,6 +500,128 @@ function compare(consumer, registry, consumerIds) {
   return problems;
 }
 
+// ---------------------------------------------------------------------------
+// **字段级判据（P0，2026-10）：`fields` 必须与 Rust 事件变体逐字段一致**
+//
+// # 为什么需要它
+//
+// 词汇表原本只管"事件**类型**"，不管"事件**字段**" —— 给一个效果加字段要人肉查 6 处
+// （`types.rs` / `legacy.rs` / `engine.js` / 模板 / 转译器 / 面板控件 + `config.rs`），
+// 而且**零门禁覆盖**：漏一处不报错，症状是"预览里有、成片里没有"。
+//
+// 现在每个效果用 `fields` 声明它的**私有**字段，本判据把它与 Rust `pub enum Event` 的
+// 对应变体逐字段对拍：**Rust 有而没声明**、**声明了而 Rust 没有**，两种都点名报红。
+//
+// ⚠️ **公共头**（`field_common`：time/end/anchor/sfx/sfx_volume/manual）两边都要排除 ——
+//    它们出现在多数变体上，不属于任何单个效果。
+// ⚠️ 判据的**方向**：Rust 是这一轮的实现权威（`fields` 是描述，不是目标）。
+//    所以"声明了但 Rust 没有"也是错 —— 那说明描述漂了（本次 P0 就靠它抓出 5 个假字段）。
+function checkFields(registry) {
+  const failures = [];
+  let checks = 0;
+  const common = new Set((registry.field_common || []).map((f) => f.name));
+
+  // 读 Rust 的 Event 枚举，抽出每个变体的字段名
+  let variants;
+  try {
+    const src = read('crates/yekitrim-render-core/src/types.rs');
+    const body = src.match(/pub enum Event \{([\s\S]*?)\n\}/);
+    if (!body) throw new Error('找不到 `pub enum Event {`');
+    variants = new Map();
+    for (const m of body[1].matchAll(/^\s{4}([A-Z][A-Za-z]*)\s*\{([\s\S]*?)^\s{4}\}/gm)) {
+      // 变体名 SnakeCase：HueShift → hue_shift（与词汇表 id 同口径）
+      const snake = m[1].replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
+      variants.set(
+        snake,
+        [...m[2].matchAll(/^\s+([a-z_]+)\s*:/gm)].map((x) => x[1]),
+      );
+    }
+  } catch (e) {
+    return { checks: 1, failures: [`字段级判据：读 Rust 类型真源失败（${e.message}）`] };
+  }
+
+  for (const effect of registry.effects) {
+    checks += 1;
+    const rust = variants.get(effect.id);
+    if (!rust) {
+      failures.push(
+        `效果 \`${effect.id}\`：Rust \`pub enum Event\` 里找不到对应变体 —— ` +
+          '要么 id 拼错，要么这个效果只活在词汇表里（后者等于"声明了但没人实现"）',
+      );
+      continue;
+    }
+    // ⚠️ 先做**形状**判据再做内容比 —— 形状错时下面那句 `.map` 会抛，
+    //    而抛出的表现是"门禁崩了"而不是"点名哪里错"（自证第 ③ 条抓到的就是这个）。
+    checks += 1;
+    if (effect.fields !== undefined && !Array.isArray(effect.fields)) {
+      failures.push(
+        `效果 \`${effect.id}\` 的 \`fields\` 不是数组（实得 ${JSON.stringify(effect.fields)}）—— ` +
+          '前端/门禁都会按数组用，形状错了会让整块界面消失（与 `ui` 那条同源事故）',
+      );
+      continue;
+    }
+    const fieldArr = effect.fields || [];
+    for (const f of fieldArr) {
+      checks += 1;
+      if (!f || typeof f.name !== 'string' || !f.name) {
+        failures.push(`效果 \`${effect.id}\` 的 \`fields\` 里有一项没有 \`name\`：${JSON.stringify(f)}`);
+      }
+    }
+    const declared = new Set(fieldArr.map((f) => f.name));
+    const rustPrivate = rust.filter((n) => !common.has(n));
+    const missing = rustPrivate.filter((n) => !declared.has(n));
+    const extra = [...declared].filter((n) => !rust.includes(n) && !common.has(n));
+    if (missing.length || extra.length) {
+      const parts = [];
+      if (missing.length) parts.push(`Rust 有但没声明：[${missing.join(', ')}]`);
+      if (extra.length) parts.push(`声明了但 Rust 没有：[${extra.join(', ')}]`);
+      failures.push(
+        `效果 \`${effect.id}\` 的 \`fields\` 与 Rust 变体不一致 —— ${parts.join('；')}\n` +
+          '      改法：以 `crates/yekitrim-render-core/src/types.rs` 的实现为准修 `fields`；' +
+          '若确实是新加的字段，先改 Rust 再改词汇表（或反过来，但两边必须同一个改动里一起动）',
+      );
+    }
+
+    // —— `dhampir_rule.collect.fields` 的判据（P4，2026-10）——
+    //
+    // 声明式收集段（`camera_rule`）靠 `collect.fields` 指名要搬哪些字段。
+    // 名单写错**不会报错**：搬不到就是 `undefined`，而下游 `?? 兜底` 会把它变成
+    // 一个"看着正常"的值（`tilt` 变 0、`speed` 变 undefined）。
+    // ⇒ 判据两条：① 名单里的每个名字都必须是**已声明字段**；② 不许漏掉 Rust 私有字段
+    //    （漏了 = 那个字段静默不进成片，正是 P0 抓出的 `camera.tilt` 那类缺陷）。
+    const collect = effect.dhampir_rule?.collect?.fields;
+    if (collect !== undefined) {
+      checks += 1;
+      if (!Array.isArray(collect)) {
+        failures.push(
+          `效果 \`${effect.id}\` 的 \`dhampir_rule.collect.fields\` 不是数组` +
+            `（实得 ${JSON.stringify(collect)}）—— 转译器会按数组遍历，形状错了整条收集段空转`,
+        );
+      } else {
+        const unknown = collect.filter((n) => !declared.has(n) && !common.has(n));
+        if (unknown.length) {
+          failures.push(
+            `效果 \`${effect.id}\` 的 \`dhampir_rule.collect.fields\` 里有**没声明的字段**：` +
+              `[${unknown.join(', ')}] —— 转译器搬不到它（静默 undefined），` +
+              '下游的 `??` 兜底会把它变成"看着正常"的值',
+          );
+        }
+        // ⚠️ 只查"没声明"不够：**漏搬**才是 P0 那个 `camera.tilt` 的形状
+        //    （字段在 Rust/词汇表里都有，就是没人读 ⇒ 进不了成片）。
+        const notCarried = [...declared].filter((n) => !collect.includes(n));
+        if (notCarried.length) {
+          failures.push(
+            `效果 \`${effect.id}\` 有字段**没进 \`collect.fields\`**：[${notCarried.join(', ')}] —— ` +
+              '它们不会被搬进收集记录 ⇒ **静默不进成片**（报告里一行差异都没有）。' +
+              '若某个字段是**派生值**（如 `origin` 被解析成点），也要在名单里、由转译器显式跳过',
+          );
+        }
+      }
+    }
+  }
+  return { checks, failures };
+}
+
 function run(registry, { quiet = false } = {}) {
   let checks = 0;
   const failures = [];
@@ -482,6 +634,9 @@ function run(registry, { quiet = false } = {}) {
   const uiShape = checkUiShape(registry);
   checks += uiShape.checks;
   failures.push(...uiShape.failures);
+  const fields = checkFields(registry);
+  checks += fields.checks;
+  failures.push(...fields.failures);
   const values = checkValues(registry);
   checks += values.checks;
   failures.push(...values.failures);
@@ -554,6 +709,80 @@ function selfTest() {
     '报红要点名那个效果与缺失的锚点',
   );
 
+  // ⑤ **声明式那条路自己也要能翻面**（P2，2026-10）。
+  //
+  // ⚠️ 由来：P2 把四条 `case` 搬进 `spec/effects.json` 的 `dhampir_rule` 之后，
+  //    可达性判据**假红**（"锚点没有消费者"），而原因只是它只认手写 `case`。
+  //    修法是"两条路都算"，但那样一来**判据本身**就有了新洞：
+  //    某个效果只要在词汇表里挂个 `dhampir_rule`，就**再也不需要**转译器里有任何东西。
+  //
+  // ⇒ 所以这里补一条反向自检：**声明了形状、但转译器里没有那个形状的派发器 ⇒ 必须红**。
+  //    这正是"声明了却没人执行"那类静默失效（症状：报告里一行差异都没有、特效一个都不转）。
+  {
+    // ⚠️ 拿 `flash` 当探针，因为它**没有手写 case**（P2 已搬进声明式）——
+    //    于是"可达性"只能靠 `dhampir_rule.shape` 那条路满足。
+    //    用 `shake` 试是**测不到东西**的：它有 `case 'shake':`，把 `dhampir_rule` 换成
+    //    一个不存在的形状也照样绿（`case` 那条路先命中了）—— 第一版就是这么写的，当场假绿。
+    const ghost = {
+      ...registry,
+      effects: registry.effects.map((e) =>
+        e.id === 'flash' ? { ...e, dhampir_rule: { shape: 'no_such_shape_xyz', kind: 'flash', params: {} } } : e,
+      ),
+    };
+    const fails = [];
+    checkAnchorsAreReached('dhampir_case', ANCHOR_SITES.dhampir_case, ghost.anchors.dhampir_case, fails, ghost);
+    eq(
+      fails.some((f) => f.includes('no_such_shape_xyz')),
+      true,
+      '声明了不存在的形状 ⇒ 必须红并点名那个形状（"声明了却没人执行"）',
+    );
+  }
+
+  // ⑥ **`collect.fields` 判据自己也要能翻面**（P4，2026-10）。
+  //
+  // ⚠️ 由来：`camera_rule.collect.fields` 有两个方向的错，而**两个都不报错**：
+  //    ① 写了个**没声明的字段** ⇒ 搬不到 ⇒ `undefined` ⇒ 下游 `??` 兜底成"看着正常"的值；
+  //    ② **漏掉一个字段** ⇒ 它静默不进成片（这正是 P0 抓出的 `camera.tilt` 的形状）。
+  //    两个方向都要能翻面，否则这条判据等于装饰。
+  {
+    const withCollect = registry.effects.find((e) => e.dhampir_rule?.collect?.fields);
+    eq(!!withCollect, true, '词汇表里至少要有一个 `collect.fields` 的效果（否则下面两条自检空转）');
+    if (withCollect) {
+      const id = withCollect.id;
+      // ① 造假字段名
+      const ghostField = {
+        ...registry,
+        effects: registry.effects.map((e) =>
+          e.id === id
+            ? { ...e, dhampir_rule: { ...e.dhampir_rule, collect: { fields: [...e.dhampir_rule.collect.fields, 'no_such_field_xyz'] } } }
+            : e,
+        ),
+      };
+      const f1 = checkFields(ghostField).failures;
+      eq(
+        f1.some((f) => f.includes('no_such_field_xyz')),
+        true,
+        '`collect.fields` 里有没声明的字段 ⇒ 必须红并点名',
+      );
+      // ② 漏掉一个字段
+      const dropped = withCollect.dhampir_rule.collect.fields[0];
+      const ghostDrop = {
+        ...registry,
+        effects: registry.effects.map((e) =>
+          e.id === id
+            ? { ...e, dhampir_rule: { ...e.dhampir_rule, collect: { fields: e.dhampir_rule.collect.fields.slice(1) } } }
+            : e,
+        ),
+      };
+      const f2 = checkFields(ghostDrop).failures;
+      eq(
+        f2.some((f) => f.includes(dropped)),
+        true,
+        '`collect.fields` 漏掉一个已声明字段 ⇒ 必须红并点名（否则它静默不进成片）',
+      );
+    }
+  }
+
   // ④ **可达性判据本身不许空转**（2026-10-12 补）。
   //
   // ⚠️ 这条自检的由来：可达性判据第一版**漏了把定义文件自己从消费语料里剔掉** ——
@@ -565,7 +794,7 @@ function selfTest() {
   {
     const probe = { ...registry.anchors.dom_preview, __probe__: 'definitelyNotReferencedAnywhere12345' };
     const fails = [];
-    checkAnchorsAreReached('dom_preview', ANCHOR_SITES.dom_preview, probe, fails);
+    checkAnchorsAreReached('dom_preview', ANCHOR_SITES.dom_preview, probe, fails, registry);
     eq(fails.length > 0, true, '可达性判据对"没人引用的锚点"必须报红');
     eq(
       fails.some((f) => f.includes('definitelyNotReferencedAnywhere12345')),
@@ -574,7 +803,53 @@ function selfTest() {
     );
   }
 
-  console.log(`✓ 词汇表门禁自证：${checks} 项（多一个 / 少一个 / 少了底座锚点 / 锚点不可达，都必须红且点名）`);
+  // ⑤ **字段级判据本身不许空转**（P0，2026-10）。
+  //
+  // ⚠️ 为什么要自证：这条判据读的是 `types.rs` 的**正则抽取**（`^\s{4}Variant {` + `^\s+field:`）。
+  //    抽取写错的表现是"永远抓不到"——两边都空 ⇒ 全部 `✓`，看着像"字段都对上了"。
+  //    所以两个方向各喂一次假数据，要求**必须红且点名那个字段**。
+  {
+    // 方向一：词汇表声明一个 Rust 没有的字段
+    const withBogus = {
+      ...registry,
+      effects: registry.effects.map((e) =>
+        e.id === 'shake' ? { ...e, fields: [...(e.fields || []), { name: 'bogus_probe', type: 'f64' }] } : e,
+      ),
+    };
+    const rb = checkFields(withBogus);
+    eq(rb.failures.length > 0, true, '声明了 Rust 没有的字段 → 必须报红');
+    eq(
+      rb.failures.some((f) => f.includes('bogus_probe')),
+      true,
+      '字段级判据报红要**点名**那个字段（而不是只说"不一致"）',
+    );
+
+    // 方向二：词汇表**漏声明**一个 Rust 确实有的私有字段
+    //         （做法：把 shake 的 fields 清空 ⇒ `intensity` 就成了"Rust 有但没声明"）
+    const withMissing = {
+      ...registry,
+      effects: registry.effects.map((e) => (e.id === 'shake' ? { ...e, fields: [] } : e)),
+    };
+    const rm = checkFields(withMissing);
+    eq(rm.failures.length > 0, true, '漏声明 Rust 有的字段 → 必须报红');
+    eq(
+      rm.failures.some((f) => f.includes('intensity')),
+      true,
+      '漏声明时报红要点名 `intensity`',
+    );
+
+    // 方向三：形状错（`fields` 写成对象）—— 与 `ui` 那条同源
+    const withBadShape = {
+      ...registry,
+      effects: registry.effects.map((e) => (e.id === 'shake' ? { ...e, fields: { intensity: 1 } } : e)),
+    };
+    eq(checkFields(withBadShape).failures.length > 0, true, '`fields` 形状错（非数组）→ 必须报红');
+  }
+
+  console.log(
+    `✓ 词汇表门禁自证：${checks} 项（多一个 / 少一个 / 少了底座锚点 / 锚点不可达 / ` +
+      '字段多声明 / 字段漏声明 / 字段形状错，都必须红且点名）',
+  );
 }
 
 if (process.argv.includes('--self-test')) {

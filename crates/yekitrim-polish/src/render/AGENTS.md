@@ -70,7 +70,16 @@ ffmpeg 调用；`frame.rs`/`gif.rs`/`sound.rs`/`backend.rs`/`context.rs` 是底�
   （声音由本仓 ffmpeg 混入，成片有声），日志层把它整行换成准确说法
   （`api/render.rs::is_base_no_audio_notice`，有单测钉住原文不进日志）。
 - **取消 = 杀进程树**：子进程是另一个进程，看不到进程内标志。`render_proc::kill_tree(pid)`
-  在取消时 `taskkill /F /T`（含 ffmpeg 与底座拉起的孙进程），父进程再清 `_chunk_*` / `_temp_*`。
+  在取消时 `taskkill /F /T`（含 ffmpeg 与底座拉起的孙进程），父进程再清
+  `_chunk_*` / `_temp_*` / **`_dhampir_project*`**（转译草稿的 `.json` 与 `.assets/` 目录 ——
+  进程树被杀时 `cleanup_project` 跑不到；`api/render.rs::cleanup_render_leftovers` 兜底）。
+- ⚠️ **转译草稿 = `<工程文件名>.assets/` 子目录 + 收尾整目录删**（2026-10-18，用户报
+  「渲染导出时中间文件过多」）：文字元素的 ASS 文件名带落点/动效/颜色 ⇒ 每改一次就是**新名字**，
+  单个删收不干净（实测一个片段 42 个）。目录推导只有一处（`dhampir.rs::side_assets_dir`，与
+  `tools/polish-to-dhampir.mjs::sideDir` **逐字同一条**）；`render_video_only` 的**失败路径**也必须
+  走到 `cleanup_project`（用闭包收口，别再加早退的 `?`）。存量安装的旧文件由
+  `prepare_project_reporting` 里的 `sweep_legacy_text_assets` 扫掉（判据很窄：`dhampir-text_*.ass`，
+  别放宽成"删所有 `.ass`"）。
 - **启动清扫孤儿**：每次渲染往 `<data_dir>/render-procs/<job_id>.pid` 登记 pid，
   `server::run` 启动时 `render_proc::sweep_orphans` 结束上一次遗留的渲染（**先核对命令行**
   再杀，pid 会被系统回收）。服务器重启带不走子进程 —— 实测两个渲染各留 3 个渲染孙进程空转两小时，

@@ -165,9 +165,19 @@ check('面板不自己存 RGBA（只写颜色名）', !editorHasRgba,
 //   ① 转译器**写**文件用的 `dhampir-${id}.ass`
 //   ② doc 里 `assets[].uri` 的 basename（服务端按它建表）
 //   ③ 前端按 `uri` basename 查表
-const TRANS_ASS = /const assPath = join\(clipDir, `dhampir-\$\{id\}\.ass`\)/.exec(trans)
+//
+// ⚠️ 2026-10-18（「渲染导出时中间文件过多」）之后，文件**不再写片段根目录**，而是落
+//    `<工程文件名去扩展名>.assets/`（与 `dhampir.rs::cleanup_project` 同一推导）。
+//    所以这里多钉一条：**两条推导必须成对存在** —— 只钉 basename 的话，把 `sideDir`
+//    改回片段根目录这条变异不会红（成片照样对，只是又开始堆垃圾）。
+const SIDE_DIR = /const sideDir = join\(dirname\(docPath\),/.exec(trans)
+check('转译器给文字轨 ASS 一个**独占子目录**（`<工程文件名>.assets/`，与 Rust 清理同一推导）',
+  SIDE_DIR !== null,
+  '转译器里找不到 `const sideDir = join(dirname(docPath), …)` —— 排他目录没了，' +
+  '文字轨 ASS 会退回片段根目录/与并发转译共用目录（前者=文件越积越多，后者=互相删）')
+const TRANS_ASS = /const assPath = join\(sideDir, `dhampir-\$\{id\}\.ass`\)/.exec(trans)
 check('转译器把文字轨写成 `dhampir-<轨 id>.ass`（前缀契约）', TRANS_ASS !== null,
-  '转译器里找不到 `join(clipDir, \\`dhampir-${id}.ass\\`)` —— 改了这个形状，' +
+  '转译器里找不到 `join(sideDir, \\`dhampir-${id}.ass\\`)` —— 改了这个形状，' +
   '服务端/前端按 basename 建表与查表就会对不上（预览里那类文字静默消失）')
 
 const PREVIEW = 'webui/src/components/PolishPreview.vue'

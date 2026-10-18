@@ -1475,6 +1475,7 @@ mod tests {
             sfx: None,
             sfx_volume: None,
             manual: false,
+            manual_pos: None,
         }
     }
 

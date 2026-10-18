@@ -10,7 +10,31 @@
     "另两个与 shake/运镜重叠）—— 其中 split/color_shift 已于 2026-10-01 删除；zoom_bounce/stutter 待删。",
     "`lane` = 它落在时间轴的哪条轨道上（D3：overlay 并入「视觉特效」泳道，`overlay` 槽位已删）。",
     "前端 `LANE_DEFS` 的成员由它派生 —— 加效果时只改这里，泳道自动收进正确的轨道。",
-    "`overlay.angle`（D5）：本仓只补字段与四处求值（面板暂时没有控件，由 LLM/手工写在 `polish.toml`）。"
+    "`overlay.angle`（D5）：本仓只补字段与四处求值（面板暂时没有控件，由 LLM/手工写在 `polish.toml`）。",
+    "",
+    "=== P0（2026-10）：事件字段的**结构化声明** ===",
+    "`params` 原先只是**字符串数组**（只有名字），加一个字段时\"类型 / 默认值 / 取值范围\"没有任何权威，",
+    "只能靠人肉读 Rust 结构体 —— 而字段级改动**此前零门禁覆盖**（体检报告 §1.2 的那一条）。",
+    "现在每个效果多两个键：",
+    "  · `mechanism` —— 它走底座的**哪套机制**（effect=特效注册表 / keyframe=关键帧变换 / layer=图层素材 / audio=音轨）。",
+    "     加新效果前先看这里：三套机制的扩展成本与落点完全不同（见 docs/plan/polish-unified-architecture-with-base.md）。",
+    "  · `fields` —— 事件**私有**字段的结构化声明（名字 / 类型 / 默认 / 取值域 / 界面控件）。",
+    "     ⚠️ `fields` **不含**公共头（time/end/anchor/sfx/sfx_volume/manual）—— 那些是 12 个变体共有的，",
+    "        在 `field_common` 里声明一次；P2 会把它们提成真正的公共头。",
+    "`params` 保留，作为 `fields[].name` 的**兼容投影**（还有旧的读取方）；门禁断言两者集合一致。",
+    "",
+    "=== P2（2026-10）：转译的**声明式规则** `dhampir_rule` ===",
+    "在此之前，\"本仓事件 → 底座效果参数\"的映射是 `tools/polish-to-dhampir.mjs` 里 **11 个手写 `case`**，",
+    "每个 case 里的窗口长度、包络形状、参数常量全是散文注释 + 字面量。加一个**同类**特效 = 再抄一遍",
+    "那段 case（~14 行），窗口/包络抄错**不报错**（只是成片的节奏不一样）。",
+    "`dhampir_rule` 把那段 case 里**可声明的那一半**搬到词汇表，转译器按形状求值：",
+    "  · `shape:\"envelope\"` —— 逐帧不透明度包络（`placeEnvelope`）：一个 `kind` + 固定 `params`",
+    "     + 窗口长度规则（`window`）+ 包络曲线（`envelope`）。`flash`/`hue_shift`/`noise`/`vignette` 都是这条。",
+    "  · 没写 `dhampir_rule` 的（`camera`/`sticker`/`element`/`sfx`/`overlay`/`blur`/`shake`/`pulse`）",
+    "     **保持手写 case** —— 它们要么发关键帧/图层而不是特效、要么有按帧循环/多档分支，",
+    "     声明式表达不了（硬塞会变成\"为了统一而统一\"，比手写更难看懂）。",
+    "⚠️ **声明里的数不许和 case 里的散文注释漂开**：`check-effect-registry.mjs` 会断言",
+    "   写了 `dhampir_rule` 的效果，转译器里**必须**真的走声明式那条路（case 里不许再留一份字面量）。"
   ],
   "channels": {
     "_note": "dhampir=底座工程里的原语（null = 底座没有，只能 CLAMP/DROP）；canvas=本仓 canvas 出片（兜底通道）；dom_preview=WebUI 自绘预览（engine.js）",
@@ -18,6 +42,28 @@
     "canvas": "crates/yekitrim-polish/templates/index.html 的 handlers.<id>",
     "dom_preview": "webui/src/polish/engine.js 的 get<Camel>(id)"
   },
+  "_mechanism_note": [
+    "`mechanism` = 这个效果走底座的哪套机制。**加新效果前先看它** —— 三套的落点与成本差很多：",
+    "  `effect`   → 底座 EffectSpec 注册表（`kind` + `params`）。落在已有 4 条管线内时本仓可\"只改词汇表\"。",
+    "  `keyframe` → 底座 Keyframe 驱动 transform（scale/x/y/rotation）或 `effect.<i>.<参数>`。",
+    "  `layer`    → 底座 Layer / SourceRef（素材引用）。",
+    "  `audio`    → **不过底座**，本仓自己混音。",
+    "依据：docs/plan/polish-unified-architecture-with-base.md §1、../Dhampir/plan/p9-polish-parity-design.md §3。"
+  ],
+  "_field_common_note": [
+    "**公共头**：这些字段出现在绝大多数事件变体上，不属于任何单个效果。",
+    "P0 先把它们声明出来（让字段级门禁认得它们、并作为\"不该被当成私有字段\"的依据）；",
+    "P2 会把它们提成真正的公共头（`Event { time, end, anchor, sfx, sfx_volume, manual, kind, params }`）。",
+    "`present` = 实现在哪些变体上真的出现了（12 个变体的实测计数），门禁据此校验\"声明与实现一致\"。"
+  ],
+  "field_common": [
+    { "name": "time", "type": "f64", "required": true, "_note": "12/12 变体都有（事件起点，秒）" },
+    { "name": "end", "type": "Option<f64>", "default": null, "_note": "12/12；`time` + `end`（**没有 duration**），老的 duration 由 legacy.rs 换算" },
+    { "name": "anchor", "type": "Option<String>", "default": null, "_note": "9/12；落点参照（liver/danmaku/…）" },
+    { "name": "sfx", "type": "Option<String>", "default": null, "_note": "9/12；配声引用" },
+    { "name": "sfx_volume", "type": "Option<f64>", "default": null, "_note": "9/12；配声音量" },
+    { "name": "manual", "type": "bool", "default": false, "_note": "4/12；手工标记 —— **后处理一律不改写**" }
+  ],
   "_anchors_note": [
     "每一处实现的**精确锚点**（函数名 / 处理器名 / case 名）。加效果时把锚点也填上 ——",
     "门禁会依次断言：① 非 null 的锚点在对应文件里**真的存在**；② 那些文件里**不许有没人认领的实现**",
@@ -87,6 +133,7 @@
       "id": "camera",
       "label": "运镜",
       "kind": "durable",
+      "mechanism": "keyframe",
       "params": [
         "zoom",
         "origin",
@@ -97,7 +144,38 @@
         "handheld",
         "speed"
       ],
+      "fields": [
+        { "name": "zoom", "type": "String", "default": "中", "ui": "select", "enum": ["中", "近", "特写", "远"], "_note": "档位名；倍率住 Rust `CameraStyle::factor` 一张表" },
+        { "name": "origin", "type": "String", "default": "liver", "ui": "text", "panel": false, "_note": "起点参照（**解析结果**，不是输入）", "_panel_note": "**面板不显示**：这是 `resolve_camera_anchors`（process Step 2d）**每次运行都覆写**的**结果坐标** —— 真正的输入是 `anchor`/`anchor_to`（面板上叫「聚焦 / 移到」）。给控件 = 用户改完下一次后处理就被冲掉（静默无效）。" },
+        { "name": "to_origin", "type": "Option<String>", "default": null, "ui": "text", "panel": false, "_note": "终点参照（**解析结果**，缺省=不移动）", "_panel_note": "**面板不显示**，同 `origin`：由 `anchor_to` 解析而来，每跑一次 process 重算。" },
+        { "name": "anchor", "type": "Option<String>", "default": null, "ui": "text", "_note": "不动点" },
+        { "name": "anchor_to", "type": "Option<String>", "default": null, "ui": "text" },
+        { "name": "cut", "type": "bool", "default": false, "ui": "switch", "_note": "硬切（不走 0.6s 推移）" },
+        { "name": "handheld", "type": "bool", "default": false, "ui": "switch", "_note": "手持摇摆" },
+        { "name": "speed", "type": "Option<String>", "default": null, "ui": "text", "_note": "运镜速度档" },
+        { "name": "tilt", "type": "Option<f64>", "default": null, "ui": "number", "_note": "地平线倾斜度（荷兰角）。⚠️ 2026-10-15 校正：旧注释说「转译器不读它」**已过期** —— 出片模板 `index.html`（`var camTilt = (cam.tilt || 0) + sw.rot`）与转译器的 `dutchFrames` 都在消费它，是个**活的**字段，所以面板保留。" }
+      ],
+      "_gap": "`tilt` 在本仓类型/LLM/后处理里都有，但 `tools/polish-to-dhampir.mjs` 的 camera case 没读 ⇒ **它进不了成片**。这是本次 P0 体检发现的既有缺口（不是本次改动引入），已登记在 docs/plan/polish-extensibility-master-plan.md 的待办里。",
       "dhampir": "TransformV2（关键帧）",
+      "dhampir_rule": {
+        "shape": "keyframe_camera",
+        "collect": {
+          "fields": [
+            "zoom",
+            "origin",
+            "to_origin",
+            "anchor",
+            "anchor_to",
+            "cut",
+            "handheld",
+            "speed",
+            "tilt"
+          ]
+        },
+        "_why": "运镜**不直接写关键帧** —— 它先归一化成一条 `cameraEvents` 记录（起点/终点参照、倍率档、硬切、手持、速度、荷兰角），再由**三个消费端**各取所需：① 缩放关键帧 ② 手持/荷兰角状态机 ③ 交给底座的 `camEventsOut`。",
+        "_scope": "⚠️ 声明式只管**收集段**（字段搬运 + 默认值，约 20 行）。**消费段那 ~170 行是插值算法，不在声明范围内** —— 新运镜若只是现成字段的新组合（例：`zoom=近 + speed=fast`），到这里就够了；若带**新字段**（例：绕 Z 轴 `roll`），仍要在本文件加字段、在 `types.rs` 加变体字段、并**写那一段新算法**（算法抄不了、也不该假装能抄）。",
+        "_note": "`origin`/`to_origin` 的解析（`liver`/`center`/百分比/`danmaku`）与锚点兜底顺序是**收集段的语义**，写在派发器里；这里只声明**哪些字段参与**。"
+      },
       "canvas": true,
       "dom_preview": true,
       "llm": true,
@@ -111,6 +189,7 @@
       "id": "sticker",
       "label": "贴纸",
       "kind": "durable",
+      "mechanism": "layer",
       "params": [
         "sticker_tag",
         "keyword",
@@ -118,6 +197,14 @@
         "source",
         "x",
         "y"
+      ],
+      "fields": [
+        { "name": "sticker_tag", "type": "Option<String>", "default": null, "ui": "text", "_note": "贴纸标签（首选匹配键）" },
+        { "name": "keyword", "type": "String", "default": "", "ui": "text", "_note": "关键字（与 sticker_tag 二选一）" },
+        { "name": "name", "type": "Option<String>", "default": null, "ui": "text", "_note": "素材文件名（去扩展名）" },
+        { "name": "source", "type": "Option<String>", "default": null, "ui": "text", "_note": "素材来源口径" },
+        { "name": "x", "type": "String", "default": "50%", "ui": "text", "_note": "**字符串**百分比/关键字；落点规则见引擎" },
+        { "name": "y", "type": "String", "default": "50%", "ui": "text" }
       ],
       "dhampir": "AssetKind::ImageSequence + Transform（逐帧采样）",
       "canvas": true,
@@ -133,6 +220,7 @@
       "id": "overlay",
       "label": "覆盖层",
       "kind": "durable",
+      "mechanism": "effect",
       "params": [
         "overlay_type",
         "colors",
@@ -140,6 +228,14 @@
         "shape",
         "opacity",
         "angle"
+      ],
+      "fields": [
+        { "name": "overlay_type", "type": "String", "default": "color", "ui": "select", "enum": ["color", "gradient", "radial", "fade_in", "fade_out"], "_note": "色罩形态" },
+        { "name": "color", "type": "Option<String>", "default": null, "ui": "color", "_note": "单色（与 colors 二选一）" },
+        { "name": "colors", "type": "Option<Vec<String>>", "default": null, "ui": "color_list", "_note": "渐变色档 ≥2 个" },
+        { "name": "shape", "type": "Option<String>", "default": null, "ui": "text", "_note": "径向形态" },
+        { "name": "opacity", "type": "Option<f64>", "default": null, "min": 0, "max": 1, "ui": "slider" },
+        { "name": "angle", "type": "Option<f64>", "default": null, "ui": "number", "_note": "YekiTrim/CSS 约定：0=向上、顺时针；转译器按 `base = css − 90` 换算" }
       ],
       "dhampir": "ColorMask::overlay（Solid/Linear/Radial + angle） ｜ `angle`（D5 补）：YekiTrim/CSS 约定（0 = 向上、顺时针；缺省 = `to bottom right` = 135°），底座是 `(cos, sin)` 方向（0 = 向右）⇒ 转译器按 `base = css − 90` 换算（`overlayBaseAngle`）。",
       "canvas": true,
@@ -156,11 +252,17 @@
       "id": "sfx",
       "label": "音效",
       "kind": "durable",
+      "mechanism": "audio",
       "params": [
         "keyword",
         "name",
         "volume"
       ],
+      "fields": [
+        { "name": "name", "type": "String", "default": "", "ui": "text", "_note": "音效文件名（去扩展名）" },
+        { "name": "volume", "type": "Option<f64>", "default": null, "min": 0, "max": 2, "ui": "slider" }
+      ],
+      "_gap": "⚠️ `keyword` 是历史遗留的假字段：Rust `Event::Sfx` 只有 `name`/`volume`/`end`，**没有 `keyword`**（那是 `Sticker`/`Element` 的字段）。`params` 里保留原名不改，`fields` 以实现为准。",
       "dhampir": "音轨层（本仓混音，不走底座）",
       "canvas": true,
       "dom_preview": false,
@@ -178,9 +280,13 @@
       ],
       "label": "抖动",
       "kind": "fx",
+      "mechanism": "keyframe",
       "params": [
         "intensity",
         "sfx"
+      ],
+      "fields": [
+        { "name": "intensity", "type": "f64", "default": 14, "min": 0, "ui": "intensity", "_note": "**像素**（不是 0–1！LLM 提示词曾写 0.5 ⇒ 亚像素、看不见）" }
       ],
       "dhampir": "视频层关键帧（四级阶梯，逐帧采样）",
       "canvas": true,
@@ -199,11 +305,23 @@
       ],
       "label": "闪白",
       "kind": "fx",
+      "mechanism": "effect",
       "params": [
         "color",
         "sfx"
       ],
+      "fields": [
+        { "name": "color", "type": "Option<String>", "default": null, "ui": "color", "_note": "缺省白色" }
+      ],
       "dhampir": "ColorMask::flash（逐帧包络）",
+      "dhampir_rule": {
+        "shape": "envelope",
+        "kind": "flash",
+        "params": { "amount": 0.2, "color_field": "color", "color_default": [1, 1, 1] },
+        "window": { "min": 0.04, "max": null, "default": 0.35, "plus_rise": true },
+        "envelope": { "rise": 0.04, "fall": "span" },
+        "_why": "参照 `getFlash`：0.04s 升到峰值 0.20，然后 `dur` 秒线性落回 0。`amount` 不随 duration 变。⚠️ `plus_rise:true` —— 上升段**加在** `dur` **之外**（总长 = 0.04 + dur），不是含在里面。这是参照 `getFlash` 的真实口径：`dur` 只计下降段。第一版按\"含在内\"写，演示工程那条 flash 的窗口从 0.34s 变 0.30s、键数 21→22、包络逐值漂 —— 由\"重构前后产物逐字节相同\"那条校验当场抓住。"
+      },
       "canvas": true,
       "dom_preview": true,
       "llm": true,
@@ -217,10 +335,13 @@
       "id": "blur",
       "label": "模糊",
       "kind": "fx",
+      "mechanism": "effect",
       "params": [
         "intensity",
         "sfx"
       ],
+      "fields": [],
+      "_gap": "⚠️ **`intensity` 是历史遗留的假字段**：Rust `Event::Blur` **没有** `intensity`，转译器 blur case 也**从不读** `event.intensity` —— 强度写死在转译器里（前 0.48s 恒定 **8px**，后 0.32s 线性降到 0）。旧的 `params:[\"intensity\",…]` 只是把它的名字抄了一遍。P0 起 `fields` 以实现为准（空），`params` 保持原样**不改**（还有旧读取方）；要不要真加这个旋钮是**功能决策**，不是重构。",
       "dhampir": "Blur 调整图层",
       "canvas": true,
       "dom_preview": true,
@@ -235,11 +356,22 @@
       "id": "vignette",
       "label": "暗角",
       "kind": "fx",
+      "mechanism": "effect",
       "params": [
         "intensity",
         "sfx"
       ],
+      "fields": [],
+      "_gap": "⚠️ 同 `blur`：Rust `Event::Vignette` 无 `intensity`，强度写死在转译器（底座 `amount` = 边缘压暗量 **0.5**，另有 `radius 0.7` / `softness 0.35`）。",
       "dhampir": "ColorMask::vignette",
+      "dhampir_rule": {
+        "shape": "envelope",
+        "kind": "vignette",
+        "params": { "amount": 0.5, "radius": 0.7, "softness": 0.35 },
+        "window": { "min": 0.1, "max": 0.6, "default": 0.4, "span_source": "end" },
+        "envelope": { "hold": 0.4, "ramp_max": 0.3, "ramp_frac": 0.6 },
+        "_why": "参照 = radial-gradient(transparent 55% → rgba(0,0,0,.5) 100%) × `getVignette` 包络（前 `dur×0.4` 恒 1，之后在 `min(0.3, dur×0.6)` 秒内线性归零）。`window.max 0.6` = 参照的 `TRANSIENT_CAP.vignette`。⚠️ 窗口缺省 0.4（**不是**事件跨度）—— 参照的 `evDuration(ev, def)` 语义就是\"有 end 用 `end-time`，否则用 def\"；第一版写成跨度，导致没写 end 的工程里暗角只有 0.1s、几乎看不见。"
+      },
       "canvas": true,
       "dom_preview": true,
       "llm": true,
@@ -256,11 +388,23 @@
       ],
       "label": "色相偏移",
       "kind": "fx",
+      "mechanism": "effect",
       "params": [
         "color",
         "sfx"
       ],
+      "fields": [
+        { "name": "color", "type": "Option<String>", "default": null, "ui": "color" }
+      ],
       "dhampir": "ColorMask::hue（逐帧包络）",
+      "dhampir_rule": {
+        "shape": "envelope",
+        "kind": "flash",
+        "params": { "amount": 0.25, "color_field": "color", "color_default": [1, 0, 0.25] },
+        "window": { "min": 0.95, "max": 0.95, "default": 0.95 },
+        "envelope": { "rise": 0.15, "fall": 0.8 },
+        "_why": "参照 `getHueShiftFlash`：0.15s 升到峰值 0.25，然后 **0.80s** 线性落回 0（窗口固定 0.95s，不随事件跨度变）。底座侧用的是 `flash` 原语 + 色相色，不是独立 kind。"
+      },
       "canvas": true,
       "dom_preview": true,
       "llm": true,
@@ -274,11 +418,23 @@
       "id": "noise",
       "label": "噪点",
       "kind": "fx",
+      "mechanism": "effect",
       "params": [
         "intensity",
         "sfx"
       ],
+      "fields": [],
+      "_gap": "⚠️ 同 `blur`：Rust `Event::Noise` 无 `intensity`，强度写死在转译器（`amount 0.08` / `seed 7`）。",
       "dhampir": "ColorMask::noise（真黑白噪点：逐像素加性灰度噪声，逐帧不同、同一帧可复现）",
+      "dhampir_rule": {
+        "shape": "envelope",
+        "kind": "noise",
+        "params": { "amount": 0.08, "seed": 7 },
+        "window": { "min": 0.8, "max": 0.8, "default": 0.8 },
+        "envelope": { "rise": 0.08, "fall": 0.72 },
+        "_why": "§20 起 `noise` 发底座的**真黑白噪点**原语（不再发白色 `flash`）。`seed` 固定：噪声必须是**帧号的函数**，同一帧两次渲染要逐字节相同（用随机会让预览与成片对不上）。⚠️ 强度 0.08 与旧的\"白纱 0.08\"**不可比**（底座 `NOISE_FULL_SCALE` 量纲修掉之后，0.08 = 逐像素 ±10/255 的颗粒）。",
+        "params_note": "`amount` + `seed` 与底座 `dhampir-core/src/effects.rs` 的 `NOISE` 登记表对齐。"
+      },
       "canvas": true,
       "dom_preview": true,
       "llm": true,
@@ -292,10 +448,13 @@
       "id": "pulse",
       "label": "脉冲",
       "kind": "fx",
+      "mechanism": "keyframe",
       "params": [
         "intensity",
         "sfx"
       ],
+      "fields": [],
+      "_gap": "⚠️ 同 `blur`：Rust `Event::Pulse` 无 `intensity`，档位写死在转译器（×1.06 / ×0.97 两档，窗口写死 0.48s）。",
       "dhampir": "视频层关键帧（逐帧采样）",
       "canvas": true,
       "dom_preview": true,
@@ -310,6 +469,7 @@
       "id": "element",
       "label": "元素（文字 / 贴纸）",
       "kind": "durable",
+      "mechanism": "layer",
       "params": [
         "kind",
         "text",
@@ -320,6 +480,23 @@
         "y",
         "manual",
         "end"
+      ],
+      "fields": [
+        { "name": "kind", "type": "String", "default": "sticker", "ui": "select", "enum": ["sticker", "text"], "_note": "子类型分派" },
+        { "name": "text", "type": "String", "default": "", "ui": "text", "_note": "kind=text 时的正文" },
+        { "name": "style", "type": "Option<String>", "default": null, "ui": "select", "panel": false, "enum": ["hook", "chapter", "comment", "count"], "_note": "四档样式预设（权威 = Rust placement.rs::TextStyle）。决定字号/描边宽度/字重/底衬/默认色 —— 描边**宽度**只有这里能定", "_panel_note": "**面板不显示**（`panel:false`）：那套四档 **2026-10-13 已被用户否决**，下拉随之删除（`TimelineEditor.vue` 里那段注释写着「**别把它加回来** —— 它被否决过一次，又被人看见挂在面板上，等于把否定的方案留在上面」）。⚠️ `Event.style` **这个字段还在**（字幕层仍用它、Rust 仍解析它），删字段会砸老工程 —— 藏的是**入口**。" },
+        { "name": "anim", "type": "Option<String>", "default": null, "ui": "select", "panel": false, "enum": ["tilt", "arc", "vtext", "pop", "fade", "shake", "perchar_big", "perchar_small", "heartbeat"], "_note": "**旧的总字段**（被下面三根轴取代）。权威 = 转译器 ANIM_PRESETS。三根轴任一有值 ⇒ 本键被忽略（只读迁移，不写回）", "_panel_note": "**面板不显示**（`panel:false`）：它是**只读迁移**字段 —— 转译器只在三根轴都为空时才读它，`process` 一个字节都不写回。给控件 = 用户改完看着生效、成片毫无变化（静默无效控件）。它仍留在词汇表里给转译器与老工程用。" },
+        { "name": "style_anim", "type": "Option<String>", "default": null, "ui": "select", "enum": ["tilt", "arc", "vtext"], "_note": "排版轴（形态）。权威 = 转译器 ANIM_PRESETS 的 `sort:'layout'` 三档" },
+        { "name": "effect_anim", "type": "Option<String>", "default": null, "ui": "select", "enum": ["shake", "perchar_big", "perchar_small", "heartbeat"], "_note": "动效轴。权威 = ANIM_PRESETS 的 `sort:'effect'`（shake / perchar_big / perchar_small / heartbeat）。⚠️ 面板上「逐字变化」是一个档位、两个变体，落盘是 perchar_big / perchar_small 两个不同的**档名**（不是一个叫 perchar 的档）" },
+        { "name": "transition_anim", "type": "Option<String>", "default": null, "ui": "select", "enum": ["pop", "fade"], "_note": "过渡轴（进出场）。权威 = ANIM_PRESETS 的 `sort:'transition'` 两档" },
+        { "name": "layout_angle_deg", "type": "Option<f64>", "default": null, "ui": "number", "_note": "文字倾斜（φ 方向 ∘ 尺度序，见 check-text-tilt）。区间 [-30, 30]，与转译器 LAYOUT_ANGLE_{MIN,MAX} 同值（check-anim-layout-angle.mjs 钉着）" },
+        { "name": "pos", "type": "Option<String>", "default": null, "ui": "select", "panel": false, "enum": ["top", "center", "bottom"], "_note": "纵向档位（权威 = Rust placement.rs::TextAnchor）。经 anchor_prefer_band 作为**落点求解器的安全集内偏好**生效；不写 = Auto = 无偏好", "_panel_note": "**面板不显示**（`panel:false`）：2026-10-12 用户口径已把「纵向位置」下拉从界面去掉（`placement.rs::TextAnchor::Auto` 的注释记着这件事），**默认就是 Auto**。老工程写过的值照旧生效（`parse` 仍认三档），但新事件不该再落到带上 —— 重新暴露这个下拉 = 把已撤销的能力带回来。" },
+        { "name": "color", "type": "Option<String>", "default": null, "ui": "color" },
+        { "name": "sticker_tag", "type": "Option<String>", "default": null, "ui": "text" },
+        { "name": "x", "type": "Option<String>", "default": null, "ui": "text" },
+        { "name": "y", "type": "Option<String>", "default": null, "ui": "text" },
+        { "name": "name", "type": "Option<String>", "default": null, "ui": "text" },
+        { "name": "source", "type": "Option<String>", "default": null, "ui": "text" }
       ],
       "dhampir": "按 kind 分派：sticker → ImageSequence（复用贴纸路径）；text → 待排版通道",
       "canvas": true,

@@ -6,7 +6,7 @@
 mod types;
 pub mod version;
 pub use types::*;
-pub use version::{ConfigKind, CONFIG_VERSION, VERSION_KEY};
+pub use version::{clean_retired_keys_in, ConfigKind, CONFIG_VERSION, VERSION_KEY};
 
 use std::path::{Path, PathBuf};
 
@@ -979,6 +979,9 @@ fn edit_toml_at(project_file: &Path, f: impl FnOnce(&mut toml_edit::DocumentMut)
         let kind = ConfigKind::of_path(project_file);
         let base = match version::migrate_text(kind, &content) {
             Ok(prepared) => {
+                // ⚠️ `migrate_text` 是纯函数、**不打日志**（工程级文件不写回，在纯函数里报就是刷屏）。
+                //    这条路**会**把文件写回去 ⇒ 由它来报（`prepare` 那条读路径同口径）。
+                version::report_retired(project_file, kind, &prepared);
                 if prepared.changed && kind.persists() {
                     if let Err(e) = version::backup_before_upgrade(project_file, prepared.from) {
                         tracing::warn!("升级前备份 {} 失败（继续）：{e:#}", project_file.display());

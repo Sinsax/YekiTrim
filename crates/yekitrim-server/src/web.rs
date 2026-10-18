@@ -17,7 +17,10 @@
 //! ⚠️ **别再回退到"手写的内嵌单文件页面"**：那份页面长期与 API 漂移，已删除。现在内嵌的是
 //! **构建产物本身**（同一批文件，只是换了载体），不是第二份实现。
 //!
-//! 内嵌表由 `crates/yekitrim-server/build.rs` 生成；`dist` 缺失或比 `webui/src` 旧都会让**编译失败**。
+//! 内嵌表由 `crates/yekitrim-server/build.rs` 生成。⚠️ **只有 release 才内嵌、才查新鲜度**
+//! （2026-10-16 用户口径：debug/`cargo run` 里前端是运行时读盘的，**改前端不许牵动后端编译**）——
+//! 所以 debug 下这张表是**空的**、`Embedded` 那条路自然轮不到；release 下 `dist` 缺失或比
+//! `webui/src` 旧仍然**编译失败**。`YEKITRIM_EMBED_WEBUI=1/0` 可强制任一侧（排障用）。
 
 use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
@@ -356,8 +359,15 @@ mod tests {
     /// 内嵌表本身的形状：必须有入口，且每个键都是**安全的相对路径**。
     ///
     /// 表是 build.rs 遍历文件系统生成的，所以这条同时在看生成器有没有跑歪。
+    ///
+    /// ⚠️ **只对 release 有意义**（2026-10-16）：debug 形态**不内嵌**（`build.rs` 里
+    /// `PROFILE != release` ⇒ 生成空表），所以这里空表就返回 —— 拿"表里必须有 index"去判
+    /// debug 形态是在测另一件事（那件事的真判据在 `build.rs` 的 release 分支里，过期即编译失败）。
     #[test]
     fn embedded_table_has_index_and_only_safe_relative_keys() {
+        if WEBUI_DIST.is_empty() {
+            return; // debug：不内嵌 ⇒ 这条不适用（见上）
+        }
         assert!(WEBUI_DIST.len() > 5, "内嵌表太小，像是生成歪了：{} 项", WEBUI_DIST.len());
         assert!(WEBUI_DIST.iter().any(|(p, _)| *p == INDEX), "内嵌表里必须有 {INDEX}");
         for (key, bytes) in WEBUI_DIST {
@@ -389,10 +399,16 @@ mod tests {
         assert!(WEBUI_DIST.iter().all(|(p, _)| *p != "../secret"));
     }
 
-    /// release 形态必须**真的**有内嵌资源可用：否则"只换 exe 就能升级"是空话。
-    /// 仓库里 dist 已入库 ⇒ 编译期必然生成表，所以这条在源码树上恒成立。
+    /// release 形态必须**真的**有内嵌资源可用：否则「只换 exe 就能升级」是空话。
+    ///
+    /// ⚠️ **release 才成立**（2026-10-16）：`build.rs` 只在 `PROFILE == release` 时内嵌，
+    /// debug（`cargo run`）生成的是空表、前端走磁盘 —— 那时这条断言在测一个不存在的性质。
+    /// 「release 的表真的非空」由 `build.rs` 自己保证（dist 缺失/过期直接**编译失败**）。
     #[test]
     fn embedded_source_is_always_ready() {
+        if WEBUI_DIST.is_empty() {
+            return; // debug：不内嵌 ⇒ 这条不适用（见上）
+        }
         assert!(
             WEBUI_DIST.iter().any(|(p, _)| *p == INDEX),
             "内嵌表里没有 {INDEX} —— release 的 `dist_ready()` 会返回 false"

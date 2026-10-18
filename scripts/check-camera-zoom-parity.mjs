@@ -194,7 +194,17 @@ const rangesEqual = (a, b) =>
 function mutate() {
   const base = loadVariant()
   let bad = 0
-  const expectRed = (name, variant, fn) => {
+  /** ⚠️ **变异体必须真的与原件不同** —— 目标串写错（少一段、多空格）时 `.replace` 静默不命中，
+   *  变异体与原件逐字节相同 ⇒ 判据当然不翻面 ⇒ 自证把它报成"守卫没抓到"，
+   *  而真相是**这条变异自己没生效**（2026-10-15 实测：转译器那条的 "近" 目标串漏了 `特写: 1.8,`）。
+   *  这与 `check-yekitrim-translator.mjs --mutate` 的纪律同源：**先断言替换命中，再看判据翻面**。
+   *  `srcKey` 指出被变异的那个来源键（rust/html/engine/dhampir/server/polishView）。 */
+  const expectRed = (name, variant, fn, srcKey) => {
+    if (srcKey && variant[srcKey] === base[srcKey]) {
+      console.log(`  FAIL [变异] ${name} → 变异**没生效**（目标串没命中 ${srcKey}，变异体与原件相同）`)
+      bad += 1
+      return
+    }
     const before = failures
     failures = 0
     try {
@@ -228,13 +238,19 @@ function mutate() {
     process.exit(1)
   }
 
-  expectRed('render-core 把 zoom_close 默认改成 1.8', { ...base, rust: base.rust.replace('fn default_zoom_close() -> f64 {\n    1.5', 'fn default_zoom_close() -> f64 {\n    1.8') }, run)
-  expectRed('出片模板的 `d=1.5` 改成 `d=1.8`', { ...base, html: base.html.replace("if(label==='近'){v=c.zoom_close;d=1.5;}", "if(label==='近'){v=c.zoom_close;d=1.8;}") }, run)
-  expectRed('engine.js 的近景回落值改成 1.8', { ...base, engine: base.engine.replace("pick(c.zoom_close, 1.5)", "pick(c.zoom_close, 1.8)") }, run)
-  expectRed('转译器 defaults 的近景改成 1.8', { ...base, dhampir: base.dhampir.replace('const defaults = { 近: 1.5', 'const defaults = { 近: 1.8') }, run)
-  expectRed('后端放开 zoom_mid 下限到 0.5（中景会缩出黑边）', { ...base, server: base.server.replace('("zoom_mid", &mut cam.zoom_mid, 1.0_f64, 3.0_f64)', '("zoom_mid", &mut cam.zoom_mid, 0.5_f64, 3.0_f64)') }, run)
-  expectRed('后端把 zoom_wide 上限放到 2.0（画中画不再是画中画）', { ...base, server: base.server.replace('("zoom_wide", &mut cam.zoom_wide, 0.05, 1.0)', '("zoom_wide", &mut cam.zoom_wide, 0.05, 2.0)') }, run)
-  expectRed('前端滑杆上限与后端不同（3.0 → 5.0）', { ...base, polishView: base.polishView.replace("key: 'zoom_close', label: '近景', min: 1.0, max: 3.0", "key: 'zoom_close', label: '近景', min: 1.0, max: 5.0") }, run)
+  expectRed('render-core 把 zoom_close 默认改成 1.8', { ...base, rust: base.rust.replace('fn default_zoom_close() -> f64 {\n    1.5', 'fn default_zoom_close() -> f64 {\n    1.8') }, run, 'rust')
+  expectRed('出片模板的 `d=1.5` 改成 `d=1.8`', { ...base, html: base.html.replace("if(label==='近'){v=c.zoom_close;d=1.5;}", "if(label==='近'){v=c.zoom_close;d=1.8;}") }, run, 'html')
+  expectRed('engine.js 的近景回落值改成 1.8', { ...base, engine: base.engine.replace("pick(c.zoom_close, 1.5)", "pick(c.zoom_close, 1.8)") }, run, 'engine')
+  // ⚠️ 变异目标串必须**逐字**等于源码（`tools/polish-to-dhampir.mjs` 的 `zoomFactor` 里是
+  //    `const defaults = { 特写: 1.8, 近: 1.5, 远: 0.55, 中: 1.3 };`）。
+  //    曾经写成 `const defaults = { 近: 1.5`（**少了 `特写: 1.8,` 那一段**）⇒ `.replace` 静默不命中
+  //    ⇒ 变异体与原件逐字节相同 ⇒ 判据当然不翻面，而自证把它报成"守卫没抓到"。
+  //    那是**假红**：真正的守卫一直在工作（另三条变异证明过），红的是这条变异自己没生效。
+  //    教训与 `check-yekitrim-translator.mjs` 的 `--mutate` 同源：**每处变异都要先断言"替换命中一次"**。
+  expectRed('转译器 defaults 的近景改成 1.8', { ...base, dhampir: base.dhampir.replace('const defaults = { 特写: 1.8, 近: 1.5', 'const defaults = { 特写: 1.8, 近: 1.8') }, run, 'dhampir')
+  expectRed('后端放开 zoom_mid 下限到 0.5（中景会缩出黑边）', { ...base, server: base.server.replace('("zoom_mid", &mut cam.zoom_mid, 1.0_f64, 3.0_f64)', '("zoom_mid", &mut cam.zoom_mid, 0.5_f64, 3.0_f64)') }, run, 'server')
+  expectRed('后端把 zoom_wide 上限放到 2.0（画中画不再是画中画）', { ...base, server: base.server.replace('("zoom_wide", &mut cam.zoom_wide, 0.05, 1.0)', '("zoom_wide", &mut cam.zoom_wide, 0.05, 2.0)') }, run, 'server')
+  expectRed('前端滑杆上限与后端不同（3.0 → 5.0）', { ...base, polishView: base.polishView.replace("key: 'zoom_close', label: '近景', min: 1.0, max: 3.0", "key: 'zoom_close', label: '近景', min: 1.0, max: 5.0") }, run, 'polishView')
   expectRed('默认值掉出夹取区间（近景默认改 0.5）', { ...base, rust: base.rust.replace('fn default_zoom_close() -> f64 {\n    1.5', 'fn default_zoom_close() -> f64 {\n    0.5').replace('fn default_zoom_mid() -> f64 {\n    1.3', 'fn default_zoom_mid() -> f64 {\n    0.5').replace('fn default_zoom_wide() -> f64 {\n    0.55', 'fn default_zoom_wide() -> f64 {\n    0.55'), html: base.html.replace("if(label==='近'){v=c.zoom_close;d=1.5;}", "if(label==='近'){v=c.zoom_close;d=0.5;}").replace("if(label==='远'){v=c.zoom_wide;d=0.55;}", "if(label==='远'){v=c.zoom_wide;d=0.55;}").replace("else{v=c.zoom_mid;d=1.3;}", "else{v=c.zoom_mid;d=0.5;}"), engine: base.engine.replace("pick(c.zoom_close, 1.5)", "pick(c.zoom_close, 0.5)").replace("pick(c.zoom_mid, 1.3)", "pick(c.zoom_mid, 0.5)"), dhampir: base.dhampir.replace('const defaults = { 近: 1.5, 远: 0.55, 中: 1.3 }', 'const defaults = { 近: 0.5, 远: 0.55, 中: 0.5 }') }, run)
 
   if (bad > 0) {

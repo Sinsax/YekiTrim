@@ -159,6 +159,7 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
             &mut config.segments,
             |ev| matches!(ev, crate::project::Event::Sticker { .. }),
             sticker_budget,
+            &config.mute_ranges,
         );
         if removed_stickers > 0 {
             tracing::info!("  ⚠ sticker 超出限制({}): 删除 {} 个 (保留均匀分布)", sticker_budget, removed_stickers);
@@ -168,9 +169,28 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
             &mut config.segments,
             |ev| matches!(ev, crate::project::Event::Sfx { .. }),
             sfx_budget,
+            &config.mute_ranges,
         );
         if removed_sfx > 0 {
             tracing::info!("  ⚠ sfx 超出限制({}): 删除 {} 个 (保留均匀分布)", sfx_budget, removed_sfx);
+        }
+    }
+
+    // 屏蔽区间是**标记**、不是删除：这些事件一个都不动，但下面每一处「按可见内容算」的步骤
+    // （预算 / 落点 / 元素对齐 / 音效规则 / 文字排版）都要**跳过**它们 —— 否则会出现两种症状：
+    // ① 一条看不见的贴纸挤掉可见区里的名额；② 一条看不见的 sfx 因为「字幕里找不到依据」被删掉
+    // （字幕已经按屏蔽过滤过），撤销屏蔽之后就再也回不来了。
+    {
+        let muted = config
+            .segments
+            .iter()
+            .flat_map(|s| s.events.iter())
+            .filter(|e| crate::project::event_starts_muted(&config.mute_ranges, e))
+            .count();
+        if muted > 0 {
+            tracing::info!(
+                "  · 屏蔽区间内事件 {muted} 条：不参与预算/落点/音效规则（只标记，不删除）"
+            );
         }
     }
 
@@ -287,6 +307,24 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
         }
     }
 
+    // Step 1d2b: 文字元素**候补**守卫（2026-10-19 用户口径）。
+    //
+    // 用户对文字效果的定位是**候补**：它突出、指向性强（观众一定会读那句话），
+    // 滥用适得其反 —— 只有「没有更合适的贴纸/特效」时才拿它换一种表达。
+    // 所以这里只做两条**确定性**兜底（LLM 在段窗口里数不出全段有几张贴纸）：
+    // ① 与贴纸**同一时刻** ⇒ 贴纸优先、删文字；② 同一段最多留一条。
+    // 与 `llm/mod.rs` Step 4b 成对：只改一处的话，编辑器里看到的与出片时的不是同一份。
+    // ⚠️ 这一步只是**先删一轮**（省得 Step 1d3 给注定要删的文字排版）；
+    //    贴纸窗口在 2b1 才被吸到字幕上 ⇒ 那边对齐完还会再兜一次（幂等）。
+    {
+        let dropped = cap_text_elements(&mut config.segments, &config.mute_ranges);
+        if dropped > 0 {
+            tracing::info!(
+                "  ✂ 文字元素超出候补配额/与贴纸冲突：删 {dropped} 条（文字只当候补，贴纸优先）"
+            );
+        }
+    }
+
     // Step 1d3: 文字元素排版（§5 E3）—— **只排版、不定落点**。
     //
     // ⚠️ **这一步存在的理由**：在它之前，落点求解器只会算**固定 280px 的贴纸盒**，
@@ -307,8 +345,13 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
             let v = crate::process::placement::parse_px(&config.style.subtitle.stroke);
             if v.is_finite() && v > 0.0 { v } else { 12.0 }
         };
-        let laid_out =
-            layout_text_elements(&mut config.segments, cw as f64, ch as f64, el_stroke_px);
+        let laid_out = layout_text_elements(
+            &mut config.segments,
+            cw as f64,
+            ch as f64,
+            el_stroke_px,
+            &config.mute_ranges,
+        );
         if laid_out > 0 {
             tracing::info!("  · 文字元素排版：已排 {laid_out} 条（§5 E3）");
         }
@@ -544,9 +587,15 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
     // 头尾吸到它反应的那句话上。**必须排在 2b（落点）之前**：落点是按贴纸的时间窗口
     // 算相机/字幕/其他贴纸障碍的，时间挪了就得重算。
     {
-        let n = align_stickers_to_subtitles(&mut config.segments, &subtitles);
+        let n = align_stickers_to_subtitles(&mut config.segments, &subtitles, &config.mute_ranges);
         if n > 0 {
             tracing::info!("  · 贴纸已对齐最近字幕 {} 条", n);
+        }
+        // 贴纸窗口刚刚变了 ⇒ 文字的互斥判据要按**最新**那份重算（1d2b 那一遍已经过时）。
+        // 幂等：只删文字，不碰贴纸/运镜。
+        let dropped = cap_text_elements(&mut config.segments, &config.mute_ranges);
+        if dropped > 0 {
+            tracing::info!("  ✂ 对齐后重算文字互斥：删 {dropped} 条（贴纸优先）");
         }
     }
 
@@ -585,6 +634,10 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
             for (idx, event) in seg.events.iter_mut().enumerate() {
                 // ⚠️ **必须在解构之前取**：解构会把 `event` 可变借出去（E0502）。
                 let manual = event.manual_pos().map(str::to_owned);
+                // 屏蔽区间里看不见 —— 不落点、也不进 `placed`（否则会拿一个空气盒子挡后面的贴纸）
+                if crate::project::event_starts_muted(&config.mute_ranges, event) {
+                    continue;
+                }
                 let (x, y, time, end) = match event {
                     crate::project::Event::Sticker { x, y, time, end, .. } => {
                         (x, y, *time, end.unwrap_or(*time))
@@ -692,6 +745,10 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
                 let end = event.end_or_default().unwrap_or(time);
                 // ⚠️ **手动落点也必须在解构之前取**（同一条 E0502 理由）。
                 let manual = event.manual_pos().map(str::to_owned);
+                // 屏蔽区间里看不见 —— 不落点（与贴纸同一条口径）
+                if crate::project::event_starts_muted(&config.mute_ranges, event) {
+                    continue;
+                }
                 let crate::project::Event::Element { kind, text, style, pos, x, y, .. } = event
                 else {
                     continue;
@@ -768,6 +825,10 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
                 if event.is_time_manual() {
                     continue;
                 }
+                // 屏蔽区间里看不见 —— 不延长（延长只会让它跨进可见区，撤销屏蔽后还变成另一条）
+                if crate::project::event_starts_muted(&config.mute_ranges, event) {
+                    continue;
+                }
                 let et = event.get_time();
                 let end = match event {
                     crate::project::Event::Sticker { end, .. } => *end,
@@ -804,6 +865,13 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
         for seg in &mut config.segments {
             let mut kept: Vec<crate::project::Event> = Vec::with_capacity(seg.events.len());
             for mut event in seg.events.drain(..) {
+                // **屏蔽区间里的声音原样保留**（2026-10-19）：下面这套规则是按**字幕上下文**
+                // 判定的，而字幕已经按屏蔽过滤过 ⇒ 不加这道闸，屏蔽段里一条有依据的 sfx
+                // 会因为「字幕里找不到关键词」被当成垃圾删掉（撤销屏蔽后也回不来了）。
+                if crate::project::event_starts_muted(&config.mute_ranges, &event) {
+                    kept.push(event);
+                    continue;
+                }
                 let has_sfx_slot = match &event {
                     crate::project::Event::Sfx { .. }
                     | crate::project::Event::Sticker { .. }
@@ -970,6 +1038,7 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
             &mut config.segments,
             &mut config.edl.clips,
             total_duration,
+            &config.mute_ranges,
         );
         if materialized.changed() {
             tracing::info!(
@@ -1878,6 +1947,7 @@ fn layout_text_elements(
     frame_h: f64,
     // **字幕那份描边宽度**（文档像素）—— 文字元素与字幕用同一个值，见下面写回处那条注释。
     stroke_px: f64,
+    mute_ranges: &[crate::project::MuteRange],
 ) -> usize {
     use crate::process::placement::{ElementColor, Frame, TextAnchor, TextLayout, TextStyle};
 
@@ -1885,6 +1955,10 @@ fn layout_text_elements(
     let mut done = 0usize;
     for seg in segments.iter_mut() {
         for ev in seg.events.iter_mut() {
+            // 屏蔽区间里看不见 —— 不排版（省一次几何求解，也不改它的 x/y）
+            if crate::project::event_starts_muted(mute_ranges, ev) {
+                continue;
+            }
             let crate::project::Event::Element { kind, text, style, pos, x, y, source, color, .. } = ev else {
                 continue;
             };
@@ -2083,8 +2157,13 @@ pub fn cap_events(
     segments: &mut [crate::project::Segment],
     is_target: impl Fn(&crate::project::Event) -> bool,
     budget: usize,
+    mute_ranges: &[crate::project::MuteRange],
 ) -> usize {
-    let is_target = |ev: &crate::project::Event| is_target(ev) && !ev.is_time_manual();
+    // **屏蔽区间里的事件不占额度**（2026-10-19）：那一段在成片里不存在，它既不该挤掉
+    // 可见区里的名额，也不该被这条守卫删掉（屏蔽只做标记 —— 撤销屏蔽后原样还在）。
+    let is_target = |ev: &crate::project::Event| {
+        is_target(ev) && !ev.is_time_manual() && !crate::project::event_starts_muted(mute_ranges, ev)
+    };
     let mut targets: Vec<(usize, usize)> = vec![];
     for (si, seg) in segments.iter().enumerate() {
         for (ei, ev) in seg.events.iter().enumerate() {
@@ -2188,7 +2267,7 @@ y = "10%"
             }],
         }];
         // ⚠️ 第 4 个参数 = **字幕那份描边宽度**（2026-10-18 起文字元素与字幕同宽）。
-        assert_eq!(layout_text_elements(&mut segs, 1920.0, 1080.0, 12.0), 1);
+        assert_eq!(layout_text_elements(&mut segs, 1920.0, 1080.0, 12.0, &[]), 1);
 
         let Event::Element { source, .. } = &segs[0].events[0] else {
             panic!("还是那条 element");
@@ -2261,7 +2340,7 @@ y = "10%"
         }
         let run = |color: Option<&str>| {
             let mut segs = seg_with(color);
-            assert_eq!(layout_text_elements(&mut segs, 1920.0, 1080.0, 12.0), 1);
+            assert_eq!(layout_text_elements(&mut segs, 1920.0, 1080.0, 12.0, &[]), 1);
             let Event::Element { source, .. } = &segs[0].events[0] else {
                 panic!("还是那条 element");
             };
@@ -2382,7 +2461,7 @@ y = "10%"
                 manual_pos: None,
             }],
         }];
-        assert_eq!(layout_text_elements(&mut segs, 1920.0, 1080.0, 12.0), 1);
+        assert_eq!(layout_text_elements(&mut segs, 1920.0, 1080.0, 12.0, &[]), 1);
         let Event::Element { source, .. } = &segs[0].events[0] else {
             panic!("还是那条 element");
         };
@@ -3055,7 +3134,7 @@ y = "10%"
     fn cap_events_keeps_evenly_spaced() {
         let events: Vec<Event> = (0..9).map(|_| sfx_ev()).collect();
         let mut segments = vec![seg_with(events)];
-        let removed = cap_events(&mut segments, |e| matches!(e, Event::Sfx { .. }), 4);
+        let removed = cap_events(&mut segments, |e| matches!(e, Event::Sfx { .. }), 4, &[]);
         assert_eq!(removed, 5);
         assert_eq!(segments[0].events.len(), 4);
         // 均匀: 首尾保留
@@ -3063,7 +3142,7 @@ y = "10%"
         assert!(matches!(segments[0].events[3], Event::Sfx { .. }));
         // 非目标事件不受影响
         let mut segments = vec![seg_with(vec![sticker(), camera(), sfx_ev()])];
-        let removed = cap_events(&mut segments, |e| matches!(e, Event::Sfx { .. }), 0);
+        let removed = cap_events(&mut segments, |e| matches!(e, Event::Sfx { .. }), 0, &[]);
         assert_eq!(removed, 1);
         assert_eq!(segments[0].events.len(), 2);
         assert!(matches!(segments[0].events[0], Event::Sticker { .. }));
@@ -3072,12 +3151,38 @@ y = "10%"
     #[test]
     fn cap_events_noop_when_within_budget() {
         let mut segments = vec![seg_with(vec![sticker(), camera()])];
-        let removed = cap_events(&mut segments, |e| matches!(e, Event::Sticker { .. }), 5);
+        let removed = cap_events(&mut segments, |e| matches!(e, Event::Sticker { .. }), 5, &[]);
         assert_eq!(removed, 0);
         assert_eq!(segments[0].events.len(), 2);
     }
 
     /// 手工放的事件（`manual`）**永远不被抽稀删掉**，只有 LLM 生成的那些参与均匀采样。    /// 反例（修之前）：新建一个贴纸 → 自动后处理跑一遍 → 中间那个被采样漏掉 → "我加的东西自己没了"。
+    /// 屏蔽区间里的音效**不参与抽稀、也不被删**（2026-10-19）：额度只按**看得见**的算，
+    /// 屏蔽段的音效留到撤销屏蔽之后（屏蔽只做标记，不许删事件）。
+    #[test]
+    fn cap_events_ignores_muted_events() {
+        let sfx_at = |t: f64| {
+            let mut ev = sfx_ev();
+            if let Event::Sfx { time, end, .. } = &mut ev {
+                *time = t;
+                *end = Some(t + 1.0);
+            }
+            ev
+        };
+        let mut segments = vec![seg_with(vec![sfx_at(2.0), sfx_at(10.0), sfx_at(20.0)])];
+        let mutes = [MuteRange { start: 0.0, end: 5.0 }];
+        // 预算 0：可见的两条全删，屏蔽区那条**留着**
+        assert_eq!(cap_events(&mut segments, |e| matches!(e, Event::Sfx { .. }), 0, &mutes), 2);
+        let left: Vec<f64> = segments[0]
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                Event::Sfx { time, .. } => Some(*time),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(left, vec![2.0], "屏蔽段里的音效不许被抽稀吃掉");
+    }
     #[test]
     fn cap_events_never_removes_manual_events() {
         let manual_sticker = |t: f64| {
@@ -3091,7 +3196,7 @@ y = "10%"
         // 9 个手工贴纸 + 预算 2：一个都不能删（预算只管非手工的）
         let events: Vec<Event> = (0..9).map(|i| manual_sticker(i as f64)).collect();
         let mut segments = vec![seg_with(events)];
-        let removed = cap_events(&mut segments, |e| matches!(e, Event::Sticker { .. }), 2);
+        let removed = cap_events(&mut segments, |e| matches!(e, Event::Sticker { .. }), 2, &[]);
         assert_eq!(removed, 0);
         assert_eq!(segments[0].events.len(), 9, "手工事件必须原样保留");
 
@@ -3100,7 +3205,7 @@ y = "10%"
         events.extend((0..6).map(|_| sticker())); // 6 个 LLM 贴纸
         events.push(manual_sticker(9.0));
         let mut segments = vec![seg_with(events)];
-        let removed = cap_events(&mut segments, |e| matches!(e, Event::Sticker { .. }), 2);
+        let removed = cap_events(&mut segments, |e| matches!(e, Event::Sticker { .. }), 2, &[]);
         assert_eq!(removed, 4, "6 个自动贴纸抽到 2 个");
         assert_eq!(segments[0].events.len(), 5, "3 个手工 + 2 个自动");
         let manual_left = segments[0]
@@ -4108,7 +4213,7 @@ mod diagnose_pip_and_silence {
                 _ => None,
             })
             .collect();
-        let stickers = super::align_stickers_to_subtitles(&mut config.segments, &subtitles);
+        let stickers = super::align_stickers_to_subtitles(&mut config.segments, &subtitles, &config.mute_ranges);
         println!("\n[贴纸] 共 {} 条 · 对齐 {stickers} 条（离最近字幕 > {:.1}s 的不动）", before_stickers.len(), super::STICKER_SNAP_MAX_SECS);
         for (i, (t0, t1, name)) in before_stickers.iter().enumerate() {
             let after = config

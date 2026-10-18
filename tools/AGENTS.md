@@ -11,7 +11,11 @@
 
 - **不是产品代码**：`yekitrim` 二进制不 import 它、编译不依赖它；产品代码也不许 import 它。
 - **只读本仓的工程**（`polish.toml` / `clip.srt` / `clip.dm.srt`）：**不回写 `polish.toml`**；
-  旁写文件（`dhampir-subtitle.srt` / `dhampir-danmaku.ass`）放在**工程文件旁边**。
+  旁写文件（`dhampir-subtitle.srt` / `dhampir-danmaku.ass`）放在**工程文件旁边**；
+  ⚠️ **文字元素的 ASS 必须落 `<工程文件名去扩展名>.assets/` 子目录**（2026-10-18，用户报
+  「渲染导出时中间文件过多」：它们的文件名带落点/动效/颜色 ⇒ 写回片段根目录就**每改一次多一个**，
+  实测一个片段 42 个）。目录推导与 `crates/yekitrim-polish/src/render/dhampir.rs::side_assets_dir`
+  逐字同一条，收尾由宿主整目录删。
 - **不探测媒体**：`frame_count` 留空，交给底座自己处理（⚠️ 2026-10-01 更正：这句原写"由底座的
   `dhampir probe --write` 回填"，但**底座 CLI 里没有 `probe --write` 这个用法**（`--write` 只被
   `edit/undo/redo/clip/sequence/batch/import` 认）—— 实测 `frame`/`render` 在 `frame_count: null`

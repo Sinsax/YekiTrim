@@ -588,7 +588,8 @@ function fnBodyOf(src, name) {
   // 这条是本仓最贵的一次"隔着边界的名字对不上"：
   //
   //   服务端原先只读两个**写死的**名字（`dhampir-subtitle.srt` / `dhampir-danmaku.ass`），
-  //   在 `--out` 旁边找。而**文字元素轨的 ASS 写在片段根目录**
+  //   在 `--out` 旁边找。而**文字元素轨的 ASS 写在另一个目录**
+  //   （当时是片段根目录；2026-10-18 起改成 `--out` 同目录的 `<工程文件名>.assets/`）
   //   （`dhampir-text_<样式>_<档>[_<动效>][_<颜色>].ass`）——
   //   一条都没读过 ⇒ `dhampir_project_set_subtitles` 从没被调用
   //   ⇒ **wasm 预览里文字元素一个字都不显示**。
@@ -620,7 +621,7 @@ function fnBodyOf(src, name) {
   check(
     /get\("assets"\)/.test(sideSubsBody) && /== Some\("subtitle"\)/.test(sideSubsBody),
     '读旁写字幕要**遍历 doc 的 assets 并只认 kind == "subtitle"**（而不是一个写死的名字列表）',
-    '按写死的名字读 = 文字元素轨（写在片段根目录、名字带档位与颜色）永远读不到：' +
+    '按写死的名字读 = 文字元素轨（名字带档位与颜色）永远读不到：' +
       '预览里那一类文字不显示，而成片正常、报告全绿',
   );
   check(

@@ -11,6 +11,9 @@ use crate::project::Event;
 pub struct AssetDownloader {
     project_path: PathBuf,
     client: reqwest::Client,
+    /// 仅测试用：把贴纸**库**根换成临时目录（见 `sticker_lib_root`）。
+    #[cfg(test)]
+    test_lib_root: Option<PathBuf>,
 }
 
 /// 下载报告
@@ -40,7 +43,19 @@ impl AssetDownloader {
         Self {
             project_path: project_path.to_path_buf(),
             client,
+            #[cfg(test)]
+            test_lib_root: None,
         }
+    }
+
+    /// 贴纸**库**根目录。生产恒为程序目录下那一份；测试可注入一个临时根，
+    /// 免得并发跑的用例互相删对方的包（各用例共享同一个全局库目录）。
+    fn sticker_lib_root(&self) -> PathBuf {
+        #[cfg(test)]
+        if let Some(r) = &self.test_lib_root {
+            return r.clone();
+        }
+        yekitrim_core::owner::sticker_dir_readable(yekitrim_core::owner::Owner::from_env())
     }
 
     /// 统一 sticker 下载入口: 根据 source 类型分发
@@ -55,22 +70,29 @@ impl AssetDownloader {
 
         // 按事件精确下载，与 process Step 2 的 name 解析保持同一来源分配
         for (seg_idx, event_idx, source) in assignments {
+            // ⚠️ **两个载体都要认**（`process/AGENTS.md`「贴纸有两个载体」）：编辑器「贴纸轨」建的
+            // 贴纸是 `Element{kind:"sticker"}` —— 关键词在 `text`、`name` 也在它自己身上。
+            // 只认 `Event::Sticker` 的话手动贴纸**永远拿不到文件**（`assignments` 里明明有它），
+            // 出片时转译器找不到图就静默 drop。
             if let Some(seg) = segments.get(*seg_idx)
                 && let Some(event) = seg.events.get(*event_idx)
-                && let Event::Sticker { keyword, name, .. } = event
+                && let Some(keyword) = event.sticker_keyword()
                 && !keyword.trim().is_empty()
             {
+                let name = event.sticker_name();
                 match source.as_str() {
                             "emoji" => {
                                 // 优先下载 process 已解析的具体 codepoint (去重可能选了非首个),
                                 // 无则按 keyword 搜索首个
-                                let codepoints = match name.as_deref() {
-                                    Some(n) if !n.is_empty() && n.chars().all(|c| c.is_ascii_hexdigit()) => vec![n.to_string()],
+                                // ⚠️ 多码点序列（`203c_fe0f`）带 `_`，不是纯十六进制 —— 判据要放它过去，
+                                // 否则 39% 的表情会退回"按 keyword 搜首个"、拿到另一个表情。
+                                let codepoints = match name {
+                                    Some(n) if !n.is_empty() && n.chars().all(|c| c.is_ascii_hexdigit() || c == '_') => vec![n.to_string()],
                                     _ => vec![],
                                 };
                                 let (new_files, existing) = if codepoints.is_empty() {
                                     super::emoji_search::download_images(
-                                        &[keyword.clone()], &sticker_dir, &self.client, 1,
+                                        &[keyword.to_string()], &sticker_dir, &self.client, 1,
                                     ).await
                                 } else {
                                     super::emoji_search::download_images_by_codepoints(
@@ -90,7 +112,7 @@ impl AssetDownloader {
                             // 非 emoji/irasu 的来源 = 贴纸包名（如 ysyk），只复制该事件实际选中的文件
                             _ => {
                                 let copied = self.copy_sticker_from_local(
-                                    source, name.as_deref(), &sticker_dir, &mut report,
+                                    source, name, &sticker_dir, &mut report,
                                 );
                                 report.sticker_downloaded += copied;
                             }
@@ -212,7 +234,7 @@ impl AssetDownloader {
             ));
             return 0;
         };
-        let sticker_dir = yekitrim_core::owner::sticker_dir_readable(yekitrim_core::owner::Owner::from_env());
+        let sticker_dir = self.sticker_lib_root();
         if !sticker_dir.exists() {
             report.errors.push(format!(
                 "贴纸「{source}」: 程序目录贴纸库不存在（{}），复制不进项目",
@@ -367,23 +389,52 @@ impl AssetDownloader {
     }
 
     /// 生成资产路径映射 (注入到 config JSON)
-    /// 扫描 assets/stickers/ 目录, 返回 stem → URL 映射
+    ///
+    /// 扫描 `assets/stickers/`（**含子目录**），返回 stem → URL 映射。
+    ///
+    /// ⚠️⚠️ 与 `render::server::build_sticker_map` **必须同口径**（2026-10-14 一起修）：
+    /// 贴纸库实测有**扁平**与**带版本子目录**（`ysyk_0.9.0/*.gif`）两种布局。
+    /// 老实现只扫顶层、且不筛扩展名 ⇒ 子目录那个工程只算出一个**目录**当成图片的键
+    /// （`"ysyk_0.9" -> "/assets/stickers/ysyk_0.9.0"`），210 张真图一张都没进映射
+    /// ⇒ **预览里贴纸一张都不出现且不报错**。
+    ///
+    /// ⚠️ 只收图片走 `is_image_file_name`（**唯一扩展名判据**，别再抄一份清单）；
+    /// URL 必须是**含子目录的相对路径**，否则 ServeDir 按真实路径找不到。
     pub fn asset_map(&self) -> serde_json::Value {
+        use super::sticker_index::is_image_file_name;
         let sticker_dir = self.project_path.join("assets").join("stickers");
         let mut sticker_map = serde_json::Map::new();
-        if sticker_dir.exists()
-            && let Ok(entries) = std::fs::read_dir(&sticker_dir) {
-                for entry in entries.flatten() {
-                    if let Some(name) = entry.file_name().to_str() {
-                        let stem = Path::new(name).file_stem()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or(name);
-                        sticker_map.insert(stem.to_string(), serde_json::Value::String(
-                            format!("/assets/stickers/{}", name)
-                        ));
-                    }
+        let mut stack = vec![sticker_dir.clone()];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
                 }
+                let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+                    continue;
+                };
+                if !is_image_file_name(&name) {
+                    continue;
+                }
+                let Some(stem) = Path::new(&name).file_stem().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                let rel = path
+                    .strip_prefix(&sticker_dir)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                sticker_map.insert(
+                    stem.to_string(),
+                    serde_json::Value::String(format!("/assets/stickers/{rel}")),
+                );
             }
+        }
         serde_json::json!({
             "sticker_map": sticker_map,
         })
@@ -568,5 +619,109 @@ mod video_asset_tests {
 
         // ⑥ 空白的 id 不当成素材（否则会去库里找一个叫 "" 的文件）
         assert!(copy(&["   "]).errors.is_empty());
+    }
+
+    /// **两个载体都要把贴纸文件复制进项目**（2026-10-15 用户报「贴纸无法加入」）。
+    ///
+    /// 钉的是「贴纸轨加的贴纸在成片里凭空消失」那条链的**第一环**：
+    /// `download_stickers` 只认 `Event::Sticker` 时，编辑器产的
+    /// `Element{kind:"sticker"}` **一个文件都不会落进 `<项目>/assets/stickers/`**，
+    /// 于是转译器找不到图、成片里静默没有 —— 而 DOM 预览走 engine.js 另一条路
+    /// **照常显示**，所以两边各自看都正常。
+    ///
+    /// ⚠️ 判据是「文件真的出现在项目目录里」，不是「函数被调到了」。
+    #[tokio::test]
+    async fn element_sticker_gets_its_file_copied_into_the_project() {
+        use crate::project::{Event, ProjectFile, Segment};
+
+        // ⚠️ 路径**不带 pid**：带 pid 的话每次跑都是新目录，`remove_dir_all` 清不掉上一次那份，
+        // 而 `copy_sticker_from_local` 是幂等的（目的文件已存在就不复制、计数 0）⇒ 断言假红。
+        let tmp = std::env::temp_dir().join("vt-sticker-copy-dual-carrier");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("assets/stickers")).unwrap();
+
+        // 假包：<程序目录>/resources/stickers/<包>/x.gif（1x1 透明 GIF，只为让 is_image_path 认它）
+        // ⚠️ **库根用临时目录，不碰进程级共享的那一份**：贴纸库是全局的，
+        // 而 cargo 默认并发跑用例 —— 共享它会让"单独重跑绿、全量跑红"这种假红随机出现（踩过）。
+        let pkg_root = tmp.join("libroot");
+        let pkg_name = "dual_carrier_pkg";
+        let pkg = pkg_root.join(pkg_name);
+        let _ = std::fs::remove_dir_all(&pkg);
+        std::fs::create_dir_all(&pkg).unwrap();
+        const GIF: &[u8] = &[
+            0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, 0x80, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0x21, 0xf9, 0x04, 0x01, 0x00, 0x00, 0x00, 0x00,
+            0x2c, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x02, 0x02, 0x44, 0x01,
+            0x00, 0x3b,
+        ];
+        std::fs::write(pkg.join("x.gif"), GIF).unwrap();
+        // ⚠️ 先自证桩已就位：库扫不到它的话，这条测的就不是"载体认不认"，而是"库在不在"，
+        // 失败信息会指向完全错误的方向（踩过）。
+        let scanned = crate::assets::sticker_index::scan_packages(&pkg_root);
+        assert!(
+            scanned.iter().any(|p| p.name == pkg_name && !p.files.is_empty()),
+            "桩包没被库扫到（root={}）—— 这条测的前提就不成立",
+            pkg_root.display()
+        );
+
+        let mut cfg = ProjectFile::example();
+        cfg.segments = vec![Segment {
+            role: String::new(),
+            start: 0.0,
+            end: 10.0,
+            fx: "low".into(),
+            note: String::new(),
+            events: vec![Event::Element {
+                time: 1.0,
+                end: Some(3.0),
+                kind: "sticker".into(),
+                // ⚠️ 关键词在 text（Sticker 那个载体叫 keyword）
+                text: "生气".into(),
+                style: None,
+                anim: None,
+                style_anim: None,
+                effect_anim: None,
+                transition_anim: None,
+                layout_angle_deg: None,
+                pos: None,
+                color: None,
+                sticker_tag: Some("emotion".into()),
+                x: None,
+                y: None,
+                manual: true,
+                name: Some("x".into()),
+                source: Some(pkg_name.into()),
+                manual_pos: None,
+            }],
+            extra: Default::default(),
+        }];
+
+        let mut dl = AssetDownloader::new(&tmp);
+        dl.test_lib_root = Some(pkg_root.clone());
+        // assignments 的形状 = download_keyword_assets 产出的那个：(段下标, 事件下标, source)
+        let report = dl
+            .download_stickers(&cfg.segments, &[(0, 0, pkg_name.to_string())])
+            .await;
+
+        let landed = tmp.join("assets/stickers/x.gif");
+        let names: Vec<String> = crate::assets::sticker_index::scan_packages(&pkg_root)
+            .iter()
+            .map(|p| format!("{}[{}]{:?}", p.name, p.files.len(), p.files))
+            .collect();
+        let dest_listing: Vec<String> = std::fs::read_dir(tmp.join("assets/stickers"))
+            .map(|rd| rd.flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect())
+            .unwrap_or_default();
+        assert!(
+            landed.exists(),
+            "贴纸轨的贴纸必须被复制进项目（errors={:?}；库={:?}；dest={:?}；downloaded={}）",
+            report.errors,
+            names,
+            dest_listing,
+            report.sticker_downloaded,
+        );
+        assert_eq!(report.sticker_downloaded, 1, "应当记一次新复制");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+        // ⚠️ **不删库里的桩包**：它是共享资源，删掉会让"单独重跑这一条"失去前提（踩过）。
     }
 }

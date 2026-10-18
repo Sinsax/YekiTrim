@@ -114,10 +114,16 @@ check(
 // 症状是"三行大字按一个 280 方块去避让 ⇒ 压住主播脸"，而且**不报错**。
 // 实测：这个变异在我的 Rust 用例下**一条都没红**，所以必须在这里拦。
 const modSrc = fs.readFileSync('crates/yekitrim-polish/src/process/mod.rs', 'utf8')
+// ⚠️ 2026-10-15：调用点改成了 pick_box_position_pref（多一个"纵向偏好"实参 —— 不传 pos
+//    的话三档对成片零影响，见 mod.rs 那段注释）。写死旧签名会让这条**永久变红**，
+//    而一条不断红的判据等于没有判据（它会把真正报警的那几条一起埋掉）。
+//    ⇒ 判据放宽成"两种都认"，仍然钉住的本意：**走动态盒求解器、不是贴纸那条**。
+const dynBoxCall = modSrc.includes('pick_box_position_pref(') || modSrc.includes('pick_box_position(')
+const passesBox = /pick_box_position(_pref)?\(\s*&blocked,\s*&obstacles\.allow,\s*seed,\s*f,\s*&b/.test(modSrc)
 check(
-  '文字落点走 pick_box_position（动态盒），不是 pick_sticker_position',
-  modSrc.includes('pick_box_position(&blocked, &obstacles.allow, seed, f, &b)'),
-  'mod.rs 里找不到 `pick_box_position(...&b)` —— 文字可能退回成"按 280 固定盒避让"',
+  '文字落点走 pick_box_position(_pref)（动态盒），不是 pick_sticker_position',
+  dynBoxCall && passesBox,
+  'mod.rs 里找不到去重后的动态盒调用（pick_box_position[_pref](&blocked, &obstacles.allow, seed, f, &b)）—— 文字可能退回成固定 280 盒避让',
 )
 check(
   '文字落点把排版出来的盒子传进去了',
@@ -125,6 +131,113 @@ check(
   '找不到 `TextLayout::solve(...)` 后面紧跟 `box_size()` —— 算出来的盒子没进求解器',
 )
 
+// ⑥c **卡片底衬的色值两处同源**（2026-10-16）：`chapter`/`comment` 的底衬由 `process` 写回
+//     `source` 第 7 段（backdrop），**成片那条腿**（转译器）与 **DOM 预览**（engine.js）各读一次；
+//     两处字面量不一致 = 「预览有底衬、成片没有」（或反过来），而两边各自看都正常。
+const engineSrc = fs.readFileSync('webui/src/polish/engine.js', 'utf8')
+const plateInTranslator = /plate_color:\s*\[0,\s*0,\s*0,\s*140\]/.test(s)
+const plateInEngine = /PLATE_CARD_COLOR\s*=\s*\[0,\s*0,\s*0,\s*140\]/.test(engineSrc)
+check(
+  '卡片底衬的色值两处同值（黑 55%）',
+  plateInTranslator && plateInEngine,
+  '转译器与 engine.js 里的卡片底衬色必须是同一对值（plate_color: [0,0,0,140]）—— ' +
+    '只改一处 = 预览与成片分叉，而两边各自看都正常',
+)
+
+// ⑥d **字幕样式的两处默认值**（2026-10-16）：工程**没写**这两个键时，
+//     Rust（`default_sub_stroke()` / `default_sub_outer_stroke()`）与转译器的兜底
+//     （`parseStroke(subStyle.stroke, 12, ...)` / `DEFAULT_OUTER_STROKE`）各给一份 ——
+//     两处不一致的症状是「没写这个键的工程：预览一套、成片另一套」，而各自看都正常。
+const subStyleSrc = fs.readFileSync('crates/yekitrim-render-core/src/types.rs', 'utf8')
+const rustStroke = /fn default_sub_stroke\(\) -> String \{\s*"([^"]+)"/.exec(subStyleSrc)
+const rustOuter = /fn default_sub_outer_stroke\(\) -> String \{\s*"([^"]+)"/.exec(subStyleSrc)
+check(
+  '字幕描边默认值两处同源（12px #403c3b）',
+  !!rustStroke && rustStroke[1] === '12px #403c3b' && /parseStroke\(subStyle\.stroke, 12, '#403c3b'\)/.test(s),
+  'Rust default_sub_stroke() 与转译器 parseStroke 的兜底必须同值（实得 Rust ' + (rustStroke && rustStroke[1]) + '）',
+)
+check(
+  '外圈描边默认值两处同源（auto #ffffff = 跟随第一层）',
+  !!rustOuter && rustOuter[1] === 'auto #ffffff' && /DEFAULT_OUTER_STROKE = 'auto #ffffff'/.test(s),
+  'Rust default_sub_outer_stroke() 与转译器 DEFAULT_OUTER_STROKE 必须同值（实得 Rust ' + (rustOuter && rustOuter[1]) + '）',
+)
+// ⑥e **弹幕的两个默认值两处同源**（2026-10-16）：工程**没写** `font_size` / `stroke` 时，
+//     **成片那条腿**（转译器 `cuesToAss` 的 `fontSize = 42` / `dmSizePx` 的 `?? 42`）与
+//     **DOM 预览**（`engine.js` 的 `fontSize || 42` / `dmFontSize` 的 `|| 42`）各给一份 ——
+//     漂了的症状是"预览与成片的弹幕字号/描边不一样"，而两边各自看都正常（老工程最容易命中：
+//     它们大多没写这两个键）。
+const engineSrcDm = fs.readFileSync('webui/src/polish/engine.js', 'utf8')
+const dm42 = (engineSrcDm.match(/\|\| 42\b/g) || []).length
+check(
+  '弹幕字号默认值两处同源（42）',
+  /fontSize = 42/.test(s) && /dmSizePx[^\n]*: 42\b/.test(s) && dm42 >= 2,
+  '转译器（cuesToAss 默认参数 42 / dmSizePx 的 ?? 42）与 engine.js（|| 42 ×2 处）必须同值：' +
+    '实得 engine 侧 ' + dm42 + ' 处 42',
+)
+// ⑥f **粗体字面的命名规则两处同源**（2026-10-16）：Rust `find_font` 在库里按
+//     `format!("{family} Bold")` 找粗体那一支；前端（字体库的「无粗体」提示）必须用同一条后缀，
+//     两边不一致 = 界面与底座对"这支有没有粗体"的判断相反 —— 而两边各自看都正常。
+const dhampirSrc = fs.readFileSync('crates/yekitrim-polish/src/render/dhampir.rs', 'utf8')
+const fontJsSrc = fs.readFileSync('webui/src/polish/fonts.js', 'utf8')
+const rustBoldSuffix = dhampirSrc.indexOf(String.raw`{family} Bold`) >= 0
+const jsBoldSuffix = fontJsSrc.indexOf('${fam.toLowerCase()} bold') >= 0
+check(
+  '粗体字面的命名规则两处同源（族名 + " Bold"）',
+  rustBoldSuffix && jsBoldSuffix,
+  'Rust find_font 按 `<族名> Bold` 找粗体、前端 hasBoldFace 必须同后缀（实得 Rust ' +
+    rustBoldSuffix + ' / JS ' + jsBoldSuffix + '）',
+)
+// ⑥h 需要 `findFontInLibrary`（同一个文件里的邻居函数）—— 同样按括号配平扒出来，不抄第二份。
+const findInLibrary = (() => {
+  const s2 = fs.readFileSync('webui/src/polish/fonts.js', 'utf8')
+  const start2 = s2.indexOf('function findFontInLibrary')
+  if (start2 < 0) return null
+  let depth = 0
+  for (let i = s2.indexOf(String.fromCharCode(123), start2); i < s2.length; i += 1) {
+    if (s2[i] === String.fromCharCode(123)) depth += 1
+    else if (s2[i] === String.fromCharCode(125)) { depth -= 1; if (depth === 0) return new Function('return (' + s2.slice(start2, i + 1) + ')')() }
+  }
+  return null
+})()
+// ⑥h **换字体的族名换算两处同源**（2026-10-16，用户报「更改字体时没有正常切换字体」）：
+//     预览注册 FontFace / 底座 canvas / 出片用的都是转译产物里的 `font_family`
+//     （= 宿主的 id→族名映射算出来的**内部族名**），而 DOM 的 CSS 用的是 `[style.*].font`
+//     **原值**（往往是库 id）。两者在 id≠族名时（自带 `NotoSansSC-Regular` / 族名
+//     `Noto Sans SC` 就是）对不上 ⇒ 浏览器**静默回退系统字体** ⇒「换字体没反应」。
+//     ⚠️ 这里**跑真函数**：从 `fonts.js` 扒出 `fontFamilyFor` 喂一条合成清单。
+const fontSrc = fs.readFileSync('webui/src/polish/fonts.js', 'utf8')
+const fnStart = fontSrc.indexOf('function fontFamilyFor')
+let fnEnd = -1
+if (fnStart >= 0) {
+  let depth = 0
+  for (let i = fontSrc.indexOf(String.fromCharCode(123), fnStart); i < fontSrc.length; i += 1) {
+    if (fontSrc[i] === String.fromCharCode(123)) depth += 1
+    else if (fontSrc[i] === String.fromCharCode(125)) { depth -= 1; if (depth === 0) { fnEnd = i + 1; break } }
+  }
+}
+const familyFor = fnEnd > 0
+  ? new Function('findFontInLibrary', 'return (' + fontSrc.slice(fnStart, fnEnd) + ')')(findInLibrary)
+  : null
+check(
+  '换字体的族名换算：库内 id → 内部族名（DOM 与底座/成片同源）',
+  !!familyFor && familyFor([{ id: 'NotoSansSC-Regular', family: 'Noto Sans SC' }], 'NotoSansSC-Regular') === 'Noto Sans SC' &&
+    familyFor([{ id: 'NotoSansSC-Regular', family: 'Noto Sans SC' }], 'LXGW WenKai') === 'LXGW WenKai' &&
+    familyFor([{ id: 'A', family: 'B' }], '') === '',
+  'DOM 预览必须把 `[style.*].font`（库 id）换成内部族名，库外原样 —— 否则注册的 FontFace 与 CSS 对不上，' +
+    '浏览器静默回退系统字体（症状：换字体没反应），实得 ' + (familyFor ? familyFor([{ id: 'NotoSansSC-Regular', family: 'Noto Sans SC' }], 'NotoSansSC-Regular') : '<扒不到函数>'),
+)
+// ⑥g **白环厚度系数两处同源**（2026-10-16）：`auto` 那一档的「粗细跟随第一层」由一个系数决定 ——
+//     成片/底座预览走转译器的 `OUTER_RING_FOLLOW`，DOM 预览走 `PolishPreview.vue` 里那份镜像。
+//     漂了的症状是「预览白边比成片粗/细」，而两边各自看都正常（本仓的老形状）。
+const previewSrc = fs.readFileSync('webui/src/components/PolishPreview.vue', 'utf8')
+const translatorFollow = /export const OUTER_RING_FOLLOW = ([\d.]+)/.exec(s)
+const domFollow = /const OUTER_RING_FOLLOW = ([\d.]+)/.exec(previewSrc)
+check(
+  '白环厚度系数两处同源（OUTER_RING_FOLLOW）',
+  !!translatorFollow && !!domFollow && translatorFollow[1] === domFollow[1],
+  '转译器与 PolishPreview.vue 的 OUTER_RING_FOLLOW 必须同值（实得 转译器 ' +
+    (translatorFollow && translatorFollow[1]) + ' / DOM ' + (domFollow && domFollow[1]) + '）',
+)
 // ⑦ **字号真源只有一处：Rust 的 `ELEMENT_FONT_PX`**（2026-10-13，字号统一 80）。
 //
 // ⚠️ 这条补的是 ②「四档数值表只有一处」**管不到的那一半**：

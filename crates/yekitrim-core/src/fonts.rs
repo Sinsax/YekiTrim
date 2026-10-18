@@ -59,6 +59,39 @@ pub fn ensure_dir_for(owner: crate::owner::Owner) -> std::io::Result<PathBuf> {
     Ok(root)
 }
 
+/// **把"配置里那串值"解析成库里的条目**：先按 `id`，再按**内部族名**、最后按**显示名**
+/// （都忽略大小写；空串不算命中）。
+///
+/// # 为什么必须认族名（2026-10-16 用户报的「字体没应用 / 显示不在字体库」）
+///
+/// `[style.subtitle].font` 里那串值**有两种来源**：
+///   * **库 id**（`NotoSansSC-Regular`）—— 界面选出来的、老工程存的；
+///   * **族名**（`Noto Sans SC`）—— `default_font()` 写下的默认值（它要同时当系统字体栈的一项用）。
+///
+/// 只认 id 的症状有三个，**全都不报错**：
+///   ① 出片用**另一支字体**（`resolve_file_for` 落空 → 退到兜底栈里第一支能用的）；
+///   ② 预览的 `@font-face` 不注入（浏览器回退系统字体栈）；
+///   ③ 界面显示「Noto Sans SC（不在字体库）」，而它明明装在全局库的 `NotoSansSC-Regular/`。
+pub fn find_entry_roots(roots: &[PathBuf], value: &str) -> Option<FontEntry> {
+    let want = value.trim();
+    if want.is_empty() {
+        return None;
+    }
+    let all = scan_all_roots(roots);
+    all.iter()
+        .find(|e| e.id.eq_ignore_ascii_case(want))
+        .or_else(|| {
+            all.iter().find(|e| {
+                e.family_internal.eq_ignore_ascii_case(want) || e.family.eq_ignore_ascii_case(want)
+            })
+        })
+        .or_else(|| {
+            all.iter().find(|e| {
+                !e.display_name.trim().is_empty() && e.display_name.trim().eq_ignore_ascii_case(want)
+            })
+        })
+        .cloned()
+}
 /// **按归属**解析字体 id → 文件路径（`None` = 库里没有这一支）。
 ///
 /// ⚠️ **两层都搜**（用户库优先、全局补缺，2026-10-10）：自带字体装在 `global/`，
@@ -1203,12 +1236,24 @@ pub fn resolve_dir_file(root: &Path, id: &str) -> Option<PathBuf> {
 
 /// 两种布局都能解析（目录优先）。
 pub fn resolve_all(root: &Path, id: &str) -> Option<PathBuf> {
-    resolve_dir_file(root, id).or_else(|| resolve_file_at(root, id))
+    if let Some(hit) = resolve_dir_file(root, id).or_else(|| resolve_file_at(root, id)) {
+        return Some(hit);
+    }
+    // 同 [`resolve_all_roots`]：认族名/显示名（预览的 `/vt-fonts/<name>` 也走这条）
+    let canonical = find_entry_roots(std::slice::from_ref(&root.to_path_buf()), id)?.id;
+    resolve_dir_file(root, &canonical).or_else(|| resolve_file_at(root, &canonical))
 }
 
 /// 多根解析（`roots[0]` 优先）—— 用户库里有就用用户的，没有才去全局库找。
 pub fn resolve_all_roots(roots: &[PathBuf], id: &str) -> Option<PathBuf> {
-    roots.iter().find_map(|r| resolve_all(r, id))
+    if let Some(hit) = roots.iter().find_map(|r| resolve_all(r, id)) {
+        return Some(hit);
+    }
+    // ⚠️ **直查落空 ⇒ 再按族名/显示名认一遍**（见 [`find_entry_roots`]）：配置里那串值
+    //    可能不是 id 而是族名（`default_font()` 写的 `Noto Sans SC` 就是）。少了这一步，
+    //    出片会静默改用兜底栈里第一支能用的字体 —— 用户看到的正是「选的字没用上」。
+    let canonical = find_entry_roots(roots, id)?.id;
+    roots.iter().find_map(|r| resolve_all(r, &canonical))
 }
 
 /// 字体 id → **页面里该用的 CSS 字族名**（三处字体来源的唯一权威）。
@@ -1901,6 +1946,62 @@ mod tests_v2 {
         std::fs::write(root.join("flat.ttf"), b"x").unwrap();
         let flat = family_for_at(&root, "flat");
         assert_eq!(flat, "flat", "老布局没有元数据时回落 id");
+    }
+
+
+    /// ★ **族名 / 显示名也要能解析到同一支**（2026-10-16：用户报的「Noto Sans SC（不在字体库）」
+    /// 与「字体本身也应用错误」是同一条根因）。
+    ///
+    /// `[style.subtitle].font` 里那串值有两种来源：**库 id**（界面选的、老工程存的）与**族名**
+    /// （`default_font()` 写下的 `Noto Sans SC`）。只认 id ⇒ 出片静默改用兜底栈里第一支、
+    /// 预览不注入 `@font-face`、界面报「不在字体库」——**三条都不报错**，所以三条一起钉。
+    #[test]
+    fn resolves_by_id_family_and_display_name() {
+        let root = tmp("alias");
+        let slug = root.join("NotoSansSC-Regular");
+        std::fs::create_dir_all(&slug).unwrap();
+        std::fs::write(slug.join("font.ttf"), b"not-a-real-font").unwrap();
+        write_meta(
+            &slug,
+            &FontMeta {
+                id: "NotoSansSC-Regular".into(),
+                display_name: "Noto Sans SC".into(),
+                family: "Noto Sans SC".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let builtin_file = slug.join("font.ttf");
+        // ① 按 id（界面选的、老工程存的）
+        assert_eq!(resolve_all(&root, "NotoSansSC-Regular"), Some(builtin_file.clone()));
+        // ② 按**族名**（`default_font()` 写的就是它）+ 大小写不敏感
+        assert_eq!(resolve_all(&root, "Noto Sans SC"), Some(builtin_file.clone()));
+        assert_eq!(resolve_all(&root, "noto sans sc"), Some(builtin_file.clone()));
+        // ③ 按**显示名**（与族名不同值时也要认）
+        let other = root.join("lemi");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(other.join("font.ttf"), b"not-a-real-font").unwrap();
+        write_meta(
+            &other,
+            &FontMeta {
+                id: "lemi".into(),
+                display_name: "乐米波波体".into(),
+                family: "Lemi Font Internal".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(resolve_all(&root, "乐米波波体"), Some(other.join("font.ttf")));
+        // ④ **库外 ⇒ None（不猜）**：猜了会让老工程的系统族名被顶成库内某支
+        assert_eq!(resolve_all(&root, "LXGW WenKai"), None);
+        // ⑤ 条目级：值 → 规范 id；⑥ 多根版本（owner 那条路）同口径
+        assert_eq!(
+            find_entry_roots(std::slice::from_ref(&root), "noto sans sc")
+                .unwrap()
+                .id,
+            "NotoSansSC-Regular"
+        );
+        assert_eq!(resolve_all_roots(std::slice::from_ref(&root), "乐米波波体"), Some(other.join("font.ttf")));
     }
 
     /// 目录布局：扫得到、解析得到、display_name 与内部族名**分开存**

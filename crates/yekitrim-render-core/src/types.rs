@@ -550,6 +550,26 @@ impl Event {
         }
     }
 
+    /// 写入开始秒。⚠️ **凡是要改事件时间的后处理都走这里**，别在各处 `match` ——
+    /// 贴纸有两个载体（`Sticker` / `Element{kind:"sticker"}`），逐处匹配漏一个就是
+    /// "这一类事件的时间在界面上改了、后处理却不认"。
+    pub fn set_time(&mut self, value: f64) {
+        match self {
+            Event::Sticker { time, .. } => *time = value,
+            Event::Camera { time, .. } => *time = value,
+            Event::Shake { time, .. } => *time = value,
+            Event::Flash { time, .. } => *time = value,
+            Event::Blur { time, .. } => *time = value,
+            Event::Vignette { time, .. } => *time = value,
+            Event::HueShift { time, .. } => *time = value,
+            Event::Noise { time, .. } => *time = value,
+            Event::Pulse { time, .. } => *time = value,
+            Event::Overlay { time, .. } => *time = value,
+            Event::Sfx { time, .. } => *time = value,
+            Event::Element { time, .. } => *time = value,
+        }
+    }
+
     /// 结束秒（`None` = 没写，由调用方按 `default_end` 或文件长度兜底）。
     pub fn end(&self) -> Option<f64> {
         match self {
@@ -680,6 +700,17 @@ impl Event {
             Event::Element { kind, .. } => kind == "sticker",
             _ => false,
         }
+    }
+
+    /// **这个事件是不是文字元素**（`Element { kind: "text" }`）。
+    ///
+    /// 与 [`Event::is_sticker`] 成对：`Element` 这一支同时装两种 kind，按下标/字段匹配时
+    /// 只写一半就会静默漏掉另一边（本仓在贴纸那一半上踩过一次，见上面那段说明）。
+    ///
+    /// ⚠️ **空 `kind` 不算**：它可能是手改到一半/老数据，`process` 自己会按「认不出的 kind」
+    /// 给出提示；这里只认明确写了文字的（`normalize_segments_json` 给漏写 kind 的补的就是 "text"）。
+    pub fn is_text_element(&self) -> bool {
+        matches!(self, Event::Element { kind, .. } if kind.trim().eq_ignore_ascii_case("text"))
     }
 
     /// 贴纸的**关键词**（= 贴纸包名 / 来源关键字），非贴纸返回 `None`。
@@ -964,6 +995,22 @@ pub struct SubtitleStyle {
     #[serde(default = "default_sub_stroke")]
     pub stroke: String,
 
+    /// **外圈描边**：在 `stroke` 那一圈**外面**再加一圈（常态白）。
+    ///
+    /// 格式与 `stroke` 完全一样：`"4px #ffffff"`（宽度 + 颜色）。
+    ///
+    /// # 为什么要有它（2026-10-15 用户口径）
+    ///
+    /// 「给字幕和文字层描边**再增加一层白色描边**」—— 白在外、深在内那套双层描边。
+    /// 本仓这一侧只负责把值交给两条消费方：底座（转译器写进 `SubtitleStyle.outer_stroke`）
+    /// 与 DOM 预览（4 向 `text-shadow` 兜底）。⚠️ 两边**同一条口径**：
+    /// 都是「在 `stroke` 那一圈**之外**再向外这么宽」。
+    ///
+    /// ⚠️ **默认就是开着**（`4px #ffffff`）—— 用户要的是「加一层白边」这个观感本身，
+    /// 不是「提供一个能加白边的开关」。写空串 = 不画。
+    #[serde(default = "default_sub_outer_stroke")]
+    pub outer_stroke: String,
+
     #[serde(default = "default_highlight_color")]
     pub highlight_color: String,
 
@@ -994,6 +1041,7 @@ impl Default for SubtitleStyle {
             size: default_sub_size(),
             color: default_sub_color(),
             stroke: default_sub_stroke(),
+            outer_stroke: default_sub_outer_stroke(),
             highlight_color: default_highlight_color(),
             position: default_sub_position(),
             position_pct: None,
@@ -1019,6 +1067,16 @@ fn default_sub_color() -> String {
 }
 fn default_sub_stroke() -> String {
     "12px #403c3b".into()
+}
+/// 外圈描边默认值：**白、`auto`**（单位与 `stroke` 一样是 CSS 居中宽）。
+///
+/// ⚠️ **`auto` = 粗细跟随第一层描边**（2026-10-16 用户口径：「第二层的白描边…粗细跟随第一层的
+///    宽度」）：内圈多宽，白环就多厚。以前是写死的 `4px` —— 用户把第一层从 12px 调到 24px 时
+///    白边纹丝不动，看着就是「白边太细、不成比例」。
+/// ⚠️ 写具体数字（`"8px #ffffff"`）**仍然按固定宽度走**，老工程与手写的值不被改写。
+/// ⚠️ 两处默认值必须同值：这里与转译器的 `DEFAULT_OUTER_STROKE`，判据 `check-text-style.mjs` ⑥d。
+fn default_sub_outer_stroke() -> String {
+    "auto #ffffff".into()
 }
 fn default_highlight_color() -> String {
     "#f56b41".into()

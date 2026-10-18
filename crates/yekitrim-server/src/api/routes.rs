@@ -121,6 +121,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/polish/sticker-sources", get(polish_sticker_sources))
         // 贴纸库只读浏览（编辑器里 keyword→贴纸 的两级选择）
         .route("/polish/sticker-library", get(polish_sticker_library))
+        // 内建 emoji 目录（编辑器表情面板：881 条按 tag 分组）
+        .route("/polish/emoji-catalog", get(polish_emoji_catalog))
         .route("/polish/sticker-file", get(polish_sticker_file))
         // 音效目录（编辑器里音效事件的列表选择）
         .route("/polish/sfx-catalog", get(polish_sfx_catalog))

@@ -36,6 +36,7 @@
 // （不去 import 应用模块、也不动仓库里的文件）—— 每次都是新 URL，模块缓存不会串。
 
 import { strict as assert } from 'node:assert';
+
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { copyFileSync } from 'node:fs';
@@ -44,8 +45,10 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+/// 仓库根（`scripts/` 的上一级）—— 用来给变异体指路 `spec/effects.json`。
+const REPO_ROOT = join(HERE, '..');
 /// 转译器路径**相对于本脚本**算（从哪个目录调用都一样）。
-const TRANSLATOR = join(HERE, '..', 'tools', 'polish-to-dhampir.mjs');
+const TRANSLATOR = join(REPO_ROOT, 'tools', 'polish-to-dhampir.mjs');
 
 let checks = 0;
 const near = (actual, expected, tol, what) => {
@@ -895,6 +898,13 @@ function checkLaneSwitches(curves) {
 }
 
 const MUTATIONS = [
+  {
+    name: '外圈改回固定宽度（`4px` 不再跟随第一层）',
+    // ⚠️ **不许带 `file`**：带 `file` 的条目走「跨文件」分支，那个分支**只跑运镜对拍** ⇒
+    //    同文件的变异会静默「没红」（实测踩过：这条第一版带了 file，一直被跳过）。
+    from: 'const widthPx = Math.round((Number.isFinite(innerWidthPx) ? innerWidthPx : 12) * OUTER_RING_FOLLOW);',
+    to: 'const widthPx = 4;',
+  },
   // ---- 纵向档位（2026-10-12，底座 v7 的 `anchor_bottom`）----
   // ⚠️ 这两条打的是**同一个真缺陷的两种写法**：
   //    `anchor_bottom` 是轨级常量、`pos` 是逐事件的，只按样式分轨就会互相覆盖。
@@ -912,9 +922,8 @@ const MUTATIONS = [
     // ⚠️⚠️ **2026-10-14 三轴收敛（补过渡维）时第三次改** —— 而且这次键**跨两行**了
     //    （源码把它拆成两个模板串相加）⇒ 锚点必须**逐字照抄那个两行形状**，
     //    否则 `.replace` 命中 0 次、变异体与真身一模一样 ⇒ 判据静默不翻面。
-    from: `const key = \`\${cue.style.name}|\${cue.pos}|\${cue.styleAnim || ''}\` +
-        \`|\${cue.effectAnim || ''}|\${cue.transitionAnim || ''}|\${colorKey}\`;`,
-    to: 'const key = cue.style.name;',
+    from: "`${cue.style.name}|${cue.pos}|${cue.styleAnim || ''}` +\n        `|${cue.effectAnim || ''}|${cue.transitionAnim || ''}|${colorKey}|${originKey}`",
+    to: "`${cue.style.name}|${cue.styleAnim || ''}` +\n        `|${cue.effectAnim || ''}|${cue.transitionAnim || ''}|${colorKey}|${originKey}`",
   },
   // ---- 逐条颜色（2026-10-13）----
   // ⚠️ 三条打的是**同一个真缺陷的三个面**：颜色是**逐事件**的，而底座的
@@ -925,10 +934,8 @@ const MUTATIONS = [
     name: '分组键丢掉颜色那一维 ⇒ 同档位不同色共用一个轨级 color（成片里全变成同一色）',
     // ⚠️ 同一条教训（见上）：键跨两行，锚点必须照抄两行形状。
     //    这条把键截到"过渡维为止"⇒ 颜色维丢掉。
-    from: `\`\${cue.style.name}|\${cue.pos}|\${cue.styleAnim || ''}\` +
-        \`|\${cue.effectAnim || ''}|\${cue.transitionAnim || ''}|\${colorKey}\``,
-    to: `\`\${cue.style.name}|\${cue.pos}|\${cue.styleAnim || ''}\` +
-        \`|\${cue.effectAnim || ''}|\${cue.transitionAnim || ''}\``,
+    from: "`${cue.style.name}|${cue.pos}|${cue.styleAnim || ''}` +\n        `|${cue.effectAnim || ''}|${cue.transitionAnim || ''}|${colorKey}|${originKey}`",
+    to: "`${cue.style.name}|${cue.pos}|${cue.styleAnim || ''}` +\n        `|${cue.effectAnim || ''}|${cue.transitionAnim || ''}|${originKey}`",
   },
   {
     name: '颜色那一维改用预设名（而不是 RGBA 值）⇒ 同色不同名的条目被拆成两条轨',
@@ -1426,8 +1433,12 @@ const MUTATIONS = [
     // 2026-10-02：`manual` 落点分支被删掉 —— 就是「设计器里改了固定落点、出片里没变」那次回归。
     // 判据（6c-bis）断言转译器里**必须有**这个分支且读 `config.sticker.position`，删掉即打红。
     name: '`manual` 落点分支被整条删掉（固定落点在那条腿上丢失）',
-    from: "          if (stickerMode === 'manual') {",
-    to: "          if (false && stickerMode === 'manual') {",
+    // ⚠️ 锚点跟着 2026-10-17 的「逐块手动落点」改造更新：那条分支现在是
+    //    `if (anchor) { … } else if (stickerMode === 'manual') {`（逐块 manual_pos 优先）——
+    //    旧锚点 `          if (stickerMode === …` 已经不存在 ⇒ 替换不命中 ⇒ 变异变空操作 ⇒ **永远不红**
+    //    （实测就是这个形状：汇总里"1 处变异没被打红"而明细什么都不说）。
+    from: "          } else if (stickerMode === 'manual') {",
+    to: "          } else if (false && stickerMode === 'manual') {",
   },
   {
     // 2026-10-02：`manual` 分支读错键（读事件的 x/y 而不是 `[sticker] position`）——
@@ -1720,12 +1731,59 @@ const MUTATIONS = [
 ];
 
 /// 把 `source` 写进临时目录并真加载一遍（新 URL = 新模块实例，缓存不会串）。
+///
+/// ⚠️⚠️ **必须把词汇表目录一起告诉变体**（`YEKITRIM_SPEC_DIR`）。
+///
+/// 副本住在 `tmpdir`，而转译器找 `spec/effects.json` 的两条相对路径（同目录 / `../spec`）
+/// **在那时全都落空**。P2 之前这只让报告文案变粗（"不认识的事件类型"），
+/// 所以一直没人发现；P2 把 `dhampir_rule` 声明式派发接上去之后，
+/// **词汇表读不到 = 特效一个都不转** —— 变异体跑出来的时间线上连层都没有，
+/// 于是那条"窗口不许溢出所在段"的变异**永远不会红**。
+///
+/// 症状极具迷惑性：变异台说"1 处变异没被打红"，看着像**被变异的那行代码**的问题，
+/// 而真正的病根在**注入路径**。所以这里显式指路，并在下面断言"真的读到了词汇表"。
 async function loadVariant(source, run) {
   const dir = mkdtempSync(join(tmpdir(), 'yekitrim-translator-'));
+  const prev = process.env.YEKITRIM_SPEC_DIR;
+  process.env.YEKITRIM_SPEC_DIR = join(REPO_ROOT, 'spec');
   try {
     const file = join(dir, 'polish-to-dhampir.mjs');
     writeFileSync(file, source, 'utf8');
     return await run(await import(pathToFileURL(file).href), source);
+  } finally {
+    if (prev === undefined) delete process.env.YEKITRIM_SPEC_DIR;
+    else process.env.YEKITRIM_SPEC_DIR = prev;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/// 词汇表到底有没有被加载（`EFFECT_VOCAB.loaded`）。
+///
+/// ⚠️ 没有它，上面那个坑是**静默**的：跑得完、退出码 0、只在末尾说"某处没被打红"。
+/// 判据 = 拿一条**只有声明式能转**的事件过一遍 `translate`，必须真的产出带 `effects` 的层。
+export function assertVocabLoaded(mod) {
+  const dir = mkdtempSync(join(tmpdir(), 'yekitrim-vocab-'));
+  try {
+    writeFileSync(join(dir, 'clip.srt'), '1\n00:00:00,100 --> 00:00:01,000\nx\n\n', 'utf8');
+    const toml = [
+      'duration = 12.0', '[project]', 'name = "v"', 'output = "o.mp4"',
+      '[source]', 'video = "clip.mp4"', 'subtitles = "clip.srt"',
+      '[[segments]]', 'start = 0.0', 'end = 12.0',
+      '[[segments.events]]', 'type = "flash"', 'time = 1.0', 'end = 1.3', '',
+    ].join('\n');
+    const doc = mod.translate(mod.parseToml(toml), dir, join(dir, 'p.doc.json'));
+    let withFx = 0;
+    for (const track of doc.timeline.tracks ?? []) {
+      for (const l of track.layers ?? []) if ((l.effects ?? []).length) withFx += 1;
+    }
+    if (withFx === 0) {
+      throw new Error(
+        '转译器**读不到效果词汇表**（`spec/effects.json`）—— 声明式派发整条失效。\n' +
+        '  · 直接跑 CLI 时：检查 `spec/effects.json` 在不在、`YEKITRIM_SPEC_DIR` 指得对不对；\n' +
+        '  · 变异台里：`loadVariant` 必须设 `YEKITRIM_SPEC_DIR`（见它的注释）。\n' +
+        '  ⚠️ 不修的话所有依赖 `dhampir_rule` 的守卫都是**空转**的。',
+      );
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -1797,6 +1855,7 @@ async function mutate() {
         checkColors(curves);
         // 描边解析同理：它守的是"`#fff` 静默回落成深灰"，与 `hexColor` 是两处。
         checkStroke(curves);
+        checkOuterStroke(curves);
         // ⚠️ 弹幕逐条颜色（§24 更正）：它走**源码文本**判据 ⇒ 必须喂 `mutatedSource`
         // （喂原始 `translatorSource` 的话，变异体改了源码而检查还在看老文本，这条永远绿）。
         checkDanmakuColorStripped(mutatedSource);
@@ -1824,6 +1883,12 @@ async function mutate() {
         checkElementAssFont(mutatedSource);
         // 片头/片尾（2026-10-09）—— 不跑它，"不拼进时间线"与"素材没登记"两条变异永远绿。
         checkIntroOutro(curves);
+        // ⚠️⚠️ **每个变异体都要先自证"能看见词汇表"**（2026-10, P2）：
+        //    副本住在 `tmpdir`，`spec/effects.json` 的两条相对路径都落空 ——
+        //    P2 之前只让报告文案变粗，之后是**声明式派发整条失效**。
+        //    症状：变异体跑出来的时间线连特效层都没有 ⇒ 依赖它的判据**全部空转**，
+        //    而变异台只说"某处没被打红"，看着像被变异那行代码的问题。
+        assertVocabLoaded(curves);
         // ⚠️⚠️ 文字元素轨道的安全宽（2026-10-11）—— **这一条我第一版漏了**：
         //    新检查只加进了 main，没加进这份清单 ⇒ 那 2 处变异**双双存活**，
         //    而变异台照旧跑完、只在末尾说"2 处没被打红"。写这条注释就是为了
@@ -2244,6 +2309,28 @@ function checkStroke(mod) {
   // 宽度认不出 → 回落传入的兜底宽度
   assert.equal(mod.parseStroke('#fff', 9, '#403c3b').widthPx, 9, '认不出宽度时回落兜底宽度');
   return cases.length + 2;
+}
+
+// ⚠️ **外圈（白环）的口径：任何非空值都跟随第一层**（2026-10-16 第二次更正）。
+//
+//    老工程里写的是 `outer_stroke = "4px #ffffff"`（当年的默认值）。按"固定宽度"解释它时，
+//    这一圈是 **4px 全宽 ⇒ 径向 2px**，而第一层 12px（径向 6px）⇒ **两层必然不等** ——
+//    用户第二次报的「二层白描边宽度还是不对」就是它。现在数字**不再是宽度**：任何非空值都是
+//    "开 + 跟随第一层（× `OUTER_RING_FOLLOW`）"，只有空串才是关。
+function checkOuterStroke(mod) {
+  const follow = mod.parseOuterStroke({ outer_stroke: "4px #ffffff" }, 12);
+  assert.equal(follow.widthPx, 12, "外圈任何非空值都跟随第一层（`4px` 那串也要给 12，不是 4）");
+  assert.equal(mod.parseOuterStroke({ outer_stroke: "auto #ffffff" }, 24).widthPx, 24,
+    "`auto` 跟随第一层（24 ⇒ 24）");
+  // 只写颜色的写法：`parseStroke` 会给它兜底宽度（9/4 那种）—— **那个数字必须被忽略**。
+  assert.equal(mod.parseOuterStroke({ outer_stroke: "#ffffff" }, 12).widthPx, 12,
+    "只写颜色的写法也跟随（颜色串里的兜底宽度不许当宽度）");
+  assert.equal(mod.parseOuterStroke({ outer_stroke: "" }, 12), null, "空串 = 显式关（返回 null）");
+  // 颜色形状：产物要 `[r,g,b,255]` 数组（写 `{r,g,b}` 会被底座当白兜底，看着"颜色对了"）。
+  const color = follow.color;
+  assert.ok(Array.isArray(color) && color.length >= 3 && color[0] === 255 && color[1] === 255 && color[2] === 255,
+    "外圈颜色必须是 [r,g,b,…] 数组，实得 " + JSON.stringify(color));
+  return 4;
 }
 
 // ---------------------------------------------------------------------------
@@ -2832,6 +2919,117 @@ function checkElementAssFont(src) {
   return checks;
 }
 
+/// **绝对盒原点**（`SubtitleStyle::origin`，2026-10-15）：宿主面板给每条字算好的
+/// **逐事件**落点，必须在产物里落成 `origin`；而它是**轨级**字段 ⇒ **不同落点必须分轨**；
+/// **没写 x/y 的元素一个 origin 键都不许出现**（R4：既有工程逐字节不变）。
+///
+/// ⚠️ 三个方向都钉：① 给了就写 ② 不同落点分轨 ③ 没给**一个键都不写**。
+/// 少 ①「字段没接上」照样绿，少 ②「两个落点共用一轨、后写覆盖先写」照样绿。
+/// ⚠️ `outerRaw` 三档：`null` = 不写这个键（老工程 ⇒ 走默认 `auto` = **跟随第一层**，夹具内圈 12px ⇒
+/// ratio 12/2/1080）· `""` = 显式关 · `"4px #ffffff"` = 固定 4px（折半 ⇒ 4/2/1080）。
+function checkTextOrigin(mod, outerRaw = '4px #ffffff') {
+  let checks = 0;
+  const ok = (cond, what) => {
+    checks += 1;
+    if (!cond) throw new Error(what);
+  };
+
+  const dir = mkdtempSync(join(tmpdir(), 'yekitrim-origin-'));
+  try {
+    let have = false;
+    try {
+      execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i',
+        'color=c=black:s=320x240:d=2,format=yuv420p', '-r', '30',
+        '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-y', join(dir, 'clip.mp4')],
+        { stdio: ['ignore', 'ignore', 'ignore'], timeout: 60000 });
+      have = existsSync(join(dir, 'clip.mp4'));
+    } catch (e) {
+      if (e && e.code === 'ENOENT') have = false;
+      else throw e;
+    }
+    if (!have) return 0;
+
+    const nl = String.fromCharCode(10);
+    writeFileSync(join(dir, 'clip.srt'),
+      '1' + nl + '00:00:00,300 --> 00:00:01,200' + nl + '有字幕' + nl + nl, 'utf8');
+    const src = 'hook|80|6|255,255,255,255|26,26,26,255|900|0';
+    const ev = (t, extra) => [
+      '[[segments.events]]',
+      'type = "element"',
+      'kind = "text"',
+      'time = ' + t,
+      'end = ' + (Number(t) + 0.6),
+      'text = "落点"',
+      'style = "hook"',
+      'pos = "top"',
+      'source = "' + src + '"',
+    ].concat(extra).concat(['']);
+    writeFileSync(join(dir, 'polish.toml'), [
+      'config_version = 1', 'duration = 2.0', 'processed = true',
+      '[project]', 'name = "origin-probe"', 'output = "out.mp4"', 'created = "2026-10-15"', 'version = 1',
+      '[source]', 'video = "clip.mp4"', 'subtitles = "clip.srt"', 'danmaku = ""', 'metadata = ""',
+      '[canvas]', 'orientation = "landscape"',
+      '[stage]', 'bg_mode = "blur"',
+      '[sticker]', 'position_mode = "auto"', 'position = "50% 50%"',
+      '[style.subtitle]', 'font = "LXGW WenKai"', 'size = 72', 'color = "#dcbda0"',
+      'stroke = "12px #403c3b"', 'highlight_color = "#f56b41"', 'position = "bottom"',
+      ...(outerRaw === null ? [] : ['outer_stroke = "' + outerRaw + '"']),
+      '[[segments]]', 'start = 0.0', 'end = 2.0', 'fx = "med"',
+      ...ev('0.2', ['x = "10%"', 'y = "20%"']),
+      ...ev('0.8', ['x = "60%"', 'y = "70%"']),
+      ...ev('1.2', []),
+    ].join(nl), 'utf8');
+
+    const project = mod.translate(
+      mod.parseToml(readFileSync(join(dir, 'polish.toml'), 'utf8')), dir, join(dir, 'origin.json'));
+    const tracks = (project.timeline?.tracks ?? []).filter((t) => String(t.id).startsWith('text_hook'));
+    const ids = tracks.map((t) => t.id);
+    ok(tracks.length === 3,
+      '两条不同落点 + 一条没写 ⇒ 三条轨（实得 ' + JSON.stringify(ids) + '）');
+    const a = tracks.find((t) => t.id === 'text_hook_top_x10.0y20.0');
+    const b = tracks.find((t) => t.id === 'text_hook_top_x60.0y70.0');
+    ok(!!a && !!b, '轨 id 必须带上落点（否则两个不同位置共用一个**轨级** origin，后写的覆盖先写的）');
+    ok(!!a && JSON.stringify(a.subtitle.origin) === JSON.stringify([0.1, 0.2]),
+      'origin 必须逐值等于 x/100,y/100（实得 ' + JSON.stringify(a && a.subtitle.origin) + '）');
+    ok(!!b && JSON.stringify(b.subtitle.origin) === JSON.stringify([0.6, 0.7]),
+      '第二条同理（实得 ' + JSON.stringify(b && b.subtitle.origin) + '）');
+    const plain = tracks.find((t) => t.id === 'text_hook_top');
+    ok(!!plain, '没写 x/y 的元素仍走老那条轨（id 不带落点）');
+    ok(!!plain && !Object.prototype.hasOwnProperty.call(plain.subtitle ?? {}, 'origin'),
+      '没写 x/y ⇒ **一个 origin 键都不许出现**（R4：既有工程逐字节不变）');
+    // ---- 外圈白描边（2026-10-16 用户口径）----
+    // 口径：宽度是 CSS 居中宽 ⇒ 底座的**外侧宽**要折半 ⇒ `ratio = 宽 / 2 / 1080`。
+    //
+    // ⚠️ **`outer_stroke` 里那个数字不再是宽度**（2026-10-16 第二次更正，用户口径
+    //    「第二层白描边…粗细跟随第一层的宽度」）：**任何非空值都跟随第一层**那条 `stroke`
+    //    （本夹具里是 12px）⇒ 三档（缺键 / `auto` / 显式 `4px`）算出来的 ratio **必须同一个值**。
+    //
+    //    为什么改：老工程里写的正是 `"4px #ffffff"`（当年的默认值），而按"固定宽度"解释时它是
+    //    4px 全宽 ⇒ 径向 2px，第一层 12px ⇒ 径向 6px ⇒ **两层必然不等**（用户报的
+    //    「二层白描边宽度还是不对」）。这条判据以前钉的正是那个"固定 4px"，现在改成钉"跟随"。
+    const wantRatio = 12 / 2 / 1080;
+    const subs = (project.timeline?.tracks ?? []).find((t) => t.id === 'sub');
+    const outerOf = (t) => (t && t.subtitle ? t.subtitle.outer_stroke : undefined);
+    if (outerRaw === '') {
+      ok(outerOf(a) === undefined && outerOf(subs) === undefined,
+        '外圈写空串 ⇒ 字幕与元素都**一个键都不许出现**（显式关 = 逐字节回到改造前）');
+    } else {
+      for (const [name, tr] of [['文字元素', a], ['字幕', subs]]) {
+        const o = outerOf(tr);
+        ok(!!o, name + ' 必须带 outer_stroke（用户口径：字幕与文字层都加一层白边）');
+        ok(Math.abs(o.ratio - wantRatio) < 1e-9,
+          name + ' 的 outer_stroke.ratio 应为 ' + wantRatio + '（' +
+            (outerRaw === null ? '缺键 ⇒ 跟随 12px 内圈' : '显式值 ⇒ **也**跟随 12px 内圈') +
+            '，实得 ' + (o && o.ratio) + '）');
+        ok(JSON.stringify(o.color) === JSON.stringify([255, 255, 255, 255]),
+          name + ' 的外圈颜色应为白（实得 ' + JSON.stringify(o && o.color) + '）');
+      }
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  return checks;
+}
 function checkTextElementLane(mod, src = translatorSource) {
   let checks = 0;
   const ok = (cond, what) => {
@@ -2895,8 +3093,9 @@ function checkTextElementLane(mod, src = translatorSource) {
       'text = "钩子标题"',
       'style = "hook"',
       'pos = "top"',
-      'x = "10%"',
-      'y = "20%"',
+      // ⚠️ **这些夹具都不写 x/y**（2026-10-15）：它们验的是纵向档 / 动效 / 角度，
+      //    而写了 x/y 就走 `origin`（绝对落点）⇒ 轨 id 多一段、`anchor_bottom` 不再被读。
+      //    origin 那条路另有 `checkTextOrigin` 一组钉着。
       // ⚠️ 2026-10-13：字号统一为 80（`ELEMENT_FONT_PX`）、`hook` 描边 8→6。
       //    这个串是 `process` 写回的**仿真**（`style|font_px|stroke|fill|stroke|weight|backdrop`），
       //    所以它必须跟着 Rust 走 —— 否则下面 ③ 那条 `font_ratio` 判据会拿**旧字号**去对，
@@ -3090,8 +3289,11 @@ function checkTextElementLane(mod, src = translatorSource) {
     //    然后逐条对拍。这样判据钉的是"**拆了没有**"这件事本身，
     //    而不是"某个内部函数的返回值" —— 本仓反复踩过"测到了函数、没测到调用方"。
     // ------------------------------------------------------------------
-    const assOf = (d, id) => {
-      const p = join(d, `dhampir-${id}.ass`);
+    // ⚠️ 文字轨 ASS 落 `<工程文件名去扩展名>.assets/dhampir-<轨 id>.ass`
+    //    （2026-10-18 起；此前在片段根目录，每改一次落点就多一个、收不干净）。
+    //    目录推导与 `crates/yekitrim-polish/src/render/dhampir.rs::side_assets_dir` 同一条。
+    const assOf = (d, outStem, id) => {
+      const p = join(d, `${outStem}.assets`, `dhampir-${id}.ass`);
       return existsSync(p) ? readFileSync(p, 'utf8') : '';
     };
     // `Dialogue:` 行里的**正文**（`Format` 那 9 列之后全是文本，文本里可能有逗号）。
@@ -3100,7 +3302,7 @@ function checkTextElementLane(mod, src = translatorSource) {
       .map((l) => l.split(',').slice(9).join(','));
 
     // 开关**关着**时：一条都不许拆（这是 R4 零回归在转译侧的判据）。
-    const offTexts = textsOf(assOf(dir, TID));
+    const offTexts = textsOf(assOf(dir, 'elem', TID));
     ok(offTexts.length === 1,
       `没开打字机时文字元素必须还是 1 条 cue（存量零回归），实得 ${offTexts.length} 条：` +
       JSON.stringify(offTexts));
@@ -3117,7 +3319,7 @@ function checkTextElementLane(mod, src = translatorSource) {
       const pOn = mod.translate(mod.parseToml(tomlOn), dirOn, join(dirOn, 'on.json'));
       ok((pOn.timeline?.tracks ?? []).some((t) => t.id === TID),
         '开了打字机之后那条轨不能消失（拆 cue 不该把整条轨弄丢）');
-      const onTexts = textsOf(assOf(dirOn, TID));
+      const onTexts = textsOf(assOf(dirOn, 'on', TID));
 
       // ⑥ / ⑦ 必须真的拆开、且明显多于原句字数关系上是"逐字"。
       ok(onTexts.length > 1,
@@ -3138,7 +3340,7 @@ function checkTextElementLane(mod, src = translatorSource) {
         `最后一条必须是整句「${full}」，实得 ${JSON.stringify(onTexts[onTexts.length - 1])}`);
 
       // ⑩ 区间首尾相接、不重叠、不掉帧（把 ASS 的时间戳解析回毫秒来比）。
-      const spans = assOf(dirOn, TID).split('\n')
+      const spans = assOf(dirOn, 'on', TID).split('\n')
         .filter((l) => l.startsWith('Dialogue:'))
         .map((l) => [l.split(',')[1], l.split(',')[2]]);
       const ms = (t) => {
@@ -3357,7 +3559,7 @@ function checkTextPosLanes(mod, src) {
     //    压平后两类都匹配得上，且仍然钉着**全部六维**。
     const flatSrc = src.replace(/\s+/g, '');
     ok(flatSrc.includes(
-      '`${cue.style.name}|${cue.pos}|${cue.styleAnim||\'\'}`+`|${cue.effectAnim||\'\'}|${cue.transitionAnim||\'\'}|${colorKey}`'),
+      '`${cue.style.name}|${cue.pos}|${cue.styleAnim||\'\'}`+`|${cue.effectAnim||\'\'}|${cue.transitionAnim||\'\'}|${colorKey}|${originKey}`'),
       '分组键必须是「样式 | 纵向档 | **排版轴** | **过渡轴** | **动效轴** | **颜色**」六维' +
       '（最后一维 `colorKey` = 逐条 RGBA 拼串）—— ' +
       '少一维，同一档位下就会共用一个轨级参数（后写的覆盖先写的，' +
@@ -3366,7 +3568,7 @@ function checkTextPosLanes(mod, src) {
       '是**轨级**的，不分轨的话「同样式，一条要弹出、一条要淡入」会静默共用一个');
     // ⚠️ 颜色那一维**必须是值、不是预设名**（理由见上）。
     ok(src.includes('const colorKey = Array.isArray(cue.color) ? cue.color.join(\',\') : \'\'') &&
-       flatSrc.includes('`${cue.style.name}|${cue.pos}|${cue.styleAnim||\'\'}`+`|${cue.effectAnim||\'\'}|${cue.transitionAnim||\'\'}|${colorKey}`'),
+       flatSrc.includes('`${cue.style.name}|${cue.pos}|${cue.styleAnim||\'\'}`+`|${cue.effectAnim||\'\'}|${cue.transitionAnim||\'\'}|${colorKey}|${originKey}`'),
       '最后一维必须是 **RGBA 值**（`cue.color.join(\',\')`），不是 `colorName` —— ' +
       '按名字分会让"comment 的默认黄"与"显式写的 yellow"分到两条轨（值相同却拆开），' +
       '而按值分永远正确');
@@ -3472,8 +3674,9 @@ function checkTextMotion(mod, dir, src) {
       'text = "钩子标题"',
       'style = "hook"',
       'pos = "top"',
-      'x = "10%"',
-      'y = "20%"',
+      // ⚠️ **这些夹具都不写 x/y**（2026-10-15）：它们验的是纵向档 / 动效 / 角度，
+      //    而写了 x/y 就走 `origin`（绝对落点）⇒ 轨 id 多一段、`anchor_bottom` 不再被读。
+      //    origin 那条路另有 `checkTextOrigin` 一组钉着。
       'source = "hook|120|8|255,255,255,255|26,26,26,255|900|0"',
       '',
     ];
@@ -3528,8 +3731,9 @@ function checkTextMotion(mod, dir, src) {
       'text = "钩子标题"',
       'style = "hook"',
       'pos = "top"',
-      'x = "10%"',
-      'y = "20%"',
+      // ⚠️ **这些夹具都不写 x/y**（2026-10-15）：它们验的是纵向档 / 动效 / 角度，
+      //    而写了 x/y 就走 `origin`（绝对落点）⇒ 轨 id 多一段、`anchor_bottom` 不再被读。
+      //    origin 那条路另有 `checkTextOrigin` 一组钉着。
       'source = "hook|120|8|255,255,255,255|26,26,26,255|900|0"',
     ];
     if (animName !== null) lines.push(`anim = "${animName}"`);
@@ -3583,8 +3787,9 @@ function checkTextMotion(mod, dir, src) {
       'text = "钩子标题"',
       'style = "hook"',
       'pos = "top"',
-      'x = "10%"',
-      'y = "20%"',
+      // ⚠️ **这些夹具都不写 x/y**（2026-10-15）：它们验的是纵向档 / 动效 / 角度，
+      //    而写了 x/y 就走 `origin`（绝对落点）⇒ 轨 id 多一段、`anchor_bottom` 不再被读。
+      //    origin 那条路另有 `checkTextOrigin` 一组钉着。
       'source = "hook|120|8|255,255,255,255|26,26,26,255|900|0"',
     ];
     if (styleAnim) lines.push(`style_anim = "${styleAnim}"`);
@@ -3656,33 +3861,47 @@ function checkTextMotion(mod, dir, src) {
   //    因为没有任何用例把"某档 + 配了 `[elements]`"这个组合跑起来。
   //    缺口是**实测出来的**（先看到 5 处打不红，才回来补的这里）。
 
-  // ★★ 先说**最要紧的一条**：`perchar_big` / `perchar_small` 的 `per_char`
-  //    必须写出去。这两档的 `perChar` 是**形态字段**，但档位住在**动效**轴
-  //    （`sort: 'effect'`）—— 实测抓到过：只要判据只认"排版轴给 `perChar`"，
-  //    这两档就**整档不生效**（轨生成了、`per_char` 一个字不写、
-  //    报告里一行差异都没有）。收敛后动效轴就 4 档，那一版里**一半是死的**。
+  // ★★ **逐字变化 = 过渡轴上的固定形状**（2026-10-18 用户口径：「将逐字变化归类为过渡，
+  //    并固定为**入场逐字变大、出场逐字变小**，不用手动设置」）。
   //
-  // ⚠️ 这两档还**必须互相不同**（本仓为 `vtext_thin` vs `vtext_bold` 立过
-  //    "两档不许逐字节相同"的判据，同一个坑在 `perchar_*` 上原样出现过）。
+  //    这一段的判据**整个换了方向**：以前钉的是"变大/变小两支必须**不同**"
+  //    （那时它是动效轴上的两个静态字号乘数档），现在钉的是
+  //    **"三个名字必须**逐值相同**"** —— `perchar`（新，界面唯一入口）与
+  //    `perchar_big` / `perchar_small`（老名字，老工程的 `effect_anim` 里写着它们）是**别名**。
+  //    别名漂了的表现是"老片段与新片段同档、观感不一样"（`vtext_thin` vs `vtext_bold` 的老教训）。
+  //
+  //    ⚠️ 其中两条**最要紧**：① `per_char` 必须真的写出去（它是形态字段，只认排版轴的判据
+  //    会让这一档**整档不生效且不报错**）；② `per_char_out_frames` 必须写出去
+  //    （缺了它 = **只有入场没有出场**，而画面里字照常显示、报告里一行差异都没有）。
   {
+    const fixed = textTrack3({ transitionAnim: 'perchar' });
     const big = textTrack3({ effectAnim: 'perchar_big' });
     const small = textTrack3({ effectAnim: 'perchar_small' });
-    ok(big !== null, '`effect_anim = "perchar_big"` 的轨没生成');
-    ok(small !== null, '`effect_anim = "perchar_small"` 的轨没生成');
-    ok(big.sub.per_char !== undefined && big.sub.per_char !== null,
-      'perchar_big 必须写出 per_char —— 它是形态字段但住在动效轴，' +
-      '只认排版轴会让这一档**整档不生效且不报错**');
-    ok(small.sub.per_char !== undefined && small.sub.per_char !== null,
-      'perchar_small 必须写出 per_char（同上）');
-    ok(big.sub.per_char.scale_spread !== undefined
-      && big.sub.per_char.scale_spread > 0,
-      'perchar_big 的 scale_spread 该是正数（逐字变大），实得 ' + JSON.stringify(big.sub.per_char.scale_spread));
-    ok(small.sub.per_char.scale_spread !== undefined
-      && small.sub.per_char.scale_spread < 0,
-      'perchar_small 的 scale_spread 该是负数（逐字变小），实得 ' + JSON.stringify(small.sub.per_char.scale_spread));
-    ok(JSON.stringify(big.sub.per_char) !== JSON.stringify(small.sub.per_char),
-      'perchar_big 与 perchar_small 的 per_char 逐字节相同 —— ' +
-      '两个档在面板上是两个名字，产物里却一模一样（本仓犯过这个错）');
+    ok(fixed !== null, '`transition_anim = "perchar"` 的轨没生成');
+    ok(big !== null, '`effect_anim = "perchar_big"` 的轨没生成（老工程读兼容）');
+    ok(small !== null, '`effect_anim = "perchar_small"` 的轨没生成（老工程读兼容）');
+    for (const [name, t] of [['perchar', fixed], ['perchar_big', big], ['perchar_small', small]]) {
+      ok(t.sub.per_char !== undefined && t.sub.per_char !== null,
+        name + ' 必须写出 per_char —— 它是形态字段，' +
+        '只认排版轴会让这一档**整档不生效且不报错**');
+      ok(t.sub.per_char_out_frames > 0,
+        name + ' 必须写出 per_char_out_frames（>0）—— 缺了它**只有入场没有出场**，' +
+        '实得 ' + JSON.stringify(t.sub.per_char_out_frames));
+    }
+    // **固定形状**：入场逐字变大（from < to）、出场反着走（同一个 per_char）。
+    ok(fixed.sub.per_char.scale_from < fixed.sub.per_char.scale_to,
+      '逐字入场必须是**变大**（scale_from < scale_to），实得 ' +
+      JSON.stringify([fixed.sub.per_char.scale_from, fixed.sub.per_char.scale_to]));
+    ok(fixed.sub.per_char.per_char_frames > 0,
+      'per_char_frames 必须 > 0 —— 缺省 0 时 `is_active()` 为假 ⇒ **整档不生效**');
+    // **别名不许漂**：三个名字的 per_char + 出场窗口逐值相同。
+    ok(JSON.stringify(big.sub.per_char) === JSON.stringify(small.sub.per_char)
+      && JSON.stringify(fixed.sub.per_char) === JSON.stringify(big.sub.per_char),
+      'perchar / perchar_big / perchar_small 的 per_char 不一致 —— 它们是**别名**，' +
+      '漂了就是"老片段与新片段同档不同观感"');
+    ok(big.sub.per_char_out_frames === fixed.sub.per_char_out_frames
+      && small.sub.per_char_out_frames === fixed.sub.per_char_out_frames,
+      '三个名字的 per_char_out_frames 不一致（同上）');
   }
 
   // ㉛ **`tilt` 的静态 rotation**（没填角度时回落档位缺省 −6）。
@@ -3747,7 +3966,6 @@ function checkTextMotion(mod, dir, src) {
       '[[segments]]', 'start = 0.0', 'end = 2.0', 'role = "other"', 'index = 1', '',
       '[[segments.events]]', 'type = "element"', 'kind = "text"',
       'time = 0.2', 'end = 1.5', 'text = "钩子标题"', 'style = "hook"', 'pos = "top"',
-      'x = "10%"', 'y = "20%"',
       'source = "hook|120|8|255,255,255,255|26,26,26,255|900|0"',
       'style_anim = "tilt"', 'layout_angle_deg = 90', '',
     ].join(String.fromCharCode(10)));
@@ -3905,8 +4123,13 @@ function checkTextMotion(mod, dir, src) {
       '[[segments]]', 'start = 0.0', 'end = 2.0', 'role = "other"', 'index = 1', '',
       '[[segments.events]]', 'type = "element"', 'kind = "text"',
       'time = 0.2', 'end = 1.5', 'text = "钩子标题"', 'style = "hook"', 'pos = "top"',
-      'x = "10%"', 'y = "20%"',
       'source = "hook|120|8|255,255,255,255|26,26,26,255|900|0"',
+      // ⚠️ **三条轴各写一个认不出的档名**（2026-10-16 补）：这一档原先只测 `effect_anim`，
+      //    而第三轴 `transition_anim` 是 2026-10-14 才收敛出来的 —— 它**从没进过转译器
+      //    那张校验表**，于是写了过时档名（LLM 爱写 `pop_std` / `fade_only`）时
+      //    "既没过渡、也不报错"。三行分开断言：少覆盖哪条轴，红的就是哪一行。
+      'style_anim = "tilt_std"',
+      'transition_anim = "pop_std"',
       'effect_anim = "sway_stdd"', '',
     ].join(String.fromCharCode(10)));
     copyFileSync(join(dir, 'clip.mp4'), join(badDir, 'clip.mp4'));
@@ -3915,9 +4138,15 @@ function checkTextMotion(mod, dir, src) {
       [TRANSLATOR, badDir, '--out', join(badDir, 'o.json')],
       { encoding: 'utf8' });
     const txt = (out.stdout || '') + (out.stderr || '');
-    ok(/sway_stdd/.test(txt),
-      '认不出的 `effect_anim = "sway_stdd"` 必须在报告里点名（用户手滑时成片里字一动不动，' +
-      '而报告里一行差异都没有 —— 这条判据就是为那种情况写的），实得：' + JSON.stringify(txt.slice(0, 400)));
+    for (const [axis, name] of [
+      ['style_anim', 'tilt_std'],
+      ['transition_anim', 'pop_std'],
+      ['effect_anim', 'sway_stdd'],
+    ]) {
+      ok(new RegExp(name).test(txt),
+        `认不出的 \`${axis} = "${name}"\` 必须在报告里点名（成片里这一条不动，` +
+        '而报告里一行差异都没有 —— 这条判据就是为那种情况写的），实得：' + JSON.stringify(txt.slice(0, 400)));
+    }
   }
 
   // ㊴ **不写 `anim` 时轨 id 不变**（R4：老工程产物逐字节相同）。
@@ -3931,8 +4160,7 @@ function checkTextMotion(mod, dir, src) {
           '[[segments]]', 'start = 0.0', 'end = 2.0', 'role = "other"', 'index = 1', '',
           '[[segments.events]]', 'type = "element"', 'kind = "text"',
           'time = 0.2', 'end = 1.5', 'text = "钩子标题"', 'style = "hook"', 'pos = "top"',
-          'x = "10%"', 'y = "20%"',
-          'source = "hook|120|8|255,255,255,255|26,26,26,255|900|0"', '',
+              'source = "hook|120|8|255,255,255,255|26,26,26,255|900|0"', '',
         ].join(String.fromCharCode(10))),
         dir, join(dir, 'm.doc.json'),
       );
@@ -4264,6 +4492,40 @@ function checkKaraoke(mod, translateSrc) {
       ok(dc.length === 1,
         `脏值 \`${line}\` 必须当**关**（1 条普通字幕），实得 ${dc.length} 条 —— ` +
         '只有真的是 `true` 才算开');
+    }
+
+    // ㊴ **脏 `scale_in_ms` 只能当"没配"**（2026-10-17 补：修掉一个判据盲区）。
+    //
+    // ⚠️ 这条是为什么补的：㉘ 那段只读 `withElements(...)` 返回的**元素样式对象**，
+    //    而 `scale_in_ms` 的脏值守卫在**事件级**那条支路上（`parseTextStyle` 的 `raw` = 事件）——
+    //    变异把 `Number.isInteger` 放宽成 `typeof … === "number"` 之后，㉘ 的观察点**纹丝不动**
+    //    ⇒ 变异存活（「这份守卫有洞，别当它是绿的」）。
+    //
+    // ⇒ 换到**能被变异影响**的观察点：真跑一遍翻译，断言**整份产物里不出现那个脏值**。
+    //    语义（注释在变异表 1721-1724）：用户写了 `180.5` ⇒ 程序不许当他没写 ——
+    //    底座那边是 `u64`，透传过去会让**整份工程反序列化失败**（不是"这一项不生效"）。
+    {
+      const lines2 = [
+        'config_version = 1', 'duration = 3.0', 'processed = true', '',
+        '[source]', 'video = "clip.mp4"', 'subtitles = "clip.srt"', 'danmaku = ""', 'metadata = ""', '',
+        '[canvas]', 'width = 1920', 'height = 1080', '',
+        '[[segments]]', 'start = 0.0', 'end = 3.0', 'role = "other"', 'index = 1', '',
+        '[[segments.events]]', 'type = "element"', 'time = 0.2', 'end = 2.0', 'kind = "text"',
+        'text = "脏毫秒"', 'style = "hook"', 'pos = "top"', 'x = "10%"', 'y = "10%"',
+        'scale_in_ms = 180.5', '',
+      ];
+      writeCues(pulled);
+      let doc2;
+      try {
+        doc2 = mod.translate(mod.parseToml(lines2.join('\n')), dir, join(dir, 'dirty-ms.doc.json'));
+      } catch (e) {
+        throw new Error(`脏 \`scale_in_ms = 180.5\` 让转译器抛了：${e && e.message}`);
+      }
+      ok(doc2 !== null && doc2 !== undefined, '脏 `scale_in_ms` 必须能跑完（不炸）');
+      const dumped = JSON.stringify(doc2);
+      ok(!dumped.includes('180.5'),
+        '脏 `scale_in_ms = 180.5` **不许**出现在产物里 —— 用户写了脏值只能当"没配"（`undefined`），' +
+        '透传过去会让底座 `u64` 反序列化失败 ⇒ **整片出不了**（不是"这一项不生效"）。');
     }
 
     // ㊳ ⚠️ **`polish.toml` 里不许出现任何切分键**（架构红线）。
@@ -4955,6 +5217,11 @@ console.log(`✓ 素材判据（只认小写 asset + 非空 id）：${assetPredC
 console.log(`✓ 片头/片尾（[intro_outro] 拼进时间线 + 用素材自己的画面）：${introOutroChecks} 项全绿`);
 const textElemChecks = checkTextElementLane(translatorModule);
 console.log(`✓ 文字元素轨道（左右安全宽 + 与 safe_width_ratio 自洽 + 四档字号）：${textElemChecks} 项全绿`);
+// ⚠️ 三档都跑：缺键（默认值那档）· 空串（关）· 显式开 —— 判据里 `outerRaw` 那一维就是它。
+const textOriginChecks = checkTextOrigin(translatorModule, '4px #ffffff')
+  + checkTextOrigin(translatorModule, '')
+  + checkTextOrigin(translatorModule, null);
+console.log(`✓ 文字元素位置（origin：给了就写 + 按落点分轨；没给一个键都不写）：${textOriginChecks} 项全绿`);
 console.log('  钉住的是 2026-10-11：`bottom_margin: 0.5` ⇒ 底座 `max_width = 宽 × (1 - 2×0.5) = 0`');
 console.log('  ⇒ `text_layout::layout` **提前返回空布局** ⇒ 文字元素一个字都不排，而成片「看着像画了」');
 console.log('  （字幕照画、转译报告零差异、`probe` 零 error）—— 只有真去数像素才发现少了那几个字');
@@ -4963,10 +5230,146 @@ const elementAssFontChecks = checkElementAssFont(translatorSource);
 console.log(`✓ 字体族名（库 id → 真族名，底座 0.2.0 起）：${fontFamilyChecks} 项全绿`);
 console.log('  钉住的是：libass **按族名**找字体，而 polish.toml 存的是**库 id**；库内那支必须换成');
 console.log('  真族名（传 id 会静默落 ArialMT、lines_failed 仍是 0），库外的值必须**原样返回**');
+// ⚠️ **词汇表读不到 = P2 之后所有声明式守卫空转**（见 `assertVocabLoaded` 的注释）。
+//    放在最后当作"这份守卫自己可信吗"的自检：它失败时前面那些 ✓ **不算数**。
+assertVocabLoaded(translatorModule);
+console.log('✓ 词汇表可达（`dhampir_rule` 声明式派发真的在跑）');
+console.log('  钉住的是 P2 之后新增的一类**静默失效**：转译器找不到 `spec/effects.json` 时，');
+console.log('  原先只是"报告文案变粗"，现在会变成"特效一个都不转" —— 而退出码仍是 0。');
 console.log('  钉住的是 2026-10-06 的六条轨道开关（`[stage.lanes]`）：缺字段时"素材竖或画布竖 ⇒ 运镜/');
 console.log('  视觉特效默认关、音效只跟画布"，**显式开关优先于一切**（横画布也能关、竖画布也能开）——');
 console.log('  与 Rust `ProjectFile::lane_default` 四种方向组合逐值对拍');
 console.log('  钉住的是 M2 三条"报告里一行、成片里没有"：覆盖层 color/fade_in 两档、贴纸只有 name、');
 console.log('  以及 `style.camera` 没配时的**按档位默认倍率**（§18-A 起四档：特写 1.8 / 近 1.5 / 远 0.55 / 中 1.3，照抄模板）');
+
+let skippedStickerSpread = false;
+// ── ㊲ 贴纸「N 个事件不许塌成一张图」（2026-10-14 真事故）──────────────────
+//
+// 用户口径：「在某个项目内会有添加贴纸但是无法出现的问题，
+//            但是其他项目内更改贴纸位置时间、更换都是正常的」。
+//
+// 根因是**行为**不是形状：`pickSticker` 恒取 `files[0]`，而 `STICKER_SYNONYMS`
+// 把「搞笑 / 爆笑 / 笑」都映射到同一个库 tag「笑」⇒ 三个事件全取同一张。
+// 实测某工程 **5 个事件 → 只有 2 个素材**，4 条轨画的是同一张图 ⇒
+// 用户看到的就是「贴纸没出现」（那张图与他要的情绪毫无关系），而**报告里一行差异都没有**。
+//
+// 判据盯行为：同一映射的多次出现必须落到**不同**文件上。
+// ⚠️ 不能只判"有素材"—— 那正是塌陷时的表现（有 2 个素材、5 条轨）。
+{
+  const dir = mkdtempSync(join(tmpdir(), 'vt-sticker-spread-'));
+  try {
+    // ⚠️ 夹具必须有**真视频**：没有 `clip.mp4` 时贴纸轨一条都不生成，
+    //    而报告里**一行差异都没有**（实测踩过：tracks 只剩 v1/a0）。
+    const dir0 = mkdtempSync(join(tmpdir(), 'vt-sticker-src-'));
+    try {
+      execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi',
+        '-i', 'color=c=black:s=320x180:d=2:r=30', '-pix_fmt', 'yuv420p',
+        '-c:v', 'libx264', '-preset', 'ultrafast', join(dir0, 'clip.mp4')]);
+    } catch {
+      console.log('· 跳过贴纸分散判据：这台机器没有 ffmpeg');
+      rmSync(dir0, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true });
+      // ⚠️ 跳过大括号：用抛出标记跳出，下面 catch 会重建
+      throw new Error('SKIP_STICKER_SPREAD');
+    }
+    copyFileSync(join(dir0, 'clip.mp4'), join(dir, 'clip.mp4'));
+    rmSync(dir0, { recursive: true, force: true });
+    // 贴纸文件：造两张同 tag 的候选，让"分散"有东西可分。
+    const sdir = join(dir, 'assets', 'stickers');
+    mkdirSync(sdir, { recursive: true });
+    // 1×1 GIF（最小合法动图），两张**不同字节**的文件
+    const gifA = Buffer.from('R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==', 'base64');
+    writeFileSync(join(sdir, '笑_甲.gif'), gifA);
+    writeFileSync(join(sdir, '笑_乙.gif'), gifA);
+    // ⚠️ **必须有 `ysyk.toml`**：没有它 `loadStickerPackage` 返回 null ⇒
+    //    `pickSticker` 拿不到候选 ⇒ 贴纸轨**一条都不生成**，而报告里一行差异都没有。
+    //    （实测踩过：只有 gif 时 tracks 是 `v1, a0`、`drops` 是空。）
+    writeFileSync(join(sdir, 'ysyk.toml'), [
+      'name = "ysyk"',
+      '[[tags]]',
+      'tag = "笑"',
+      'files = [',
+      '    "笑_甲.gif",',
+      '    "笑_乙.gif",',
+      ']',
+      '',
+    ].join(String.fromCharCode(10)));
+
+    const toml = [
+      'config_version = 1',
+      'duration = 10.0',
+      '[project]',
+      'name = "spread"',
+      '[source]',
+      'video = "clip.mp4"',
+      '',
+      'sticker_source = ["ysyk"]',
+      '',
+      '[[segments]]',
+      'start = 0.0',
+      'end = 10.0',
+      'fx = "low"',
+      // 三个事件，tag **不同**但同义映射到**同一个**库 tag
+      '[[segments.events]]',
+      'type = "sticker"',
+      'time = 1.0',
+      'end = 2.0',
+      'keyword = "ysyk"',
+      'sticker_tag = "搞笑"',
+      'x = "40%"',
+      'y = "30%"',
+      '[[segments.events]]',
+      'type = "sticker"',
+      'time = 4.0',
+      'end = 5.0',
+      'keyword = "ysyk"',
+      'sticker_tag = "爆笑"',
+      'x = "40%"',
+      'y = "30%"',
+      '[[segments.events]]',
+      'type = "sticker"',
+      'time = 7.0',
+      'end = 8.0',
+      'keyword = "ysyk"',
+      'sticker_tag = "笑"',
+      'x = "40%"',
+      'y = "30%"',
+      '',
+    ].join(String.fromCharCode(10));
+
+    const doc = translatorModule.translate(
+      translatorModule.parseToml(toml), dir, join(dir, 'o.doc.json'));
+    const tracks = doc.timeline.tracks ?? [];
+    const refs = [];
+    for (const t of tracks) {
+      if (!String(t.id ?? '').startsWith('ssticker')) continue;
+      const lay = (t.layers ?? [])[0] ?? {};
+      const id = lay.source && lay.source.asset_id;
+      if (id) refs.push(id);
+    }
+    assert.equal(refs.length, 3,
+      '三个贴纸事件必须都进时间线，实得 ' + refs.length + '：' + JSON.stringify(refs));
+    // ⚠️ 判据是「**不许全塌成一张**」，不是「必须两两不同」——
+    //    候选只有 2 张时，3 个事件按序号取模必然是 A/B/A，那是**正确**行为。
+    //    老代码的表现是 A/A/A（`files[0]` 恒定）⇒ 这条断言必须能把它打红。
+    assert.ok(new Set(refs).size >= 2,
+      '同一映射的多个贴纸事件**不许全指向同一张图**（那就是 `files[0]` 恒定）—— ' +
+      '实得 ' + refs.length + ' 条轨只有 ' + new Set(refs).size + ' 个素材：' + JSON.stringify(refs));
+    assert.notEqual(refs[0], refs[1],
+      '同一映射的相邻两次出现必须落到**不同**文件上 —— 实得 ' + JSON.stringify(refs));
+  } catch (e) {
+    if (e && e.message !== 'SKIP_STICKER_SPREAD') throw e;
+    skippedStickerSpread = true;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+if (skippedStickerSpread) {
+  console.log('· 跳过贴纸分散判据（这台机器没有 ffmpeg）');
+}
+console.log('✓ 贴纸分散（N 个事件不许塌成一张图）');
+console.log('  钉住的是 2026-10-14 真事故：`pickSticker` 恒取 `files[0]`，而 `STICKER_SYNONYMS`');
+console.log('  把「搞笑/爆笑/笑」映射到同一个库 tag ⇒ 5 个事件只有 2 个素材、4 条轨画同一张图，');
+console.log('  用户看到的就是「贴纸没出现」—— 而报告里一行差异都没有。');
 
 if (process.argv.includes('--mutate')) await mutate();

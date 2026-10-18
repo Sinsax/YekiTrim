@@ -12,6 +12,17 @@
 //
 // 每条断言后面都跟一处**变异自证**：把源码改成"错的那一版"，检查必须翻面 ——
 // 少了它，断言可能只是匹配了注释里的字样（这个坑本仓踩过）。
+//
+// 2026-10-19 补 ⑥⑦⑧⑨（用户报「播放头落在屏蔽段里开始播 = 持续卡顿」）：
+//   ⑥ **根因**：`dhampirFrameAt` 的段起点比较要留半个素材帧容差。跳转目标是
+//      `sourceIn / srcFps` 这个秒值，乘回去会得到 122.99999999999999 < 123（实测 30fps 下
+//      0..200000 帧里 3270 个帧踩中）⇒ 判定永远说"这里没有帧" ⇒ tick 每帧重跳同一个位置。
+//      判据分静态 + **行为级**（把四个函数从源码里抠出来真跑，喂一份 123 帧起点的段落表）。
+//   ⑦ 跳转目标要经 `dhampirSnapForward` 前挪到"真的有帧"处，且 **tick / scheduleDhampir /
+//      dhampirPrerollTarget / playableJumpTarget 全走同一个入口**（预滚与跳错开 = 白备一趟）。
+//   ⑧ 从屏蔽段里按播放：`togglePlay` 必须**在 play() 之前**调 `playableJumpTarget()` 并落位，
+//      不许上定格遮罩（那时旧画面还没上屏）。按**函数体里的调用顺序**判，不是 grep 名字。
+//   ⑨ 同一跳转目标 400ms 内被第二次要求时不许再无脑 seek（防"未来回归变成无限重跳"）。
 import { strict as assert } from 'node:assert';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -22,6 +33,8 @@ const SFC = join(HERE, '..', 'src', 'components', 'PolishPreview.vue');
 const SRC = readFileSync(SFC, 'utf8');
 
 let checks = 0;
+/** 变异自证条数（只用于汇总行；不参与判据） */
+let mutations = 0;
 const ok = (cond, what, mutated = false) => {
   checks += 1;
   assert.ok(mutated ? !cond : cond, what);
@@ -31,6 +44,7 @@ const ok = (cond, what, mutated = false) => {
 function mutate(from, to) {
   const hits = SRC.split(from).length - 1;
   assert.equal(hits, 1, `变异台自己错了：「${from.slice(0, 40)}…」在 SFC 里命中 ${hits} 次（必须是 1）`);
+  mutations += 1;
   return SRC.replace(from, to);
 }
 
@@ -62,6 +76,7 @@ ok(swapOrderOk(SRC), '换台顺序反了：先 `prev.pause()` 再翻 `activeStag
     '  prev.pause()\n  activeStage.value = 1 - activeStage.value$1',
   );
   assert.notEqual(bad, SRC, '变异自证：换台顺序那一处没匹配上 —— 自证台自己错了');
+  mutations += 1;
   ok(swapOrderOk(bad), '变异自证：顺序反过来竟然没被识别出来', true);
 }
 
@@ -139,6 +154,207 @@ ok(/ref="stage[01]Ref"/.test(SRC), 'DOM 预览腿被删了 —— P3 要求它**
   );
 }
 
-console.log(`✓ 精修预览 A/B 预滚：${checks} 项全绿（含 4 处变异自证）`);
+// ---- ⑥ **根因：段起点的浮点陷阱**（2026-10-19）----
+//
+// 用户报「播放头落在屏蔽段里开始播 = 持续卡顿」的根因不在 tick 的跳转逻辑，而在
+// dhampirFrameAt 的**边界判据**：跳转目标是 sourceIn / srcFps 这个秒值，乘回去会得到
+// 122.99999999999999 < 123（实测 30fps 下 0..200000 帧里 **3270** 个帧踩中、
+// 25fps **9174** 个、60fps **3270** 个）⇒ 判定永远说"这里没有帧" ⇒ 每帧重跳同一个位置。
+//
+// 判据分两层，缺一不可：
+//   ① 静态：段起点比较必须减掉半个素材帧的容差（edgeTol = 0.5）；
+//   ② 行为：把 dhampirFrameAt / dhampirNextSourceStart / dhampirSnapForward /
+//      dhampirJumpTarget 从源码里抠出来**真跑一遍**，喂一份带 123 帧起点的段落表。
+//      变异（改回 srcPos >= seg.sourceIn）必须让**两层一起翻面**。
+const fnBody = (src, name) => {
+  const start = src.indexOf('function ' + name + '(');
+  if (start < 0) return '';
+  let i = src.indexOf('{', start);
+  let depth = 0;
+  for (; i < src.length; i += 1) {
+    const ch = src[i];
+    if (ch === '/' && src[i + 1] === '/') {
+      const nl = src.indexOf('\n', i);
+      if (nl < 0) break;
+      i = nl;
+      continue;
+    }
+    if (ch === '/' && src[i + 1] === '*') {
+      const e = src.indexOf('*/', i + 2);
+      i = e < 0 ? src.length : e + 1;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '`') {
+      const q = ch;
+      i += 1;
+      while (i < src.length && src[i] !== q) {
+        if (src[i] === '\\') i += 1;
+        i += 1;
+      }
+      continue;
+    }
+    if (ch === '{') depth += 1;
+    else if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) return src.slice(start, i + 1);
+    }
+  }
+  return '';
+};
+const constNum = (src, name) => {
+  const m = src.match(new RegExp('const ' + name + ' = ([0-9.]+)'));
+  return m ? Number(m[1]) : null;
+};
+const edgeTolOk = (src) => {
+  const f = fnBody(src, 'dhampirFrameAt');
+  return /const edgeTol = 0\.5/.test(f)
+    && /srcPos >= seg\.sourceIn - edgeTol && srcPos < seg\.sourceIn \+ lenSrc/.test(f);
+};
+ok(edgeTolOk(SRC), 'dhampirFrameAt 的段起点比较没留半个素材帧容差 —— 跳转目标乘回去 122.99999999999999 就永远判"没有帧"，每帧重跳 = 持续卡顿');
+
+// 行为级：真跑一遍抠出来的四个函数。段落表 A[0,100) 帧 / 屏蔽 [100,123) / B 从 **123 帧**起 / C 从 900 帧起。
+const jumpMathOf = (src) => {
+  const parts = ['dhampirFrameAt', 'dhampirNextSourceStart', 'dhampirSnapForward', 'dhampirJumpTarget']
+    .map((n) => fnBody(src, n));
+  if (parts.some((p) => !p)) return null;
+  const step = constNum(src, 'DHAMPIR_SNAP_STEP_FRAMES');
+  const maxFrames = constNum(src, 'DHAMPIR_SNAP_MAX_FRAMES');
+  if (step === null || maxFrames === null) return null;
+  const segments = [
+    { frameStart: 0, frameEnd: 100, sourceIn: 0 },
+    { frameStart: 100, frameEnd: 200, sourceIn: 123 },
+    { frameStart: 200, frameEnd: 300, sourceIn: 900 },
+  ];
+  try {
+    return new Function(
+      'let dhampirFps={value:30},dhampirSourceFps=30;let dhampirSegments=' + JSON.stringify(segments) + ';'
+        + 'const DHAMPIR_SNAP_STEP_FRAMES=' + step + ',DHAMPIR_SNAP_MAX_FRAMES=' + maxFrames + ';'
+        + parts.join('\n')
+        + ';return { frameAt: dhampirFrameAt, nextStart: dhampirNextSourceStart, jumpTarget: dhampirJumpTarget };',
+    )();
+  } catch (e) {
+    return null;
+  }
+};
+const jumpMathOk = (m) => !!m
+  && m.frameAt(110 / 30) === null                 // 110 帧（3.666s）落在被掐掉的 [100,123) 里
+  && m.nextStart(110 / 30) !== null
+  && m.frameAt(m.nextStart(110 / 30)) === 100     // ★ 保证：nextSourceStart 的原样输出落回段落表必须"有帧"
+  && m.jumpTarget(110 / 30) !== null
+  && m.frameAt(m.jumpTarget(110 / 30)) === 100
+  && m.jumpTarget(32) === null;                   // 片尾：后面没有保留段 ⇒ 不许瞎跳
+ok(jumpMathOk(jumpMathOf(SRC)), '行为级：跳转目标（含 nextSourceStart 的原样输出）落回段落表是 null —— 素材帧率换算 / 容差 / 收敛有一处不对');
+{
+  const bad = mutate('seg.sourceIn - edgeTol', 'seg.sourceIn');
+  ok(edgeTolOk(bad), '变异自证：段起点改回 srcPos >= seg.sourceIn 竟然没被识别出来', true);
+  ok(jumpMathOk(jumpMathOf(bad)), '变异自证：去掉容差后行为级判据竟然没翻面（123/30*30 那一下没抓到）', true);
+}
+
+// 段尾**不许**跟着放宽：会把下一段的开头吞进上一段（跨屏蔽区间时多放出该掐掉的内容）。
+const endStrictOk = (src) => {
+  const f = fnBody(src, 'dhampirFrameAt');
+  return /srcPos < seg\.sourceIn \+ lenSrc\)/.test(f) && !/seg\.sourceIn \+ lenSrc \+/.test(f);
+};
+ok(endStrictOk(SRC), 'dhampirFrameAt 的段尾比较被放宽了 —— 会把下一段开头吞进上一段（跨屏蔽区间多放内容）');
+{
+  const bad = mutate('srcPos < seg.sourceIn + lenSrc)', 'srcPos < seg.sourceIn + lenSrc + edgeTol)');
+  ok(endStrictOk(bad), '变异自证：段尾也加容差竟然没被识别出来', true);
+}
+
+// ---- ⑦ 跳转目标要**推进到真的有帧**，且所有消费者吃同一个入口 ----
+const snapOk = (src) => {
+  const snap = fnBody(src, 'dhampirSnapForward');
+  const jump = fnBody(src, 'dhampirJumpTarget');
+  if (!snap || !jump) return false;
+  // 契约：1/4 素材帧为步长、最多前挪 2 帧（再大就会把下一段开头挪成第 3 帧 = 丢内容）
+  if (constNum(src, 'DHAMPIR_SNAP_STEP_FRAMES') !== 0.25) return false;
+  if (constNum(src, 'DHAMPIR_SNAP_MAX_FRAMES') !== 2) return false;
+  return /const raw = dhampirNextSourceStart\(seconds\)/.test(jump)
+    && /return raw === null \? null : dhampirSnapForward\(raw\)/.test(jump)
+    && /if \(dhampirFrameAt\(t\) !== null\) return t/.test(snap)
+    && /dhampirFrameAt\(x\) !== null/.test(snap);
+};
+ok(snapOk(SRC), '没有 dhampirSnapForward（1/4 素材帧、最多 2 帧）或 dhampirJumpTarget 没让 nextSourceStart 的输出过它');
+const consumersOk = (src) => {
+  const preroll = fnBody(src, 'dhampirPrerollTarget');
+  const sched = fnBody(src, 'scheduleDhampir');
+  const tickFn = fnBody(src, 'tick');
+  const playable = fnBody(src, 'playableJumpTarget');
+  return /return dhampirJumpTarget\(t\)/.test(preroll)
+    && /dhampirJumpTarget\(el \? el\.currentTime : current\.value\)/.test(sched)
+    && /const target = dhampirJumpTarget\(v\.currentTime\)/.test(tickFn)
+    && /const next = dhampirJumpTarget\(t\)/.test(playable)
+    && !/const target = dhampirNextSourceStart\(/.test(src);
+};
+ok(consumersOk(SRC), 'tick / scheduleDhampir / dhampirPrerollTarget / playableJumpTarget 没全走 dhampirJumpTarget —— 预滚与跳会错开（白备一趟）');
+{
+  const bad = mutate('  return raw === null ? null : dhampirSnapForward(raw)', '  return raw');
+  ok(snapOk(bad), '变异自证：wrapper 里去掉 snap 竟然没被识别出来', true);
+}
+{
+  const bad = mutate('      const target = dhampirJumpTarget(v.currentTime)', '      const target = dhampirNextSourceStart(v.currentTime)');
+  ok(consumersOk(bad), '变异自证：tick 退回裸 nextSourceStart 竟然没被识别出来', true);
+}
+
+// ---- ⑧ 从屏蔽段里按播放 = **play() 之前**就落到可播放位置 ----
+// 判据看的是 togglePlay 的**函数体里的调用顺序**（不是全文 grep 名字）：
+//   playableJumpTarget()  →  v.currentTime = jumpTarget  →  v.play()
+const prePlayJumpOk = (src) => {
+  const body = fnBody(src, 'togglePlay');
+  if (!body) return false;
+  const callAt = body.indexOf('playableJumpTarget()');
+  const seekAt = body.indexOf('v.currentTime = jumpTarget');
+  const playAt = body.indexOf('v.play()');
+  // 起播这一跳不许上定格遮罩：那时旧画面还没上屏（遮罩是"已经在播"才用的）
+  return callAt > 0 && seekAt > callAt && playAt > seekAt && !/beginSkipFreeze\(/.test(body);
+};
+ok(prePlayJumpOk(SRC), 'togglePlay 没在 play() 之前调 playableJumpTarget() 并落位 —— 从屏蔽段起播仍会先放一帧旧画面再抖一下');
+{
+  // 变异：把整套起播跳挪到 play() **之后**（= 回到旧行为），顺序判据必须翻面。
+  const preBlock = [
+    '    const jumpTarget = playableJumpTarget()',
+    '    if (jumpTarget !== null) {',
+    '      v.currentTime = jumpTarget',
+    '      syncDhampirTime(jumpTarget)',
+    '      current.value = v.currentTime',
+    '      player.seek(current.value)',
+    '      prerollReset()        // 手动跳位后上一趟预滚的目标就作废了（与 seekTo 同一条纪律）',
+    "      emit('time', v.currentTime)",
+    '      if (bgOn.value && bgRef.value) bgRef.value.currentTime = jumpTarget',
+    '    }',
+    '',
+  ].join('\n');
+  const moved = SRC.replace(preBlock, '');
+  const bad = moved.replace(
+    '    v.play().catch(() => {})\n    setPlaying(true)',
+    '    v.play().catch(() => {})\n    playableJumpTarget()\n    setPlaying(true)',
+  );
+  assert.ok(moved !== SRC && bad !== moved, '变异自证：起播跳那一块没匹配上 —— 自证台自己错了');
+  mutations += 1;
+  ok(prePlayJumpOk(bad), '变异自证：把起播跳挪到 play() 之后竟然没被识别出来', true);
+}
+
+// ---- ⑨ 防呆：同一个跳转目标不允许短时间被重复 seek ----
+// 这不是当前 bug 的修法（那是 ⑥⑦），而是给"未来任何一环被改回去"准备的护栏：
+// 失败模式是每帧重跳同一个位置（浏览器每帧打断解码器 ⇒ 永久卡顿，且**不报错**）。
+const jumpGuardOk = (src) => {
+  const fn = fnBody(src, 'dhampirJumpGuardAllows');
+  const tickFn = fnBody(src, 'tick');
+  const sched = fnBody(src, 'scheduleDhampir');
+  return /const DHAMPIR_JUMP_GUARD_MS = 400/.test(src)
+    && /Math\.abs\(target - st\.target\) < 1e-6/.test(fn)
+    && /addClient\(/.test(fn)
+    && /dhampirJumpGuardAllows\('tick', target\)/.test(tickFn)
+    && /dhampirJumpGuardAllows\('schedule', target\)/.test(sched);
+};
+ok(jumpGuardOk(SRC), '没有"同一跳转目标 400ms 内不许重跳"的闸门（tick 与 scheduleDhampir 两处都要挂）—— 未来任何回归都会变成无限重跳');
+{
+  const bad = mutate("if (target !== null && dhampirJumpGuardAllows('tick', target)) {", 'if (target !== null) {');
+  ok(jumpGuardOk(bad), '变异自证：摘掉 tick 的防重跳闸竟然没被识别出来', true);
+}
+
+
+console.log('✓ 精修预览 A/B 预滚：' + checks + ' 项全绿（含 ' + mutations + ' 处变异自证）');
 console.log('  台上那块 = computed(activeStage) / 换台先翻 activeStage 再 pause / Dhampir 源没就绪不画 + 备用源换绑');
 console.log('  P3：wasm 主腿（挂载自动进 + 失败自动退回 DOM + DOM 兜底仍在）');
+console.log('  屏蔽段起播：段起点半个素材帧容差 / 跳转目标 snap 到有帧处 / 同一目标 400ms 防重跳 / play() 前落位');

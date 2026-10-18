@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::parse::srt::Subtitle;
-use crate::project::{Event, Segment};
+use crate::project::{Event, MuteRange, Segment};
 use yekitrim_core::config::LlmConfig;
 use yekitrim_core::llm::agent::{
     extract_json_array, AgentItem, AgentProgress, AgentTask, AgentWindow,
@@ -36,6 +36,8 @@ pub struct EventGenTask {
     local_sticker_text: String,
     /// 切片目录，只用于用量记账归因。
     project: Option<String>,
+    /// **这一趟不该产出事件的区间**（手剪屏蔽段）。默认空 = 老行为。
+    mute_ranges: Vec<MuteRange>,
 }
 
 impl EventGenTask {
@@ -55,7 +57,19 @@ impl EventGenTask {
             sfx_blacklist,
             local_sticker_text,
             project: None,
+            mute_ranges: Vec::new(),
         }
+    }
+
+    /// 告诉任务「哪些区间已经被手剪掉了」（见 [`EventGenTask::parse_output`] 的剔除）。
+    ///
+    /// 为什么需要它：屏蔽段里的**字幕**在进 LLM 之前就已经被过滤掉了（`cmd_llm`），
+    /// 但模型仍可能按上下文把事件写到那段时间里（比如照抄 ±3s 窗口外的邻居）。
+    /// 那一段在成片里不存在 ⇒ 生成出来就是浪费，还会挤占后处理的预算。
+    /// ⚠️ 这里只**丢弃这一趟的生成物**，`polish.toml` 里已有的照旧一个字节都不动。
+    pub fn with_mute_ranges(mut self, ranges: Vec<MuteRange>) -> Self {
+        self.mute_ranges = ranges;
+        self
     }
 
     /// 用量记账归因（链路名 + 切片目录）。
@@ -182,7 +196,19 @@ impl AgentTask<Vec<Event>> for EventGenTask {
         // 模型偶尔仍按老字段写 `duration` → 统一升级成 `end`（与老配置同一条路）
         let mut value: Value = serde_json::from_str(&json)?;
         crate::project::upgrade_event_times(&mut value);
-        let events: Vec<Event> = serde_json::from_value(value)?;
+        let mut events: Vec<Event> = serde_json::from_value(value)?;
+        // **屏蔽段里不产出事件**（2026-10-19）：那一段在成片里不存在，写出去只会挤占预算、
+        // 还会在编辑器里显示成「这里怎么有个看不见的贴纸」。只丢这一趟的生成物 ——
+        // `polish.toml` 里已有的一个字节都不动（屏蔽只做标记，见 `project/AGENTS.md`）。
+        let before = events.len();
+        events.retain(|ev| !crate::project::event_starts_muted(&self.mute_ranges, ev));
+        if before > events.len() {
+            tracing::info!(
+                "  ✂ 屏蔽区间内不生成事件：剔除 {} 条（生成 {} 条）",
+                before - events.len(),
+                before
+            );
+        }
         Ok(events)
     }
 
@@ -225,7 +251,16 @@ impl AgentTask<Vec<Event>> for EventGenTask {
         // 老 checkpoint 里的事件还是 `duration` 字段 → 升级后再解析
         let mut value = value;
         crate::project::upgrade_event_times(&mut value);
-        Ok(serde_json::from_value(value)?)
+        let mut windows: Vec<AgentWindow<Vec<Event>>> = serde_json::from_value(value)?;
+        // **续传来的窗口也过同一道屏蔽闸**：checkpoint 可能是改了屏蔽范围之前存的
+        // （甚至可能是上一版代码存的），命中之后拿回来的事件照样要落在"看不见的段"里 ——
+        // 判据与 [`EventGenTask::parse_output`] 同一个谓词，别只在新生成那条路上过滤。
+        for w in &mut windows {
+            if let Some(out) = &mut w.output {
+                out.retain(|ev| !crate::project::event_starts_muted(&self.mute_ranges, ev));
+            }
+        }
+        Ok(windows)
     }
 }
 
@@ -241,6 +276,7 @@ pub async fn run_event_agent(
     sticker_source: &[String],
     sfx_blacklist: &[String],
     local_sticker_text: String,
+    mute_ranges: &[MuteRange],
     llm_cfg: &LlmConfig,
     project: Option<&Path>,
     checkpoint_path: Option<&Path>,
@@ -258,7 +294,8 @@ pub async fn run_event_agent(
         sfx_blacklist.to_vec(),
         local_sticker_text,
     )
-    .with_project(project);
+    .with_project(project)
+    .with_mute_ranges(mute_ranges.to_vec());
     let windows = task.build_windows::<Vec<Event>>();
     // 并发跟 .yekitrim/llm.toml 的 [llm] max_concurrent（精修没有自己的并发配置项）
     let agent = yekitrim_core::llm::agent::Agent::new(llm_cfg.clone())

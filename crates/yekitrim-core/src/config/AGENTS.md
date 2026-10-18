@@ -180,8 +180,14 @@ max_tokens = 32768
 所以写侧 `to_toml_commented()` 在文本里补一行、读侧 `validate.rs` 用
 `version::strip_version_key()` 摘掉再看结构体。
 
-判据：`config::version::tests`（11 条，含**文件版本更高时不动**、幂等、注释不丢、
-程序级写回+备份 / 工程级不碰磁盘）。**变异自证**跑过：`CONFIG_VERSION` 改回 0、
+⚠️ **工程级那份"只在内存里升"的代价**：磁盘上那几行**永远在** ⇒ 每次读都会重新发现它。
+所以：① 报要**去重**（`report_retired`：每文件每进程只报一次，实测 100ms 曾刷 10 条）；
+② 真清走 **`clean_retired_keys_in`**（CLI `yekitrim config migrate <工程目录|toml>`，
+清前留 `.bak-v<旧>`；**返回空 = 不动磁盘**）。`migrate_text` 是**纯函数、不打日志**，
+它只把清掉的键放进 `Prepared::retired`（日志在调用方 —— 只有调用方知道路径与"写没写回"）。
+
+判据：`config::version::tests`（13 条，含**文件版本更高时不动**、幂等、注释不丢、
+程序级写回+备份 / 工程级不碰磁盘 / `clean_retired_keys_in` 真写回且幂等 / **同一文件只报一次**）。**变异自证**跑过：`CONFIG_VERSION` 改回 0、
 或把 4 个死键从 `retired_in` 里去掉，都会让判据翻面（不是空转）。
 
 ### 写入纪律

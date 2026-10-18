@@ -25,6 +25,8 @@
 // ④ 两个 ＋ 各自**直接**建对应 kind 的元素（不再有"二选一菜单"）。
 // ⑤ ⚠️ **反例**：`elementKindOf` 认不出时必须是 `'unknown'`，**不许默认成 `'text'`**
 //    （默认成文字 = 把坏数据伪装成正常元素）。
+// ⑥ 界面上**不许再出现「元素」这个类别名** —— 含 ASCII 的**磁盘载体名 `element`**
+//    （用户原话：「因为元素(原文字+贴纸)已分离，请查找元素相关文案进行修改」）。
 //
 // 用法：node scripts/check-editor-lane-split.mjs   （退出码非 0 即失败）
 
@@ -45,9 +47,16 @@ function ok(cond, what) {
 
 const src = readFileSync(TL, 'utf8')
 
-// 剥注释（`//` 与 `/* */`）—— 本文件里解释性注释大量提到这些符号，
+// 剥注释 —— 本文件里解释性注释大量提到这些符号，
 // 不剥的话判据会被**它自己让人写下的说明**顶翻。⚠️ `(?<!:)` 避开 `https://`。
+//
+// ⚠️⚠️ **`.vue` 里必须连 HTML 注释（`<!-- -->`）一起剥**（2026-10-15 踩到）：
+//    只剥 `//` 与 `/* */` 时，写在 `<template>` 里的警告（"别再加回 `xxx`"）
+//    **本身就是一段代码**，于是"`xxx` 不许出现"的判据被**它自己的说明**顶翻 ——
+//    假红，而且修法看起来像"把警告删掉"（删掉解释 = 后人不知道为什么）。
+//    ⇒ 剥注释不是洁癖，是让判据读的是**行为**而不是**关于行为的散文**。
 const stripComments = (s) => s
+  .replace(/<!--[\s\S]*?-->/g, '')
   .replace(/\/\*[\s\S]*?\*\//g, '')
   .replace(/(^|[^:])\/\/[^\n]*/g, '$1')
 const code = stripComments(src)
@@ -115,23 +124,30 @@ if (byId.text && byId.sticker) {
 }
 
 // ---------------------------------------------------------------------------
-// ①b **两枚眼睛管同一个开关** —— 只有贴纸轨许有眼睛
+// ①b **每条内容轨都要有一枚能点的眼睛**（2026-10-15 用户口径，**逆转了旧设计**）
 // ---------------------------------------------------------------------------
 //
-//  `文字` 与 `贴纸` 在磁盘上是**同一条轨**（都 `lane: 'sticker'`）。
-//  两条都画眼睛 = 两枚按钮管同一个 `[stage.lanes].sticker` 开关 ——
-//  点哪一枚另一枚都跟着变，用户看到的是"我只关了文字，贴纸怎么也没了"。
-//  ⇒ 眼睛留在贴纸轨，文字轨放**不可点的占位**（`sharedEye`）。
+//  ⚠️⚠️ **旧设计（已作废）**：`文字` 与 `贴纸` 磁盘上同一条轨（都 `lane: 'sticker'`）
+//  ⇒ 两条都画眼睛 = 两枚按钮管同一个 `[stage.lanes].sticker` 开关，
+//  点哪一枚另一枚都跟着变 —— 当时判断这是缺陷，于是**文字轨放不可点的占位**。
+//
+//  ⚠️ **那个判断站不住**（用户报的正是它）：`laneEnabled` 的键**就是轨道名**
+//  （两条都是 `'sticker'`）⇒ 共用开关**恰恰意味着**两枚眼睛读数一致、谁点都生效 ——
+//  那正是用户要的（"文字不渲染"与"贴纸不渲染"本来就是同一件事，
+//  落盘也只有一个 `[stage.lanes].sticker`）。占位符带来的**真实**体验是
+//  "文字轨前面有个坏掉的符号、还点不动"。
+//  ⇒ 现在两条都走**同一条**可点分支；`sharedEye` 字段与占位支**都已删除**。
 {
-  ok(byId.text && byId.text.sharedEye === true,
-    '①b 文字轨必须标 `sharedEye: true`（它的眼睛与贴纸轨是同一个开关，'
-    + '不能画成第二枚可点的眼睛）')
-  ok(byId.sticker && !byId.sticker.sharedEye,
-    '①b 贴纸轨**不许**标 `sharedEye` —— 眼睛留在它身上（开关名就是 `sticker`）')
-  ok(/v-if="lane\.lane && !lane\.sharedEye"/.test(code),
-    '①b 眼睛的 `v-if` 必须排除 `sharedEye` 那条（否则两枚眼睛管同一个开关）')
-  ok(/v-else-if="lane\.sharedEye"/.test(code),
-    '①b `sharedEye` 那条要有自己的占位分支（让用户知道为什么这里没有眼睛）')
+  // 占位支不许回来（字段或模板任一残留都算）。
+  ok(!/sharedEye/.test(code),
+    '①b `sharedEye` 占位机制**不许回来** —— 文字轨要一枚**真的能点**的眼睛'
+    + '（用户报过"前面那个符号不对、还点不动"）')
+  // 眼睛分支只按 `lane.lane` 门控（不是"排除某条"）。
+  ok(/v-if="lane\.lane"/.test(code),
+    '①b 眼睛的 `v-if` 只许按 `lane.lane` 门控（每条有轨道名的轨都画眼睛）')
+  // 两条泳道的 `lane` 都是 `sticker` ⇒ 它们读到的是同一个开关（这是**对的**）。
+  ok(byId.text && byId.text.lane === 'sticker' && byId.sticker && byId.sticker.lane === 'sticker',
+    '①b 文字与贴纸的 `lane` 都必须是 `sticker`（同一条磁盘轨 ⇒ 同一个眼睛开关）')
 }
 
 // ---------------------------------------------------------------------------
@@ -199,6 +215,118 @@ ok(!/elementMenu|openElementMenu/.test(code),
 
 // ---------------------------------------------------------------------------
 
+
+// ---------------------------------------------------------------------------
+// ⑥ ⚠️⚠️ **界面上不许再出现「元素」这个类别名**（2026-10-15 用户口径）
+//
+// 用户原话：「**因为元素(原文字+贴纸)已分离，请查找元素相关文案进行修改**」。
+//
+// 轨道分家之后，"元素"作为一个**类别**在界面上已经不存在了 —— 用户只看得到
+// 「文字」与「贴纸」两类。而属性面板顶部那行「类型」此前显示的是词汇表的
+// `element.label` = **「元素（文字 / 贴纸）」** ⇒ 把已经分开的两样东西**又并回一个名字**
+// 摆在用户面前（他刚要求分开的就是这个）。
+//
+// ⚠️ 判据只查**用户看得见的文案**：模板插值（`{{ }}`）与 `label`/`title`/placeholder 的值。
+//    注释不查 —— 注释里说"元素轨"是在解释代码概念，改了反而失真。
+// ⚠️ 词表 `spec/effects.json` 的 `element.label` **不改**：它喂的是 `docs/` 的生成物
+//    （`polish-events-reference.md` 等），属于**数据面**的名字；这里管的是**界面**口径。
+//
+// ⚠️⚠️ **ASCII 的 `element` 同样是「元素相关文案」**（2026-10-15 收尾）：上一批只查了「元素」
+//    二字，而属性面板「类型」行那枚回显写的是 `element · {{ kind }}` —— 判据漏了，
+//    用户照旧看见 **「element · sticker」/「element · text」**（他报的就是这两个字符串）。
+//    ②b 补上这条：它查 ASCII `element`，与 ② 的 `/元素/` **正交**。
+// ---------------------------------------------------------------------------
+{
+  // ① 「类型」行：element 必须按真实 kind 显示文字 / 贴纸。
+  //    ⚠️⚠️ **判据要取"那一行"，不是"全文某处出现过这个模式"** —— 本轮自证抓到：
+  //       把 `TYPE_LABELS[...]` 拼在那个三元表达式**前面**（`… || (elementKindOf(…) === 'text' ? …`）
+  //       时，模式照样命中、判据照样绿，而用户看到的是「元素（文字 / 贴纸）」。
+  //       症状正是**判据被"模式存在"满足、而不是被"行为正确"满足**。
+  // ⚠️ 那个 `<b>` **跨好几行**（三元表达式换行写），所以要**从 `<b>` 拼到 `</b>`** ——
+  //    只看单行的话 `'贴纸'` 在下一行、判据会假红。
+  const bStart = code.indexOf('<b>{{ elementKindOf')
+  const elRow = bStart >= 0 ? code.slice(bStart, code.indexOf('</b>', bStart)) : ''
+  ok(!!elRow, '⑥ 找得到「类型」行里那个按 kind 显示的元素行（结构变了要改本判据）')
+  ok(!!elRow && !/TYPE_LABELS/.test(elRow),
+    '⑥ 「类型」行对 element **不许**引 `TYPE_LABELS`（那句是给文档/数据面的合并名；'
+    + '拼进来用户就会看到「元素（文字 / 贴纸）」）')
+  ok(!!elRow && /'文字'/.test(elRow) && /'贴纸'/.test(elRow),
+    '⑥ 「类型」行对 element 必须按真实 kind 显示「文字」/「贴纸」')
+
+  // ② **模板里的可见文案**不许含「元素」二字。
+  //    ⚠️ 取**剥过注释的**模板段：本文件里解释"为什么不能用元素这个词"的注释
+  //       本身就大量含「元素」，不剥就是**判据被自己的说明顶翻**。
+  const tplEnd = src.indexOf('<script')
+  const tpl = stripComments(tplEnd > 0 ? src.slice(0, tplEnd) : src)
+  const visible = []
+  // ⚠️ 插值里取**字符串字面量**，不是整条表达式：`{{ elementKindOf(selItem) === 'text' ? '文字' }}`
+  //    里的 `elementKindOf` 是**代码**、不是给用户看的字 —— 整条拿去测会**假红**。
+  for (const m of tpl.matchAll(/\{\{([^}]*)\}\}/g)) {
+    for (const s of m[1].matchAll(/['"]([^'"]*)['"]/g)) visible.push(s[1])
+  }
+  for (const m of tpl.matchAll(/<label>([^<]*)<\/label>/g)) visible.push(m[1])
+  for (const m of tpl.matchAll(/placeholder="([^"]*)"/g)) visible.push(m[1])
+  for (const m of tpl.matchAll(/title="([^"]*)"/g)) visible.push(m[1])
+  const badVisible = visible.filter((s) => /元素/.test(s))
+  ok(badVisible.length === 0,
+    `⑥ 模板里用户看得见的文案不许出现「元素」（已分离，用户只看得到文字 / 贴纸）；`
+    + `实得 ${badVisible.length} 处：${badVisible.map((s) => s.trim().slice(0, 40)).join(' | ')}`)
+
+  // ②b ⚠️⚠️ **「类型」行的回显里不许再出现 `element` 这个载体名**（2026-10-15 收尾）
+  //
+  // 上一批只改了 `<b>`（按 kind 显示「文字」/「贴纸」），紧跟其后那枚 mono 回显
+  // 还写着 `element · {{ selItem.kind }}` —— 用户看到的正是 **「element · sticker」/
+  // 「element · text」**：刚要求拆开的两样东西**又被一个合并名捆在一起**摆回他面前。
+  //
+  // ⚠️ `element` 是**磁盘上的载体名**（两条泳道共用 `type: "element"`，Rust `Lane::of_event`
+  //    也把它映到 `Lane::Sticker`），属于**数据面** —— 界面上一个都不该露。
+  // ⚠️ 它是 ASCII 词，**不在上面 ② 的 `/元素/` 判据里** ⇒ 单独判一条；
+  //    不补的话这类回显可以一路漏下去（上一批就是这么漏的）。
+  // ⚠️ 只查**用户看得见的文案**：插值里的字符串字面量 + 去掉标签/插值之后的**静态文本节点**
+  //    （`element · ` 正是后者）。`elementKindOf(...)` 是**代码**、不是文案，不许因此假红。
+  const typeRoBlock = (s) => {
+    const i = s.indexOf('class="type-ro"')
+    if (i < 0) return ''
+    const j = s.indexOf('</div>', i)
+    return j < 0 ? s.slice(i) : s.slice(i, j)
+  }
+  const visibleOf = (s) => {
+    const out = []
+    for (const m of s.matchAll(/\{\{([^}]*)\}\}/g)) {
+      for (const t of m[1].matchAll(/['"]([^'"]*)['"]/g)) out.push(t[1])
+    }
+    out.push(...s.replace(/\{\{[\s\S]*?\}\}/g, ' ').replace(/<[^>]*>/g, ' ').split(/\s+/))
+    return out.filter(Boolean)
+  }
+  const roBlock = typeRoBlock(tpl)
+  ok(!!roBlock, '⑥ 找得到「类型」行那个 `type-ro` 块（结构变了要改本判据）')
+  const roTexts = roBlock ? visibleOf(roBlock) : []
+  const badRo = roTexts.filter((s) => /element/i.test(s))
+  ok(badRo.length === 0,
+    '⑥⚠️ 「类型」行的**可见文案**不许出现磁盘载体名 `element`（用户看到的会是'
+    + '「element · sticker」/「element · text」，等于把刚分开的两样又捆成一个名字）；'
+    + `实得 ${badRo.length} 处：${badRo.map((s) => s.trim().slice(0, 40)).join(' | ')}`)
+  ok(roTexts.length > 0, '⑥ [自证] 「类型」行取文案的算术必须抽得到内容（否则这条判据恒过）')
+  // [自证] 把 `element · ` 前缀塞回去，上面那条必须翻面
+  // （⚠️ 锚点写错时 `replace` 是**静默 no-op**，那时"自证"变成恒过判据）
+  const mutRo = tpl.replace('class="muted small mono">{{ selItem.kind',
+    'class="muted small mono">element · {{ selItem.kind')
+  ok(mutRo !== tpl, '⑥ [自证] 变异真的改到了「类型」行（锚点还在吗）')
+  const mutRoTexts = mutRo !== tpl ? visibleOf(typeRoBlock(mutRo)) : []
+  ok(mutRoTexts.some((s) => /element/i.test(s)),
+    '⑥ [自证] 把 `element · ` 塞回「类型」行后判据必须翻面（否则它抓不到任何东西）')
+
+  // ③ [自证] 取文案的算术必须真的抽得到东西 —— 抽不到就是恒真判据。
+  ok(visible.length > 0, '⑥ [自证] 取文案的算术必须抽得到内容（否则这条判据恒过）')
+  // ④ [自证] 塞一句带「元素」的可见 label，上面那条必须翻面。
+  //    ⚠️ 锚点用模板里**确实存在**的 label（写错锚点时 `replace` 是静默 no-op，
+  //       自证就变成"恒过" —— 本轮先用了 `<label>位置</label>`，而它早已改成 `pos-lbl`）。
+  const mutatedTpl = tpl.replace(/<label>字幕内容<\/label>/, '<label>元素内容</label>')
+  ok(mutatedTpl !== tpl, '⑥ [自证] 变异真的改到了模板（锚点还在吗）')
+  const mutVisible = [...mutatedTpl.matchAll(/<label>([^<]*)<\/label>/g)].map((m) => m[1])
+  ok(mutVisible.some((s) => /元素/.test(s)),
+    '⑥ [自证] 塞一句「元素位置」后判据必须翻面（否则它抓不到任何东西）')
+}
 console.log(`编辑器「文字 / 贴纸」分家：${pass} 项通过，${fail} 项失败`)
 if (fail) {
   console.log()
