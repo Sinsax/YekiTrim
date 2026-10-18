@@ -1130,7 +1130,7 @@ fn staged_font_dir(translated: &Path) -> PathBuf {
 /// 平铺用**硬链接**（同一卷上零拷贝；失败退回真拷贝）。**文件名随意** ——
 /// libass 认的是字体内部的族名，不是文件名。
 ///
-/// 返回平铺了几支。判据：scripts/check-font-parity.mjs。
+/// 返回平铺了几支。判据：`平铺后的字体目录必须是平的且内容逐字节相同`（本文件 `#[cfg(test)]`）。
 fn stage_font_dir(roots: &[PathBuf], dest: &Path) -> std::io::Result<usize> {
     std::fs::create_dir_all(dest)?;
     let mut staged = 0usize;
@@ -1801,7 +1801,98 @@ mod artifact_tests {
         let note = font_swap_note("乐米波波体", "Noto Sans SC").expect("换了就要报");
         assert!(note.contains("乐米波波体") && note.contains("Noto Sans SC"), "两头名字都要出现：{note}");
     }
-    /// **本机自检（`#[ignore]`）**：把真字体库平铺出来到底是什么样（[`stage_font_dir`]）。
+    /// 沙箱不给写 %TEMP% 时退回 target/tmp（与 `dhampir-worker` 那条同一条理由）。
+#[cfg(test)]
+fn font_parity_tmp(tag: &str) -> PathBuf {
+    let name = format!("yekitrim-fontparity-{tag}-{}", std::process::id());
+    let direct = std::env::temp_dir().join(&name);
+    if std::fs::create_dir_all(&direct).is_ok() {
+        return direct;
+    }
+    let alt = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/tmp")
+        .join(&name);
+    std::fs::create_dir_all(&alt).expect("建临时目录失败（%TEMP% 与 target/tmp 都写不了）");
+    alt
+}
+
+/// **平铺字体目录的机器判据**（`--font-dir` 递给底座的那一份必须满足的形状）。
+///
+/// 为什么值得一条真判据：libass 的 `fontsdir` **不递归子目录**，而库里是 v2 布局
+/// `<slug>/font.ttf`。把**库根**直接递过去 ⇒ 它把目录当字体文件读（日志 `fopen failed`）、
+/// **一支都没加载**，libass 静默回落到系统字体（实测成片弹幕变成 NotoSansSC-VF 自报的 Thin，
+/// 而预览那条腿走 `/vt-fonts/` + `@font-face` 仍是 Regular）—— 而且**一个错都不报**
+/// （`lines_failed: 0`）。这就是用户 2026-10-19 报的「预览和导出的字体不一样」。
+///
+/// 造的是**真字体**（仓库里内嵌的那两支）而不是假字节：`scan_all_roots` 要读字体内部的
+/// `name` 表，假字节会被它跳过 —— 那样这条判据就是空转的。
+#[test]
+fn 平铺后的字体目录必须是平的且内容逐字节相同() {
+    let base = font_parity_tmp("flat");
+    let _ = std::fs::remove_dir_all(&base);
+    let lib = base.join("fonts");
+    let dest = base.join("staged");
+    let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../yekitrim-core/assets/fonts");
+    let sc = assets.join("NotoSansSC-Regular.ttf");
+    let emoji = assets.join("NotoColorEmoji-CBDT.ttf");
+    if !sc.exists() || !emoji.exists() {
+        eprintln!("跳过：内嵌字体不在 {}（判据没跑，不是通过）", assets.display());
+        return;
+    }
+    // v2 布局：库根下面**还有一层目录**（这正是 libass 看不见的那一层）
+    let nested = lib.join("noto-sans-sc-abcabcabcabc");
+    std::fs::create_dir_all(&nested).expect("建假库失败");
+    link_or_copy(&sc, &nested.join("font.ttf"));
+    // 老布局：散在库根的那个文件（它恰好是能看见的那个 —— 当年只靠它才没全瞎）
+    std::fs::create_dir_all(&lib).ok();
+    link_or_copy(&emoji, &lib.join("legacy-emoji.ttf"));
+
+    // 自证「这条判据不是空转」：库根本身**不是平的**，直接递根必然漏字体
+    let nested_in_lib = std::fs::read_dir(&lib)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .any(|e| e.path().is_dir());
+    assert!(nested_in_lib, "假库必须带一层子目录，否则这条判据测不到东西");
+
+    let staged = stage_font_dir(&[lib.clone()], &dest).expect("平铺失败");
+    assert_eq!(staged, 2, "库里两支字体都该被平铺出来（少一支就是又走回 libass 看不见的布局）");
+
+    let mut files: Vec<PathBuf> = Vec::new();
+    for entry in std::fs::read_dir(&dest).expect("读平铺目录失败") {
+        let path = entry.expect("读目录项失败").path();
+        assert!(
+            !path.is_dir(),
+            "平铺目录里不许有子目录（libass 不递归，{} 会被静默忽略）",
+            path.display()
+        );
+        files.push(path);
+    }
+    assert_eq!(files.len(), 2, "平铺目录里的文件数必须等于字体数：{files:?}");
+
+    // 内容逐字节相同（硬链接或拷贝都行，但不许是空壳/占位）
+    let mut got: Vec<String> = files
+        .iter()
+        .map(|f| yekitrim_core::fonts::sha256_hex(&std::fs::read(f).expect("读平铺文件失败")))
+        .collect();
+    got.sort();
+    let mut want = vec![
+        yekitrim_core::fonts::sha256_hex(&std::fs::read(&sc).expect("读源字体失败")),
+        yekitrim_core::fonts::sha256_hex(&std::fs::read(&emoji).expect("读源字体失败")),
+    ];
+    want.sort();
+    assert_eq!(got, want, "平铺出来的内容必须与库里的字体逐字节相同");
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// 硬链接优先、失败退回拷贝（与 `stage_font_dir` 同一条口径）。
+#[cfg(test)]
+fn link_or_copy(src: &Path, dst: &Path) {
+    if std::fs::hard_link(src, dst).is_err() {
+        std::fs::copy(src, dst).expect("拷贝字体失败");
+    }
+}
+
+/// **本机自检（`#[ignore]`）**：把真字体库平铺出来到底是什么样（[`stage_font_dir`]）。
     ///
     /// 为什么值得留：平铺这条路的失败模式是**一条文件都没有**，而它在出片里只表现为
     /// 「字体悄悄换成系统那支」—— 不报错。跑法：
