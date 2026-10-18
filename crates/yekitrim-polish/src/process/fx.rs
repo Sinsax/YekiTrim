@@ -35,8 +35,9 @@ pub fn transient_default_duration(event_type: &str) -> f64 {
     }
 }
 
-/// 事件对应的字符串类型名。
-fn event_type_name(event: &Event) -> &'static str {
+/// 事件对应的字符串类型名（**瞬时特效判定的唯一入口**：`audit` 也用它，
+/// 别在别处再抄一份"哪些类型算瞬时"）。
+pub(super) fn event_type_name(event: &Event) -> &'static str {
     match event {
         Event::Shake { .. } => "shake",
         Event::Flash { .. } => "flash",

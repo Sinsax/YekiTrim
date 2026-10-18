@@ -325,67 +325,132 @@ fn sticker_lang_desc(sticker_source: &[String]) -> String {
 
 /// LLM 可能漏掉事件对象的 type 字段 (serde tagged enum 必需)。
 /// 解析前按字段特征推断补全, 提高不同模型的输出容错性。
-/// 推断规则: zoom/origin/anchor/anchor_to/cut/handheld/tilt→camera, overlay_type/colors→overlay,
-/// kind（或 text+style/pos）→element, keyword→sticker, name→sfx, intensity/color→shake。
+///
+/// 推断规则（写的顺序就是优先级）:
+/// `zoom/origin/anchor/anchor_to/cut/handheld/tilt` → camera；
+/// `overlay_type/colors/shape/opacity` → overlay（后两个是 overlay 独有字段）；
+/// `kind`（或 `text`+`style|pos`）→ element；`keyword` → sticker；`name` → sfx；
+/// `intensity` → shake；**十六进制** `color` → overlay；其余 `color` → shake（老行为）。
 /// 无法推断的保持原样（由 serde 报错）。
-pub(crate) fn normalize_segments_json(json: &str) -> String {
-    let infer_type = |obj: &serde_json::Map<String, serde_json::Value>| -> Option<&'static str> {
-        if obj.contains_key("zoom")
-            || obj.contains_key("origin")
-            || obj.contains_key("anchor")
-            || obj.contains_key("anchor_to")
-            || obj.contains_key("cut")
-            || obj.contains_key("handheld")
-            // §19 荷兰角：只写 tilt 的运镜也该被认出来（与 handheld 同一条理由 ——
-            // 附加变种常常不重复景别之外的字段）
-            || obj.contains_key("tilt")
-        {
-            return Some("camera");
-        }
-        if obj.contains_key("overlay_type") || obj.contains_key("colors") {
-            return Some("overlay");
-        }
-        // 元素（§5）：`kind` 是它独有的分派字段，最可靠。
-        //
-        // ⚠️ **必须排在 `keyword` 之前**：`kind = "sticker"` 的元素既可能带 `kind`
-        // 也可能带 `text`（关键词就存在 `text` 里），而**老** `sticker` 事件带的是 `keyword`。
-        // 三条规则不重叠（`kind` / `keyword` / `text+style|pos`），但顺序上先认 `kind`
-        // 更安全：万一将来给元素补一个 `keyword` 别名，也不会被上面那条抢走。
-        if obj.contains_key("kind") {
-            return Some("element");
-        }
-        // 兜底：只写了 `text` 的元素（LLM 漏了 `kind`）。⚠️ 判据加上 `style` 或 `pos` ——
-        // **不能只看 `text`**：`sfx` 没有 `text`、但别的模型可能用 `text` 当 `name` 的别名，
-        // 加上这两个元素独有的字段之后就不可能与其它类型混淆。
-        if obj.contains_key("text")
-            && (obj.contains_key("style") || obj.contains_key("pos"))
-        {
-            return Some("element");
-        }
-        if obj.contains_key("keyword") {
-            return Some("sticker");
-        }
-        if obj.contains_key("name") {
-            return Some("sfx");
-        }
-        if obj.contains_key("intensity") || obj.contains_key("color") {
-            return Some("shake");
-        }
-        None
-    };
+///
+/// ⚠️ 两条容易踩空的（2026-10-19 由 B4 契约测试抓出来，见 `contract_tests.rs`）：
+///
+/// ① **`shape`/`opacity` 也是 overlay 独有字段**。只按 `overlay_type/colors` 认的话，
+///    「纯色 + opacity」（提示词里就有这个写法）会被归成 `shake`，而 `Shake` **根本没有 color 字段**
+///    ⇒ serde 把颜色**静默丢掉**（`Event` 没有 `deny_unknown_fields`）：用户在编辑器里看到
+///    一条「没有颜色的抖动」，日志一个字都没有。
+/// ② **十六进制 `color` 归 overlay**：提示词里 `#rrggbb` 只出现在覆盖层那一节
+///    （「颜色用 6 位十六进制(#rrggbb)」），而 element 的七档是**颜色名**（white/pink/…，且一定带
+///    `kind`/`text`，在本函数里排在前面）⇒ 裸 hex 不会抢走 element。
+///    命名色的裸 `color` 仍按老行为归 `shake`（那种写法下 color 会被丢掉；提示词里没有这种写法，
+///    这里只做记录、不改老行为）。
+fn infer_event_type(obj: &serde_json::Map<String, serde_json::Value>) -> Option<&'static str> {
+    if obj.contains_key("zoom")
+        || obj.contains_key("origin")
+        || obj.contains_key("anchor")
+        || obj.contains_key("anchor_to")
+        || obj.contains_key("cut")
+        || obj.contains_key("handheld")
+        // §19 荷兰角：只写 tilt 的运镜也该被认出来（与 handheld 同一条理由 ——
+        // 附加变种常常不重复景别之外的字段）
+        || obj.contains_key("tilt")
+    {
+        return Some("camera");
+    }
+    if obj.contains_key("overlay_type")
+        || obj.contains_key("colors")
+        || obj.contains_key("shape")
+        || obj.contains_key("opacity")
+    {
+        return Some("overlay");
+    }
+    // 元素（§5）：`kind` 是它独有的分派字段，最可靠。
+    //
+    // ⚠️ **必须排在 `keyword` 之前**：`kind = "sticker"` 的元素既可能带 `kind`
+    // 也可能带 `text`（关键词就存在 `text` 里），而**老** `sticker` 事件带的是 `keyword`。
+    // 三条规则不重叠（`kind` / `keyword` / `text+style|pos`），但顺序上先认 `kind`
+    // 更安全：万一将来给元素补一个 `keyword` 别名，也不会被上面那条抢走。
+    if obj.contains_key("kind") {
+        return Some("element");
+    }
+    // 兜底：只写了 `text` 的元素（LLM 漏了 `kind`）。⚠️ 判据加上 `style` 或 `pos` ——
+    // **不能只看 `text`**：`sfx` 没有 `text`、但别的模型可能用 `text` 当 `name` 的别名，
+    // 加上这两个元素独有的字段之后就不可能与其它类型混淆。
+    if obj.contains_key("text") && (obj.contains_key("style") || obj.contains_key("pos")) {
+        return Some("element");
+    }
+    if obj.contains_key("keyword") {
+        return Some("sticker");
+    }
+    if obj.contains_key("name") {
+        return Some("sfx");
+    }
+    if obj.contains_key("intensity") {
+        return Some("shake");
+    }
+    if obj.get("color").and_then(|c| c.as_str()).is_some_and(is_hex_color) {
+        return Some("overlay");
+    }
+    if obj.contains_key("color") {
+        return Some("shake");
+    }
+    None
+}
 
+/// `#rgb` / `#rrggbb` / `#rrggbbaa`（提示词只要求 6 位，这里宽进）。
+fn is_hex_color(s: &str) -> bool {
+    let Some(rest) = s.strip_prefix('#') else {
+        return false;
+    };
+    matches!(rest.len(), 3 | 4 | 6 | 8) && rest.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// 给**一条**事件对象补 serde 必需的字段：`type`，以及 overlay 的 `overlay_type`。
+///
+/// ⚠️ `overlay_type` 在 `Overlay` 变体里是**没有 default 的必填字段**：漏写它 ⇒ 反序列化报
+/// `missing field overlay_type` ⇒ **整窗事件全丢**（`apply_outputs` 走「失败不覆盖」那条路，
+/// 用户看到的只是「这一段没生成事件」，而不是「少了一条覆盖层」）。
+/// 所以只要这一条**是** overlay（显式 `type` 或推断出来的）就补一个合法档位：
+/// 有 `colors` ⇒ `gradient`；否则 ⇒ `color`（含「只写了 color 的纯色」与「只写了 opacity」）。
+fn apply_event_inference(ev: &mut serde_json::Value) {
+    let Some(obj) = ev.as_object_mut() else {
+        return;
+    };
+    if !obj.contains_key("type")
+        && let Some(t) = infer_event_type(obj)
+    {
+        obj.insert("type".into(), serde_json::Value::String(t.into()));
+    }
+    let is_overlay = obj.get("type").and_then(|v| v.as_str()) == Some("overlay");
+    if is_overlay && !obj.contains_key("overlay_type") {
+        let kind = if obj.contains_key("colors") {
+            "gradient"
+        } else {
+            "color"
+        };
+        obj.insert("overlay_type".into(), serde_json::Value::String(kind.into()));
+    }
+}
+
+/// 归一化 LLM 输出的事件 JSON（`Event` 是 serde tagged enum，`type` 必需）。
+///
+/// **两种形状都要认**（2026-10-19，B4 实测）：
+/// * `[{"events":[…]}` —— 分段形状（Step1 的输出），事件在 `events` 里；
+/// * `[…]` —— **Step2 的平铺事件数组**（`EventGenTask::parse_output` 拿到的就是这个）。
+///
+/// ⚠️ 只认第一种的话，推断在 Step2 那条路上**一次都不会跑**：模型漏写 `type` ⇒ 直接
+/// `missing field type` ⇒ 整窗判失败 ⇒ 那一段一条事件都没有，而日志里只有一句解析错误。
+pub(crate) fn normalize_segments_json(json: &str) -> String {
     match serde_json::from_str::<serde_json::Value>(json) {
         Ok(serde_json::Value::Array(mut segs)) => {
             for seg in segs.iter_mut() {
                 if let Some(evs) = seg.get_mut("events").and_then(|e| e.as_array_mut()) {
                     for ev in evs.iter_mut() {
-                        if let Some(obj) = ev.as_object_mut() {
-                            if !obj.contains_key("type")
-                                && let Some(t) = infer_type(obj) {
-                                    obj.insert("type".into(), serde_json::Value::String(t.into()));
-                                }
-                        }
+                        apply_event_inference(ev);
                     }
+                } else {
+                    // 平铺事件数组：这一条本身就是事件
+                    apply_event_inference(seg);
                 }
             }
             serde_json::to_string(&segs).unwrap_or_else(|_| json.to_string())
@@ -393,7 +458,6 @@ pub(crate) fn normalize_segments_json(json: &str) -> String {
         _ => json.to_string(),
     }
 }
-
 /// Step1 system prompt: 分段 + 每段情绪密度
 /// **无弹幕时按字幕语气判情绪**（与 `process::emotion_from_subtitles` **同口径**）。
 ///

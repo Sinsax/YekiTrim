@@ -98,6 +98,15 @@
   `colors` 数组 + 纯色两个写法（`llm/segment.rs`，另有单测锁住），且写了 `colors`/`color` 却漏掉
   `overlay_type` 时也会被推断成 overlay；老工程靠**读时兜底**，不用重跑 LLM。`fade_in`/`fade_out`（黑场淡入/淡出）**不进示例**：提示词里只有
   一句「系统只在初次后处理时在片头补、不要重复写」，片头那份见 `process/AGENTS.md` Step 3c（用户可手动改/删）。
+- ⚠️ **prompt ↔ parser 契约有专门判据**（`llm/contract_tests.rs`，规格 §4 B4）：提示词里**每个字段/取值**
+  各有一条「模型照写 → 过 `EventGenTask::parse_output` → 字段逐值还在」的用例，每条都注明了提示词出处；
+  `needles` 还会断言那些字面量**仍在提示词里**。**改提示词的字段/取值、或动 `normalize_segments_json`
+  的推断规则，必须同时改那张表**（否则判据与提示词脱节而全绿）。变异自证：删 `colors`/`tilt` 推断分支、
+  删 `overlay_type` 补种、删 `parse_output` 里的 normalize 调用，四处都已实测变红。
+- ⚠️ **类型推断必须认两种形状**（2026-10-19 实测）：`[{"events":[…]}]`（Step1 分段）**与平铺事件数组**
+  （Step2 那条路 —— `parse_output` 拿到的就是它）。只认前者的话推断**一次都不会跑**：模型漏写 `type`
+  ⇒ 整窗 `missing field type` ⇒ 那一段一条事件都没有，而日志只有一句解析错误。回归钉子：
+  `contract_tests::every_documented_field_and_value_survives_the_parser` / `segment_shaped_payload_also_infers_types`。
 - **老 checkpoint 必须过时间迁移**：里面的事件还是 `duration` 字段 → `EventGenTask::load_windows` 会先
   走 `crate::project::upgrade_event_times` 再解析，别绕过它。
 - ⚠️ **冷开场/回忆回溯的意图写在 `anchor` 上**（`segment.rs::build_events_system_prompt` 那一段）：

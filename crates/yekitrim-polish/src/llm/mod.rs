@@ -8,6 +8,10 @@ pub mod keywords;
 pub mod events;
 pub mod status;
 
+/// B4：prompt ↔ parser 契约（规格 §4 B4）。只放测试，没有生产代码。
+#[cfg(test)]
+mod contract_tests;
+
 use std::path::{Path, PathBuf};
 
 use crate::parse::srt::Subtitle;
