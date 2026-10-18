@@ -78,3 +78,22 @@ Node 侧车，把并发/取消/checkpoint/记账/体积全打乱 —— 只抄�
 * **已知的源侧不一致**（照实收，未悄悄改，见 `crates/yekitrim-llm/data/NOTICE.md`）：
   `deepseek-chat` 在源里不存在（只有 `v4-flash/v4-pro`）、`openrouter/x-ai/grok-4.5` 的 max_output 疑似抄错、
   `anthropic` 只有 3 个型号写了 `supportsTemperature:false`。
+
+## 七、补记（本文件写完之后又落的四笔）
+
+第六节那条「TOML v2 推迟」**已经做掉了**，下面按提交补全：
+
+| commit | 内容 |
+|---|---|
+| `bdf0048` | 能力表 **vendor 进仓库**（19 文件 / 201 KB）+ 离线门禁 `check-llm-models.mjs`（`--self-test` 14 项）。**为什么必须做**：原来 `--check` 要外部 npx 缓存里的 pi-ai 包，判据跑不了 CI ⇒ 表会不会腐没人知道。provenance 可复核：17 个数据文件的 sha256 与上游自带的 `.manifest.json` 逐条一致；不带 `--pi-ai` 重跑产物 SHA-256 **逐字节相同** |
+| `0e5998a` | **配置 v2**：`[llm.params]` = 请求参数面、`[llm.models."<id>"]` = 能力面（表外模型可手填）、`[llm.overrides.<link>]` 同一套面；`CONFIG_VERSION` 1→2。**迁移对拍**：3 个老文件 × 4 条链路 = **12 条金色请求体**（全部由迁移前的老代码真跑出来）逐字节相同 |
+| `f029fd4` | 「获取模型」带**草稿 key**（只走这一次请求、不落盘）。补的是最常见路径：刚填新 key 还没保存就点 —— 以前会拿旧 key 换一个 401，界面上写着「API key 不对」 |
+| `798659f` | 新接口进**接线门禁**（`api/llm.js` 的每个 `/api/...` 必须在 `routes.rs` 有对应 `.route(...)`）。97 → **103 项** |
+| `385954a` | 平铺字体目录的**真判据**。`stage_font_dir` 的文档里写着「判据：`scripts/check-font-parity.mjs`」，**那个脚本从来不存在** ⇒ 判据是空的。改成 Rust 判据（造 v2 布局假库 → 平铺 → 断言无子目录 + 逐字节相同 + **自证假库确实带一层目录**），变异自证：让平铺结果带一层 ⇒ FAIL，复原 ⇒ 通过 |
+
+### 仍然没做的（与第六节合并看）
+
+* 界面上一处小滞后：`GET /api/config/llm/catalog` 是**纯查表**（故意的，它不读盘），所以刚保存的 `[llm.models]` 手填能力不会立刻反映在「能力已收录」那行字上 —— **出站请求体是对的** |
+* 模态只记 text；`supportsReasoningEffort` / `forceAdaptiveThinking` 未体现 |
+* 底座 `v0.4.1` 的 tag 未 push（推了才触发 CI 发布）；底座仓那批 web-parity WIP 仍未提交 |
+* 字形比 drawtext 时代小 8%（`ass_font_size` 的 1.25 常数）—— 等用户拍板 |
