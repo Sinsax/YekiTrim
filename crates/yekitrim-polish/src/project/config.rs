@@ -83,7 +83,13 @@ pub struct ProjectFile {
 
     /// 12c. **多版本成片动过 EDL 时的用户原值备份**（§9）。
     ///
-    /// ⚠️ 只在工程**本来就有手排 EDL**、且跑过 `--versions > 1` 时才非空。
+    /// ⚠️⚠️ **2026-10-18：多版本成片整条移除**（用户口径：「为什么要一次渲染多个同样的视频？
+    /// 没有理由吧，版本号 _n 是之前就完成的，这个没有意义」）⇒ 全仓**再没有写入方**。
+    /// 字段**必须留着**：`ProjectFile` 是 `deny_unknown_fields`，老工程里可能有这个键，
+    /// 删了会让它们**加载失败**。`skip_serializing_if = Vec::is_empty` ⇒ 老工程下次保存时
+    /// 它自然消失（零迁移）。
+    ///
+    /// ⚠️ 原来只在工程**本来就有手排 EDL**、且跑过 `--versions > 1` 时才非空。
     /// 收工时用它把 `edl.clips` **整份还原** —— 否则用户手排的第一段起点
     /// 会被换成候选值，**永久丢失**（实测：`1.0` → `0.3`，而日志说"已恢复"）。
     ///
@@ -3854,6 +3860,7 @@ portrait_camera = true
                 manual: false,
                 name: None,
                 source: None,
+                manual_pos: None,
             },
             crate::project::Event::Element {
                 anim: None,
@@ -3874,6 +3881,7 @@ portrait_camera = true
                 manual: false,
                 name: None,
                 source: None,
+                manual_pos: None,
             },
         ];
         let text = cfg.to_toml_commented().expect("写 toml");
@@ -3941,6 +3949,7 @@ portrait_camera = true
             manual: false,
             name: None,
             source: None,
+            manual_pos: None,
         }];
         let text = cfg.to_toml_commented().expect("写 toml");
         // 只需看那一条元素事件块：`[style.camera]` 那些无关字段不在同一段里，

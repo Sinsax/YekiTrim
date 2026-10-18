@@ -432,19 +432,12 @@ Command::Polish(action) => {
                     input,
                     renderer,
                     strict,
-                    versions,
                 } => {
                     std::env::set_var("VTEDIT_RENDERER", renderer);
                     // `--strict` 走环境变量：出片的判据在 `pipeline.rs` / `dhampir.rs` 里，
                     // 而那条链路是**库**（WebUI 与 CLI 共用），不给它塞 CLI 类型的参数。
                     std::env::set_var("VTEDIT_STRICT", if *strict { "1" } else { "0" });
-                    // §9 多版本成片：`versions <= 1` 时**原样走老路**（一条成片、
-                    // 逐字节零回归）；大于 1 才进多版本编排。
-                    if *versions > 1 {
-                        yekitrim_polish::render::cmd_render_versions(input, *versions).await?;
-                    } else {
-                        render::cmd_render(input).await?;
-                    }
+                    render::cmd_render(input).await?;
                 }
                 cli::PolishAction::Cover { input, template, renderer } => {
                     if let Some(t) = template {

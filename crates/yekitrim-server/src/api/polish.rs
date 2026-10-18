@@ -81,11 +81,6 @@ pub(super) struct PolishJobOpts {
     pub full: bool,
     /// `llm_segment`：只重做这一段的事件（下标见 `polish.toml` 的 `[[segments]]`）
     pub segment_index: Option<usize>,
-    /// `render`：多版本成片（§9）—— 出 N 条**开头不同**的片子，产物按 `_1`/`_2` 排开。
-    ///
-    /// ⚠️ **None = 不传 `--versions`**，让 CLI 用它自己的默认值 `1`（= 完全走老路、
-    /// 逐字节零回归）。服务端不抄第二份默认值 —— 与 `renderer` 同一条口径。
-    pub versions: Option<usize>,
 }
 
 pub(super) async fn polish_spawn(
@@ -203,13 +198,6 @@ pub(super) async fn polish_spawn(
                         extra.push("--renderer".into());
                         extra.push(r);
                     }
-                    // 多版本成片（§9）：**只在 >1 时才透传**。
-                    // ⚠️ 传 `--versions 1` 与"不传"在 CLI 上是同一条路（`versions <= 1` 直接走
-                    //    `cmd_render`），但**不传**更安全：少一个参数就少一处默认值漂移。
-                    if let Some(v) = opts.versions.filter(|v| *v > 1) {
-                        extra.push("--versions".into());
-                        extra.push(v.to_string());
-                    }
                     run_polish_child(&data_dir, &jobs, &job_id, "render", &path, &extra, owner).await
                 }
                 "cover" => {
@@ -317,37 +305,15 @@ pub(super) async fn polish_render(State(state): State<Arc<AppState>>, Extension(
             ))
         }
     };
-    // 多版本成片（§9）：出 N 条**开头不同**的片子。
-    //
-    // ⚠️ 这是 §9 的**界面入口** —— 在此之前 `--versions` **只有 CLI 有**，
-    //    WebUI 的点「渲染导出」永远只出一版，用户在界面上**根本够不到**这个能力。
-    //
-    // 取值口径：缺席 / `null` ⇒ `None` ⇒ 不带 `--versions`（CLI 默认 1 = 老路）。
-    // 上限 10：每版都是一次完整出片（分钟级），再多不像"给个选择"而像误操作。
-    // 非整数 / 0 / 负数 ⇒ **400**，不静默当 1 —— 用户以为在出多版、拿到了单版，
-    // 与 §9 那个"静默假成功"是同一类欺骗。
-    let versions = match body.get("versions") {
-        None | Some(serde_json::Value::Null) => None,
-        Some(v) => {
-            let n = v
-                .as_u64()
-                .ok_or_else(|| err(StatusCode::BAD_REQUEST, "versions 必须是非负整数"))?;
-            if n > 10 {
-                return Err(err(
-                    StatusCode::BAD_REQUEST,
-                    "versions 最多 10（每版都是一次完整出片，分钟级）",
-                ));
-            }
-            Some(n as usize)
-        }
-    };
+    // ⚠️ 「版本数」（§9 多版本成片）**已整条删除**（2026-10-18 用户口径：没有理由）。
+    //    它与 `unique_output_path` 的 `_n` 后缀**无关**：后者是「同名不覆盖」，保留。
     polish_spawn(
         &state,
         crate::auth::owner_of(&user),
         scope_pid(pid),
         "render",
         dir,
-        PolishJobOpts { output_file, renderer, versions, ..Default::default() },
+        PolishJobOpts { output_file, renderer, ..Default::default() },
     )
     .await
 }
@@ -1881,6 +1847,16 @@ pub(super) fn polish_project_put_locked(dir: &Path, body: &serde_json::Value) ->
             cfg.style.subtitle.stroke = s.to_string();
         }
     }
+    if let Some(s) = body.get("subtitle_outer_stroke").and_then(|v| v.as_str()) {
+        // **第二层描边（白环）**（2026-10-16）：三种写法 ——
+        //   · `"auto #ffffff"` = 粗细**跟随第一层描边**（缺键时的默认，也是开关"开"写下去的值）；
+        //   · `"8px #ffffff"` = 固定宽度（老工程与手写的值）；
+        //   · **空串 = 显式关** —— ⚠️ 与 `subtitle_stroke` 不同，空串在这里是**合法值**
+        //     （面板的开关"关"写的就是它），所以这一支**不做非空判断**。
+        // ⚠️ 认不出的形状**照样写进去**：转译器对认不出的值回落到默认（`auto`）并把它写进
+        //    转译报告，比"悄悄拒收"好 —— 拒收会让开关按下去没反应，而前端以为存上了。
+        cfg.style.subtitle.outer_stroke = s.trim().to_string();
+    }
     if let Some(v) = body.get("subtitle_size") {
         // 字号（px）：范围收在 8~400（与模板/转译器都对得上），**坏值当场报错、不静默**。
         let n = v
@@ -2117,10 +2093,12 @@ pub(super) async fn polish_sticker_sources(
     ok(serde_json::json!({ "sources": out }))
 }
 
-/// 贴纸库全量（**只读**，非 admin 也能看）：编辑器里「keyword 一级 → 贴纸二级」选择用。
+/// 贴纸库全量（**只读**，非 admin 也能看）：编辑器里贴纸选择器（**包 → 分类 → 贴纸**三段行递进）用。
 ///
 /// 以磁盘为准（`scan_packages`），每个包给齐 `tags[].files`（`<包名>.toml` 的反向索引）
-/// 与全部文件名 —— 未构建的包也给文件，只是没有 tag（前端把它们平铺成一级条目）。
+/// 与全部文件名 —— 未构建的包也给文件，只是没有 tag（前端把它的分类那一级收成一行「全部（不限）」）。
+/// ⚠️ 分类计数与「包内全部图」都由这份响应派生（`tags[].files.length` / `files.length`），
+/// 别再加"分类数"之类的字段 —— 两处数字迟早对不上。
 pub(super) async fn polish_sticker_library(
     Extension(user): Extension<crate::auth::CurrentUser>,
 ) -> ApiResult {
@@ -2155,6 +2133,34 @@ pub(super) async fn polish_sticker_library(
         })
         .collect();
     ok(serde_json::json!({ "ok": true, "packs": packs }))
+}
+/// **编辑器表情面板**：内建 emoji 目录按 tag 分组（`GET /api/polish/emoji-catalog`）。
+///
+/// 目录是**编译期内嵌**的（`assets/emoji_catalog.json`，881 条），不联网、不读用户库 ——
+/// 所以这条接口没有 `Owner` 维度，也不需要 `dir`。
+///
+/// ⚠️ 与 `polish_sticker_sources` 的分工：那条只回"有哪些**来源**"（含 `emoji` 这个名字），
+/// 回不了"emoji 里有哪些**具体表情**"；编辑器「贴纸轨」的 keyword 选到 `emoji` 之后，
+/// 面板要的就是这一份。以前没有它 —— 面板只给一个"填码点"的输入框，
+/// 用户得自己知道 `1f62d` 是 😭（用户报「添加表情后没有正确显示」的那个入口）。
+pub(super) async fn polish_emoji_catalog() -> ApiResult {
+    use yekitrim_polish::assets::emoji_search::EmojiCatalog;
+    // ⚠️ 走**内嵌**目录那条（`from_embedded` 经由 `fetch` 的第一分支），不建 HTTP 客户端：
+    // 本 crate 没有 `reqwest` 依赖，而且这条接口本来就该离线可用（面板打开就要有表情）。
+    // 目录读不出来不算致命 —— 回空目录，面板显示"没有可选表情"，
+    // 而不是让整个编辑器报错。
+    let groups = match EmojiCatalog::fetch_embedded() {
+        Ok(c) => c.grouped(),
+        Err(e) => {
+            tracing::warn!("emoji 目录加载失败: {e}");
+            Vec::new()
+        }
+    };
+    let groups: Vec<serde_json::Value> = groups
+        .into_iter()
+        .map(|(tag, codepoints)| serde_json::json!({ "tag": tag, "codepoints": codepoints }))
+        .collect();
+    ok(serde_json::json!({ "ok": true, "groups": groups }))
 }
 
 /// 视频素材库（**只读**，非 admin 也能看）：项目设置里「片头/片尾」挑素材用。
@@ -3989,8 +3995,11 @@ fn polish_project_put_writes_canvas_stage_sticker() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// 字幕样式四键（`subtitle_color` / `subtitle_stroke` / `subtitle_size` / `subtitle_position_pct`）
-/// **必须真的写进 `polish.toml`**。
+/// 字幕样式五键（`subtitle_color` / `subtitle_stroke` / `subtitle_outer_stroke` /
+/// `subtitle_size` / `subtitle_position_pct`）**必须真的写进 `polish.toml`**。
+///
+/// ⚠️ `subtitle_outer_stroke` 是本条**唯一允许空串**的键：空串 = **显式关**（面板开关"关"写它），
+/// 与 `subtitle_stroke` 的"空串拒收"正好相反 —— 写成同一支会让开关关不上（或描边被清空）。
 ///
 /// ⚠️ 这条测试的存在理由就是上面那段注释里的坑：`polish_project_put_locked` 是**逐字段白名单**，
 /// 没列进来的键 **PUT 照样回 `{"ok":true}`、而磁盘一个字都不动**。实测过（2026-10）：
@@ -4011,6 +4020,9 @@ fn polish_project_put_writes_subtitle_style() {
     let body = serde_json::json!({
         "subtitle_color": "#ff0000",
         "subtitle_stroke": "8px #00ff00",
+        // ⚠️ 用一个**非默认值**（默认现在是 `auto #ffffff`）：拿默认值测的话，
+        // "写没写进去"这条断言**永远是绿的**（不写也读回这个值）—— 判据就白写了。
+        "subtitle_outer_stroke": "8px #ffffff",
         "subtitle_size": 96,
         "subtitle_position_pct": 25.0,
     });
@@ -4018,10 +4030,15 @@ fn polish_project_put_writes_subtitle_style() {
     let after = yekitrim_polish::project::load_project(&dir).unwrap();
     assert_eq!(after.style.subtitle.color, "#ff0000", "颜色必须写进去");
     assert_eq!(after.style.subtitle.stroke, "8px #00ff00", "描边必须写进去");
+    assert_eq!(
+        after.style.subtitle.outer_stroke, "8px #ffffff",
+        "第二层（白环）必须写进去 —— 固定宽度那一种写法"
+    );
     assert_eq!(after.style.subtitle.size, 96, "字号必须写进去");
     assert_eq!(after.style.subtitle.position_pct, Some(25.0), "落点必须写进去");
     // 没提交的键不能被顺手重置
     assert_eq!(after.style.subtitle.highlight_color, "#f56b41", "没提到的字段必须原样保留");
+
 
     // 2) 落到 toml 文本上（防"内存里对了但序列化没写"）。
     //    ⚠️ 颜色/描边/字号在 `[style.subtitle]` 段内，但 `position_pct` 我们**只在这里**断言，
@@ -4040,6 +4057,7 @@ fn polish_project_put_writes_subtitle_style() {
     for needle in [
         "color = \"#ff0000\"",
         "stroke = \"8px #00ff00\"",
+        "outer_stroke = \"8px #ffffff\"",
         "size = 96",
     ] {
         assert!(sec.contains(needle), "`[style.subtitle]` 缺 {needle}:\n{sec}");
@@ -4095,6 +4113,21 @@ fn polish_project_put_writes_subtitle_style() {
     let _ = polish_project_put_locked(&dir, &bad).expect("坏颜色不报错");
     let after = yekitrim_polish::project::load_project(&dir).unwrap();
     assert_eq!(after.style.subtitle.color, "#123456", "坏颜色必须被拒收、不能写脏");
+
+    // 6) **白环的空串 = 显式关**（本键唯一允许空串的语义；面板开关"关"写它）。
+    //    ⚠️ 必须排在这一条**最后**：它会把 `[style.subtitle]` 里的值改掉，
+    //    放在前面会让第 2 步那条"落到 toml 文本上"的断言看到空串（第一版就是这么写的，一跑就露）。
+    //    ⚠️ 与 `subtitle_stroke` 的"空串拒收"正好相反 —— 写成同一支会让开关**关不上**。
+    let _ = polish_project_put_locked(
+        &dir,
+        &serde_json::json!({ "subtitle_outer_stroke": "" }),
+    )
+    .expect("关闭白环");
+    let after_off = yekitrim_polish::project::load_project(&dir).unwrap();
+    assert_eq!(
+        after_off.style.subtitle.outer_stroke, "",
+        "空串必须写进去 —— 它是「显式关」，不是「坏值」"
+    );
 
     // 6) 越界值被夹住（0~50 / 8~400），不是写进野值
     let body = serde_json::json!({ "subtitle_position_pct": 999.0, "subtitle_size": 9999 });
@@ -4816,9 +4849,11 @@ pub(super) async fn polish_dhampir_project(
 ///     let side = translated.with_file_name(name);   // ← 只在 --out 旁边找
 /// ```
 ///
-/// 而**文字元素那条轨的 ASS 不在那个目录**：转译器把它写在**片段根目录**
-/// （`tools/polish-to-dhampir.mjs` 里那句 `join(clipDir, \`dhampir-${id}.ass\`)`，
-/// 而字幕/弹幕走 `dirname(outPath)`）。于是：
+/// 而**文字元素那条轨的 ASS 不在那个目录**：转译器把它写在 `--out` **同目录的
+/// `<工程文件名去扩展名>.assets/` 子目录**里（2026-10-18 起；此前直接写片段根目录 ——
+/// 文件名带落点/动效/颜色 ⇒ 每改一次就多一个，用户的片段目录越积越多，见
+/// `tools/polish-to-dhampir.mjs` 里 `sideDir` 那段）。字幕/弹幕仍走 `dirname(outPath)`。
+/// 于是：
 ///
 /// * **出片腿（`dhampir.exe`）是对的** —— 它按 `asset.uri`（**绝对路径**）自己找文件；
 /// * **wasm 预览腿整条文字不显示** —— 浏览器没有文件系统，文本只能由这里读出来喂。
