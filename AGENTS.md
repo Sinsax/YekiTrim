@@ -25,13 +25,13 @@ yekitrim-render-core ←── yekitrim-polish ──┐
 | crate | 干什么 |
 |---|---|
 | `crates/yekitrim-core` | 管线编排 + ASR / 事件检测 / 剪切 + 配置 / 弹幕 |
-| `crates/yekitrim-llm` | **LLM 传输层**（叶子 crate）：协议 / 方言 / 模型能力 / 用量采集；不认识配置与业务 |
+| `crates/yekitrim-llm` | LLM 传输层（叶子 crate） |
 | `crates/yekitrim-polish` | GSAP 精修引擎（从 vtedit 合并）：字幕/贴纸/音效/特效 → 出片与封面 |
-| `crates/yekitrim-render-core` | 事件/时间线**类型**与时间线数学（被 polish 用），不认识业务；**不含任何 GPU 管线** |
-| `crates/yekitrim-service` | CLI 与 WebUI 共用的领域逻辑（账号账本 / 项目 / 录播姬 / B站 / 用量） |
+| `crates/yekitrim-render-core` | 事件/时间线**类型**与时间线数学（被 polish 用）；**不含任何 GPU 管线** |
+| `crates/yekitrim-service` | CLI 与 WebUI 共用的领域逻辑（账本 / 项目 / 录播姬 / B站 / 用量） |
 | `crates/yekitrim-server` | axum HTTP API + WebUI 宿主 + 任务队列，`api/` 按领域分模块 |
 | `crates/yekitrim-cli` | 只剩入口（clap 命令 + tracing 装配），二进制名 `yekitrim` |
-| `crates/xtask` | 构建/打包/产物门禁（`cargo xtask scan|package`） |
+| `crates/xtask` | 构建/打包/产物门禁（`xtask scan|package`） |
 
 硬规矩（`scripts/check_module_boundaries.py` 逐条机器检查，**17 条**：15 行级 + 1 成对判据 + 1 卫生）：
 
@@ -41,15 +41,15 @@ yekitrim-render-core ←── yekitrim-polish ──┐
 - CLI 侧要用**服务端能力**，只能经 `yekitrim-server` 暴露的 `run()` / `ServerArgs` 进入；
 - 前端 `components/` 不许 import `views/`；作用域查询串只许在 `webui/src/api/` 里拼。
 
-README 的「架构」一节有同一张图的展开版；分层决策的来龙去脉见 `docs/plan/service-direction-review.md`。
+展开版见 README「架构」；分层决策见 `docs/plan/service-direction-review.md`。
 
 ### 管线：Stage 编号与运行模式
 
 `AudioExtractor(1) → Transcriber(2) → EventDetector(3) → Cutter(4)`，**连续无跳过**。
 所有 stage 用 `#[async_trait]` 实现 `Stage` trait（`crates/yekitrim-core/src/pipeline/stage.rs`）。
 
-`PipelineRunner` 三种模式（`pipeline/runner.rs`）：`run()`（受文件存在性约束，单 stage 命令用）、
-`run_all()`（无视文件检查从头跑，`process` 用）、`run_until(max)`（`process --dry-run` 用）。
+`PipelineRunner` 三种模式（`pipeline/runner.rs`）：`run()`（按文件存在性，单 stage 用）、
+`run_all()`（从头跑，`process` 用）、`run_until(max)`（`--dry-run` 用）。
 
 `current_stage` **不持久化**，从输出文件存在性推导（`config/types.rs::current_stage`）：
 
@@ -84,7 +84,7 @@ README 的「架构」一节有同一张图的展开版；分层决策的来龙�
 | `core-detection` | `crates/yekitrim-core/src/detection` | `crates/yekitrim-core/src/detection/AGENTS.md` | 改事件检测之前 |
 | `core-danmaku` | `crates/yekitrim-core/src/danmaku` | `crates/yekitrim-core/src/danmaku/AGENTS.md` | 改弹幕之前 |
 | `core-cutting` | `crates/yekitrim-core/src/cutting` | `crates/yekitrim-core/src/cutting/AGENTS.md` | 改剪切之前 |
-| `llm` | `crates/yekitrim-llm` | `crates/yekitrim-llm/AGENTS.md` | 动 LLM 协议/方言/模型能力之前 |
+| `llm` | `crates/yekitrim-llm` | `crates/yekitrim-llm/AGENTS.md` | 改 LLM 协议之前 |
 | `render-core` | `crates/yekitrim-render-core` | `crates/yekitrim-render-core/AGENTS.md` | 动绘制原语之前 |
 | `polish` | `crates/yekitrim-polish` | `crates/yekitrim-polish/AGENTS.md` | 动该目录之前 |
 | `polish-process` | `crates/yekitrim-polish/src/process` | `crates/yekitrim-polish/src/process/AGENTS.md` | 动后处理之前 |

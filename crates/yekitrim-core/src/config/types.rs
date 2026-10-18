@@ -1290,16 +1290,30 @@ impl From<LlmConfig> for yekitrim_llm::LlmParams {
 
 impl From<&LlmConfig> for yekitrim_llm::LlmParams {
     fn from(c: &LlmConfig) -> Self {
+        // 旧口径 `[llm] thinking = "enabled"/"disabled"` → 推理档位。
+        // ⚠️ `reasoning_explicit` 必须跟着置位：链路自己的老开关（如 `[correct] thinking`）
+        //    只在 LLM 层**没表态**时才生效（2026-09 修过的一个真 bug）。
+        let reasoning = c
+            .thinking
+            .as_deref()
+            .and_then(yekitrim_llm::ReasoningLevel::from_thinking_flag);
         Self {
             api_key: c.api_key.clone(),
             base_url: c.base_url.clone(),
             model: c.model.clone(),
             temperature: c.temperature,
-            max_tokens: c.max_tokens,
+            max_tokens: Some(c.max_tokens),
+            reasoning: reasoning.unwrap_or_default(),
+            reasoning_explicit: reasoning.is_some(),
+            top_p: None,
+            // `response_format` 仍由 `extra_params` 表达（老工程的写死值原样保留）；
+            // 归一化面的 `json_mode` 是给新界面用的，这里不主动打开。
+            json_mode: false,
             // `extra_params` 是 TOML 表，传输层只认 JSON —— 在这里转一次。
             extra_params: c.extra_params.as_ref().and_then(|t| serde_json::to_value(t).ok()),
-            thinking: c.thinking.clone(),
             max_concurrent: c.concurrency(None),
+            // 能力表：按 (base_url, model) 查内置表；查不到就是保守默认（不发推理参数）。
+            caps: yekitrim_llm::catalog::caps_for(&c.base_url, &c.model),
         }
     }
 }

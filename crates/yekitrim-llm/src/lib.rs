@@ -21,10 +21,12 @@
 //! * [`usage`] —— 用量记录与 sink（落库由上层实现 trait）。
 
 pub mod agent;
+pub mod catalog;
 pub mod client;
 pub mod params;
+pub mod wire;
 pub mod usage;
 
 pub use agent::{Agent, AgentItem, AgentProgress, AgentTask, AgentWindow, CancelProbe};
 pub use client::LlmClient;
-pub use params::LlmParams;
+pub use params::{LlmParams, ModelCaps, ReasoningLevel, ThinkingWire};

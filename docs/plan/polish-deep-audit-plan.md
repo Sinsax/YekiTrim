@@ -138,3 +138,61 @@ python3 scripts/check_module_map.py && python3 scripts/check_module_boundaries.p
 1. **节奏先下线（calm）还是保留但改成事件驱动？** 我建议 P0 先 calm，P2 再上事件驱动版。
 2. **黑屏优先修哪条？** 我建议先做 P0-5 埋点 + D9（canvas 不重挂断言），因为 B1 是"永久黑"、其余是"闪一下"。
 3. **P3 的"LLM 只产意图"会不会和你正在做的 LLM 整合冲突？** 如果冲突，P3 只做 `full` 语义与 prompt 版本化，不动链路结构。
+
+---
+
+## 7. 拍板与架构 v2（2026-10-19）
+
+### 三条决定
+
+1. **节奏 = 事件驱动**：取消「全片网格补位」，只在爆点与长段给手法。
+2. **预览黑屏按推荐顺序**：先埋点 + canvas 不重挂断言（D9），再上像素探针。
+3. **创作全部归 LLM**：事件、意图、整体剪辑/安排都由 LLM 产出；**可能再加一轮「编排轮」**；
+   **process 只做资源热加载与应用**（下载/解析贴纸与音效、写回落点/排版/锚点、clamp）。
+
+### 由此产生的硬边界
+
+- **process 不再产生创作性事件**：`process::rhythm` 的 `plan/apply` 迁到 LLM 编排轮，process 侧只留
+  `clear`（清理历史派生事件）与手法**词表**（给 prompt 与 parser 校验用）。
+- **`[rhythm] auto_events` 账本随派生事件一起退役**：所有事件都带来源（`llm:seg` / `llm:arrange` / `manual`），
+  重跑时按来源清理即可，不再需要第二份账本。
+- **配额从 process 前移到 LLM**：LLM 编排轮看得到全片，配额由它在生成时遵守；process 只**校验并在超限时报错**，
+  不再偷偷抽稀/降级。
+
+### 守卫的去向（P2 的核心表）
+
+| 守卫/步骤 | 今天 | 新归属 |
+|---|---|---|
+| `cap_events`（贴纸/sfx 总量） | process 抽稀 | **LLM 编排轮**（生成时遵守）＋ process 只校验 |
+| `cap_pip_shots` | process 降级 | LLM 编排轮 |
+| `cap_dutch_angle` | process 剔除 | LLM 编排轮（±6° 仍由类型/clamp 兜底） |
+| `cap_text_elements` | process 删文字 | LLM 编排轮（prompt 已写「候补」） |
+| `cap_jump_cuts` | process 降级 | LLM 编排轮 |
+| `align_stickers_to_subtitles` | process 吸附时间 | **降级为 clamp**：只保证不越界，不改 LLM 给的时间 |
+| `fit_element_span` | process 吞字幕延长 | 同上：只保护最短显示，不改时间 |
+| `cap_handheld_sway` | process 剔除 | **保留**（能力/几何限制，不是创作） |
+| `materialize_edl_intents` | process | **保留**（把意图落成 EDL = 应用） |
+| `resolve_camera_anchors` / `layout_text_elements` / `placement` | process 每趟重算 | **保留**，但必须遵守 ownership（`manual` 不覆盖） |
+| 片头 `fade_in` / 音效规则 | process | 保留（应用） |
+| `rhythm::plan/apply` | process | **迁出**：LLM 编排轮 |
+
+### 编排轮（新增，LLM 第三段）设计要点
+
+- **一镜到底、单片一次**：输入 = 段表摘要 + 爆点表 + 字幕/弹幕摘要 + 既有事件摘要（不塞全文，控 token）；
+  输出 = 全片结构（hook / body / climax / 收尾）+ 手法表（哪一段用哪个手法、强度、时间）+ 转场；
+- **输出即事件**：直接出 `camera/shake/flash/overlay` 等事件，带 `origin = "llm:arrange"`；
+- **配额在这里兜**：每分钟运镜数、瞬时效数、画中画/歪镜/呼吸的整片次数，全部由 prompt + parser 双保险；
+- **失败降级**：编排轮失败 ⇒ 只保留逐段事件（片子平淡但不崩），并在任务日志里明说；
+- **可关**：`[polish.llm] arrange = true|false`（默认开，失败自动降级）。
+
+### 实施顺序（按新架构调整）
+
+| 阶段 | 内容 | 影响面 |
+|---|---|---|
+| **P0（现在）** | 节奏冻结（默认 `calm`，已落地）· 幂等探针 · 黑屏埋点 + D9 | 只动 process / webui |
+| **P1** | 审计器（重叠/密度）· ownership 表 · 预览像素探针 | process + webui |
+| **P2** | 守卫去创作化（按上表迁移/降级）· `Event.origin` 来源标记 · 幂等矩阵全绿 | process + render-core |
+| **P3** | LLM 编排轮（新第三段）· process 只留资源与应用 · 删 `rhythm::plan/apply` | polish/llm + yekitrim-llm |
+
+⚠️ P3 依赖你正在做的 `yekitrim-llm` 抽 crate（当前 `check_module_map.py` 还有 4 条红：新 crate 未登记卡/
+`core-llm` 卡随目录搬走）。在它落定之前，P0–P2 不碰 `crates/yekitrim-llm`。
