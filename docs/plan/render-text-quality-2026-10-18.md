@@ -74,3 +74,45 @@ A/B（同一帧同一段字幕 2×）：改前描边边缘呈波浪、字腔被�
   并非「从轮廓往外扩 half」那套几何（还与 `FontSize` 联动，且 `ass_outline_px` 的 PlayRes
   补偿会再放大一次），叠加腐蚀出的内半边就是「又粗又糊」。**结论：保留膨胀/腐蚀** ——
   拐角略圆但粗细对得上；要再试**先做 A/B**。
+
+## 三、已修：**编码侧**（2026-10-18，底座 `encoder_args` + 本仓 `cut_ranges`）
+
+### 怎么定位的
+
+用 **lossless PNG**（`dhampir frame`）与**成片解码帧**逐像素对比，把"渲染"与"编码"分开：
+
+| 对比 | 结果 |
+|---|---|
+| lossless 的描边外缘扫描线 | 3~4px 平滑过渡 ⇒ **渲染侧抗锯齿已经在了** |
+| lossless ↔ 成片解码（文字区 180x80） | **MAE 4.40 / max 51**，损伤全在字形边缘、带 4:2:0 色度污渍 |
+| 5× 放大看到的"方格" | 是 1080p 像素栅格本身，不是渲染缺陷 |
+
+⇒ 继续优化渲染层没有收益，剩下的差距全在**编码**。
+
+### 改了什么
+
+| 位置 | 改前 | 改后 |
+|---|---|---|
+| 底座 `pipeline.rs::encoder_args` | `-preset veryfast -crf 20` | **`-preset slow -crf 17`** |
+| 本仓 `render/ffmpeg.rs::detect_encoder`（`cut_ranges` 用） | NVENC `p1/cq22`、libx264 `veryfast/crf22` | NVENC **`p5/cq19`**、libx264 **`slow/crf17`**（与第一遍同级，不做"更差的第二遍"） |
+
+`-c:v libx264` / `-pix_fmt yuv420p` / `+faststart` **一项没动**（444 会破坏播放器与硬解兼容性）。
+
+### 代价（同一 180 帧、1080p、只换参数）
+
+| 设置 | 编码耗时 | 体积 | 文字区 MAE |
+|---|---|---|---|
+| `veryfast/crf20`（旧） | 528 ms | 156,558 B | 3.72（不过） |
+| `slow/crf20`（只升 preset） | — | — | 3.46（不过） |
+| `slow/crf18` | 957 ms | 273,222 B | 未测 |
+| **`slow/crf17`（现在）** | **978 ms（1.85×）** | **291,048 B（1.86×）** | **2.59 ✓** |
+
+⚠️ **体积接近翻倍**是这条改动最实在的代价。想省体积就把 `crf` 提到 18/19（一行改动），
+然后用 `node scripts/check-export-text-quality.mjs ...` 看还能不能过 —— **判据会给出数字，不靠感觉**。
+
+### 判据
+
+`scripts/check-export-text-quality.mjs`（验收工具，不进 CI）：
+`dhampir frame` 出无损 PNG → `dhampir render` 出 1 帧 mp4 → ffmpeg 解成灰度 → 量 **MAE / max / Δ>40 占比**。
+阈值 **mae 3.0**（新参数 2.59 过、旧参数 3.72 **不过** —— 这组数字是**变异自证**跑出来的）。
+`--self-test` 用合成缓冲自证判据能分辨 0 / 2 级 / 128 级差异。
