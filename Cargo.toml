@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/yekitrim-core", "crates/yekitrim-cli", "crates/yekitrim-polish",
+members = ["crates/yekitrim-core", "crates/yekitrim-cli", "crates/yekitrim-llm", "crates/yekitrim-polish",
     "crates/yekitrim-render-core", "crates/yekitrim-server", "crates/yekitrim-service", "crates/xtask"]
 resolver = "2"
 

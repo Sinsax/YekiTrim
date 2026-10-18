@@ -11,7 +11,6 @@ pub mod srt;
 pub mod pipeline;
 pub mod audio;
 pub mod asr;
-pub mod llm;
 pub mod download;
 pub mod detection;
 pub mod danmaku;

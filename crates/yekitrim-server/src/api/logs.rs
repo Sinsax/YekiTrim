@@ -44,7 +44,7 @@ pub(super) struct UsageQuery {
 /// `GET /api/admin/usage?days=30`：LLM 用量汇总（总量 + 按天/链路/项目/模型）。
 ///
 /// **仅 admin**：记录里带各用户的项目路径，与 `/api/admin/logs` 同一个理由。
-/// 采集点在 `yekitrim_core::llm::LlmClient::send`，见 `yekitrim_service::usage`。
+/// 采集点在 `yekitrim_llm::LlmClient::send`，见 `yekitrim_service::usage`。
 pub(super) async fn admin_usage(State(state): State<Arc<AppState>>, Query(q): Query<UsageQuery>) -> ApiResult {
     let days = q.days.unwrap_or(30);
     let db = state.auth.db();

@@ -1,7 +1,7 @@
 //! llm::agent：把条目切成窗口、并发跑 LLM 任务的通用编排器（含 checkpoint 续传）。
 //!
 //! 入口：`Agent`（`new` / `with_window_size` / `with_max_concurrent` / `with_cancel` / `run` / `run_with_checkpoint` / `run_windows`）、`AgentTask`、`AgentItem`、`AgentWindow`、`CancelProbe`、`extract_json_array` / `extract_json_object`、`windows_from_checkpoint`。
-//! 边界：checkpoint 按提示词指纹失效（`prompt_fingerprint`），别绕过；并发只由 `LlmConfig::concurrency` 决定，别写死数字 —— 见 `crates/yekitrim-core/src/llm/AGENTS.md`
+//! 边界：checkpoint 按提示词指纹失效（`prompt_fingerprint`），别绕过；并发只由 `LlmParams::concurrency` 决定，别写死数字 —— 见 `crates/yekitrim-core/src/llm/AGENTS.md`
 
 use std::path::Path;
 use std::sync::Arc;
@@ -12,8 +12,8 @@ use serde_json::Value;
 use tokio::sync::{mpsc, Semaphore};
 use tokio::task::JoinSet;
 
-use crate::config::LlmConfig;
-use crate::llm::LlmClient;
+use crate::params::LlmParams;
+use crate::client::LlmClient;
 
 /// 取消探针：返回 true = 任务已被请求取消。
 ///
@@ -106,8 +106,8 @@ pub trait AgentTask<T: Send + Sync + Clone + 'static>: Send + Sync {
     fn name(&self) -> &str;
 
     /// 用量记账的归因（链路名 + 项目目录）。默认用 `name()`；认得出项目的任务覆写它。
-    fn usage_context(&self) -> crate::llm::usage::UsageContext {
-        crate::llm::usage::UsageContext::new(self.name())
+    fn usage_context(&self) -> crate::usage::UsageContext {
+        crate::usage::UsageContext::new(self.name())
     }
 
     /// 是否启用思考模式（LLM 先输出 reasoning 再输出结果）
@@ -140,7 +140,7 @@ pub trait AgentTask<T: Send + Sync + Clone + 'static>: Send + Sync {
         all_items: &[AgentItem],
         window: &AgentWindow<T>,
         global: &str,
-        llm_cfg: &LlmConfig,
+        llm_cfg: &LlmParams,
     ) -> Result<T> {
         // 局部上下文：当前窗口前 3 条 + 后 2 条（供参考）
         let ctx_start = window.offset.saturating_sub(3);
@@ -151,12 +151,12 @@ pub trait AgentTask<T: Send + Sync + Clone + 'static>: Send + Sync {
         let system_prompt = self.system_prompt();
         let user_prompt = self.user_prompt(global, &window_context, &window.items);
 
-        let client = LlmClient::from_config(llm_cfg)?
+        let client = LlmClient::new(llm_cfg)?
             .with_timeout(120)
             .with_usage_context(self.usage_context());
         // `AgentTask::thinking()` 是**订正那条链路的老开关**（`[correct] thinking`）。
         // LLM 层已经表态时（`[llm].thinking` 或 `[llm.overrides.<link>].thinking`，由
-        // `LlmConfig::for_link` 解析出来）以 LLM 层为准 —— 否则它会把解析结果顶掉。
+        // `LlmParams::for_link` 解析出来）以 LLM 层为准 —— 否则它会把解析结果顶掉。
         let client = if self.thinking() && llm_cfg.thinking.is_none() {
             client.with_thinking(Some("enabled"))
         } else {
@@ -209,7 +209,7 @@ pub fn fingerprint(parts: &[&str]) -> String {
 
 /// 通用 Agent 执行器。
 pub struct Agent {
-    llm: LlmConfig,
+    llm: LlmParams,
     window_size: usize,
     max_concurrent: usize,
     /// 取消探针（不给 = 不支持取消，跑完为止）。
@@ -217,9 +217,11 @@ pub struct Agent {
 }
 
 impl Agent {
-    pub fn new(llm: LlmConfig) -> Self {
+    /// 接受任何 `Into<LlmParams>`（配置层解析出来的参数，见 `LlmClient::new`）。
+    pub fn new<P: Into<LlmParams>>(llm: P) -> Self {
+        let llm = llm.into();
         // 默认并发跟随 `[llm] max_concurrent`，别在这里另写一个常数
-        let max_concurrent = llm.concurrency(None);
+        let max_concurrent = llm.max_concurrent;
         Self {
             llm,
             window_size: 25,
@@ -651,7 +653,7 @@ mod tests {
 
     #[test]
     fn build_windows_uses_window_size() {
-        let agent = Agent::new(LlmConfig::default()).with_window_size(3);
+        let agent = Agent::new(LlmParams::default()).with_window_size(3);
         let items: Vec<AgentItem> = (0..7)
             .map(|i| AgentItem {
                 index: i + 1,
@@ -729,7 +731,7 @@ mod tests {
                 _all_items: &[AgentItem],
                 window: &AgentWindow<AgentOutput>,
                 _global: &str,
-                _llm_cfg: &LlmConfig,
+                _llm_cfg: &LlmParams,
             ) -> Result<AgentOutput> {
                 // 第一个窗口立刻完成；其余模拟"在飞的 LLM 调用"：一直挂着，直到被 abort
                 if self.entered.fetch_add(1, Ordering::SeqCst) > 0 {
@@ -773,7 +775,7 @@ mod tests {
         let cancelled = Arc::new(AtomicBool::new(false));
         let probe_flag = cancelled.clone();
         let probe_completed = completed.clone();
-        let agent = Agent::new(LlmConfig::default())
+        let agent = Agent::new(LlmParams::default())
             .with_window_size(1)
             .with_max_concurrent(1)
             .with_cancel(Arc::new(move || {
@@ -844,7 +846,7 @@ mod tests {
                 _all_items: &[AgentItem],
                 window: &AgentWindow<AgentOutput>,
                 _global: &str,
-                _llm_cfg: &LlmConfig,
+                _llm_cfg: &LlmParams,
             ) -> Result<AgentOutput> {
                 self.calls.fetch_add(1, Ordering::SeqCst);
                 Ok(AgentOutput {
@@ -879,7 +881,7 @@ mod tests {
         // 第一次运行：两个窗口都处理，checkpoint 写入全部
         let calls = Arc::new(AtomicUsize::new(0));
         let task = FakeTask { calls: calls.clone() };
-        let agent = Agent::new(LlmConfig::default()).with_window_size(1);
+        let agent = Agent::new(LlmParams::default()).with_window_size(1);
         let windows = agent.build_windows(&items);
         let _ = agent
             .run_windows(task, windows, Some(&cp), None)
@@ -958,7 +960,7 @@ mod tests {
                 _all_items: &[AgentItem],
                 window: &AgentWindow<AgentOutput>,
                 _global: &str,
-                _llm_cfg: &LlmConfig,
+                _llm_cfg: &LlmParams,
             ) -> Result<AgentOutput> {
                 self.calls.fetch_add(1, Ordering::SeqCst);
                 Ok(AgentOutput {
@@ -1005,7 +1007,7 @@ mod tests {
         ];
         let calls = Arc::new(AtomicUsize::new(0));
         let task = FakeTask { calls: calls.clone() };
-        let agent = Agent::new(LlmConfig::default());
+        let agent = Agent::new(LlmParams::default());
         let result = agent.run_windows(task, windows, None, None).await.unwrap();
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].output.as_ref().unwrap().text, "cached");

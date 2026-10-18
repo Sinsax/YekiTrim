@@ -1,0 +1,17 @@
+[package]
+name = "yekitrim-llm"
+version.workspace = true
+edition = "2021"
+description = "YekiTrim LLM 传输层：协议/方言/模型能力/用量采集（隔离 crate，不认识配置与业务）"
+authors = ["Sinsax"]
+license = "Apache-2.0"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", features = ["json"] }
+async-trait = "0.1"
+indicatif = "0.18"
+tracing = "0.1"

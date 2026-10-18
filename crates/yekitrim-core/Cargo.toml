@@ -7,6 +7,7 @@ authors = ["Sinsax"]
 license = "Apache-2.0"
 
 [dependencies]
+yekitrim-llm = { path = "../yekitrim-llm" }
 sherpa-onnx = "1.13.3"
 # VAD 走 C API：`sherpa-onnx` 1.13.3 的 Rust 侧 `vad` 模块是私有的（上游 1.13.6 才公开），
 # 而本仓库本来就把 sys 换成 vendor/sherpa-onnx-sys（为了不带 GPL 的 espeak-ng），

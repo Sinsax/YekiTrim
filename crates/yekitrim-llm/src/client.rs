@@ -9,12 +9,10 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use serde_json::Value;
 
-use crate::config::LlmConfig;
+use crate::params::LlmParams;
 
-pub mod agent;
-pub mod usage;
 
-use usage::{UsageRecord, UsageSink};
+use crate::usage::{UsageRecord, UsageSink};
 
 /// OpenAI 兼容 LLM 客户端
 ///
@@ -66,14 +64,15 @@ pub struct LlmClient {
     thinking: Option<String>,
     http: reqwest::Client,
     /// 用量归因（谁在调用）。不给就记成空 label（仍会记账，只是分不出链路）。
-    usage_context: usage::UsageContext,
+    usage_context: crate::usage::UsageContext,
     /// 私有 sink；不给就用进程级默认 sink（CLI/server 启动时装的那个）。
     usage_sink: Option<Arc<dyn UsageSink>>,
 }
 
 impl LlmClient {
     /// 从裸参数构造。base_url / model 为空时使用默认值（OpenAI / gpt-4o-mini）。
-    pub fn new(api_key: &str, base_url: &str, model: &str) -> Self {
+    /// 从裸参数构造（测试/探针用；生产走 [`LlmClient::new`]）。
+    pub fn raw(api_key: &str, base_url: &str, model: &str) -> Self {
         Self {
             api_key: api_key.to_string(),
             base_url: if base_url.is_empty() {
@@ -91,35 +90,38 @@ impl LlmClient {
             extra_params: None,
             thinking: None,
             http: build_http_client(Duration::from_secs(120)),
-            usage_context: usage::UsageContext::default(),
+            usage_context: crate::usage::UsageContext::default(),
             usage_sink: None,
         }
     }
 
     /// 给用量记账挂上归因（链路名 + 项目目录）。**在 `send()` 之前调**，否则记成空 label。
-    pub fn with_usage_context(mut self, ctx: usage::UsageContext) -> Self {
+    pub fn with_usage_context(mut self, ctx: crate::usage::UsageContext) -> Self {
         self.usage_context = ctx;
         self
     }
 
-    /// 注入私有 sink（测试用；生产走 `usage::set_default_sink`）。
+    /// 注入私有 sink（测试用；生产走 `crate::usage::set_default_sink`）。
     pub fn with_usage_sink(mut self, sink: Arc<dyn UsageSink>) -> Self {
         self.usage_sink = Some(sink);
         self
     }
 
-    /// 从 `LlmConfig` 构造。`base_url` 为空时返回错误。
-    pub fn from_config(llm: &LlmConfig) -> Result<Self> {
-        if llm.base_url.is_empty() {
+    /// 从**归一化参数**构造。`base_url` 为空时返回错误。
+    ///
+    /// 接受任何 `Into<LlmParams>`：实际传进来的是配置层解析出来的参数（`impl From<&LlmConfig>`
+    /// 在 `yekitrim-core::config` 里）—— **本 crate 不认识那个类型**。
+    pub fn new<P: Into<LlmParams>>(p: P) -> Result<Self> {
+        let p = p.into();
+        if p.base_url.is_empty() {
             anyhow::bail!("未配置 LLM API 基础地址 (llm.base_url)，请设置后重试");
         }
-        let mut client = Self::new(&llm.api_key, &llm.base_url, &llm.model);
-        client.temperature = llm.temperature;
-        client.max_tokens = Some(llm.max_tokens);
-        client.extra_params = llm
-            .extra_params
-            .as_ref()
-            .and_then(|t| serde_json::to_value(t).ok());
+        // ⚠️ 这里**不**设 thinking：旧 from_config 也没设，thinking 由调用方按链路
+        //    with_thinking(...) 显式给（搬迁期保持逐字节相同）。
+        let mut client = Self::raw(&p.api_key, &p.base_url, &p.model);
+        client.temperature = p.temperature;
+        client.max_tokens = Some(p.max_tokens);
+        client.extra_params = p.extra_params;
         Ok(client)
     }
 
@@ -209,11 +211,11 @@ impl LlmClient {
                             // 200 但不是 JSON（网关插了一页 HTML 之类）：账上也要留一行，
                             // 否则"调用发生了却查无此事"，只能靠日志猜
                             let msg = format!("解析 LLM API 响应失败: {e}");
-                            self.emit_usage(usage::UsageNumbers::default(), started, attempt + 1, false, None, Some(&msg));
+                            self.emit_usage(crate::usage::UsageNumbers::default(), started, attempt + 1, false, None, Some(&msg));
                             return Err(anyhow::anyhow!(msg));
                         }
                     };
-                    let nums = usage::parse_usage(&value);
+                    let nums = crate::usage::parse_usage(&value);
                     self.emit_usage(nums, started, attempt + 1, true, None, None);
                     return Ok(value);
                 }
@@ -229,7 +231,7 @@ impl LlmClient {
                         continue;
                     }
                     self.emit_usage(
-                        usage::UsageNumbers::default(),
+                        crate::usage::UsageNumbers::default(),
                         started,
                         attempt + 1,
                         false,
@@ -248,7 +250,7 @@ impl LlmClient {
                         continue;
                     }
                     self.emit_usage(
-                        usage::UsageNumbers::default(),
+                        crate::usage::UsageNumbers::default(),
                         started,
                         attempt + 1,
                         false,
@@ -266,21 +268,21 @@ impl LlmClient {
     /// 组装并投递一条用量记录（没有 sink 时只留日志）。
     fn emit_usage(
         &self,
-        nums: usage::UsageNumbers,
+        nums: crate::usage::UsageNumbers,
         started: Instant,
         attempts: u32,
         ok: bool,
         status: Option<u16>,
         error: Option<&str>,
     ) {
-        usage::emit_with(
+        crate::usage::emit_with(
             self.usage_sink.as_ref(),
             UsageRecord {
-                ts: usage::now_secs(),
+                ts: crate::usage::now_secs(),
                 label: self.usage_context.label.clone(),
                 project: self.usage_context.project.clone(),
                 model: self.model.clone(),
-                host: usage::host_of(&self.base_url),
+                host: crate::usage::host_of(&self.base_url),
                 prompt_tokens: nums.prompt_tokens,
                 completion_tokens: nums.completion_tokens,
                 cached_tokens: nums.cached_tokens,
@@ -289,7 +291,7 @@ impl LlmClient {
                 attempts,
                 ok,
                 status,
-                error: error.map(usage::truncate_error),
+                error: error.map(crate::usage::truncate_error),
             },
         );
     }
@@ -392,9 +394,9 @@ mod tests {
         // 这两条缺一都会偶发红，见 fake_server 的 ⚠️
         let (_srv, base) = fake_server(vec![(200, body.clone()), (200, body.clone()), (200, body)]).await;
         let rec = recorder();
-        let client = LlmClient::new("k", &base, "m1")
+        let client = LlmClient::raw("k", &base, "m1")
             .with_usage_sink(rec.clone())
-            .with_usage_context(usage::UsageContext::new("测试链路").project(Some("F:/proj")));
+            .with_usage_context(crate::usage::UsageContext::new("测试链路").project(Some("F:/proj")));
 
         assert_eq!(client.chat("sys", "user").await.unwrap(), "hi");
 
@@ -426,7 +428,7 @@ mod tests {
         let (_srv, base) =
             fake_server(vec![(400, bad.clone()), (400, bad.clone()), (400, bad)]).await;
         let rec = recorder();
-        let client = LlmClient::new("k", &base, "m1").with_usage_sink(rec.clone());
+        let client = LlmClient::raw("k", &base, "m1").with_usage_sink(rec.clone());
 
         assert!(client.chat("sys", "user").await.is_err());
 
@@ -473,7 +475,7 @@ mod tests {
         ])
         .await;
         let rec = recorder();
-        let client = LlmClient::new("k", &base, "m1").with_usage_sink(rec.clone());
+        let client = LlmClient::raw("k", &base, "m1").with_usage_sink(rec.clone());
 
         assert_eq!(client.chat("sys", "user").await.unwrap(), "ok");
 

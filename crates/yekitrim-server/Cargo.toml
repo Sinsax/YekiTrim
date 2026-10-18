@@ -16,6 +16,7 @@ path = "src/lib.rs"
 # `wgpu_render` 这一位。别再把 feature 加回来。
 
 [dependencies]
+yekitrim-llm = { path = "../yekitrim-llm" }
 yekitrim-core = { path = "../yekitrim-core" }
 yekitrim-polish = { path = "../yekitrim-polish" }
 yekitrim-service = { path = "../yekitrim-service" }

@@ -1,6 +1,6 @@
 //! LLM 用量：落库（`DbSink`）与汇总（`summarize`）。
 //!
-//! 采集点在 `yekitrim_core::llm::LlmClient::send`——那里是全链路唯一出口，
+//! 采集点在 `yekitrim_llm::LlmClient::send`——那里是全链路唯一出口，
 //! 所以这里只需要实现一个 [`UsageSink`] 并装上去，不用碰任何调用方。
 //!
 //! - 服务端：`server::run` 启动时 [`install`]（复用 `AuthService` 手上的同一个 Db）
@@ -11,7 +11,7 @@
 use anyhow::Result;
 use serde::Serialize;
 use std::sync::Arc;
-use yekitrim_core::llm::usage::{UsageRecord, UsageSink};
+use yekitrim_llm::usage::{UsageRecord, UsageSink};
 
 use super::db::Db;
 
@@ -38,7 +38,7 @@ impl UsageSink for DbSink {
 
 /// 装进程级默认 sink（重复调用以最后一次为准）。
 pub fn install(db: Arc<Db>) {
-    yekitrim_core::llm::usage::set_default_sink(Arc::new(DbSink::new(db)));
+    yekitrim_llm::usage::set_default_sink(Arc::new(DbSink::new(db)));
 }
 
 /// CLI 入口用：开账本并装上 sink。失败只 warn（没有账本不该拦住 `yekitrim correct` 这类命令）。
@@ -89,7 +89,7 @@ const COLS: &str = "COUNT(*) AS calls,
 /// 全部用 SQL 聚合：这张表会一直长（一次检测几十行），不在 Rust 里扫全表。
 pub fn summarize(db: &Db, days: i64) -> Result<UsageSummary> {
     let days = days.clamp(1, 3650);
-    let since = yekitrim_core::llm::usage::now_secs() - days * 86_400;
+    let since = yekitrim_llm::usage::now_secs() - days * 86_400;
     let mut summary = UsageSummary { days, ..Default::default() };
 
     let totals = db.query_llm_usage_row(

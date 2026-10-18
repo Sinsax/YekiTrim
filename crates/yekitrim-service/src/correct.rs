@@ -46,7 +46,7 @@ pub async fn run_correct(
     }
     let checkpoint_path = if checkpoint.exists() { Some(checkpoint.as_path()) } else { None };
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<yekitrim_core::llm::agent::AgentProgress<Vec<yekitrim_core::llm::agent::AgentOutput>>>(64);
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<yekitrim_llm::agent::AgentProgress<Vec<yekitrim_llm::agent::AgentOutput>>>(64);
     let partial_writer = partial_path.clone();
     let partial_task = tokio::spawn(async move {
         use std::collections::BTreeMap;
@@ -61,8 +61,8 @@ pub async fn run_correct(
 
     // 取消探针：订正是分钟级链路，必须让 Agent 在窗口边界轮询它
     //（判据与检测/精修同源：`ProgressReporter::cancelled()`）。
-    let cancel: Option<yekitrim_core::llm::agent::CancelProbe> = progress.clone().map(|p| {
-        std::sync::Arc::new(move || p.cancelled()) as yekitrim_core::llm::agent::CancelProbe
+    let cancel: Option<yekitrim_llm::agent::CancelProbe> = progress.clone().map(|p| {
+        std::sync::Arc::new(move || p.cancelled()) as yekitrim_llm::agent::CancelProbe
     });
     let result = yekitrim_core::asr::correct::correct_transcript_with_checkpoint(
         &transcript_data.segments,
