@@ -9,11 +9,15 @@
  * 只抽数据，不引 pi-ai 的运行时；脚本零依赖（node:fs / node:path / node:crypto）。
  *
  * 用法：
- *   node scripts/gen-llm-models.mjs --pi-ai <pi-ai 包目录>            # 重写产物
- *   node scripts/gen-llm-models.mjs --pi-ai <pi-ai 包目录> --check    # 只比对不写
- *   node scripts/gen-llm-models.mjs --pi-ai <目录> --print-analysis   # 额外打印源侧统计
+ *   node scripts/gen-llm-models.mjs                          # 重写产物（读仓库内 vendor/pi-ai-models/）
+ *   node scripts/gen-llm-models.mjs --check                   # 只比对不写（离线，可进 CI）
+ *   node scripts/gen-llm-models.mjs --print-analysis          # 额外打印源侧统计
+ *   node scripts/gen-llm-models.mjs --pi-ai <pi-ai 包目录>    # 换成外部源（可选覆盖，如本机 npm 缓存）
  *
- * 退出码：0 成功/一致；1 --check 不一致；2 缺 --pi-ai 或源目录不可用。
+ * 源目录两种形态都认：npm 包的 dist/providers/data/*.json，或 vendor 目录里平铺的 <id>.json
+ * （两种形态喂给同一个 sha256 ⇒ 产物逐字节一致；见 vendor/pi-ai-models/README.md）。
+ *
+ * 退出码：0 成功/一致；1 --check 不一致；2 源目录不可用（缺文件 / 不是 pi-ai / 参数不认识）。
  *
  * 产物逐字节稳定：2 空格缩进、LF、末尾一个换行；providers 按 id 升序、models 按 id 升序。
  */
@@ -27,6 +31,8 @@ const SCHEMA = 1;
 const PACKAGE_NAME = '@earendil-works/pi-ai';
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const OUT_FILE = path.join(SCRIPT_DIR, '..', 'crates', 'yekitrim-llm', 'data', 'llm-models.json');
+/** 默认源：仓库内 vendor 的那份（离线可跑）。`--pi-ai` 是可选的覆盖，指向外部 npm 包目录。 */
+const DEFAULT_PI_AI_DIR = path.join(SCRIPT_DIR, '..', 'vendor', 'pi-ai-models');
 
 /** 产物里允许出现的档位（源里 pi-ai 还有 max，本表不收；理由见 data/NOTICE.md）。 */
 const ALLOWED_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'];
@@ -171,18 +177,20 @@ function detectTemperatureSignal(compat) {
 
 function missingSourceMessage(pkgDir) {
   return [
-    '[gen-llm-models] 找不到可用的 pi-ai 源包：' + pkgDir,
+    '[gen-llm-models] 找不到可用的 pi-ai 源数据：' + pkgDir,
     '',
-    '需要准备什么（三选一）：',
-    '  1) 用本机 npm 缓存里已有的那份（只读即可）：',
+    '默认源应该是仓库内的 vendor/pi-ai-models/（package.json + 17 个 <id>.json）。',
+    '它被删了/被清了就从上游重新取一份（三选一）：',
+    '  1) 本机 npm 缓存里已有的那份（只读即可）：',
     '     node scripts/gen-llm-models.mjs --pi-ai <npm-cache>/node_modules/@earendil-works/pi-ai',
     '  2) 现场装一份到临时目录再跑：',
     '     npm i --prefix <tmp> @earendil-works/pi-ai',
     '     node scripts/gen-llm-models.mjs --pi-ai <tmp>/node_modules/@earendil-works/pi-ai',
     '  3) 从 GitHub 取源码包：https://github.com/earendil-works/pi （packages/ai）',
     '',
-    '要求：该目录下必须有 package.json（name=@earendil-works/pi-ai，读 version/license）',
-    '      与 dist/providers/data/*.json（每家的模型表）。',
+    '要求：该目录下必须有 package.json（name=@earendil-works/pi-ai，读 version/license），',
+    '      且模型表在 dist/providers/data/<id>.json（npm 包形态）或 <id>.json（vendor 形态）。',
+    '取回来之后照 vendor/pi-ai-models/README.md 的步骤更新（含每文件 sha256 与重跑命令）。',
     '本脚本不会联网、也不会替你安装依赖。',
   ].join('\n');
 }
@@ -192,8 +200,21 @@ function extract(piAiDir, analysis) {
   if (!fs.existsSync(pkgDir) || !fs.statSync(pkgDir).isDirectory()) die(2, missingSourceMessage(pkgDir));
   const pkgFile = path.join(pkgDir, 'package.json');
   if (!fs.existsSync(pkgFile)) die(2, missingSourceMessage(pkgDir));
-  const dataDir = path.join(pkgDir, 'dist', 'providers', 'data');
-  if (!fs.existsSync(dataDir)) die(2, missingSourceMessage(pkgDir));
+
+  // 两种形态：npm 包的 dist/providers/data/，或 vendor 目录里平铺的 <id>.json。
+  // 二者只影响去哪儿读，不影响 source_sha256（它只吃文件名 + 内容）⇒ 产物逐字节一致。
+  const nestedDataDir = path.join(pkgDir, 'dist', 'providers', 'data');
+  let dataDir;
+  let layout;
+  if (fs.existsSync(nestedDataDir)) {
+    dataDir = nestedDataDir;
+    layout = 'npm 包（dist/providers/data/）';
+  } else if (PROVIDERS.every((spec) => fs.existsSync(path.join(pkgDir, spec.file)))) {
+    dataDir = pkgDir;
+    layout = 'vendor 目录（<id>.json 平铺）';
+  } else {
+    die(2, missingSourceMessage(pkgDir));
+  }
 
   const pkg = readJsonFile(pkgFile).value;
   if (pkg.name !== PACKAGE_NAME) {
@@ -355,6 +376,7 @@ function extract(piAiDir, analysis) {
   };
 
   analysis.push('源包：' + PACKAGE_NAME + '@' + pkg.version + '  (' + pkgDir + ')');
+  analysis.push('源目录形态：' + layout);
   analysis.push('参与哈希的源文件（按名升序）：' + sourceParts.map((x) => x.name).sort().join(', '));
   analysis.push('distinct thinkingFormat（源侧原值 -> 本表 wire）：');
   for (const [fmt, n] of [...observedFormats.entries()].sort()) {
@@ -407,12 +429,13 @@ function main(argv) {
     else if (a === '--print-analysis') printAnalysis = true;
     else die(2, '[gen-llm-models] 不认识参数：' + a + '（用法见文件头注释）');
   }
-  if (!piAiDir) {
-    die(2, '[gen-llm-models] 缺 --pi-ai <pi-ai 包目录>。\n\n' + missingSourceMessage('<未指定>'));
-  }
+  // 不给 --pi-ai 就用仓库内 vendor 那份（离线；CI 走这条）。
+  const sourceDir = piAiDir || DEFAULT_PI_AI_DIR;
+  const sourceKind = piAiDir ? '--pi-ai 指定' : '仓库内 vendor 默认';
 
   const analysis = [];
-  const doc = extract(piAiDir, analysis);
+  const doc = extract(sourceDir, analysis);
+  analysis.push('源目录来源：' + sourceKind);
   const text = serialize(doc);
   if (printAnalysis) console.log(analysis.join('\n'));
 

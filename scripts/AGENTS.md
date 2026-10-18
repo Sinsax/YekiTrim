@@ -42,6 +42,7 @@
   `coverage_roots`（`crates/*/src`、`webui/src`、`scripts` …）下**每个源文件都必须落在某张卡的目录内**，
   否则报"无主文件"；**任何没登记进注册表的 `AGENTS.md` 也算失败**（卡片会漂移）。
   用法：`python3 scripts/check_module_map.py [-v|--json]`。
+- **`check-llm-models.mjs`** —— 能力表门禁：产物 vs 入库源 `vendor/pi-ai-models/`（缺源 SKIP）。`--self-test` 自证。
 - **`check-yekitrim-translator.mjs`** —— 转译器守卫（**node，不是 python**），四段：
   **348 曲线 + 13 颜色 + 44 映射 + 6 画面构成 + 25 几何 + 4 密集键 + 9 字体族名
   + 2 夹取 + 8 变速 + 9 TOML 父级 + 13 素材 + 10 片头/片尾**。
