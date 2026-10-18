@@ -1108,7 +1108,11 @@ onMounted(() => load())
   height:72px; border-radius:6px; background:var(--bg-soft); overflow:hidden;
 }
 .ml-thumb img { max-width:100%; max-height:100%; object-fit:contain; }
-.ml-font { font-size:22px; line-height:1; white-space:nowrap; }
+/* 样张**整条都要看得见**（2026-10-19，用户报「字体列表显示的有问题」）：以前是 white-space:nowrap
+   + 容器 overflow:hidden，97px 的格子放 186px 的样张 ⇒ 右边**半个字被硬裁、连省略号都没有**
+   （截图 .workbuddy/fontlist/crop-three-cards.png）。现在允许折行、居中收在 72px 高度内
+   —— 宁可换一行，不切字形。 */
+.ml-font { font-size:22px; line-height:1.15; text-align:center; white-space:normal; overflow-wrap:anywhere; max-height:100%; overflow:hidden; }
 .ml-badge {
   position:absolute; right:3px; bottom:3px;
   font-size:10px; padding:0 4px; border-radius:4px;
