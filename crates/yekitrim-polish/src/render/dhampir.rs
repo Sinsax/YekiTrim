@@ -502,7 +502,25 @@ fn font_search_order(project_font: &str) -> Vec<String> {
 ///     （底座不合成粗体：`font_weight >= 600` 时它只会去要 `--font-bold-file`）；
 ///   * 不区分粗细地挑文件 ⇒ `msyh` 会先匹配到 `msyhbd`（粗体）当常规用 ✗ —— 所以挑的时候
 ///     **优先非粗非斜**，粗体另走 [`pick_bold_from_listing`]。
-fn find_font(project_font: &str) -> Result<(PathBuf, Option<PathBuf>)> {
+/// **工程里选的那支被兜底栈顶掉了吗** —— 是就给出那句提示（`None` = 没换，不用报）。
+///
+/// ⚠️ 抽成纯函数是为了**能测**：真实环境里"库里没有这一支"取决于这台机器装了什么，
+/// 直接测 `describe()` / `find_font()` 只能得到"看机器脸色"的判据。
+/// 而"静默换字体"正是本仓最恨的那类（成片与预览不同，日志里却只写命中文件的路径）。
+fn font_swap_note(wanted: &str, matched: &str) -> Option<String> {
+    let wanted = wanted.trim();
+    if wanted.is_empty() || matched.trim().eq_ignore_ascii_case(wanted) {
+        return None;
+    }
+    Some(format!(
+        "⚠ 字体：「{wanted}」在字体库与系统里都没找到 —— 这一趟用的是兜底栈里的「{matched}」",
+    ))
+}
+
+/// ⚠️ 第三个返回值 = **这一趟命中的族名**（`font_search_order` 里的那一项）。
+/// 调用方拿它判"工程里选的那支是不是被兜底栈顶掉了" —— 那是**静默替换**，
+/// 出片日志必须看得见（2026-10-16 补：以前只打命中文件的路径，看不出换过字体）。
+fn find_font(project_font: &str) -> Result<(PathBuf, Option<PathBuf>, String)> {
     // ⚠️ **先让字体库就绪**：`ensure_dir` 里带着那次幂等的“把非 ASCII 条目搬成 ASCII”迁移
     // （`yekitrim_core::fonts::migrate_ascii_layouts`）。CLI 也可能在没跑过 server / `config init`
     // 的机器上出片 —— 那时库里还是 `<中文目录>/<中文名>.ttf`，解析出来的路径直接交给 ffmpeg
@@ -515,7 +533,8 @@ fn find_font(project_font: &str) -> Result<(PathBuf, Option<PathBuf>)> {
     if let Ok(explicit) = std::env::var("VTEDIT_DHAMPIR_FONT") {
         let p = PathBuf::from(&explicit);
         if p.is_file() {
-            return Ok((p, None));
+            // 显式指定 ⇒ "命中"就是它自己（没有兜底栈这回事）
+            return Ok((p, None, "<VTEDIT_DHAMPIR_FONT>".to_string()));
         }
         bail!("VTEDIT_DHAMPIR_FONT={explicit} 不是文件");
     }
@@ -526,11 +545,11 @@ fn find_font(project_font: &str) -> Result<(PathBuf, Option<PathBuf>)> {
             // 库内字体：粗体就在库里按 `<id> Bold` 找；找不到就交给底座（它会退回这一支）
             let bold = yekitrim_core::fonts::resolve_file_for(owner, &format!("{family} Bold"))
                 .filter(|b| *b != p);
-            return Ok((p, bold));
+            return Ok((p, bold, family));
         }
         if let Some(p) = pick_font_from_listing(&listing, &family) {
             let bold = pick_bold_from_listing(&listing, &family).filter(|b| *b != p);
-            return Ok((p, bold));
+            return Ok((p, bold, family));
         }
         tried.push(family);
     }
@@ -749,7 +768,11 @@ pub fn readiness(project_font: &str, deep: bool) -> Readiness {
     };
     // 字体：常规 + **粗体那一支**（少了它 700/600 的字重会退回常规体 —— 见 `font_bold` 的说明）。
     let (font, font_bold) = match find_font(project_font) {
-        Ok((regular, bold)) => (Some(regular.display().to_string()), bold.map(|b| b.display().to_string())),
+        // ⚠️ 就绪位这里**不看"是不是被兜底栈顶掉"**：那是**出片时**才发生的替换，
+        //    而就绪位回答的是"这台机器能不能出片"。替换本身由出片日志那条 warn 报（见 `run_render`）。
+        Ok((regular, bold, _matched)) => {
+            (Some(regular.display().to_string()), bold.map(|b| b.display().to_string()))
+        }
         Err(e) => {
             problems.push(format!("字体：{e}"));
             (None, None)
@@ -1062,7 +1085,120 @@ pub fn prepare_project_reporting(
         translated.display(),
         t.elapsed().as_secs_f64()
     );
+    // **顺带把旧版本留在片段根目录的文字轨草稿收掉**（见 `sweep_legacy_text_assets`）。
+    // 放在这里而不是 `cleanup_project`：那里只拿得到转译产物路径，而老文件在
+    // **片段目录**（预览那条腿的产物在 `.yekitrim/`，两者不是同一个目录）。
+    let swept = sweep_legacy_text_assets(clip_dir);
+    if swept > 0 {
+        tracing::info!(
+            "  · 清掉历史文字轨草稿 {swept} 个（旧版写在片段根目录的 dhampir-text_*.ass）"
+        );
+    }
     Ok((translated, report))
+}
+
+/// 文字元素的 ASS 落在哪：**转译产物同目录、同名的 `.assets/` 子目录**。
+///
+/// 与 `tools/polish-to-dhampir.mjs::translate` 里 `sideDir` 的推导**逐字同一条**
+/// （那边 = `basename(docPath)` 去掉扩展名 + `.assets`）。两边分叉的后果是
+/// "目录永远删不掉" —— 又回到用户报的那个「渲染导出时中间文件过多」。
+/// 平铺出来的字体目录在哪：与转译草稿**同目录同名**、后缀换成 .fonts。
+///
+/// 与 [`side_assets_dir`] 同一条推导（都挂在 `translated` 上）—— 于是
+/// [`cleanup_project`] 与 `api::render::cleanup_render_leftovers` 的 _dhampir_project*
+/// 通配都能收掉它，不会在用户的片段目录里留垃圾。
+fn staged_font_dir(translated: &Path) -> PathBuf {
+    let stem = translated
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    translated.with_file_name(format!("{stem}.fonts"))
+}
+
+/// 把字体库（用户库 + 全局补缺）**平铺**成一个临时目录，交给底座的 --font-dir。
+///
+/// # 为什么必须平铺（2026-10-19，用户报「预览的弹幕字体和渲染导出不一样」）
+///
+/// 底座的字体是 **libass** 按**族名**在 fontsdir 里找的，而 libass **不递归子目录**；
+/// 库里却是 v2 布局 <slug>/font.ttf。实测把库根直接给过去，日志里是
+/// 「Loading font file ...\font-c0ac1d948217」→ fopen failed（它把目录当字体文件读了），
+/// **一支都没加载**，libass 于是静默回落到**系统字体**：弹幕那条命中
+/// C:\Windows\Fonts\NotoSansSC-VF.ttf（自报 **Thin**），而成片里**一个错都不报**
+/// （lines_failed: 0）。预览那条腿走的是 /vt-fonts/ + @font-face（认两种布局），
+/// 所以只有出片一侧被换掉 —— 这正是用户看到的「预览是 Regular、成片是 Thin」。
+///
+/// 平铺用**硬链接**（同一卷上零拷贝；失败退回真拷贝）。**文件名随意** ——
+/// libass 认的是字体内部的族名，不是文件名。
+///
+/// 返回平铺了几支。判据：scripts/check-font-parity.mjs。
+fn stage_font_dir(roots: &[PathBuf], dest: &Path) -> std::io::Result<usize> {
+    std::fs::create_dir_all(dest)?;
+    let mut staged = 0usize;
+    for entry in yekitrim_core::fonts::scan_all_roots(roots) {
+        // 没下载的自带字体（installed:false）没有文件 —— 跳过，不是错误。
+        let Some(src) = yekitrim_core::fonts::resolve_all_roots(roots, &entry.id) else {
+            continue;
+        };
+        let ext = src
+            .extension()
+            .map(|e| e.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "ttf".to_string());
+        // 文件名要 ASCII 且互不撞车：字典名 + id 的 sha256 前 8 位。
+        let stem: String = entry
+            .id
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+            .collect();
+        let hash = yekitrim_core::fonts::sha256_hex(entry.id.as_bytes());
+        let dst = dest.join(format!("{stem}-{}.{ext}", &hash[..8.min(hash.len())]));
+        if dst.exists() {
+            staged += 1;
+            continue;
+        }
+        if std::fs::hard_link(&src, &dst).is_ok() || std::fs::copy(&src, &dst).is_ok() {
+            staged += 1;
+        }
+    }
+    Ok(staged)
+}
+
+fn side_assets_dir(translated: &Path) -> PathBuf {
+    let stem = translated
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    translated.with_file_name(format!("{stem}.assets"))
+}
+
+/// 清掉**历史版本**写在片段根目录里的文字轨草稿，返回删掉几个。
+///
+/// 旧版转译器把文字元素的 ASS 写成 `<片段>/dhampir-<轨 id>.ass`（见
+/// `tools/polish-to-dhampir.mjs` 里 2026-10-18 那段注释），而轨 id 里带着落点
+/// （`_x64.0y69.0`）、动效与颜色 ⇒ **每改一次落点就多一个文件**、旧名字没人收。
+/// 实测一个片段根目录积了 42 个（用户报的「渲染导出时中间文件过多」）。
+///
+/// 判据刻意收得很窄：`dhampir-text_` 前缀 + `.ass` 后缀 + 必须是普通文件。
+/// 同一片段里其它 `.ass`（用户自己的、`dhampir-danmaku.ass`）一个都不动 ——
+/// 这条与「只删自己造的」同一条纪律，别放宽成"删所有 .ass"。
+fn sweep_legacy_text_assets(clip_dir: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(clip_dir) else {
+        return 0;
+    };
+    let mut removed = 0usize;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !name.starts_with("dhampir-text_") || !name.ends_with(".ass") {
+            continue;
+        }
+        if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+            continue;
+        }
+        if std::fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
 }
 
 /// 收拾转译留下的草稿（**只删自己造的**：`_temp_video.mp4` 归主流程）。
@@ -1099,6 +1235,12 @@ pub fn cleanup_project(translated: &Path) {
     ] {
         std::fs::remove_file(&scratch).ok();
     }
+    // **文字元素的 ASS：整目录收**（见 `side_assets_dir`）。
+    // 单个删不够 —— 每次改落点/动效/颜色都是**新文件名**，正文里那段注释有实测数字。
+    // 目录不存在（没有文字元素 / 老转译器）时 `remove_dir_all` 直接报错 ⇒ `ok()` 吞掉。
+    std::fs::remove_dir_all(side_assets_dir(translated)).ok();
+    // **平铺的字体目录**（见 [`stage_font_dir`]）：同样整目录收。
+    std::fs::remove_dir_all(staged_font_dir(translated)).ok();
 }
 
 /// 读底座那一行 NDJSON 的 `progress`：`{"event":"progress","done":N,"total":M}`。
@@ -1158,6 +1300,59 @@ fn read_new_lines(path: &Path, offset: &mut u64, buf: &mut Vec<u8>) -> Vec<Strin
     out
 }
 
+/// 底座那份**终态报告**怎么判（**纯函数**，便于单测 —— "出一次空帧"在真实环境里不可控）。
+///
+/// ⚠️ 为什么必须判它（2026-10-16 实测抓到的真缺陷）：底座的 `done` 行里有
+/// `failed` / `issues[]` / `empty_frames[]` / `frames`，而这里以前**只看退出码 + 有没有 done 行**
+/// ⇒ 底座 `exit=1` 且 `failed:true`（实测：一条 `subtitle_ink_clipped`）时我们照样打 `FINISHED`、
+/// CLI 退 0；而那条具体原因只写在**进度文件**里、收尾就被删了（底座自己只说"见 done 那一行"）
+/// ⇒ 用户看到的是"成功"，实际有画质问题没人告诉他 —— 又一种"报告被削弱"。
+///
+/// 分档依据是**产物能不能用**：
+/// * **空帧非空 / 帧数对不上** ⇒ 成片是坏的 ⇒ [`BaseVerdict::Fatal`]（必须让任务失败）；
+/// * 只有 `issues[]`（画质类，例如某行字被裁）⇒ 成片能用 ⇒ [`BaseVerdict::Warn`]，逐条报出来；
+/// * 字段缺失 ⇒ `Ok`（**不猜**：底座换报告形状不该让我们炸）。
+#[derive(Debug, PartialEq)]
+enum BaseVerdict {
+    Ok,
+    Warn(Vec<String>),
+    Fatal(String),
+}
+
+fn judge_base_done(report: &serde_json::Value, expected_frames: u64) -> BaseVerdict {
+    if let Some(list) = report.get("empty_frames").and_then(|v| v.as_array())
+        && !list.is_empty()
+    {
+        let head: Vec<String> = list.iter().take(5).map(|v| v.to_string()).collect();
+        return BaseVerdict::Fatal(format!(
+            "底座报了 {} 个空帧（例如 {}）—— 成片里那几帧是空的，按失败处理",
+            list.len(),
+            head.join(", ")
+        ));
+    }
+    if let Some(n) = report.get("frames").and_then(|v| v.as_u64())
+        && expected_frames > 0
+        && n != expected_frames
+    {
+        return BaseVerdict::Fatal(format!(
+            "帧数对不上：底座出 {n} 帧，这条腿按工程算的是 {expected_frames} 帧"
+        ));
+    }
+    let mut notes = Vec::new();
+    if let Some(list) = report.get("issues").and_then(|v| v.as_array()) {
+        for item in list {
+            let code = item.get("code").and_then(|v| v.as_str()).unwrap_or("<无 code>");
+            let msg = item.get("message").and_then(|v| v.as_str()).unwrap_or("");
+            notes.push(format!("{code}: {msg}"));
+        }
+    }
+    if notes.is_empty() {
+        BaseVerdict::Ok
+    } else {
+        BaseVerdict::Warn(notes)
+    }
+}
+
 /// 边等边把底座的 NDJSON 翻成进度行的那点状态。
 ///
 /// 做成一个结构体而不是闭包：闭包会把 `seen_done` / `last_line` 借到循环之后，
@@ -1165,6 +1360,10 @@ fn read_new_lines(path: &Path, offset: &mut u64, buf: &mut Vec<u8>) -> Vec<Strin
 struct ProgressSink {
     seen_done: bool,
     last_line: String,
+    /// **底座的终态报告原文**（`{"event":"done",…}` 那一行）。收尾要拿它判"成片能不能用" ——
+    /// 见 [`judge_base_done`]：以前只看退出码 + 有没有 done 行，`failed:true` 与 `issues[]`
+    /// 整条被吞掉，而那条具体原因写在**进度文件**里、收尾就被删了。
+    done_report: Option<serde_json::Value>,
     last_emit: std::time::Instant,
     t0: std::time::Instant,
 }
@@ -1174,6 +1373,7 @@ impl ProgressSink {
         Self {
             seen_done: false,
             last_line: String::new(),
+            done_report: None,
             // 起手就允许打第一条（`elapsed` 一开始必然小于 1.5s）
             last_emit: t0 - std::time::Duration::from_secs(10),
             t0,
@@ -1183,6 +1383,9 @@ impl ProgressSink {
     fn on_line(&mut self, line: String) {
         if is_done_line(&line) {
             self.seen_done = true;
+            // 解析不出来也**不拦**（底座换文案不该让出片失败）：那就当"没有报告"，
+            // 由下面的退出码那道闸兜底。
+            self.done_report = serde_json::from_str(line.trim()).ok();
         }
         self.last_line = line.clone();
         let Some((done, total)) = parse_progress_line(&line) else {
@@ -1265,7 +1468,38 @@ fn run_render(
     // 归属在**这个函数里也算一次**（`find_font` 里那次是它自己的局部变量）：
     // `--font-dir` 交给底座的必须是同一个库。
     let owner = yekitrim_core::owner::Owner::from_env();
-    let (font, font_bold) = find_font(project_font)?;
+    // 字体库 → **平铺**成一份临时目录（libass 的 fontsdir 不递归，见 stage_font_dir 的说明）。
+    // 平铺不出来时退回库根：那是旧行为（等于一支都没给），但**不拦出片** —— 只是会回落系统字体。
+    let font_roots =
+        yekitrim_core::owner::asset_dirs(owner, yekitrim_core::owner::AssetKind::Fonts);
+    let staged = staged_font_dir(translated);
+    let font_dir_arg = match stage_font_dir(&font_roots, &staged) {
+        Ok(0) => {
+            tracing::warn!(
+                "  字体库一支都没平铺出来（{font_roots:?}）—— 成片会回落到**系统字体**，与预览不一致"
+            );
+            yekitrim_core::fonts::dir_for(owner)
+        }
+        Ok(n) => {
+            tracing::debug!("  字体库平铺 {n} 支 → {}", staged.display());
+            staged.clone()
+        }
+        Err(e) => {
+            tracing::warn!("  字体库平铺失败（{e}）—— 成片可能回落到系统字体");
+            yekitrim_core::fonts::dir_for(owner)
+        }
+    };
+    let (font, font_bold, matched) = find_font(project_font)?;
+    // ⚠️ **静默替换要留痕**（2026-10-16）：工程里选的那支找不到时，`find_font` 会退到
+    //    兜底栈里第一支能用的 —— 成片用的是**别的字体**，而这一步以前只在日志里打
+    //    命中文件的路径（看不出换过）。同一条纪律：报告里不许有"看不见的降级"。
+    let wanted = font_search_order(project_font).into_iter().next().unwrap_or_default();
+    if let Some(note) = font_swap_note(&wanted, &matched) {
+        tracing::warn!(
+            "  {note}\n    \
+             （成片字体可能与预览不同；要钉住就把它导入字体库，或设 VTEDIT_DHAMPIR_FONT=<字体文件>）"
+        );
+    }
     let t = std::time::Instant::now();
     let progress_path = out.with_file_name("_temp_dhampir_progress.ndjson");
     let progress_file = std::fs::File::create(&progress_path)
@@ -1299,9 +1533,10 @@ fn run_render(
         // 项目配置里的值）在目录里找 —— 只给 `--font-file` 的话，"库里选了字体"这件事
         // 在成片里只对**字幕那一支**生效、弹幕那支仍然是兜底字体。
         .arg("--font-dir")
-        // 同一个归属：底座按 `font_family` 在这个目录里找 —— 给错目录就是"库里选了字体
-        // 在成片里只对字幕生效 / 或干脆换了别人的字体"。
-        .arg(yekitrim_core::fonts::dir_for(owner))
+        // ⚠️⚠️ **给的是平铺过的临时目录，不是库根**（2026-10-19）：libass 的 fontsdir
+        // 不递归，而库里是 <slug>/font.ttf ⇒ 给库根等于**一支都没给**，它会静默回落到
+        // 系统字体（实测弹幕因此用了系统那份 Thin，而预览用的是库内 Regular）。
+        .arg(&font_dir_arg)
         .stdout(std::process::Stdio::from(progress_file))
         .stderr(std::process::Stdio::inherit());
     if !with_audio {
@@ -1332,6 +1567,7 @@ fn run_render(
     }
     let _ = std::fs::remove_file(&progress_path);
     let (seen_done, last_line) = (sink.seen_done, sink.last_line);
+    let done_report = sink.done_report;
 
     if !status.success() && !seen_done {
         bail!(
@@ -1340,6 +1576,24 @@ fn run_render(
             binary.display(),
             last_line
         );
+    }
+    // **底座那份终态报告要判**（2026-10-16）：`done` 行一到就放过退出码，会把
+    // `failed:true` / `issues[]` 整条吞掉（原因随进度文件一起删）—— 见 [`judge_base_done`]。
+    let expected_frames = (to.saturating_sub(from) + 1) as u64;
+    if let Some(report) = done_report.as_ref() {
+        match judge_base_done(report, expected_frames) {
+            BaseVerdict::Ok => {}
+            BaseVerdict::Warn(notes) => {
+                tracing::warn!(
+                    "  ⚠ 底座报告了 {} 条问题（成片已写出，逐条如下）：",
+                    notes.len()
+                );
+                for note in &notes {
+                    tracing::warn!("    · {note}");
+                }
+            }
+            BaseVerdict::Fatal(why) => bail!("Dhampir 出片报告判定为失败：{why}"),
+        }
     }
     if !out.is_file() {
         bail!(
@@ -1381,19 +1635,26 @@ pub fn render_video_only(
     // 与当年 chrome 那条腿同一处、同一条口径。传 false 会**剪两次**（成片短一大截 + 音轨错位）。
     // 出片**永远用源**：`video = None`（代理只服务预览）
     let (translated, report) = prepare_project_reporting(clip_dir, project_path, true, None)?;
-    if strict && report.drop_count > 0 {
-        cleanup_project(&translated);
-        bail!(
-            "--strict：转译报告里有 {} 条 DROP（参照有、底座表达不了的），拒绝出片。\n  逐条：\n    {}\n  \
-             （不加 `--strict` 就会照常出片，但这些效果在成片里是缺的）",
-            report.drop_count,
-            report.drops.join("\n    ")
-        );
-    }
-    let frames = sequence_frames(&translated)?;
-    run_render(&translated, clip_dir, 0, frames - 1, &out, false, project_font)?;
+    // ⚠️ **失败路径也必须收草稿**（2026-10-18）：以前只在成功收尾与 `--strict` 那一支调
+    // `cleanup_project`，于是"读不出帧数""底座非零退出"这类失败会把
+    // `_dhampir_project<tag>.json` + 文字轨 ASS 目录**整份留在片段目录里** ——
+    // 正是用户报的「渲染导出时中间文件过多」的另一半来源（成功的那些至少之前收掉了）。
+    // 用闭包把活包起来、出口只留一个：成功与失败都走到下面那次 cleanup。
+    let result = (|| -> Result<(PathBuf, TranslateReport)> {
+        if strict && report.drop_count > 0 {
+            bail!(
+                "--strict：转译报告里有 {} 条 DROP（参照有、底座表达不了的），拒绝出片。\n  逐条：\n    {}\n  \
+                 （不加 `--strict` 就会照常出片，但这些效果在成片里是缺的）",
+                report.drop_count,
+                report.drops.join("\n    ")
+            );
+        }
+        let frames = sequence_frames(&translated)?;
+        run_render(&translated, clip_dir, 0, frames - 1, &out, false, project_font)?;
+        Ok((out, report))
+    })();
     cleanup_project(&translated);
-    Ok((out, report))
+    result
 }
 
 /// 把转译报告**播报**进日志（总方案 §4「转译报告可见」的唯一出口）。
@@ -1450,10 +1711,22 @@ pub fn describe(project_font: &str) -> String {
     // **常规 + 粗体都打出来**：字幕是 `font_weight: 700`、弹幕 `600`，底座要的是**粗体那一支**；
     // 少了它笔画就比预览细一圈（这正是"字体不对"的那种症状），所以出片日志里要看得见。
     let f = match find_font(project_font) {
-        Ok((regular, bold)) => match bold {
-            Some(b) => format!("{}（粗体 {}）", regular.display(), b.display()),
-            None => format!("{}（**没有粗体那一支** → 700/600 的字重会退回常规体）", regular.display()),
-        },
+        Ok((regular, bold, matched)) => {
+            // ⚠️ **被兜底栈顶掉时要说出来**（与 `run_render` 里那条 warn 同一条口径）：
+            //    否则日志只显示"用了哪个文件"，用户看不出自己选的那支没生效。
+            let wanted = font_search_order(project_font).into_iter().next().unwrap_or_default();
+            let swapped = match font_swap_note(&wanted, &matched) {
+                Some(note) => format!("（{note}）"),
+                None => String::new(),
+            };
+            match bold {
+                Some(b) => format!("{}{swapped}（粗体 {}）", regular.display(), b.display()),
+                None => format!(
+                    "{}{swapped}（**没有粗体那一支** → 700/600 的字重会退回常规体）",
+                    regular.display()
+                ),
+            }
+        }
         Err(e) => format!("<找不到：{e}>"),
     };
     format!("dhampir={b}\n  translator={t}\n  font={f}")
@@ -1472,6 +1745,119 @@ pub fn explain(error: &anyhow::Error) -> String {
 
 #[cfg(test)]
 mod artifact_tests {
+    /// ★ **底座那份终态报告要判，不许吞**（2026-10-16 实测抓到的真缺陷）：
+    /// 底座 `exit=1` + `failed:true` + `issues:[subtitle_ink_clipped]` 时，这里以前照样
+    /// `FINISHED` + 退 0，而具体原因写在进度文件里、收尾就删了。
+    ///
+    /// ⚠️ 三档都钉：**画质类 issue ⇒ Warn（成片能用）· 空帧/帧数对不上 ⇒ Fatal（成片坏了）·
+    /// 字段缺失 ⇒ Ok（不猜，底座换报告形状不该让我们炸）**。只钉一档的话，
+    /// "把 Warn 写成 Fatal"（好成片被判失败）或"把 Fatal 写成 Warn"（坏成片被放过）都能溜过去。
+    #[test]
+    fn base_done_report_is_judged_not_swallowed() {
+        let clean = serde_json::json!({
+            "event": "done", "frames": 720, "empty_frames": [], "issues": [], "failed": false
+        });
+        assert_eq!(judge_base_done(&clean, 720), BaseVerdict::Ok, "干净的报告别多话");
+
+        let warn = serde_json::json!({
+            "event": "done", "frames": 720, "empty_frames": [], "failed": true,
+            "issues": [{ "code": "subtitle_ink_clipped", "message": "墨迹顶到边界" }]
+        });
+        match judge_base_done(&warn, 720) {
+            BaseVerdict::Warn(notes) => {
+                assert_eq!(notes.len(), 1);
+                assert!(
+                    notes[0].contains("subtitle_ink_clipped") && notes[0].contains("墨迹顶到边界"),
+                    "code 与 message 都要报出来：{}",
+                    notes[0]
+                );
+            }
+            other => panic!("只有画质类 issue 时应判 Warn，实得 {other:?}"),
+        }
+
+        let empty = serde_json::json!({
+            "event": "done", "frames": 720, "empty_frames": [3, 5], "issues": []
+        });
+        assert!(matches!(judge_base_done(&empty, 720), BaseVerdict::Fatal(_)), "空帧 = 成片坏了");
+
+        let short = serde_json::json!({
+            "event": "done", "frames": 700, "empty_frames": [], "issues": []
+        });
+        assert!(matches!(judge_base_done(&short, 720), BaseVerdict::Fatal(_)), "帧数对不上 = 成片坏了");
+
+        let bare = serde_json::json!({ "event": "done" });
+        assert_eq!(judge_base_done(&bare, 720), BaseVerdict::Ok, "字段缺失不猜");
+    }
+    /// ★ **被兜底栈顶掉时要留痕**（2026-10-16）：工程里选的字体找不到时，出片会退到栈里
+    /// 第一支能用的 —— 成片字体与预览不同，而以前日志只打命中文件的路径（看不出换过）。
+    ///
+    /// ⚠️ 两个方向都钉：**换了必须报**（且两头名字都要在串里）、**没换一个字都不许多**
+    /// （后者防"每出一片都警告一次"，那会让人对警告免疫）。
+    #[test]
+    fn font_swap_note_only_fires_on_a_real_substitution() {
+        assert_eq!(font_swap_note("Noto Sans SC", "Noto Sans SC"), None, "同名不算换");
+        assert_eq!(font_swap_note("noto sans sc", "Noto Sans SC"), None, "大小写不敏感");
+        assert_eq!(font_swap_note("  ", "Noto Sans SC"), None, "没选字体（空串）不报");
+        let note = font_swap_note("乐米波波体", "Noto Sans SC").expect("换了就要报");
+        assert!(note.contains("乐米波波体") && note.contains("Noto Sans SC"), "两头名字都要出现：{note}");
+    }
+    /// **本机自检（`#[ignore]`）**：把真字体库平铺出来到底是什么样（[`stage_font_dir`]）。
+    ///
+    /// 为什么值得留：平铺这条路的失败模式是**一条文件都没有**，而它在出片里只表现为
+    /// 「字体悄悄换成系统那支」—— 不报错。跑法：
+    /// `cargo test -p yekitrim-polish --lib -- --ignored --nocapture 平铺字体库`
+    #[test]
+    #[ignore = "本机自检：需要真实的程序目录（YEKITRIM_DATA_DIR）与已装好的字体库"]
+    fn 平铺字体库本机自检() {
+        let owner = yekitrim_core::owner::Owner::from_env();
+        let roots = yekitrim_core::owner::asset_dirs(owner, yekitrim_core::owner::AssetKind::Fonts);
+        let dest = std::env::temp_dir().join("vt-flat-fonts-selftest");
+        let _ = std::fs::remove_dir_all(&dest);
+        let n = stage_font_dir(&roots, &dest).expect("平铺失败");
+        println!("roots = {roots:?}");
+        println!("平铺 {n} 支 → {}", dest.display());
+        for e in std::fs::read_dir(&dest).into_iter().flatten().flatten() {
+            println!(
+                "  {}  {} bytes",
+                e.file_name().to_string_lossy(),
+                e.metadata().map(|m| m.len()).unwrap_or(0)
+            );
+        }
+        assert!(n > 0, "真库里一支都没平铺出来 —— 出片会静默回落系统字体");
+    }
+
+    /// **本机自检（`#[ignore]`）**：库里那支自带字体能不能按**族名**解析到文件。
+    ///
+    /// ⚠️ 2026-10-16：`[style.subtitle].font` 里那串值可能是**族名**（`default_font()` 写下的
+    /// `Noto Sans SC`），而解析只认 id 时**出片会静默换成兜底栈里第一支** ——
+    /// 用户报的「字体本身也应用错误」就是它。库/字体不存在时**明说跳过**（不误报）。
+    ///
+    /// 跑法：`YEKITRIM_DATA_DIR=<程序目录> cargo test -p yekitrim-polish --lib -- --ignored --nocapture 字体按族名`
+    #[test]
+    #[ignore = "本机自检：需要真实的程序目录（YEKITRIM_DATA_DIR）与已装好的自带字体"]
+    fn 字体按族名也能解析到自带那支() {
+        let owner = yekitrim_core::owner::Owner::from_env();
+        let roots =
+            yekitrim_core::owner::asset_dirs(owner, yekitrim_core::owner::AssetKind::Fonts);
+        let by_id = yekitrim_core::fonts::find_entry_roots(&roots, "NotoSansSC-Regular");
+        let by_family = yekitrim_core::fonts::find_entry_roots(&roots, "Noto Sans SC");
+        println!("roots = {roots:?}");
+        println!("按 id   = {by_id:?}");
+        println!("按族名 = {by_family:?}");
+        if by_id.is_none() {
+            println!("（这个库没装 NotoSansSC-Regular，跳过）");
+            return;
+        }
+        assert_eq!(
+            by_family.map(|e| e.id),
+            Some("NotoSansSC-Regular".to_string()),
+            "族名必须解析到同一支（否则出片会静默换字体）"
+        );
+        assert!(
+            yekitrim_core::fonts::resolve_all_roots(&roots, "Noto Sans SC").is_some(),
+            "族名必须能解析出**文件**（出片那条腿要的就是这个）"
+        );
+    }
     use super::*;
 
     /// 造一个**最小但齐全**的产物目录（`<root>/preview/...` + `<root>/VERSION`）。
@@ -1593,6 +1979,65 @@ mod artifact_tests {
             !families.exists(),
             "字体族名映射也要收掉（否则工程目录里每出一次片多一个草稿）"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **文字元素的 ASS 目录要跟着转译产物一起收掉**（2026-10-18「渲染导出时中间文件过多」）。
+    ///
+    /// 为什么必须钉：那些文件名里带落点/动效/颜色 ⇒ 每改一次落点就是**新名字**，
+    /// 单个删根本收不干净（实测一个片段 42 个）。现在转译器把它们写进
+    /// `<工程文件名>.assets/`，收尾必须**整目录**删。
+    ///
+    /// ⚠️ 判据要真往目录里放一个 `.ass`：只断言"目录不存在"的话，目录从没建过也绿。
+    #[test]
+    fn cleanup_removes_the_text_asset_dir() {
+        let dir = std::env::temp_dir().join("yekitrim_dhampir_text_assets");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let translated = dir.join("_dhampir_project.ab12.json");
+        std::fs::write(&translated, b"{}").unwrap();
+        let assets = side_assets_dir(&translated);
+        std::fs::create_dir_all(&assets).unwrap();
+        std::fs::write(assets.join("dhampir-text_hook_top.ass"), b"[Events]\n").unwrap();
+
+        cleanup_project(&translated);
+
+        assert!(!translated.exists(), "转译产物要收掉");
+        assert!(
+            !assets.exists(),
+            "文字轨 ASS 目录要**整目录**收掉 —— 单个删收不干净（每改一次落点就换一个新名字）"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **旧版本留在片段根目录的文字轨草稿要被扫掉**（存量安装的迁移，2026-10-18）。
+    ///
+    /// 判据同时钉"别扫过头"：用户自己的 `.ass`、`dhampir-danmaku.ass`、以及一个
+    /// 同前缀的**目录**都不许动 —— 放宽成"删所有 .ass"就是另一种事故。
+    #[test]
+    fn legacy_text_assets_in_the_clip_root_are_swept() {
+        let dir = std::env::temp_dir().join("yekitrim_dhampir_legacy_ass");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let litter = [
+            "dhampir-text_hook_top_x12.0y50.0_white.ass",
+            "dhampir-text_comment_bottom_x44.0y45.0_pop_black.ass",
+        ];
+        let keepers = ["clip.ass", "dhampir-danmaku.ass", "dhampir-text_hook.notass"];
+        for f in litter.iter().chain(keepers.iter()) {
+            std::fs::write(dir.join(f), b"x").unwrap();
+        }
+        // 同前缀的**目录**：`remove_file` 会失败，但不许因此报错/误删别的东西。
+        std::fs::create_dir_all(dir.join("dhampir-text_nested.ass")).unwrap();
+
+        assert_eq!(sweep_legacy_text_assets(&dir), 2, "两个旧草稿要被扫掉");
+        for f in litter {
+            assert!(!dir.join(f).exists(), "{f} 应当被扫掉");
+        }
+        for f in keepers {
+            assert!(dir.join(f).exists(), "{f} 不是我们造的，不许动");
+        }
+        assert!(dir.join("dhampir-text_nested.ass").is_dir(), "同前缀的目录不许动");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
