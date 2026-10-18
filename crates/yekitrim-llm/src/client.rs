@@ -44,7 +44,7 @@ const TCP_KEEPALIVE: Duration = Duration::from_secs(30);
 
 /// 统一的 HTTP 客户端构造。**所有选项都只在这里设**——
 /// `with_timeout` 会重建客户端，散着写就会像 UA 那样被静默丢掉。
-fn build_http_client(total_timeout: Duration) -> reqwest::Client {
+pub(crate) fn build_http_client(total_timeout: Duration) -> reqwest::Client {
     reqwest::Client::builder()
         .timeout(total_timeout)
         .connect_timeout(CONNECT_TIMEOUT)

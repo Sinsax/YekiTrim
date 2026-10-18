@@ -43,6 +43,13 @@ pub fn router(state: Arc<AppState>) -> Router {
         // 同一路径挂两次 axum 直接 panic（`Overlapping method route`）。
         .route("/admin/models", get(models_get))
         .route("/admin/models/download", post(models_download))
+        // LLM 模型清单（P3）：填好 base_url + api_key 就能取模型。
+        // ⚠️ 语义是"**表命中 ⇒ 一个网络请求都不发**"，表里没有才用**已存的那把 key** 真探
+        //    （失败回 502 + 已分类文案；探到的只是候选，**一律不落盘**）——见 handler 的注释。
+        .route("/llm/models", get(llm_models))
+        // 单支模型的**能力位**（P4「按能力渲染控件」的唯一数据源）：只查内置表，
+        // 不联网、不读盘。认不出 (base_url, model) 回保守默认 + hit:false，**不是 404**。
+        .route("/config/llm/catalog", get(llm_catalog))
         // 采集/录播姬：`GET` 读概览、`PUT` 保存配置（表单）、`POST .../token` 生成/关闭 webhook token
         .route(
             "/admin/ingest",

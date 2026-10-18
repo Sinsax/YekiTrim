@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use axum::{
-    extract::{Extension, State},
+    extract::{Extension, Query, State},
     http::StatusCode,
     Json,
 };
@@ -56,15 +56,47 @@ fn models_impl() -> ApiResult {
 ///
 /// 要读某个工程的配置：`GET /api/project-data/config?project=<id>`。
 /// 要读合并后的生效配置：也走那条（它按项目解析）。
+/// 把 `llm.toml` 原文里 `api_key` 的**值**抹成空串（键名、缩进、行号、其它键一律不动）。
+///
+/// 为什么要抹：这份原文是设置页「编辑源文件」的内容，**明文 key 一个字都不许出接口**。
+/// 为什么在**文本**上做而不是重序列化：重序列化（`toml::to_string`）会把注释全丢掉，
+/// 而模板里大段说明都写在注释里 —— 那等于把源文件编辑器毁了。
+/// 为什么连**注释掉的老 key** 也抹：`# api_key = "sk-…"` 同样是明文。
+/// 行尾注释一并抹掉（注释里也可能写着 key）—— 宁可多抹一个注解，不可漏一个字。
+fn redact_api_key(raw: &str) -> String {
+    raw.split('\n')
+        .map(|line| {
+            // 逐层剥：缩进 → 注释符 → 缩进；剥不动就原样返回（注释行、别的键都走这条）
+            let body = line.trim_start().trim_start_matches('#').trim_start();
+            let Some(rest) = body.strip_prefix("api_key") else { return line.to_string() };
+            let rest = rest.trim_start();
+            let Some(rest) = rest.strip_prefix('=') else { return line.to_string() };
+            // 等号后面那段空白**跟着等号一起留**（写成 api_key = 双引号，读起来才像原样）；
+            // rest 始终是 line 的连续后缀 ⇒ 长度差就是切点，不用自己数列
+            let rest = rest.trim_start();
+            let head = &line[..line.len() - rest.len()];
+            format!("{head}\"\"")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 pub(super) fn config_get_impl(owner: yekitrim_core::owner::Owner) -> ApiResult {
     // ⚠️ 按 **Owner** 取目录：单人 = 程序目录（现状），多用户 = 该账号自己的 `.yekitrim/`。
     // **别退回 `path::yekitrim_home()`** —— 那会让所有账号共用同一份配置（含明文 LLM key）。
     let home = yekitrim_core::owner::state_dir(owner);
     // ⚠️ 同步 IO：读 config.toml / llm.toml 两份（含 API key），调用方必须下 blocking 池。
     let global_raw = std::fs::read_to_string(home.join("config.toml")).unwrap_or_default();
-    let llm_raw = std::fs::read_to_string(home.join("llm.toml")).unwrap_or_default();
+    // ⚠️ **明文 key 一个字都不出接口**（2026-10-19）：`llm_raw`（源文件编辑器）里那行的值在这里抹掉。
+    // 配套的**写侧**口径「空 api_key = 不修改」在 `config_llm_put_locked` —— 两份合起来，
+    // 「读出来（抹过）→ 原样存回去」不会把真 key 抹掉。**只删一边就是静默毁配置。**
+    let llm_raw = redact_api_key(&std::fs::read_to_string(home.join("llm.toml")).unwrap_or_default());
     let global_cfg = yekitrim_core::config::load_config_for(owner);
-    let llm_cfg = yekitrim_core::config::load_llm_config_for(owner);
+    let mut llm_cfg = yekitrim_core::config::load_llm_config_for(owner);
+    // 「有没有配 key」以后只由这个布尔回答（界面不再回显 key 本身）：真值 = llm.toml 里非空
+    let api_key_set = !llm_cfg.api_key.trim().is_empty();
+    // 解析出来的那份结构里也有一份明文（JSON 字段 `llm_config.api_key`），同样出接口 —— 一起清掉
+    llm_cfg.api_key.clear();
     // ⚠️ **`config_error` 必须留着**：设置页表单的写入门闸就是它
     // （`SettingsView.vue::loadConfig` 把它存进 `configError`）—— 程序配置解析失败时那份配置会被
     // **整体忽略**、表单只剩内建默认值，用户不改也不知道；这时若还允许保存，
@@ -85,6 +117,9 @@ pub(super) fn config_get_impl(owner: yekitrim_core::owner::Owner) -> ApiResult {
         "llm_raw": llm_raw,
         "global_config": serde_json::to_value(global_cfg).unwrap_or_default(),
         "llm_config": serde_json::to_value(llm_cfg).unwrap_or_default(),
+        // ⚠️ 表单面**只回「有没有」、不回明文**（与采集配置的 `api_pass_set` 同一条规矩）：
+        // 界面靠它显示"已设置/未设置"，值本身永远不会回给前端
+        "api_key_set": api_key_set,
         "config_error": config_error,
         "reference_titles_default": reference_titles_default,
     }))
@@ -305,9 +340,44 @@ pub(super) async fn config_llm_put(
     blocking(move || config_llm_put_locked(&path, &body)).await
 }
 
+/// 从 `llm.toml` 文本里读 `[llm] api_key`（解析不了 / 没这个键都当空）。
+fn llm_api_key_in(text: &str) -> String {
+    toml::from_str::<toml::Value>(text)
+        .ok()
+        .and_then(|v| {
+            v.get("llm")
+                .and_then(|l| l.get("api_key"))
+                .and_then(|k| k.as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_default()
+}
+
+/// patch 里 `llm.api_key` 是**空串** ⇒ 把这个键剔掉（= 不修改）。
+///
+/// ⚠️ 为什么必须有这一步：`GET /api/config` 不再回显明文 key，设置页那一栏提交上来就是空串 ——
+/// 直接深合并等于**每保存一次表单就清一次 key**。要**删** key 请发 `null`
+/// （`patch_config_file` 的删键语义，是唯一能表达"清掉"的写法）。
+fn drop_blank_api_key(patch: &serde_json::Value) -> serde_json::Value {
+    let mut out = patch.clone();
+    let blank = out
+        .get("llm")
+        .and_then(|l| l.get("api_key"))
+        .and_then(|k| k.as_str())
+        .map(|s| s.trim().is_empty())
+        .unwrap_or(false);
+    if blank {
+        if let Some(llm) = out.get_mut("llm").and_then(|l| l.as_object_mut()) {
+            llm.remove("api_key");
+        }
+    }
+    out
+}
+
 pub(super) fn config_llm_put_locked(path: &Path, body: &serde_json::Value) -> ApiResult {
     if let Some(patch) = body.get("patch") {
-        yekitrim_core::config::patch_config_file(path, patch)
+        let patch = drop_blank_api_key(patch);
+        yekitrim_core::config::patch_config_file(path, &patch)
             .map_err(|e| err(StatusCode::BAD_REQUEST, format!("LLM 配置保存失败: {e:#}")))?;
         return ok(serde_json::json!({ "ok": true }));
     }
@@ -315,9 +385,119 @@ pub(super) fn config_llm_put_locked(path: &Path, body: &serde_json::Value) -> Ap
     let Some(raw) = raw else { return Err(err(StatusCode::BAD_REQUEST, "缺少 raw 或 patch 字段")); };
     yekitrim_service::validate_toml(raw)
         .map_err(|e| err(StatusCode::BAD_REQUEST, format!("llm.toml 不是合法 TOML，未保存: {e}")))?;
+    // ⚠️ 源文件模式守**同一条**「空 api_key = 不修改」：`GET /api/config` 回的 `llm_raw` 是**抹过值**的，
+    // 用户只想改别的键、原样存一次，不能顺手把真 key 抹掉（那是静默毁配置）。
+    // 用户要改 key：在源文件里写真值即可（下面的分支就不会触发）。
+    let incoming_key = llm_api_key_in(raw);
+    let stored_key = std::fs::read_to_string(path).map(|t| llm_api_key_in(&t)).unwrap_or_default();
     if let Some(parent) = path.parent() { std::fs::create_dir_all(parent).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("创建目录失败: {e}")))?; }
     std::fs::write(path, raw).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("保存失败: {e}")))?;
+    if incoming_key.trim().is_empty() && !stored_key.trim().is_empty() {
+        // 整份写完之后再把已存的 key 补回去：走 patch 通道（会自己建 `[llm]` 表 / 补键），
+        // 比在文本上做"插一行"的手术稳得多（源文件可能把那一行整个删了）
+        yekitrim_core::config::patch_config_file(path, &serde_json::json!({ "llm": { "api_key": stored_key } }))
+            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("LLM 配置保存失败: {e:#}")))?;
+    }
     ok(serde_json::json!({ "ok": true }))
+}
+
+/// `GET /api/llm/models?base_url=…`（**仅 admin**）：填好 base_url + api_key 就能拿到模型清单。
+///
+/// 三条语义（口径见 `docs/plan/llm-isolation-2026-10-19.md`）：
+/// 1. **先查内置表**：认识的 route 直接回 `source: catalog`，**一个网络请求都不发**
+///    —— 这是"方便"的来源，也是抄 pi-ai 的那条（认识的 route 不联网）；
+/// 2. 表里没有 **才** 探：用**已存的那把 key**（`llm.toml` 的 `[llm] api_key`）打
+///    `GET {base}/models`，回 `source: probe`。失败回 **502** + 已分类的文案
+///    （key 不对 / 这个地址没有 /models / 连不上 / 其它，实现只在 `yekitrim_llm::discovery`）；
+/// 3. **一律不落盘**：请求带的 `base_url` 只是**草稿**、回的是候选 —— `llm.toml` 仍然只由
+///    `PUT /config/llm` 决定。
+pub(super) async fn llm_models(
+    Extension(user): Extension<crate::auth::CurrentUser>,
+    Query(q): Query<BaseUrlQuery>,
+) -> ApiResult {
+    let asked = q.base_url.unwrap_or_default().trim().to_string();
+
+    // ① 内置表命中：**零网络请求**（连 api_key 都不需要 —— 也不需要读盘）
+    let known = yekitrim_llm::catalog::models_for(&asked);
+    if !known.is_empty() {
+        return ok(serde_json::json!({
+            "source": "catalog",
+            "models": known
+                .into_iter()
+                .map(|(id, name)| serde_json::json!({ "id": id, "name": name }))
+                .collect::<Vec<_>>(),
+        }));
+    }
+
+    // ② 表里没有 → 探。key 取**已存的那把**（请求里不带 key，草稿一律不落盘）、同步读盘下 blocking 池
+    let owner = crate::auth::owner_of(&user);
+    let llm = blocking(move || Ok(yekitrim_core::config::load_llm_config_for(owner))).await?;
+    let base = probe_request(&asked, &llm)?;
+    match yekitrim_llm::discovery::discover(&llm.api_key, &base).await {
+        // ⚠️ 200 + 空列表**不是失败**：连上了、地址也对，只是它没报模型 —— 别把它说成"不支持"
+        Ok(models) if models.is_empty() => ok(serde_json::json!({
+            "source": "probe",
+            "models": [],
+            "note": yekitrim_llm::discovery::empty_hint(&base),
+        })),
+        Ok(models) => ok(serde_json::json!({
+            "source": "probe",
+            "models": models
+                .into_iter()
+                .map(|m| serde_json::json!({ "id": m.id, "name": m.name }))
+                .collect::<Vec<_>>(),
+        })),
+        Err(e) => Err(err(StatusCode::BAD_GATEWAY, e)),
+    }
+}
+
+/// 真探之前的两道检查：**key 没配就别发一个必然 401 的请求**；两个 base_url 都空就没得探。
+///
+/// 拆成纯函数是为了**能钉住**：本机的真实程序目录（`target/debug/users/<uid>/.yekitrim/llm.toml`）
+/// 里通常已经躺着一把真 key，HTTP 级用例钉不了"没配 key"那条分支（会真发一个网络请求）。
+fn probe_request(asked: &str, llm: &yekitrim_core::config::LlmConfig) -> Result<String, AppError> {
+    if llm.api_key.trim().is_empty() {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "还没配置 API key（llm.toml 的 [llm] api_key）—— 填好再取模型",
+        ));
+    }
+    // 请求里给了就用它（草稿），没给才回落到已存的那条
+    let base = if asked.trim().is_empty() { llm.base_url.trim() } else { asked.trim() };
+    if base.is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "缺少 base_url：要探哪个地址的模型清单？"));
+    }
+    Ok(base.to_string())
+}
+
+/// `GET /api/config/llm/catalog?base_url=…&model=…`（**仅 admin**）：这支模型**支持哪些旋钮**。
+///
+/// 设置页「按能力渲染控件」的唯一数据源：**只查内置表**（不联网、不读盘、不落盘）。
+/// 表里没有这对 (host, model) 时回**保守默认 + `hit: false`**，**不是 404** ——
+/// 界面照它画通用参数并写明"未收录"即可（回 404 会让人以为接口坏了）。
+pub(super) async fn llm_catalog(Query(q): Query<CatalogQuery>) -> ApiResult {
+    let base_url = q.base_url.unwrap_or_default();
+    let model = q.model.unwrap_or_default();
+    ok(serde_json::json!({
+        "source": "catalog",
+        "caps": yekitrim_llm::catalog::caps_json(&base_url, &model),
+    }))
+}
+
+/// `/api/llm/models` 的查询串（`base_url` 缺省 = 用 llm.toml 里已存的那条）。
+#[derive(serde::Deserialize)]
+pub(super) struct BaseUrlQuery {
+    #[serde(default)]
+    pub base_url: Option<String>,
+}
+
+/// `/api/config/llm/catalog` 的查询串。
+#[derive(serde::Deserialize)]
+pub(super) struct CatalogQuery {
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 pub(super) async fn llm_test(
@@ -400,10 +580,16 @@ mod tests {
     use axum::body::Body;
 
 
-/// **程序配置按账号分开**：甲存的 LLM key 乙看不见，各存各的。
+/// **程序配置按账号分开 + 明文 key 一个字都不出接口 + 空值不覆盖真 key**。
 ///
-/// 这是 `Owner` 落到配置面的判据 —— 在引入 `Owner` 之前 `config.toml` / `llm.toml`
-/// 是**全局一份**，所有账号共用同一个 `api_key`（也共用同一份 base_url/model）。
+/// 三件事一起钉（它们是同一个契约的三面）：
+/// ① `Owner` 落到配置面：在引入 `Owner` 之前 `config.toml` / `llm.toml` 是**全局一份**，
+///    所有账号共用同一个 `api_key`；现在甲写自己的、乙读不到。
+///    判据从"甲看得见自己的 key"换成"**甲看得见自己的 model**"—— 明文 key 已经不回接口了。
+/// ② `GET /api/config` **不回明文**：整份响应的 JSON 里都不许出现那把 key（`llm_raw` 与
+///    `llm_config.api_key` 两处都清掉），只回 `api_key_set` 布尔。
+/// ③ 配套的**写侧**：`api_key` 空串 = 不修改 —— 否则界面"读回来是空的、保存一次"就把真 key 抹了。
+///    这条对 `patch` 与 `raw` **两条路都要成立**（raw 那条就是"编辑源文件后原样保存"）。
 ///
 /// 用 `/api/config/llm` 的 `raw` 整份覆盖写（那条路不依赖模板里的具体键名，
 /// 免得测试与 `LLM_CONFIG_TOML` 的字段名绑死），再用 `/api/config` 读回来比对。
@@ -450,35 +636,87 @@ model = \"m-a\"
     .await;
     assert_eq!(res.status(), 200, "甲应能存自己的 LLM 配置");
 
-    // 甲看得见。
+    // 甲看得见**自己的配置**（model 是归属的判据 —— 明文 key 已经不回接口了）。
     let ja = get_cfg(&t, &a.session_id, &a.csrf).await;
+    assert_eq!(ja["llm_config"]["model"], "m-a", "甲应读到自己那份配置：{ja}");
+    assert_eq!(ja["api_key_set"], serde_json::json!(true), "甲配了 key：{ja}");
+    // ② 整份响应里**一个字**明文都不许有（llm_raw 与 llm_config 两处都要清）
+    let dumped_a = ja.to_string();
     assert!(
-        ja["llm_raw"].as_str().unwrap_or("").contains("key-of-alice"),
-        "甲应读到自己的 key；实际：{}",
-        ja["llm_raw"]
+        !dumped_a.contains("key-of-alice"),
+        "明文 API key 不许出接口（llm_raw / llm_config 都得抹）：{dumped_a}"
     );
+    assert_eq!(ja["llm_config"]["api_key"], "", "解析出来的那份也要清：{ja}");
+    let raw_a = ja["llm_raw"].as_str().unwrap_or("");
+    assert!(raw_a.contains("api_key = \"\""), "键与行位置要留着（源文件编辑器靠它）：{raw_a}");
+    assert!(raw_a.contains("m-a"), "没被抹的键原样保留：{raw_a}");
 
-    // 乙**看不见** —— 这就是"配置真的分开了"。
+    // 先把乙那份**清干净**再断言：测试的配置目录是 exe 同级的 users/<uid>/.yekitrim
+    // （测试二进制在 target/debug/deps/ ⇒ 那边也有一份 users/），而 uid 在每次新建的临时账本里
+    // **又从 1 数起** ⇒ 同一个 uid 的 llm.toml 会在**多次跑测试之间留着**。
+    // 不清就断言"乙还没配 key"，第二次跑必然红（实测：left: true, right: false）。
+    // 顺手也就把 null = 删键 这条路钉住了（它是唯一能表达"清掉 key"的写法）。
+    let res = t
+        .call(
+            t.req_as(&b.session_id, &b.csrf, "PUT", "/config/llm")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "patch": { "llm": { "api_key": null } } }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(res.status(), 200, "null 应该能删掉 key");
+
+    // 乙**看不见**甲的配置。
     let jb = get_cfg(&t, &b.session_id, &b.csrf).await;
+    assert_eq!(jb["api_key_set"], serde_json::json!(false), "乙还没配 key：{jb}");
+    assert_ne!(jb["llm_config"]["model"], "m-a", "乙不该读到甲的配置：{jb}");
     assert!(
-        !jb["llm_raw"].as_str().unwrap_or("").contains("key-of-alice"),
-        "乙不该看见甲的 LLM key（明文 key 泄露）；实际：{}",
-        jb["llm_raw"]
+        !jb.to_string().contains("key-of-alice"),
+        "乙的响应里更不该有甲的 key：{jb}"
     );
 
     // 乙写自己的，两边互不覆盖。
     let res = put_llm(&t, &b.session_id, &b.csrf, "[llm]
 api_key = \"key-of-bob\"
+model = \"m-b\"
 ").await;
     assert_eq!(res.status(), 200);
     let ja2 = get_cfg(&t, &a.session_id, &a.csrf).await;
-    assert!(
-        ja2["llm_raw"].as_str().unwrap_or("").contains("key-of-alice"),
-        "乙写自己的配置**不该**动到甲的；实际：{}",
-        ja2["llm_raw"]
-    );
+    assert_eq!(ja2["llm_config"]["model"], "m-a", "乙写自己的配置**不该**动到甲的：{ja2}");
+    assert_eq!(ja2["api_key_set"], serde_json::json!(true));
+    assert!(!ja2.to_string().contains("key-of-bob"), "也不该串到甲的响应里：{ja2}");
     let jb2 = get_cfg(&t, &b.session_id, &b.csrf).await;
-    assert!(jb2["llm_raw"].as_str().unwrap_or("").contains("key-of-bob"));
+    assert_eq!(jb2["llm_config"]["model"], "m-b", "{jb2}");
+    assert_eq!(jb2["api_key_set"], serde_json::json!(true));
+
+    // ③ **空 api_key = 不修改**，两条路都成立：
+    //   patch 路 —— 界面"没动那一栏"（读回来是空的）保存一次，key 必须还在
+    let res = t
+        .call(
+            t.req_as(&a.session_id, &a.csrf, "PUT", "/config/llm")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "patch": { "llm": { "api_key": "", "model": "m-a2" } } })
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(res.status(), 200);
+    let ja3 = get_cfg(&t, &a.session_id, &a.csrf).await;
+    assert_eq!(ja3["llm_config"]["model"], "m-a2", "别的键照常改：{ja3}");
+    assert_eq!(ja3["api_key_set"], serde_json::json!(true), "空串不该把 key 清掉：{ja3}");
+
+    //   raw 路 —— "编辑源文件"读到的是**抹过值**的原文，原样存回去同样不许动 key
+    let masked = ja3["llm_raw"].as_str().unwrap_or("").to_string();
+    assert!(!masked.contains("key-of-alice"), "拿到的原文本来就是抹过的：{masked}");
+    let res = put_llm(&t, &a.session_id, &a.csrf, &masked).await;
+    assert_eq!(res.status(), 200, "抹过的原文必须能原样存回去");
+    let ja4 = get_cfg(&t, &a.session_id, &a.csrf).await;
+    assert_eq!(ja4["api_key_set"], serde_json::json!(true), "原样保存不许把真 key 抹掉：{ja4}");
+    assert_eq!(ja4["llm_config"]["model"], "m-a2");
 }
 
 /// 单人形态（`Owner::Local`）读的就是**现状那两个文件**，零迁移。
@@ -651,5 +889,202 @@ fn llm_put_null_patch_removes_override_key() {
     assert!(out.contains("api_key = \"k\""), "其余键不能动：\n{out}");
     assert!(out.contains("max_tokens = 16384"), "全局值不能动：\n{out}");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `redact_api_key`：只抹**值**，键名 / 缩进 / 其它键一律不动；**注释掉的老 key 也抹**。
+#[test]
+fn redact_api_key_只抹值() {
+    let raw = "# 顶注\n[llm]\n  api_key = \"sk-real\"   # 我的 key\nmodel = \"m\"\n# api_key = \"sk-old\"\napi_key_extra = \"留着\"\n";
+    let out = redact_api_key(raw);
+    assert!(!out.contains("sk-real"), "行尾注释里也可能是 key：\n{out}");
+    assert!(!out.contains("sk-old"), "注释掉的老 key 同样是明文：\n{out}");
+    assert!(out.contains("  api_key = \"\""), "键名与缩进原样保留：\n{out}");
+    assert!(out.contains("# api_key = \"\""), "注释符也保留（只是把值抹了）：\n{out}");
+    assert!(out.contains("model = \"m\""), "别的键一个都不许动：\n{out}");
+    assert!(out.contains("api_key_extra = \"留着\""), "键名只是前缀相同的不能误伤：\n{out}");
+    assert!(out.contains("# 顶注"), "注释整行保留：\n{out}");
+    // 行数不变（源文件编辑器靠行号对齐）
+    assert_eq!(out.lines().count(), raw.lines().count());
+}
+
+/// `drop_blank_api_key`：**空串 = 剔掉这个键（不修改）**；`null` 与非空值都不动语义。
+#[test]
+fn patch_空_api_key_等于不修改() {
+    let blank = serde_json::json!({ "llm": { "api_key": "   ", "model": "m" } });
+    let out = drop_blank_api_key(&blank);
+    assert!(out["llm"].get("api_key").is_none(), "空串要剔掉：{out}");
+    assert_eq!(out["llm"]["model"], "m", "别的键照旧：{out}");
+
+    // 真值照常写；null 照常表达"删键"（这是唯一能表达"清掉 key"的写法）
+    let real = serde_json::json!({ "llm": { "api_key": "sk-new" } });
+    assert_eq!(drop_blank_api_key(&real)["llm"]["api_key"], "sk-new");
+    let del = serde_json::json!({ "llm": { "api_key": null } });
+    assert!(drop_blank_api_key(&del)["llm"]["api_key"].is_null(), "null 是删键，别动它");
+}
+
+/// `config_llm_put_locked` 的 **raw** 路：空 api_key = 不修改（与 patch 同口径）。
+///
+/// 回归钉子：`GET /api/config` 回的 `llm_raw` 是**抹过值**的 —— 少了这条，
+/// 用户"打开源文件编辑器、改一个别的键、保存"就会把真 key 静默抹掉。
+#[test]
+fn raw_保存时空_api_key_不会清掉已存的_key() {
+    let dir = std::env::temp_dir().join(format!("yekitrim-llm-raw-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = dir.join("llm.toml");
+    std::fs::write(&p, "[llm]\napi_key = \"sk-real\"\nmodel = \"m1\"\n").unwrap();
+
+    // ① 抹过值的原文原样存回：真 key 必须还在，别的改动照常落地
+    let masked = "[llm]\napi_key = \"\"\nmodel = \"m2\"\n";
+    let _ = config_llm_put_locked(&p, &serde_json::json!({ "raw": masked })).unwrap();
+    let after = std::fs::read_to_string(&p).unwrap();
+    assert!(after.contains("api_key = \"sk-real\""), "空 api_key 不该覆盖真 key：\n{after}");
+    assert!(after.contains("model = \"m2\""), "别的键要真的写进去：\n{after}");
+
+    // ② 用户真写了新 key：照常换掉（"改 key"这条路不能被保护逻辑挡住）
+    let _ = config_llm_put_locked(
+        &p,
+        &serde_json::json!({ "raw": "[llm]\napi_key = \"sk-new\"\nmodel = \"m2\"\n" }),
+    )
+    .unwrap();
+    let after = std::fs::read_to_string(&p).unwrap();
+    assert!(after.contains("api_key = \"sk-new\"") && !after.contains("sk-real"), "\n{after}");
+
+    // ③ 源文件里连那一行都没有：也要补回来（走 patch 通道补键，别让"删一行"等于丢 key）
+    let _ = config_llm_put_locked(&p, &serde_json::json!({ "raw": "[llm]\nmodel = \"m3\"\n" })).unwrap();
+    let after = std::fs::read_to_string(&p).unwrap();
+    assert!(after.contains("api_key = \"sk-new\"") && after.contains("model = \"m3\""), "\n{after}");
+
+    // ④ 原本就没 key：不会被补出一个空的 api_key 行
+    let q = dir.join("empty.toml");
+    std::fs::write(&q, "[llm]\nmodel = \"m\"\n").unwrap();
+    let _ = config_llm_put_locked(&q, &serde_json::json!({ "raw": "[llm]\nmodel = \"m4\"\n" })).unwrap();
+    let after = std::fs::read_to_string(&q).unwrap();
+    assert!(!after.contains("api_key"), "没配过 key 就别凭空写一行：\n{after}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 真探之前的两道检查（纯函数：本机真程序目录里通常已有 key，HTTP 级钉不住这条分支）。
+#[test]
+fn 探之前先要_key_与_base_url() {
+    let mut llm = yekitrim_core::config::LlmConfig::default();
+    llm.base_url = "https://stored.example/v1".to_string();
+    let e = probe_request("https://asked.example/v1", &llm).unwrap_err();
+    assert_eq!(e.0, StatusCode::BAD_REQUEST, "没配 key 就别发一个必然 401 的请求");
+    let msg = e.1 .0["error"].as_str().unwrap_or("").to_string();
+    assert!(msg.contains("API key"), "{msg}");
+
+    llm.api_key = "sk-x".to_string();
+    assert_eq!(probe_request("https://asked.example/v1", &llm).unwrap(), "https://asked.example/v1");
+    assert_eq!(probe_request("  ", &llm).unwrap(), "https://stored.example/v1", "缺省用已存的那条");
+    llm.base_url.clear();
+    assert_eq!(probe_request("", &llm).unwrap_err().0, StatusCode::BAD_REQUEST, "两个都空就没得探");
+}
+
+/// `GET /api/llm/models`：**认识的 route ⇒ 一个网络请求都不发**（回 `source: catalog`）。
+///
+/// "不联网"在判据上怎么钉：表命中那一段在**碰任何 IO 之前**就返回了（不读盘、不发 HTTP），
+/// 所以 `source: catalog` 就是"没探过"的证据 —— 真探过的话 source 只会是 probe，
+/// 或干脆 400/502。
+///
+/// ⚠️ 这条用例**只读**程序目录，不写任何东西：那边（`target/debug/users/1/.yekitrim/llm.toml`）
+/// 是本机**真实**的 LLM 配置，测试写它等于毁开发者的配置。
+#[tokio::test]
+async fn llm_models_表命中就回_catalog() {
+    let t = test_app().await;
+    let res = t
+        .call(
+            t.req("GET", "/llm/models?base_url=https://api.deepseek.com/v1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let v = body_json(res).await;
+    assert_eq!(v["source"], "catalog", "认识的 route 必须走内置表：{v}");
+    let models = v["models"].as_array().expect("models 是数组");
+    let one = models
+        .iter()
+        .find(|m| m["id"] == "deepseek-v4-pro")
+        .unwrap_or_else(|| panic!("表里有这支：{v}"));
+    assert_eq!(one["name"], "DeepSeek V4 Pro", "name 是给人看的：{one}");
+    assert!(models.len() > 1, "整家 provider 的模型都要给：{v}");
+    // 形状就是契约：`{source, models:[{id,name}]}`（name 可以是 null，但键要在）
+    for m in models {
+        assert!(m["id"].is_string(), "{m}");
+        assert!(m.get("name").is_some(), "name 键必须在（没有也得是 null）：{m}");
+    }
+}
+
+/// `GET /api/config/llm/catalog`：设置页「按能力渲染控件」的数据源（**只查表**）。
+///
+/// 认不出 (base_url, model) 时回**保守默认 + hit:false**，**不是 404** —— 404 会让人以为接口坏了。
+#[tokio::test]
+async fn llm_catalog_回档位与能力() {
+    let t = test_app().await;
+    let res = t
+        .call(
+            t.req(
+                "GET",
+                "/config/llm/catalog?base_url=https://api.deepseek.com/v1&model=deepseek-v4-pro",
+            )
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let v = body_json(res).await;
+    assert_eq!(v["source"], "catalog", "{v}");
+    let caps = &v["caps"];
+    assert_eq!(caps["hit"], serde_json::json!(true), "{v}");
+    assert_eq!(caps["temperature"], "supported", "{v}");
+    assert_eq!(
+        caps["levels"].as_object().map(|m| m.len()),
+        Some(4),
+        "档位下拉的选项就是它的键：{v}"
+    );
+    assert_eq!(caps["max_output_ceiling"].as_u64(), Some(384_000), "{v}");
+
+    let res = t
+        .call(
+            t.req("GET", "/config/llm/catalog?base_url=https://unknown.example.com/v1&model=nope")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(res.status(), StatusCode::OK, "认不出不是错误（别回 404）");
+    let v = body_json(res).await;
+    assert_eq!(v["caps"]["hit"], serde_json::json!(false), "{v}");
+    assert_eq!(v["caps"]["levels"].as_object().map(|m| m.len()), Some(0), "{v}");
+}
+
+/// 两条 LLM 模型接口都**仅 admin**（它们会用到已存的那把 key / 服务于设置页）。
+#[tokio::test]
+async fn llm_model_endpoints_are_admin_only() {
+    let t = test_app().await;
+    let hash = yekitrim_service::auth::hash_password("pass-12345678").unwrap();
+    t.auth.db().create_user("llm_plain", &hash, "user", false, 0).unwrap();
+    let b = t.auth.login("llm_plain", "pass-12345678", None, None).unwrap();
+    for uri in [
+        "/llm/models?base_url=https://api.deepseek.com/v1",
+        "/config/llm/catalog?base_url=https://api.deepseek.com/v1&model=deepseek-v4-pro",
+    ] {
+        let res = t
+            .call(t.req_as(&b.session_id, &b.csrf, "GET", uri).body(Body::empty()).unwrap())
+            .await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN, "{uri} 应仅 admin");
+        // ⚠️ 匿名请求必须自己建（`t.req` 自带 admin 的 cookie，那样测的是"已登录"）
+        let res = t
+            .call(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "{uri} 未登录必须 401");
+    }
 }
 }

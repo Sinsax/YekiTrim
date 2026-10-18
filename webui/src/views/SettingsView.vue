@@ -155,9 +155,7 @@
     <div class="section-title row spread">
       <span>LLM 配置 llm.toml</span>
       <span class="row">
-        <button class="btn" @click="toggleLlmSource">
-          <Icon name="edit" :size="13" /> {{ editLlmSource ? '返回表单' : '编辑源文件' }}
-        </button>
+        <!-- 「编辑源文件」的入口在下面「高级」组里（同一个入口只留一处） -->
         <button class="btn" @click="testLlm">测试连接</button>
         <button class="btn btn-primary" @click="saveLlm" :disabled="!loaded">
           <Icon name="save" :size="13" /> {{ editLlmSource ? '保存源文件' : '保存 LLM' }}
@@ -166,23 +164,39 @@
     </div>
     <div class="card">
       <template v-if="!editLlmSource">
+        <!-- ① 接口：填好 key → 取模型 → 选中（模型选择器见 components/llm/LlmModelPicker.vue） -->
         <div class="form-section">
-          <div class="form-section-title">接口</div>
+          <div class="form-section-title">接口<span class="muted small">填好 key → 获取模型 → 选中</span></div>
           <div class="form-grid">
-            <div class="span-2"><label>base_url</label><input v-model="form.llm.base_url" type="text" placeholder="https://api.openai.com/v1"></div>
-            <div class="span-2"><label>api_key</label><input v-model="form.llm.api_key" type="text" placeholder="sk-..."></div>
-            <div class="span-2"><label>model</label><input v-model="form.llm.model" type="text"></div>
+            <div class="span-2">
+              <label>base_url</label>
+              <input v-model="form.llm.base_url" type="text" placeholder="https://api.deepseek.com/v1">
+            </div>
+            <div class="span-2">
+              <label>api_key</label>
+              <!-- 只写不读：服务端不再回明文（P3），永远不预填；留空 = 不动这个键 -->
+              <input v-model="form.llm.api_key" type="password" autocomplete="off"
+                     :placeholder="apiKeyPlaceholder" :title="apiKeyTitle">
+            </div>
+            <div class="span-all">
+              <label>model</label>
+              <LlmModelPicker v-model="form.llm.model" :base-url="form.llm.base_url" @fetched="onModelsFetched" />
+            </div>
           </div>
         </div>
 
+        <!-- ② 生成：**能力驱动** —— 只画这个模型支持的旋钮（档位清单来自能力表，别在前端写死） -->
         <div class="form-section">
-          <div class="form-section-title">生成</div>
+          <div class="form-section-title">生成<span class="muted small" :title="capsTitle">{{ capsText }}</span></div>
           <div class="form-grid">
-            <SliderField v-model="form.llm.temperature" class="span-2" label="temperature" :min="0" :max="2" :step="0.1" />
-            <SliderField v-model="form.llm.max_tokens" class="span-2" label="max_tokens" :min="256" :max="65536" :step="256" />
-            <SliderField v-model="form.llm.max_concurrent" class="span-2" label="并发请求数" :min="1" :max="32" :step="1"
-                         hint="对所有 LLM 调用生效" />
+            <div class="span-all">
+              <LlmParamFields :caps="caps" :target="form.llm" id-prefix="llm-g"
+                              :json-mode="jsonModeOn" @update:jsonMode="setJsonMode" />
+            </div>
+            <SliderField v-model="form.llm.max_concurrent" class="span-2" label="并发请求数"
+                         :min="1" :max="32" :step="1" hint="对所有 LLM 调用生效" />
           </div>
+          <div v-if="capsError" class="muted small mt-4 caps-err" :title="capsError">{{ capsError }}</div>
         </div>
 
         <!-- ⚠️ 「提示词」从**程序配置页**搬来这里（2026-10，用户要求）：参考标题 + 两个检测
@@ -224,50 +238,57 @@
           </div>
         </div>
 
-        <!-- 按链路覆盖 / extra_params 左右并排（用户要求）：左边是覆盖项、右边是 JSON 正文。
-             ⚠️ 原来 .llm-link-row 的滑块列写死 300px，半宽列里会顶破 —— 见下方 CSS 的覆盖。 -->
-        <div class="llm-cols">
-          <div class="form-section">
-            <div class="form-section-title">按链路覆盖<span class="muted small">不勾 = 跟随全局</span></div>
-            <!-- 各链路要的输出长度天差地别，别用同一个上限互相迁就。
-                 一行一条链路：勾上才出现滑块，没勾的只占一行灰字（跟随全局）。 -->
-            <div class="llm-links">
-              <div class="llm-link-row" v-for="l in llmLinks" :key="l.key">
-                <label class="ln-name">
-                  <input type="checkbox" v-model="form.llm.overrides[l.key].on"> {{ l.label }}
-                </label>
-                <template v-if="form.llm.overrides[l.key].on">
-                  <SliderField v-model="form.llm.overrides[l.key].max_tokens"
-                               label="max_tokens" :min="256" :max="65536" :step="256" />
-                  <SliderField v-model="form.llm.overrides[l.key].temperature"
-                               label="temperature" :min="0" :max="2" :step="0.1" />
-                  <select v-model="form.llm.overrides[l.key].thinking"
-                          aria-label="thinking"
-                          title="勾选「单独设置」后会写进 llm.toml；选「默认 thinking」则不写这个键">
-                    <option value="">默认 thinking</option>
-                    <option value="disabled">关思考</option>
-                    <option value="enabled">开思考</option>
-                  </select>
-                </template>
-                <span v-else class="muted small ln-inherit">
-                  跟随全局（{{ form.llm.max_tokens }} · {{ form.llm.temperature }} · {{ defaultThinking(l.key) }}）
-                </span>
-              </div>
+        <!-- ③ 按链路：行由 llm_config.overrides 的键**自动生成**（后端加链路，这里一行都不用改）。
+             「跟随全局」由**勾选框**表达：不勾 = 保存时发 null = 删键（别用空输入框 —— 那表达不出"没有值"）。 -->
+        <div class="form-section">
+          <div class="form-section-title">按链路覆盖<span class="muted small">勾上才覆盖，不勾 = 跟随全局</span></div>
+          <div class="llm-cols">
+            <div class="llm-link-row" v-for="l in llmLinks" :key="l.key">
+              <label class="ln-name">
+                <input type="checkbox" v-model="form.llm.overrides[l.key].on"> {{ l.label }}
+              </label>
+              <LlmParamFields v-if="form.llm.overrides[l.key].on" :caps="caps"
+                              :target="form.llm.overrides[l.key]"
+                              :fields="['thinking', 'temperature', 'max_tokens']"
+                              :id-prefix="'llm-' + l.key" />
+              <span v-else class="muted small ln-inherit" :title="inheritTitle(l.key)">
+                跟随全局（{{ form.llm.temperature }} · {{ form.llm.max_tokens }}）
+              </span>
             </div>
           </div>
+        </div>
 
-          <div class="form-section">
-            <div class="form-section-title">extra_params（JSON）</div>
-            <textarea v-model="form.llm.extra_params" class="mono llm-extra" spellcheck="false"
-                      rows="10" placeholder="留空 = 不带额外参数"></textarea>
+        <!-- ④ 高级：extra_params 逃逸口 + 源文件编辑（表单没暴露的键与注释都在源文件里改） -->
+        <div class="form-section">
+          <div class="form-section-title">高级<span class="muted small">逃逸口 · 源文件</span></div>
+          <div class="llm-cols">
+            <div>
+              <label title="原样进请求体，覆盖上面所有同名参数；留空 = 不带额外参数">extra_params（JSON）</label>
+              <textarea v-model="form.llm.extra_params" class="mono llm-extra" spellcheck="false"
+                        rows="10" placeholder="留空 = 不带额外参数"></textarea>
+            </div>
+            <div>
+              <label>llm.toml 源文件</label>
+              <div class="muted small mb-8" title="表单没暴露的键（含注释）都在源文件里改；保存 = 整份原文覆盖">
+                表单之外的键与注释在这里改
+              </div>
+              <button class="btn" @click="toggleLlmSource">
+                <Icon name="edit" :size="13" /> 编辑源文件
+              </button>
+            </div>
           </div>
         </div>
 
         <div class="muted small mt-8">{{ llmResult }}</div>
       </template>
       <template v-else>
-        <div class="muted small mb-8" title="「返回表单」会放弃未保存的修改">直接编辑 llm.toml 原文</div>
-        <textarea v-model="llmRaw" rows="14" class="mono source-editor"></textarea>
+        <div class="row spread mb-8">
+          <div class="muted small" title="保存后立即生效；「返回表单」会放弃未保存的修改；api_key 留空 = 不修改">
+            直接编辑 llm.toml 原文
+          </div>
+          <button class="btn" @click="toggleLlmSource">返回表单</button>
+        </div>
+        <textarea v-model="llmRaw" rows="24" class="mono source-editor"></textarea>
       </template>
     </div>
     </template>
@@ -322,11 +343,15 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { api } from '../api/client'
+import { fetchCatalog, saveLlm as putLlm, saveLlmRaw as putLlmRaw, testConnection } from '../api/llm'
+import { CAPS_SOURCE_ZH, normalizeCaps, normalizeLevel } from '../components/llm/caps.js'
 import { toast } from '../stores/toast'
 import Icon from '../components/Icon.vue'
 import SliderField from '../components/SliderField.vue'
+import LlmModelPicker from '../components/llm/LlmModelPicker.vue'
+import LlmParamFields from '../components/llm/LlmParamFields.vue'
 import InviteManager from '../components/InviteManager.vue'
 import UserQuotaManager from '../components/UserQuotaManager.vue'
 import RecorderConfig from '../components/RecorderConfig.vue'
@@ -348,6 +373,11 @@ const globalRaw = ref('')
 const llmRaw = ref('')
 const configError = ref('')
 const llmResult = ref('')
+/** 模型能力（caps）：来自 `GET /api/config/llm/catalog`，经 caps.js 归一化；null = 未知（只画通用控件）。 */
+const caps = ref(null)
+const capsSource = ref('')
+/** 能力读失败的原因 —— **不许静默**：拿不到能力就说出来，别让用户以为"这个模型本来就没这些旋钮" */
+const capsError = ref('')
 const referenceTitlesText = ref('')
 /** 留空时**实际会用**的内建参考标题（服务端 `GET /api/config` 的 `reference_titles_default`）。
  *
@@ -407,12 +437,17 @@ const form = reactive({
     overwrite: false,
   },
   llm: {
+    // api_key **只写不读**：服务端不再回明文（P3），表单里永远是空的；留空 = 不动这个键
     api_key: '',
+    api_key_set: false,
     base_url: '',
     model: '',
     temperature: 0,
     max_tokens: 65536,
     max_concurrent: 3,
+    // 推理档位（写的是 [llm] thinking）：'' = 不写这个键（跟随默认），否则是档位名。
+    // 档位清单不在这里写死 —— 由模型能力表给（components/llm/caps.js 归一化）
+    thinking: '',
     extra_params: '',
     // 按链路覆盖：每行 = { on, max_tokens, temperature, thinking }；
     // `on` 决定保存时写值还是发 null（服务端 patch 的 null = 删键 = 回到跟随全局，见 buildLlmPatch）
@@ -427,6 +462,60 @@ const LLM_LINK_THINKING = { polish: '关思考', utility: '关思考' }
 function defaultThinking(key) {
   return LLM_LINK_THINKING[key] || '跟随 extra_params'
 }
+
+/** 「生成」组标题右边那行小字：能力从哪来 / 有没有读到（细节挂 title）。 */
+const capsText = computed(() => {
+  if (capsError.value) return '能力读取失败'
+  if (!caps.value) return ''
+  if (caps.value.hit === false) return '能力：未收录（按通用参数）'
+  return '能力：' + (CAPS_SOURCE_ZH[capsSource.value] || capsSource.value)
+})
+const capsTitle = computed(() => capsError.value
+  || '推理档位 / 温度 / 输出上限这些旋钮出不出现，由这个模型在能力表里的条目决定')
+
+/** api_key 只写不读：占位符照实说「已设置」（P3 起 /api/config 只回 api_key_set 布尔，不回明文）。 */
+const apiKeyPlaceholder = computed(() => (form.llm.api_key_set ? '已设置（留空 = 不修改）' : 'sk-…'))
+const apiKeyTitle = computed(() => (form.llm.api_key_set
+  ? '已存有 key（服务端不回明文）。留空 = 不动它；要改就直接填新的'
+  : '还没存 key；填一个再「获取模型」'))
+
+/** 「跟随全局」那句灰字的细节（行内只留值，细节进 title —— 行内有 20 字预算）。 */
+function inheritTitle(key) {
+  return '不勾 = 这条链路不写任何覆盖键（保存时发 null，服务端删键）⇒ '
+    + '输出上限 / 温度跟随上面「生成」；推理档位用 ' + defaultThinking(key)
+}
+
+/** 取这个模型的能力。失败**照实说**（404 = 服务端还没接这条接口），界面退化成「只画通用控件」。 */
+async function loadCaps() {
+  const base = String(form.llm.base_url || '').trim()
+  const model = String(form.llm.model || '').trim()
+  if (!base || !model) { caps.value = null; capsSource.value = ''; capsError.value = ''; return }
+  capsError.value = ''
+  try {
+    const r = await fetchCatalog(base, model)
+    caps.value = normalizeCaps(r)
+    capsSource.value = 'catalog'
+  } catch (e) {
+    caps.value = null
+    capsSource.value = ''
+    capsError.value = (e && e.status === 404)
+      ? '模型能力接口还没接入（404）—— 只显示通用控件'
+      : '模型能力读取失败：' + ((e && e.message) || e)
+  }
+}
+
+/** 「获取模型」回来了：候选由选择器自己显示，这里只补一次当前模型的能力。 */
+function onModelsFetched() {
+  if (String(form.llm.model || '').trim()) loadCaps()
+}
+
+// base_url / model 一变就重取能力（等 400ms 再发，别边打字边打接口）
+let capsTimer = null
+watch(() => [form.llm.base_url, form.llm.model], () => {
+  if (capsTimer) clearTimeout(capsTimer)
+  capsTimer = setTimeout(loadCaps, 400)
+})
+onBeforeUnmount(() => { if (capsTimer) clearTimeout(capsTimer) })
 
 /** 表行：只列后端回给你的链路（新增链路不用改这里就会冒出来） */
 const llmLinks = computed(() =>
@@ -480,16 +569,48 @@ function buildGlobalPatch() {
   }
 }
 
+/** 「要求 JSON 输出」= `extra_params.response_format` 的一个视图（[llm] 没有这个一等公民键）。 */
+const jsonModeOn = computed(() => {
+  const t = String(form.llm.extra_params || '').trim()
+  if (!t) return false
+  try {
+    const o = JSON.parse(t)
+    return !!(o && typeof o === 'object' && o.response_format && o.response_format.type === 'json_object')
+  } catch (e) { return false }
+})
+
+/** 勾 / 取消「要求 JSON 输出」：改的是 extra_params 正文。
+ *  ⚠️ 正文不是合法 JSON 时**拒绝改**（toast 说明）—— 不能为了一个开关把用户手写的逃逸口覆盖掉。 */
+function setJsonMode(on) {
+  const raw = String(form.llm.extra_params || '').trim()
+  let obj = {}
+  if (raw) {
+    try { obj = JSON.parse(raw) } catch (e) {
+      toast('extra_params 不是合法 JSON，先修好再改「要求 JSON 输出」', 'err'); return
+    }
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+      toast('extra_params 必须是 JSON 对象，先修好再改「要求 JSON 输出」', 'err'); return
+    }
+  }
+  if (on) obj.response_format = { type: 'json_object' }
+  else delete obj.response_format
+  form.llm.extra_params = Object.keys(obj).length ? JSON.stringify(obj, null, 2) : ''
+}
+
 function buildLlmPatch() {
   const f = form.llm
   const llm = {
     base_url: f.base_url || '',
-    api_key: f.api_key || '',
     model: f.model || '',
-    temperature: Number(f.temperature) || 0,
-    max_tokens: Number(f.max_tokens) || 65536,
-    max_concurrent: Number(f.max_concurrent) || 1
+    temperature: clampNum(f.temperature, 0, 2, 0),
+    max_tokens: Math.round(clampNum(f.max_tokens, 256, 65536, 65536)),
+    max_concurrent: Math.max(1, Math.round(Number(f.max_concurrent) || 3)),
+    // 推理档位：'' = **发 null 删键**（跟随默认）；否则写档位名（服务端认 off/minimal/low/medium/high/xhigh）
+    thinking: f.thinking ? f.thinking : null
   }
+  // ⚠️ api_key 只写不读：**没填就整个不发这个键**。新服务端把空串当「不修改」，旧服务端却会真写一个
+  //    空串（把 key 清掉）—— 省略键在两边都等于「不修改」，所以留空时不发它（契约见 api/llm.js）。
+  if (String(f.api_key || '').trim()) llm.api_key = String(f.api_key).trim()
   if (f.extra_params && f.extra_params.trim()) {
     try {
       llm.extra_params = JSON.parse(f.extra_params)
@@ -578,15 +699,21 @@ async function loadConfig() {
     const gMax = l.max_tokens ?? 65536
     const gTemp = l.temperature ?? 0
     form.llm = {
-      api_key: l.api_key || '',
+      // ⚠️ api_key **不预填**（P3 起接口只回 api_key_set 布尔；老服务端回明文也不填进表单）——
+      //    留空 = 不修改，填了才覆盖（见 buildLlmPatch）
+      api_key: '',
+      api_key_set: (typeof d.api_key_set === 'boolean') ? d.api_key_set : !!l.api_key,
       base_url: l.base_url || '',
       model: l.model || '',
       temperature: gTemp,
       max_tokens: gMax,
       max_concurrent: l.max_concurrent ?? 3,
+      // 老配置里的 thinking 可能是 "enabled"/"disabled"（老开关）—— 归一成等价档位再显示；
+      // 写回的是规范档位名（服务端两套都认，映射见 caps.js::normalizeLevel）
+      thinking: normalizeLevel(l.thinking),
       extra_params: l.extra_params ? JSON.stringify(l.extra_params, null, 2) : '',
       // 后端把四张覆盖表都序列化出来（缺席的项是 null）→ 行按它的键走。
-      // on = 这条链路在 llm.toml 里已经有一项覆盖；滑块显示值取"覆盖值，否则当前全局值"。
+      // on = 这条链路在 llm.toml 里已经有一项覆盖；控件显示值取"覆盖值，否则当前全局值"。
       overrides: Object.fromEntries(
         Object.entries(l.overrides || {}).map(([k, v]) => [
           k,
@@ -594,7 +721,7 @@ async function loadConfig() {
             on: v?.max_tokens != null || v?.temperature != null || !!v?.thinking,
             max_tokens: v?.max_tokens ?? gMax,
             temperature: v?.temperature ?? gTemp,
-            thinking: v?.thinking || ''
+            thinking: normalizeLevel(v?.thinking)
           }
         ])
       )
@@ -652,10 +779,10 @@ async function saveLlm() {
   if (!loaded.value) { toast('配置未加载成功，已禁止保存', 'err'); return }
   try {
     if (editLlmSource.value) {
-      await api('/api/config/llm', { method: 'PUT', body: JSON.stringify({ raw: llmRaw.value }) })
+      await putLlmRaw(llmRaw.value)
       toast('llm.toml 已保存')
     } else {
-      await api('/api/config/llm', { method: 'PUT', body: JSON.stringify({ patch: buildLlmPatch() }) })
+      await putLlm(buildLlmPatch())
       // ⚠️ **提示词那一组写的是 config.toml 的 [detection]**，不是 llm.toml ——
       //    它只是**摆在**这一页（用户要求），归属没变。所以这一页的保存必须**两个文件都存**，
       //    否则用户在这里改了参考标题、点「保存」看着成功、实际一个字节都没落盘。
@@ -671,7 +798,7 @@ async function saveLlm() {
 async function testLlm() {
   llmResult.value = '测试中…'
   try {
-    const r = await api('/api/llm/test', { method: 'POST' })
+    const r = await testConnection()
     llmResult.value = '连接成功 ' + r.latency_ms + 'ms'
   } catch (e) {
     llmResult.value = e.message
@@ -694,41 +821,30 @@ onMounted(async () => {
 .tabs + .section-title { margin-top: 4px; }
 /* 表单密度：字段是一行「标签·滑块·数字框」，行高本来就矮，留白按行距给（8px 上下 / 12px 左右）。
    下面的 section/prompt 间距都跟着这条口径收，别再单独放大某一处。 */
-.llm-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.3fr); gap:8px 14px; align-items:stretch; }
-.llm-fields { display:grid; grid-template-columns:1fr 1fr; gap:6px 12px; align-content:start; }
-.llm-extra { display:flex; flex-direction:column; }
-.llm-extra textarea { flex:1; min-height:230px; resize:vertical; font-size:12px; line-height:1.6; }
-/* 按链路覆盖：一行一条链路 —— [勾选+名字] [max_tokens 滑块] [temperature 滑块] [thinking 下拉]。
-   没勾的只占一行灰字（跟随全局），所以默认状态是 4 行矮的、勾开才长出滑块。
-   数值项走 SliderField（与上面那几格同一套控件），别退回裸数字框。
-   ⚠️ 两个数值格子给**上限 300px + justify-content:start**：默认的 1fr 会把滑块拉到格子中央，
-   一行里三样东西散开、看着很空（实测过）。`:deep(.slf-name)` 改成不伸展，标签紧贴滑块；
-   滑块宽度仍是格子宽的 1/3（SliderField 自己的约定，不改）。 */
-/* 按链路覆盖 / extra_params 左右并排（用户要求"做成左右结构"）。
-   右栏给固定上限宽度：JSON 正文不需要更宽，再宽也是换行看不清。 */
-.llm-cols { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:0 20px; align-items:start; }
+/* 表单密度：字段是一行「标签·滑块·数字框」，行高本来就矮，留白按行距给。
+   extra_params 与「源文件」并排（各 50%）：JSON 正文不需要更宽，再宽也是换行看不清。 */
+textarea.llm-extra { min-height:230px; resize:vertical; font-size:12px; line-height:1.6; }
+.llm-cols { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:10px 20px; align-items:start; }
 @media (max-width:1200px) { .llm-cols { grid-template-columns:minmax(0,1fr); gap:14px 0; } }
-/* ⚠️ 半宽列（各 50%）放不下「名字 + 两个滑块 + 下拉」一行 —— 硬塞的实测结果是：
-   链路行折成 45px、滑条被压到 **59px**（1280px 下只剩 41px），刻度根本看不见。
-   所以这里改成网格：**名字与下拉一行，两个滑块各占一整行**（滑条立刻回到整列的 1/3 ≈ 189px）。 */
+/* 按链路覆盖：一条链路一格（两栏 = 2×2）—— [勾选框 + 链路名] + 该链路的参数控件（LlmParamFields）。
+   没勾的只留一行灰字（跟随全局），勾开才长出控件。控件的出现与否由**模型能力**决定。
+   ⚠️ **半宽列里的控件必须跨满整行**：并排的实测结果是滑条被压到 **59px**（1280px 下只剩 41px），
+   刻度根本看不见。下面这条 `:deep(.slf)` 是判据钉着的不变式
+   （webui/scripts/check-layout-invariants.mjs ①②，都带变异自证）—— 动它之前先读那个脚本。 */
 .llm-cols .llm-link-row {
   display:grid; grid-template-columns:minmax(0,1fr) max-content;
   gap:2px 10px; align-items:center;
 }
 .llm-cols .llm-link-row .ln-name { grid-column:1; }
-.llm-cols .llm-link-row > select { grid-column:2; }
 .llm-cols .llm-link-row :deep(.slf),
 .llm-cols .llm-link-row .ln-inherit { grid-column:1 / -1; }
-.llm-cols .llm-link-row + .llm-link-row { margin-top:8px; }
-.llm-links { margin-top:12px; }
-.llm-links-head { display:flex; align-items:baseline; gap:8px; margin-bottom:6px; font-weight:700; font-size:12.5px; }
-.llm-link-row { display:grid; grid-template-columns:max-content minmax(0,300px) minmax(0,300px) max-content;
-  justify-content:start; gap:2px 10px; align-items:center; min-width:0; }
-.llm-link-row + .llm-link-row { margin-top:2px; }
-.llm-link-row .ln-name { display:flex; align-items:center; gap:6px; font-size:12.5px; white-space:nowrap; cursor:pointer; }
-.llm-link-row :deep(.slf-name) { flex:0 1 auto; }
-.llm-link-row select { width:auto; min-width:112px; padding:3px 6px; font-size:12.5px; }
-.ln-inherit { grid-column:2 / -1; }
+/* LlmParamFields 整块也跨满整行（它内部再排「档位 / 温度 / 输出上限」） */
+.llm-cols .llm-link-row :deep(.lpf) { grid-column:1 / -1; }
+.ln-name { display:flex; align-items:center; gap:6px; font-size:12.5px; white-space:nowrap; cursor:pointer; }
+.ln-name input { margin:0; }
+.ln-inherit { font-size:11.5px; overflow-wrap:anywhere; }
+/* 能力读取失败：照实说（红色常驻，不是一闪就没的 toast） */
+.caps-err { color:var(--pink-text); }
 .form-section { padding:8px 0; border-bottom:1px dashed var(--line-soft); }
 .form-section:first-child { padding-top:0; }
 .form-section:last-child { border-bottom:none; padding-bottom:0; }
@@ -779,11 +895,10 @@ button:disabled { opacity:.45; cursor:not-allowed; }
   .form-grid { grid-template-columns:repeat(3, 1fr); }
 }
 @media (max-width: 900px) {
-  .llm-grid { grid-template-columns:1fr; }
-  .llm-extra textarea { min-height:160px; }
-  /* 链路覆盖行：窄屏一行放不下「名字 + 两个滑块 + 下拉」→ 拆成一列（名字占一行） */
-  .llm-link-row { grid-template-columns:minmax(0,1fr); }
-  .llm-link-row .ln-name, .ln-inherit { grid-column:1 / -1; }
+  textarea.llm-extra { min-height:160px; }
+  /* 链路覆盖格：窄屏让链路名独占一行（控件本来就跨满整行） */
+  .llm-cols .llm-link-row { grid-template-columns:minmax(0,1fr); }
+  .llm-cols .llm-link-row .ln-name { grid-column:1 / -1; }
   .form-grid { grid-template-columns:repeat(2, 1fr); }
   .span-2 { grid-column:1 / -1; }
   .prompt-pair, .prompt-with-side { grid-template-columns:1fr; }
