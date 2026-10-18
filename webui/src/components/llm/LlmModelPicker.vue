@@ -11,6 +11,8 @@ import { computed, ref, watch } from 'vue'
 import { fetchModels, MODEL_SOURCE_ZH } from '../../api/llm'
 
 const props = defineProps({
+  /** 草稿 key（用户刚填、还没保存）—— 探针要用它，否则会拿旧 key 换一个 401。 */
+  apiKey: { type: String, default: '' },
   modelValue: { type: String, default: '' },
   baseUrl: { type: String, default: '' },
   disabled: { type: Boolean, default: false }
@@ -86,7 +88,7 @@ async function refresh() {
   busy.value = true
   error.value = ''
   try {
-    const r = await fetchModels(base)
+    const r = await fetchModels(base, props.apiKey)
     models.value = r.models
     source.value = r.source
     note.value = r.note || ''

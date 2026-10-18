@@ -180,7 +180,7 @@
             </div>
             <div class="span-all">
               <label>model</label>
-              <LlmModelPicker v-model="form.llm.model" :base-url="form.llm.base_url" @fetched="onModelsFetched" />
+              <LlmModelPicker v-model="form.llm.model" :base-url="form.llm.base_url" :api-key="form.llm.api_key" @fetched="onModelsFetched" />
             </div>
           </div>
         </div>

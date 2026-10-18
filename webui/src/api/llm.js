@@ -16,8 +16,11 @@ export const MODEL_SOURCE_ZH = {
 }
 
 /** 内置能力表里的模型清单。返回 { source, models: [{id,name}], note }。 */
-export async function fetchModels(baseUrl) {
-  const q = 'base_url=' + encodeURIComponent(String(baseUrl || '').trim())
+export async function fetchModels(baseUrl, apiKey) {
+  let q = 'base_url=' + encodeURIComponent(String(baseUrl || '').trim())
+  // 草稿 key：刚填还没保存时探针要用它，否则会拿旧 key 换一个 401
+  const k = String(apiKey || '').trim()
+  if (k) q += '&api_key=' + encodeURIComponent(k)
   const r = await api('/api/llm/models?' + q, { label: '获取 LLM 模型列表' })
   const models = Array.isArray(r && r.models) ? r.models.filter((m) => m && m.id) : []
   return {
