@@ -242,6 +242,12 @@ pub struct Ffmpeg;
 
 impl Ffmpeg {
     /// 检测可用编码器 (NVENC 优先)
+    ///
+    /// ⚠️ **2026-10-18：这里的参数与底座那一遍对齐了**（原来比它更差：`p1/cq22` / `veryfast/crf22`）。
+    /// 后果是**有屏蔽区间时**的成片会**再压一遍**，而第二遍比第一遍还烂 ⇒ 文字边缘雪上加霜
+    /// （用户报「成片文字锯齿感强烈」；同帧 lossless ↔ 解码 MAE 3.83 / max 51，损伤全在字形边缘）。
+    /// 现在：NVENC `p5/cq19`、libx264 `slow/crf17` —— **与底座那次编码同级**，不做"更差的第二遍"。
+    /// ⚠️ 代价：这一遍只在真有屏蔽区间时才跑（没有屏蔽时是 `-c:v copy`，一个字节都不重压）。
     pub fn detect_encoder() -> EncoderInfo {
         let output = yekitrim_core::process::cmd("ffmpeg")
             .args(["-hide_banner", "-encoders"])
@@ -253,14 +259,16 @@ impl Ffmpeg {
             if text.contains("nvenc") {
                 return EncoderInfo {
                     codec: "h264_nvenc".into(),
-                    args: vec!["-preset".into(), "p1".into(), "-cq".into(), "22".into()],
+                    // p1 = 最快那一档（画质最差的老默认），换成 p5；cq 22 → 19。
+                    args: vec!["-preset".into(), "p5".into(), "-cq".into(), "19".into()],
                 };
             }
         }
 
         EncoderInfo {
             codec: "libx264".into(),
-            args: vec!["-preset".into(), "veryfast".into(), "-crf".into(), "22".into()],
+            // 与底座那一遍同级（`slow/crf17`）—— 第二遍不该比第一遍更差。
+            args: vec!["-preset".into(), "slow".into(), "-crf".into(), "17".into()],
         }
     }
 
