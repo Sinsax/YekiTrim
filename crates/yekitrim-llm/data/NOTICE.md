@@ -11,6 +11,7 @@
 |---|---|
 | 上游包 | `@earendil-works/pi-ai` |
 | 上游版本 | `0.82.1`（`package.json` 的 `version`，写进产物 `generated_from.version`） |
+| 入库副本 | **`vendor/pi-ai-models/`** —— 生成器的默认源（那边的 README 有来源/许可/每文件 sha256/更新步骤） |
 | 上游许可 | **MIT**（`package.json` 的 `license`；产物 `generated_from.license` 同值） |
 | 上游仓库 | <https://github.com/earendil-works/pi>（`packages/ai`） |
 | 作者 | Mario Zechner |
@@ -21,16 +22,26 @@ MIT 允许再分发与派生，条件是保留版权与许可声明。**pi-ai �
 需要时看安装目录下的 `node_modules/@earendil-works/pi-ai/package.json`（`license: "MIT"`）与上游仓库的 `LICENSE`。
 本仓对这份数据的加工（筛选、字段改名、档位裁剪）同样按 MIT 分发；`llm-models.json` **不含** pi-ai 的任何代码。
 
-## 怎么重新生成
+## 怎么重新生成（源数据已入库，离线可跑）
+
+**源数据在仓库里**：`vendor/pi-ai-models/`（上游 `package.json` + 本表用到的 17 个 `<id>.json`，逐字节原样；
+那边的 README 记着来源 / 许可 / 每文件 sha256 / 更新步骤）。所以生成器**不需要外部包目录**，`--pi-ai` 只是可选覆盖：
 
 ```bash
-# 1) 找一份 pi-ai（本机 npm 缓存 / 临时安装 / 上游源码包都行）
-node scripts/gen-llm-models.mjs --pi-ai <pi-ai 包目录> --print-analysis   # 重写产物并打印源侧统计
-node scripts/gen-llm-models.mjs --pi-ai <pi-ai 包目录> --check            # 只比对不写（门禁用，不一致退 1）
+node scripts/gen-llm-models.mjs                  # 重写产物（默认源 = vendor/pi-ai-models/）
+node scripts/gen-llm-models.mjs --print-analysis  # 同上，额外打印源侧统计（distinct thinkingFormat / 逐模型 wire / 可疑点）
+node scripts/gen-llm-models.mjs --check           # 只比对不写（门禁走这条；离线）
+node scripts/check-llm-models.mjs                 # 门禁：结构校验 + spawn 上面那条 --check，退出码照搬
+node scripts/gen-llm-models.mjs --pi-ai <外部包目录>   # 可选覆盖（本机 npm 缓存等）
 ```
 
-退出码：`0` 成功/一致，`1` `--check` 不一致，`2` 缺 `--pi-ai` 或源目录不可用（会打印"要准备什么"）。
+退出码：`0` 成功/一致，`1` `--check` 不一致，`2` 源目录不可用（会打印「要准备什么」）。
 产物**逐字节稳定**：2 空格缩进、LF、末尾一个换行；`providers` 按 `id` 升序、每家 `models` 按 `id` 升序。
+两种源目录形态（npm 包的 `dist/providers/data/`，或 vendor 的平铺 `<id>.json`）喂给同一个 sha256 ⇒ 产物一致。
+
+**过期口径**：这份表**不带时间戳字段**（我们不知道数据是什么时候生成的，加 `generated_at` 只会破坏逐字节稳定、
+每次重跑留假 diff）。真正的时钟在 git 里 —— **`vendor/pi-ai-models/` 超过 90 天没更新就算过期**
+（`git log -1 --format=%cs vendor/pi-ai-models/`），排期照上一节重跑一次；上游发新版或主用模型换代时提前做。
 
 ## 选哪些 provider（17 家 / 181 个模型）
 
