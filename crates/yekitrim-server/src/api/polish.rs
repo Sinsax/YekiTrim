@@ -653,6 +653,18 @@ pub(super) fn cover_title_user_prompt(reference_text: &str, context: &str) -> St
 /// - 显式设过 ⇒ **就是它**（夹 0~2）：想完全稳定就该拿到 0，不许再被下限顶回去；
 /// - 没设 ⇒ 链路温度（`[llm.params] temperature` / `[llm.overrides.utility]`）**抬到下限** 0.8。
 ///   v2 里"省略"= 不表态（不发送）⇒ 调用方按 0 传进来，于是照样落到下限 —— 与 v1 的模板默认 0 同效。
+
+/// 封面文案（标题生成）走哪条链路 —— **一处定义**，测试与调用都看它。
+///
+/// 2026-10-19 用户口径：「链路覆盖里字幕订正删除，增加一个标题生成」。封面文案原来挂在
+/// `Utility`（零散单发）上，与贴纸包/扫描标签共用一组覆盖；拆成 `Title` 之后它有自己的
+/// `[llm.overrides.title]`（默认仍然关思考，所以行为不变）。
+///
+/// ⚠️ 贴纸包标签 / emoji 分类 / 贴纸扫描标签**仍属 `Utility`**（它们才是"零散单发"）。
+fn cover_title_link() -> yekitrim_core::config::LlmLink {
+    yekitrim_core::config::LlmLink::Title
+}
+
 pub(super) fn cover_title_temperature(cover: Option<f64>, link: f64) -> f64 {
     const COVER_TITLE_MIN_TEMPERATURE: f64 = 0.8;
     match cover {
@@ -724,8 +736,9 @@ pub(super) async fn polish_cover_title(
     if llm.base_url.is_empty() || llm.api_key.is_empty() {
         return Err(err(StatusCode::BAD_REQUEST, "LLM 未配置"));
     }
-    // 链路解析：零散单发链路（见 [llm.overrides.utility]）；thinking 的默认关思考由它给出
-    let linked = llm.for_link(yekitrim_core::config::LlmLink::Utility);
+    // 链路解析：**标题生成**（见 [llm.overrides.title]）；thinking 的默认关思考由那条链路的
+    // `default_thinking` 给出（与它原来挂在零散单发上时一致 —— 行为不变）。
+    let linked = llm.for_link(cover_title_link());
     // ⚠️ **温度下限**（2026-10-19 用户报「没有幽默串子那种想点进去的欲望」）：
     // `[llm] temperature` 的模板默认是 **0**（确定性）—— 拿它写标题只会得到四平八稳的概述。
     // 只在**低于**下限时抬上来；用户自己配了更高温度就照用（不覆盖用户意图）。
@@ -2538,6 +2551,23 @@ mod tests {
     use axum::body::Body;
 
 
+
+    /// **封面文案挂的是 `Title` 链路**（不是 Utility）：用户口径「加一个标题生成」，
+    /// 而贴纸包/扫描标签仍属零散单发 —— 挂错的话两者会共用一组覆盖，改一个动一片。
+    #[test]
+    fn cover_title_uses_the_title_link() {
+        assert_eq!(
+            cover_title_link(),
+            yekitrim_core::config::LlmLink::Title,
+            "封面文案要挂标题生成链路"
+        );
+        assert_ne!(cover_title_link(), yekitrim_core::config::LlmLink::Utility);
+        // 与它原来挂在 Utility 上时**行为一致**：默认关思考（R4）
+        assert_eq!(
+            yekitrim_core::config::LlmLink::Title.default_thinking(),
+            yekitrim_core::config::LlmLink::Utility.default_thinking()
+        );
+    }
 
     /// 封面标题温度：显式设了就是它（0 也要能拿到 0），没设才抬到 0.8 下限。
     #[test]

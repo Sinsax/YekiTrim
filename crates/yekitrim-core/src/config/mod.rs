@@ -319,8 +319,11 @@ max_tokens = 8192
 # 精修 LLM 剪辑（分段 + 逐段事件）：输出比检测长。
 # reasoning 不写 = 关闭思考（分段/逐段事件的既定默认）；要开就在这写 reasoning = "high"
 max_tokens = 32768
+# [llm.overrides.title]
+# 标题生成（封面文案）：短输出、一次一发；**默认关思考**（与它原来挂在零散单发上时一致）
+# max_tokens = 512
 [llm.overrides.correct]
-# 字幕订正：输出量随输入走
+# 字幕订正：输出量随输入走（⚠️ 设置页「按链路覆盖」里**不显示它**，但这一节照旧生效）
 max_tokens = 8192
 # [llm.overrides.utility]
 # 零散单发（贴纸包/扫描标签、封面文案、连通测试）默认跟随 [llm.params]；要单独限就取消注释

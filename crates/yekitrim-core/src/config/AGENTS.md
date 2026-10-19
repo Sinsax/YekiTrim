@@ -252,12 +252,15 @@ reasoning = "off"          # 精修默认关思考（链路代码默认给的就
 
 - **一个入口**：`LlmConfig::for_link(LlmLink)`（`config/types.rs`）—— 链路覆盖 /
   `[llm.params]` / 链路代码默认 三层优先级的**唯一实现**（逐字段见 `LlmParamsToml::merged_over`）。
-  这里只记配置形态：`[llm.overrides.{detect,polish,correct,utility}]` 与 `[llm.params]` 是**同一套字段**
+  这里只记配置形态：`[llm.overrides.{detect,polish,title,correct,utility}]` 与 `[llm.params]` 是**同一套字段**
   （`temperature` / `max_tokens` / `reasoning` / `top_p` / `json_mode`），未知键忽略（拼错不该让整份配置打回默认）。
   ⚠️ **参数面（params/overrides）与能力面（`[llm.models."<id>"]`）分开**：前者是"这一趟发什么"，
   后者是"这个模型能怎样"（`ModelOverrideToml` → `caps`，模型 id 匹配大小写不敏感）。
 - 新增链路 = `LlmLink` 加一个变体 + `ALL`/`key`/`label_zh`/`default_thinking` 四处 + `LlmOverrides` 加字段
-  （设置页那张表按后端序列化出来的键自动出行，前端不用改）。
+  （设置页那张表按后端给的 `override_links` 出行，前端不用改）。
+  ⚠️ **界面行 ≠ 全部链路**：`LlmLink::ui_visible()` 是界面那几行（2026-10-19 起 = `detect/polish/title/utility`，
+  **不含 `correct`** —— 用户口径"字幕订正删除"，但代码与 `[llm.overrides.correct]` 照旧生效，`asr/correct.rs` 还在用）；
+  `LlmLink::LEGACY_V1` 是 v1 那四条，**金标准请求体按它遍历**（用 `ALL` 会去找第 5 条，而那份数据一个字都不许动）。
 - ⚠️ **`max_concurrent` 不在这张表里**：它仍是 `[llm] max_concurrent` + `[detection]`/`[correct]` 的
   `Option` 段覆盖（上面「LLM 并发与加速」那套），两套语义并存、各管各的，别混。
 

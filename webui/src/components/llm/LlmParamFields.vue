@@ -99,12 +99,8 @@ const tempHint = computed(() => {
   if (props.caps && props.caps.temperature === 'unknown') return '模型未声明温度（照发）'
   return ''
 })
-/** 工具调用：**只展示**（不是开关）。null = 未声明。 */
-const toolCallText = computed(() => {
-  if (!props.caps) return ''
-  if (props.caps.toolCall == null) return '工具调用：未声明'
-  return props.caps.toolCall ? '工具调用：支持' : '工具调用：不支持'
-})
+// ⚠️ 原先这里有一行「工具调用：支持/未声明」——**纯展示、没有开关**，而这一版根本不把工具调用接到
+//    请求里 ⇒ 点了/看了都不影响请求 = **不可用**，已删（`caps.toolCall` 字段仍归一化保留，给将来）。
 const inputImageTitle = computed(() => {
   const base = props.inputDeclared
     ? '能力表/探针说这个模型不吃图片'
@@ -189,11 +185,6 @@ function toggleInherit(inherit) {
       未收录 ⇒ 默认不发推理参数
     </div>
 
-    <!-- 能力摘要（**只展示**，不是开关）：工具调用。null = 未声明，别猜成"支持"。 -->
-    <div v-if="show('input') && toolCallText" class="muted small lpf-note"
-         title="能力面给的 tool_call，仅展示 —— 这一版不把工具调用接到请求里">
-      {{ toolCallText }}
-    </div>
   </div>
 </template>
 

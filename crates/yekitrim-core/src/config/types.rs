@@ -813,19 +813,48 @@ pub enum LlmLink {
     /// 精修 LLM 剪辑：分段、逐段事件、贴纸精挑、关键词
     Polish,
     /// 字幕订正
+    ///
+    /// ⚠️ **只从界面上隐藏，代码与 TOML 都保留**：`asr/correct.rs` 还在用它，
+    /// `[llm.overrides.correct]` 也必须继续生效（R4）。界面行由 [`LlmLink::ui_visible`] 决定。
     Correct,
-    /// 零散单发：贴纸包/扫描标签、封面文案、连通测试
+    /// **标题生成**（封面文案）：短输出、一次一发（2026-10-19 从 Utility 拆出来）
+    Title,
+    /// 零散单发：贴纸包/扫描标签、连通测试（封面文案已归 [`LlmLink::Title`]）
     Utility,
 }
 
 impl LlmLink {
-    /// 设置页那张表的行顺序 = 这个顺序。
-    pub const ALL: [LlmLink; 4] = [
+    /// **全部**链路（含界面上隐藏的 `Correct`）。顺序 = 枚举声明顺序。
+    ///
+    /// ⚠️ 会遍历它做"每条链路都…"的地方要**想清楚**：界面行请用 [`Self::ui_visible`]，
+    /// 金标准请求体对拍请用 [`Self::LEGACY_V1`]。
+    pub const ALL: [LlmLink; 5] = [
+        LlmLink::Detect,
+        LlmLink::Polish,
+        LlmLink::Correct,
+        LlmLink::Title,
+        LlmLink::Utility,
+    ];
+
+    /// **v1 时代的四条**（`detect/polish/correct/utility`）—— 顺序就是
+    /// `testdata/llm-v1-bodies.json` 里那 12 条金色请求体的顺序。
+    ///
+    /// ⚠️ **别改成 `ALL`**：加了新链路就会去找第 5 条（数据文件里没有），
+    /// 而那份数据是"迁移前的老代码真跑出来的"，**一个字都不许动**。
+    pub const LEGACY_V1: [LlmLink; 4] = [
         LlmLink::Detect,
         LlmLink::Polish,
         LlmLink::Correct,
         LlmLink::Utility,
     ];
+
+    /// **界面「按链路覆盖」那张表要显示的行**（用户口径 2026-10-19：字幕订正删掉、加标题生成）。
+    ///
+    /// `Correct` **只隐藏不删**（`asr/correct.rs` 还在用、TOML 里也还在生效）。
+    /// 后端的 `GET /config` 把它给前端（`override_links`）—— **别让前端自己写死四个**。
+    pub fn ui_visible() -> &'static [LlmLink] {
+        &[LlmLink::Detect, LlmLink::Polish, LlmLink::Title, LlmLink::Utility]
+    }
 
     /// TOML 键名（`[llm.overrides.<key>]`）。
     pub fn key(self) -> &'static str {
@@ -833,6 +862,7 @@ impl LlmLink {
             LlmLink::Detect => "detect",
             LlmLink::Polish => "polish",
             LlmLink::Correct => "correct",
+            LlmLink::Title => "title",
             LlmLink::Utility => "utility",
         }
     }
@@ -843,6 +873,7 @@ impl LlmLink {
             LlmLink::Detect => "事件检测",
             LlmLink::Polish => "精修剪辑",
             LlmLink::Correct => "字幕订正",
+            LlmLink::Title => "标题生成",
             LlmLink::Utility => "零散单发",
         }
     }
@@ -861,7 +892,8 @@ impl LlmLink {
     pub fn default_thinking(self) -> Option<&'static str> {
         match self {
             LlmLink::Detect | LlmLink::Correct => None,
-            LlmLink::Polish | LlmLink::Utility => Some("off"),
+            // Title 也走"代码级关思考"：封面文案本来挂在 Utility 上，那里就是关的
+            LlmLink::Polish | LlmLink::Title | LlmLink::Utility => Some("off"),
         }
     }
 }
@@ -1003,6 +1035,9 @@ pub struct LlmOverrides {
     pub polish: LlmOverride,
     #[serde(default)]
     pub correct: LlmOverride,
+    /// 标题生成（封面文案）。键名 `title`。
+    #[serde(default)]
+    pub title: LlmOverride,
     #[serde(default)]
     pub utility: LlmOverride,
 }
@@ -1013,6 +1048,7 @@ impl LlmOverrides {
             LlmLink::Detect => &self.detect,
             LlmLink::Polish => &self.polish,
             LlmLink::Correct => &self.correct,
+            LlmLink::Title => &self.title,
             LlmLink::Utility => &self.utility,
         }
     }
@@ -1507,6 +1543,27 @@ mod llm_link_tests {
         assert_eq!(provider_key(&p), "", "变量没设 ⇒ 空串（别 panic）");
     }
 
+    /// **新增的 `Title` 链路**：`[llm.overrides.title]` 真的生效，且**默认关思考**（沿用它原来挂在
+    /// Utility 上的行为）；`Correct` 那条照旧（只从界面上隐藏，代码里没动）。
+    #[test]
+    fn title_link_has_its_own_override() {
+        let mut c = base();
+        assert_eq!(c.for_link(LlmLink::Title).params.reasoning.as_deref(), Some("off"), "标题生成默认关思考");
+        assert_eq!(c.for_link(LlmLink::Title).params.max_tokens, Some(16384), "没配 ⇒ 跟随全局");
+
+        c.overrides.title.max_tokens = Some(512);
+        c.overrides.title.temperature = Some(0.9);
+        let t = c.for_link(LlmLink::Title);
+        assert_eq!(t.params.max_tokens, Some(512), "title 覆盖真的生效");
+        assert!((t.params.temperature.unwrap() - 0.9).abs() < 1e-9);
+        // 别的链路不受影响
+        assert_eq!(c.for_link(LlmLink::Utility).params.max_tokens, Some(16384));
+        assert_eq!(c.for_link(LlmLink::Correct).params.max_tokens, Some(16384));
+        // Correct 的覆盖也还在（**界面隐藏 ≠ 删掉**）
+        c.overrides.correct.max_tokens = Some(8192);
+        assert_eq!(c.for_link(LlmLink::Correct).params.max_tokens, Some(8192));
+    }
+
     /// 手改坏的值不能让整条链路炸：0 = 未设置，非有限 temperature 忽略，超范围夹回来。
     #[test]
     fn for_link_ignores_bogus_values() {
@@ -1627,7 +1684,13 @@ reasoning = "high"
     #[test]
     fn link_keys_are_stable() {
         let keys: Vec<&str> = LlmLink::ALL.iter().map(|l| l.key()).collect();
-        assert_eq!(keys, vec!["detect", "polish", "correct", "utility"]);
+        assert_eq!(keys, vec!["detect", "polish", "correct", "title", "utility"]);
+        // v1 的四条（金标准对拍用）—— 顺序不许变
+        let legacy: Vec<&str> = LlmLink::LEGACY_V1.iter().map(|l| l.key()).collect();
+        assert_eq!(legacy, vec!["detect", "polish", "correct", "utility"]);
+        // 界面行：**有 Title、没有 Correct**
+        let ui: Vec<&str> = LlmLink::ui_visible().iter().map(|l| l.key()).collect();
+        assert_eq!(ui, vec!["detect", "polish", "title", "utility"]);
     }
 }
 
