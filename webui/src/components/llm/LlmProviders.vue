@@ -330,45 +330,48 @@ function setLevel(l, v) {
         <span class="pv-spacer"></span>
         <!-- 两条入口分开（用户口径）：「模型」= 这份接口的模型目录；「编辑」= 接口字段（名称/地址/密钥/协议）。
              「测试连接」也在这行上（只测这一份接口，结果是行内一行字，不是一闪而过的 toast）。 -->
-        <button class="pv-models" :data-pv-model-btn="p.id"
-                :title="'当前模型：' + (p.model || '（未选）') + ' —— 点开就地切换，不展开面板'"
-                :aria-label="'当前模型 ' + (p.model || '未选') + '，点开切换'"
-                aria-haspopup="listbox" :aria-expanded="popId === p.id ? 'true' : 'false'"
-                @click.stop="togglePop(p)"
-                @keydown.down.prevent="popId !== p.id && togglePop(p)"
-                @keydown.esc="closePop()"><span class="pv-models-txt">{{ curModelText(p) }}</span>
-          <span class="pv-caret-down">▾</span></button>
+        <!-- ⚠️ 锚点 = **按钮自己**（外包一层 relative）：弹层 `right:0` 与按钮右缘对齐。
+             以前挂在行容器上（`left:36px`）⇒ 弹层贴行左边缘、盖住「+ 添加配置」、压到「按链路覆盖」。 -->
+        <span class="pv-model-wrap" :data-pv-model-anchor="p.id">
+          <button class="pv-models" :data-pv-model-btn="p.id"
+                  :title="'当前模型：' + (p.model || '（未选）') + ' —— 点开就地切换，不展开面板'"
+                  :aria-label="'当前模型 ' + (p.model || '未选') + '，点开切换'"
+                  aria-haspopup="listbox" :aria-expanded="popId === p.id ? 'true' : 'false'"
+                  @click.stop="togglePop(p)"
+                  @keydown.down.prevent="popId !== p.id && togglePop(p)"
+                  @keydown.esc="closePop()"><span class="pv-models-txt">{{ curModelText(p) }}</span>
+            <span class="pv-caret-down">▾</span></button>
+
+          <!-- 行下方就地弹出的**小列表**：锚在按钮上（right:0 ⇒ 与按钮右缘对齐），只用来切当前模型 -->
+          <div v-if="popId === p.id" class="pv-pop" :class="{ up: popUp }" role="listbox" tabindex="-1"
+               :data-pv-pop="p.id" :aria-label="'已选模型（' + listRows(p).length + '）'"
+               @keydown="popKeydown(p, $event)">
+            <div class="pv-pop-head">已选模型（{{ listRows(p).length }}）</div>
+            <div v-if="!listRows(p).length" class="pv-pop-empty">还没有已选模型 —— 点下面「管理模型…」去加</div>
+            <button v-for="(r, mi) in listRows(p)" :key="r.key" class="pv-pop-item"
+                    :class="{ on: p.model === r.id, hl: popIndex === mi }"
+                    role="option" :aria-selected="p.model === r.id ? 'true' : 'false'"
+                    :data-pv-pop-item="r.id" :data-pv-pop-unreg="r.unregistered ? '1' : null"
+                    @click="pickModel(p, r.id)">
+              <span class="pv-pop-dot">{{ p.model === r.id ? '●' : '○' }}</span>
+              <span class="pv-pop-text" :title="r.id + (r.name && r.name !== r.id ? '（' + r.name + '）' : '')">
+                {{ r.name || r.id }}<span v-if="r.name && r.name !== r.id" class="pv-pop-id">{{ r.id }}</span>
+              </span>
+              <span v-if="p.model === r.id && r.unregistered" class="pv-pop-now">使用中（未单独登记）</span>
+              <span v-else-if="p.model === r.id" class="pv-pop-now">使用中</span>
+            </button>
+            <div class="pv-pop-foot">
+              <button class="pv-mini" title="打开这份配置的完整面板（已选 + API 侧两个列表）"
+                      @click="manageModels(p)">管理模型…</button>
+            </div>
+          </div>
+        </span>
         <button class="pv-mini pv-test" :disabled="testing[p.id]"
                 :title="'只测这一份接口（POST /api/llm/test?provider=' + p.id + '）'"
                 @click="testOne(p)">{{ testing[p.id] ? '测试中…' : '测试连接' }}</button>
         <button class="pv-ico" :class="{ on: expandedId === p.id }" :title="expandedId === p.id ? '收起' : '编辑接口字段'"
                 @click="toggleEdit(p.id)"><Icon :name="expandedId === p.id ? 'check' : 'edit'" :size="12" /></button>
         <button class="pv-ico danger" title="删除这份配置" @click="removeProvider(p)"><Icon name="trash" :size="12" /></button>
-      </div>
-
-      <!-- 行下方就地弹出的**小列表**（点「模型 <当前模型> ▾」出来）：只用来切当前模型，**不展开面板**。
-           ⚠️ 行来自 `listRows()`：= models[] + （用着但没登记时）补的那一行（**只显示、不写盘**）。 -->
-      <div v-if="popId === p.id" class="pv-pop" :class="{ up: popUp }" role="listbox" tabindex="-1"
-           :data-pv-pop="p.id" :aria-label="'已选模型（' + listRows(p).length + '）'"
-           @keydown="popKeydown(p, $event)">
-        <div class="pv-pop-head">已选模型（{{ listRows(p).length }}）</div>
-        <div v-if="!listRows(p).length" class="pv-pop-empty">还没有已选模型 —— 点下面「管理模型…」去加</div>
-        <button v-for="(r, mi) in listRows(p)" :key="r.key" class="pv-pop-item"
-                :class="{ on: p.model === r.id, hl: popIndex === mi }"
-                role="option" :aria-selected="p.model === r.id ? 'true' : 'false'"
-                :data-pv-pop-item="r.id" :data-pv-pop-unreg="r.unregistered ? '1' : null"
-                @click="pickModel(p, r.id)">
-          <span class="pv-pop-dot">{{ p.model === r.id ? '●' : '○' }}</span>
-          <span class="pv-pop-text" :title="r.id + (r.name && r.name !== r.id ? '（' + r.name + '）' : '')">
-            {{ r.name || r.id }}<span v-if="r.name && r.name !== r.id" class="pv-pop-id">{{ r.id }}</span>
-          </span>
-          <span v-if="p.model === r.id && r.unregistered" class="pv-pop-now">使用中（未单独登记）</span>
-          <span v-else-if="p.model === r.id" class="pv-pop-now">使用中</span>
-        </button>
-        <div class="pv-pop-foot">
-          <button class="pv-mini" title="打开这份配置的完整面板（已选 + API 侧两个列表）"
-                  @click="manageModels(p)">管理模型…</button>
-        </div>
       </div>
 
       <!-- 展开：**两块**（接口 / 模型），一行一项、标签定宽；行尾两个入口各管一块 -->
@@ -588,14 +591,16 @@ select.pv-input { height:26px; padding:1px 4px; }
 .pv-unreg-id { min-width:0; max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
   font-size:11.5px; color:var(--main); }
 /* 行下方的小列表：锚在这一行（.pv-item 是定位上下文），靠底的行往上弹 */
-.pv-item { position:relative; }
+/* 锚点 = 按钮外面的这层 relative（弹层 `right:0` 与按钮右缘对齐；以前挂在行容器上会贴到行左边缘） */
+.pv-model-wrap { position:relative; flex:none; display:inline-flex; min-width:0; }
 .pv-pop {
-  position:absolute; left:36px; top:100%; z-index:30; width:300px; max-width:calc(100% - 40px);
+  position:absolute; right:0; left:auto; top:calc(100% + 6px); z-index:60; width:300px;
+  max-width:min(300px, calc(100vw - 24px));
   max-height:320px; overflow:auto; display:flex; flex-direction:column;
   background:var(--card); border:1px solid var(--line); border-radius:var(--r); box-shadow:var(--shadow);
   padding:2px 0;
 }
-.pv-pop.up { top:auto; bottom:100%; }
+.pv-pop.up { top:auto; bottom:calc(100% + 6px); }
 .pv-pop-head { font-size:11px; color:var(--ink-faint); padding:4px 10px 2px; }
 .pv-pop-empty { font-size:11.5px; color:var(--ink-dim); padding:6px 10px 8px; }
 .pv-pop-item { display:flex; align-items:center; gap:6px; width:100%; height:28px; padding:0 10px;
