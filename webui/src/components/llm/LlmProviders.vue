@@ -15,6 +15,7 @@ import { toast } from '../../stores/toast'
 import { MODEL_SOURCE_ZH, fetchModels } from '../../api/llm'
 import { LEVEL_VOCAB, LEVEL_ZH } from './caps.js'
 import { protocolLabel } from './protocols.js'
+import LlmParamFields from './LlmParamFields.vue'
 
 const props = defineProps({
   /** 父层的 reactive 数组：`form.llm.providers`（本组件原地增删改） */
@@ -24,9 +25,20 @@ const props = defineProps({
   /** API 协议清单（后端 `/config/llm/protocols`；拿不到时父层给内置清单） */
   protocols: { type: Array, default: () => [] },
   /** 'server' | 'builtin' —— 界面上照实标清单来源 */
-  protocolsSource: { type: String, default: '' }
+  protocolsSource: { type: String, default: '' },
+  // ---- 「参数」那一节要的输入（原来挂在页面顶层「生成」组，2026-10-19 搬进来）----
+  /** 当前模型的能力（只对 active 那份有意义：档位/温度都是按模型取的） */
+  caps: { type: Object, default: null },
+  capsError: { type: String, default: '' },
+  /** 能力来源那行文案（「内置目录 · 未收录」这类；父层算好传进来） */
+  capsText: { type: String, default: '' },
+  capsTitle: { type: String, default: '' },
+  jsonMode: { type: Boolean, default: false },
+  inputText: { type: Boolean, default: true },
+  inputImage: { type: Boolean, default: false },
+  inputDeclared: { type: Boolean, default: false }
 })
-const emit = defineEmits(['update:activeId'])
+const emit = defineEmits(['update:activeId', 'update:jsonMode', 'update:inputText', 'update:inputImage'])
 
 /** **同一时间只展开一份**；再点同一个 = 折叠 */
 const expandedId = ref('')
@@ -176,6 +188,23 @@ function setLevel(l, v) {
                  :placeholder="p.api_key_set ? '已设置（留空 = 不修改）' : 'sk-…'"
                  title="只写不读：服务端不回明文；留空 = 不动这个键">
         </label>
+
+        <!-- 参数：**整页只此一处**（原「生成」组搬进来的）。只对「使用中」那份显示 ——
+             档位/温度这些旋钮是按**当前模型的能力**算的，给未使用的配置画同一批会读错模型。 -->
+        <div v-if="activeId === p.id" class="pv-params">
+          <div class="pv-line pv-params-head">
+            <span class="pv-lbl">参数</span>
+            <span class="pv-muted caps-src" :title="capsTitle">{{ capsText }}</span>
+          </div>
+          <LlmParamFields :caps="caps" :target="p.params" :id-prefix="'llm-p-' + p.id"
+                          :json-mode="jsonMode"
+                          :input-text="inputText" :input-image="inputImage" :input-declared="inputDeclared"
+                          @update:jsonMode="emit('update:jsonMode', $event)"
+                          @update:inputText="emit('update:inputText', $event)"
+                          @update:inputImage="emit('update:inputImage', $event)" />
+          <div v-if="capsError" class="pv-note" :title="capsError">{{ capsError }}</div>
+        </div>
+        <div v-else class="pv-note">这份不是「使用中」：参数跟着当前模型的能力走，点左侧圆点切过去再改</div>
 
         <button class="pv-toggle" @click="subOpen[p.id] = !subOpen[p.id]"
                 :aria-expanded="subOpen[p.id] ? 'true' : 'false'">
@@ -328,6 +357,8 @@ select.pv-input { height:26px; padding:1px 4px; }
 .pv-toggle-inline { height:24px; padding:0 4px; font-size:11.5px; color:var(--ink-dim); }
 .pv-caret { font-size:10px; color:var(--ink-faint); }
 .pv-sub { display:flex; flex-direction:column; gap:0; }
+.pv-params { padding:2px 0 4px; min-width:0; }
+.pv-params-head { gap:8px; }
 .pv-well { gap:8px; }
 .pv-mini { flex:none; height:24px; padding:0 7px; font-size:11.5px; border-radius:var(--r-sm);
   border:1px solid var(--line); background:var(--card); color:var(--ink); cursor:pointer; }
