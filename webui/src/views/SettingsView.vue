@@ -370,6 +370,7 @@ import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { api } from '../api/client'
 import { fetchCatalog, fetchProtocols, saveLlm as putLlm, saveLlmRaw as putLlmRaw, testConnection } from '../api/llm'
 import { BUILTIN_PROTOCOLS } from '../components/llm/protocols.js'
+import { normalizeParams } from '../components/llm/params.js'
 import { CAPS_SOURCE_ZH, DEFAULT_INPUT, inputToArray, mergeCaps, normalizeCaps, normalizeLevel } from '../components/llm/caps.js'
 import { toast } from '../stores/toast'
 import Icon from '../components/Icon.vue'
@@ -473,7 +474,9 @@ const form = reactive({
     max_concurrent: 3,
     // **请求参数面**（v2 的 [llm.params]）：'' / 缺键 = 不写这个键（也就是**不发送**）。
     // 档位清单不在这里写死 —— 由模型能力表给（components/llm/caps.js 归一化）
-    params: { temperature: 0, max_tokens: 65536, reasoning: '', json_mode: false },
+    // ⚠️ 不要给 reasoning 一个 `''` 默认值（P0 事故：空串被写进 llm.toml ⇒ 整份配置回退默认）；
+    //    键缺席 = 不表态，由 normalizeParams 决定发不发
+    params: { temperature: 0, max_tokens: 65536, json_mode: false },
     // 按链路覆盖：每行 = { on, max_tokens, temperature, reasoning }（**与 params 同一套字段**）；
     // `on` 决定保存时写值还是发 null（服务端 patch 的 null = 删键 = 回到跟随全局，见 buildLlmPatch）
     overrides: {},
@@ -759,33 +762,31 @@ function setJsonMode(on) {
  * ⚠️ 后端这次**没回**的键（不在 `knownLinks` 里）且没勾 ⇒ 整条发 `null`（连空表都别留）——
  *    否则"后端刚列出来的 title"会写出一个空 `[llm.overrides.title]`；勾上了才写值。
  */
-function buildOverrides(f, baseParams) {
-  const base = baseParams || {}
+function buildOverrides(f) {
   const known = Array.isArray(f.knownLinks) ? f.knownLinks : Object.keys(f.overrides || {})
   const out = {}
   for (const [key, row] of Object.entries(f.overrides || {})) {
     if (!row.on && !known.includes(key)) { out[key] = null; continue }
-    out[key] = row.on
-      ? {
-          max_tokens: Math.round(clampNum(row.max_tokens, 256, 65536, base.max_tokens ?? 65536)),
-          temperature: clampNum(row.temperature, 0, 2, base.temperature ?? 0),
-          // reasoning 留「默认」就不写这个键（生效值由链路默认 / [llm.params].reasoning 决定）
-          reasoning: row.reasoning ? row.reasoning : null
-        }
-      : { max_tokens: null, temperature: null, reasoning: null }
+    if (!row.on) { out[key] = { max_tokens: null, temperature: null, reasoning: null }; continue }
+    // ⚠️ 值一律过**类型归一**（空串/NaN/认不出的档位 ⇒ 不写这个值）；缺的那项发 null = 删键
+    //    （= 回到跟随全局）。**绝不许**把 '' 写进 patch —— 那是 P0 事故（整份配置回退默认）。
+    const v = normalizeParams(row)
+    out[key] = {
+      max_tokens: v.max_tokens ?? null,
+      temperature: v.temperature ?? null,
+      reasoning: v.reasoning ?? null
+    }
   }
   return out
 }
 
-/** provider 的参数面（与 `[llm.params]` 同一套字段） */
+/** provider 的参数面（与 `[llm.params]` 同一套字段；**类型归一**后再出 patch） */
 function buildProviderParams(v) {
   const x = v || {}
-  return {
-    temperature: clampNum(x.temperature, 0, 2, 0.3),
-    max_tokens: Math.round(clampNum(x.max_tokens, 256, 65536, 65536)),
-    reasoning: x.reasoning ? x.reasoning : null,
-    json_mode: x.json_mode === true ? true : null
-  }
+  const out = normalizeParams(x)
+  // 「要求 JSON 输出」的**取消** = 删键（null），不是写 false —— false 会覆盖源文件里手写的那份
+  out.json_mode = x.json_mode === true ? true : null
+  return out
 }
 
 /**
@@ -828,8 +829,7 @@ function buildProviderPatch(f) {
   if (f.extra_params && f.extra_params.trim()) {
     try { llm.extra_params = JSON.parse(f.extra_params) } catch (e) { throw new Error('extra_params 不是合法 JSON，请检查格式') }
   }
-  const activeParams = ((llm.providers.find((x) => x.id === f.active) || {}).params) || {}
-  llm.overrides = buildOverrides(f, activeParams)
+  llm.overrides = buildOverrides(f)
   return llm
 }
 
@@ -843,12 +843,10 @@ function buildLlmPatch() {
     model: f.model || '',
     max_concurrent: Math.max(1, Math.round(Number(f.max_concurrent) || 3)),
     // ⚠️ **请求参数面写 [llm.params]**（v2）：这三个键不再是 [llm] 的一等公民键。
-    // 推理档位：'' = **发 null 删键**（不表态）；否则写档位名（服务端认 off/minimal/low/medium/high/xhigh）
+    // 值一律过**类型归一**（空串/NaN/认不出的档位 ⇒ 不写这个值，后端保留原值）。
+    // 推理档位"不表态"= **发 null 删键**；不要求 JSON 也发 null（老位置 extra_params.response_format 由 setJsonMode 同步）
     params: {
-      temperature: clampNum(p.temperature, 0, 2, 0),
-      max_tokens: Math.round(clampNum(p.max_tokens, 256, 65536, 65536)),
-      reasoning: p.reasoning ? p.reasoning : null,
-      // 不要求 JSON 时发 null = 删键（老位置 extra_params.response_format 那边由 setJsonMode 同步）
+      ...normalizeParams(p),
       json_mode: p.json_mode === true ? true : null
     }
   };
@@ -889,7 +887,7 @@ function buildLlmPatch() {
   // 按链路覆盖：勾上的写值，没勾的**发 null** —— `patch_config_file` 把 null 当「删键」，
   // 这样"取消勾选 = 回到跟随全局"才表达得出来（发空串会写出 max_tokens = ""，
   // 下次读配置直接解析失败、整份 LLM 配置被打回默认值）。
-  llm.overrides = buildOverrides(f, p)
+  llm.overrides = buildOverrides(f)
   return { llm }
 }
 

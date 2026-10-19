@@ -70,7 +70,8 @@ function blankProvider(n) {
     api_key: '',
     api_key_set: false,
     model: '',
-    params: { temperature: 0.3, max_tokens: 65536, reasoning: '', json_mode: false },
+    // ⚠️ 不给 reasoning 空串（P0：空串进 llm.toml ⇒ 整份配置回退默认）；键缺席即可
+    params: { temperature: 0.3, max_tokens: 65536, json_mode: false },
     models: []
   }
 }
