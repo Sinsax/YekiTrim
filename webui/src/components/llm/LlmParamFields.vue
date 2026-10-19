@@ -39,7 +39,10 @@ const props = defineProps({
   /** 服务端**声明过** input 没有（没声明 = 用的是保守默认，灰字里要说清） */
   inputDeclared: { type: Boolean, default: false },
   /** 同一页会出现多份（全局 + 四条链路）⇒ id 要能区分 */
-  idPrefix: { type: String, default: 'llm-p' }
+  idPrefix: { type: String, default: 'llm-p' },
+  /** 按链路那几份：**不重复全局已经说过的解释**（同一句"未收录/未声明"在页面上会重复 8 次）。
+   *  只留"会影响这一条怎么选"的提示（关不掉 / 文件里是 off 但关不掉）。 */
+  compact: { type: Boolean, default: false }
 })
 const emit = defineEmits(['update:jsonMode', 'update:inputText', 'update:inputImage'])
 
@@ -151,7 +154,9 @@ function toggleInherit(inherit) {
       </select>
       <span v-else class="muted small lpf-note">用链路默认</span>
     </div>
-    <div v-else-if="show('reasoning')" class="muted small lpf-note" :title="thinkingTitle">{{ thinkNote }}</div>
+    <!-- ⚠️ hit:false 时**不再说第二遍**：「未收录 ⇒ 默认不发推理参数」那一句已经说明同一件事 -->
+    <div v-else-if="show('reasoning') && !compact && !capsUnlisted" class="muted small lpf-note"
+         :title="thinkingTitle">{{ thinkNote }}</div>
     <!-- 关不掉：能力面说了算 —— 不摆"关闭"那一档，灰字写清原因（别让用户以为界面漏了） -->
     <div v-if="show('reasoning') && capsDisableNote" class="muted small lpf-note" :title="thinkingTitle">
       {{ capsDisableNote }}
@@ -178,7 +183,8 @@ function toggleInherit(inherit) {
       <span>要求 JSON 输出</span>
     </label>
 
-    <div v-if="capsUnlisted && show('reasoning')" class="muted small lpf-note"
+    <!-- 只在**全局**那一份说一次（compact = 按链路那几份，不再重复同一句） -->
+    <div v-if="capsUnlisted && show('input')" class="muted small lpf-note"
          title="未收录 ⇒ 走保守默认：不发推理参数、温度照发、max_tokens；要改就在「高级 · 模型能力覆盖」里手填">
       未收录 ⇒ 默认不发推理参数
     </div>
@@ -193,6 +199,9 @@ function toggleInherit(inherit) {
 
 <style scoped>
 .lpf { display:flex; flex-direction:column; gap:2px; min-width:0; }
+/* 滑块别吃满整行：SliderField 的滑条固定占"所在格"的 1/3，而「生成」那一格有 1200+px
+   ⇒ 之前是 413px 滑条 + 中间 700px 空白 + 行尾数字框（看着像少了一列）。给个宽度上限即可。 */
+.lpf :deep(.slf) { max-width:560px; }
 .lpf-line { display:flex; flex-wrap:wrap; align-items:center; gap:2px 8px; min-width:0; }
 .lpf-name { font-size:12px; color:var(--ink-dim); }
 .lpf-inherit { display:inline-flex; align-items:center; gap:5px; font-size:12px; color:var(--ink-dim); cursor:pointer; }
