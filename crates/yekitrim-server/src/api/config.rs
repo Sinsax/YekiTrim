@@ -745,6 +745,23 @@ mod tests {
             .filter(|m| m["caps"]["levels"].as_object().map(|o| !o.is_empty()).unwrap_or(false))
             .count();
         println!("SOURCE={} TOTAL={} WITH_CAPS={} WITH_LEVELS={}", v["source"], models.len(), with_caps, with_levels);
+        // P3：**试过哪些路径**也要看得见（路径级探测失败不阻断主流程，但必须留痕）。
+        if v["source"] == "probe" {
+            let tried: Vec<&str> = v["tried"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
+                .unwrap_or_default();
+            println!("TRIED={tried:?} CAPS_FROM={}", v["caps_from"]);
+            assert!(tried.contains(&"/models"), "主路径必须记进 tried：{tried:?}");
+            assert!(
+                tried.contains(&"/model/info"),
+                "LiteLLM 那条路必须**试过**（哪怕 404）：{tried:?}"
+            );
+            assert!(
+                tried.contains(&"/api/tags"),
+                "Ollama 那条路必须**试过**（哪怕 404）：{tried:?}"
+            );
+        }
         // 目标那支 + **档位清单缺字段的**（证明"没这个字段"不会被猜成支持）
         let mut shown_missing = 0;
         for m in models {
