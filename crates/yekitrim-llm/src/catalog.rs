@@ -14,7 +14,8 @@
 //! 3. **JSON 解析失败也不许崩**：退回空目录（等于全部走保守路径）并 warn —— 一次手改坏数据文件
 //!    不该让整个程序起不来。
 
-use crate::params::{MaxOutputWire, ModelCaps, ReasoningLevel, Support, ThinkingWire};
+use crate::dialect;
+use crate::params::{InputModalities, ModelCaps, ReasoningLevel, Support};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
@@ -95,6 +96,9 @@ struct ModelEntry {
     thinking_wire: Option<String>,
     #[serde(default)]
     max_output_wire: Option<String>,
+    /// **输入模态**（`["text"]` / `["text","image"]`）；缺失 = 只有文字（保守）。
+    #[serde(default)]
+    input: Option<Vec<String>>,
 }
 
 fn catalog() -> &'static CatalogFile {
@@ -171,12 +175,17 @@ pub fn caps_for(base_url: &str, model: &str) -> ModelCaps {
         .max_output_wire
         .as_deref()
         .or_else(|| prov.max_output_wire.as_ref().and_then(WireList::single));
-    caps.thinking_wire = if openai_compat {
-        thinking.map(ThinkingWire::parse).unwrap_or_default()
+    // 方言 = (推理写法, 输出字段名) 这一对 → 注册表里的一行。协议族不对 ⇒ 推理写法按"不发"走，
+    // 但**字段名照表**（那是 provider 契约，与推理无关）。未知组合由 dialect::resolve 降级。
+    caps.dialect = if openai_compat {
+        dialect::resolve(thinking, max_output)
     } else {
-        ThinkingWire::None
+        dialect::resolve(None, max_output)
     };
-    caps.max_output_wire = max_output.map(MaxOutputWire::parse).unwrap_or_default();
+    // 输入模态：表里有 `input` 就按它，**没有就只吃文字**（保守）
+    if let Some(items) = &entry.input {
+        caps.input = InputModalities::parse(items.iter().map(String::as_str));
+    }
     caps.temperature = parse_support(&prov.temperature);
     caps.context_window = entry.context_window;
     caps.max_output_ceiling = entry.max_output;
@@ -247,6 +256,8 @@ pub fn caps_json(base_url: &str, model: &str) -> serde_json::Value {
         "max_output_ceiling": caps.max_output_ceiling,
         "context_window": caps.context_window,
         "reasoning": caps.reasoning_supported(),
+        // 输入模态（文字/图片）：老网关缺省就是 `{text: true, image: false}` —— 别猜它支持图片
+        "input": caps.input.to_json(),
     })
 }
 
@@ -281,7 +292,9 @@ mod tests {
         let caps = caps_for("https://unknown.example.com/v1", "no-such-model");
         assert!(!caps.reasoning_supported(), "不认识就不发推理参数");
         assert_eq!(caps.temperature, Support::Supported, "温度照发（最坏是对方拒）");
-        assert_eq!(caps.max_output_wire, MaxOutputWire::MaxTokens);
+        assert_eq!(caps.dialect.id, "none", "不认识就不发推理参数");
+        assert_eq!(caps.dialect.max_output_field, "max_tokens");
+        assert_eq!(caps.input, InputModalities::default(), "不认识 ⇒ 只有文字（不许猜图片）");
     }
 
     #[test]
@@ -289,10 +302,11 @@ mod tests {
         // `api.moonshot.ai` 这家在表里同时出现两种方言（provider 级是**并集**，单看它无法消歧）。
         // 这条钉的就是「逐模型覆盖真的被读到了」——kimi-k3 与 kimi-k2-0711-preview 必须拿到不同的 wire。
         let a = caps_for("https://api.moonshot.ai/v1", "kimi-k3");
-        assert_eq!(a.thinking_wire, ThinkingWire::parse("openai_effort"));
+        assert_eq!(a.dialect.id, "openai_effort");
         let b = caps_for("https://api.moonshot.ai/v1", "kimi-k2-0711-preview");
-        assert_eq!(b.thinking_wire, ThinkingWire::parse("thinking_type"));
-        assert_ne!(a.thinking_wire, b.thinking_wire, "两家不同方言必须能分辨");
+        assert_eq!(b.dialect.id, "thinking_type");
+        assert_ne!(a.dialect.id, b.dialect.id, "两家不同方言必须能分辨");
+        assert_eq!(a.dialect.max_output_field, "max_tokens", "这家用的是老字段名");
     }
 
     /// 界面契约：`caps_json` 给的是**档位与温度**，不是方言。
@@ -314,6 +328,8 @@ mod tests {
         // 方言不外泄：界面照 keys 画就行，怎么发是本 crate 的事
         assert!(v.get("thinking_wire").is_none(), "{v}");
         assert!(v.get("max_output_wire").is_none(), "{v}");
+        // 输入模态（2026-10-19 新增）：deepseek 只吃文字
+        assert_eq!(v["input"], serde_json::json!({"text": true, "image": false}), "{v}");
 
         // 表没命中：hit=false + 保守默认（**不是**让它画出一堆档位）
         let u = caps_json("https://unknown.example.com/v1", "no-such-model");
@@ -322,5 +338,29 @@ mod tests {
         assert_eq!(u["temperature"], "supported", "温度照发（最坏是对方拒）: {u}");
         assert_eq!(u["levels"].as_object().map(|m| m.len()), Some(0), "{u}");
         assert!(u["max_output_ceiling"].is_null(), "{u}");
+        assert_eq!(u["input"], serde_json::json!({"text": true, "image": false}), "未收录 ⇒ 只吃文字：{u}");
+    }
+
+    /// **输入模态**：表里写了 `["text","image"]` 的模型必须真的读到 image；
+    /// 只写 `["text"]` 的不能"顺手"支持图片。
+    #[test]
+    fn input_modalities_come_from_the_table() {
+        let img = caps_for("https://api.anthropic.com/v1", "claude-opus-4-1");
+        assert!(img.input.text, "文字永远支持");
+        assert!(img.input.image, "这份 `input` 里写了 image");
+        let txt = caps_for("https://api.deepseek.com/v1", "deepseek-v4-pro");
+        assert!(txt.input.text);
+        assert!(!txt.input.image, "只写 text 的不许被猜成支持图片");
+        // 用户覆盖（[llm.models."<id>"]）走的是另一步，见 core 的 config 测试
+    }
+
+    /// 空/垃圾模态串：忽略未知、`text` 仍在（"没提 textual" ≠ "不支持文字"）。
+    #[test]
+    fn unknown_modalities_are_ignored() {
+        let m = InputModalities::parse(["IMAGE", "audio", "video"]);
+        assert!(m.image, "大写 image 也认");
+        assert!(m.text, "只说了 image ⇒ 文字仍然可用");
+        assert_eq!(m.to_json(), serde_json::json!({"text": true, "image": true}));
+        assert_eq!(InputModalities::parse(Vec::<String>::new()), InputModalities::default());
     }
 }

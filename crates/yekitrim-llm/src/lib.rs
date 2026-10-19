@@ -15,6 +15,7 @@
 //!
 //! # 模块
 //!
+//! * [`dialect`] —— **方言注册表**：推理参数怎么写 + 输出上限发哪个字段名（一家标准一行）。
 //! * [`params`] —— 一次调用的全部参数（归一化面）。
 //! * [`client`] —— HTTP + 重试 + 请求体 + **用量采集的唯一一处**。
 //! * [`discovery`] —— `GET {base}/models`：问中转"有哪些模型"（失败分类，四条文案互不串味）。
@@ -24,6 +25,8 @@
 pub mod agent;
 pub mod catalog;
 pub mod client;
+/// **方言注册表**：一家 API 标准 = 一条表项（加标准只加表项，不碰 wire/params/catalog）。
+pub mod dialect;
 pub mod discovery;
 pub mod params;
 pub mod wire;
@@ -31,4 +34,4 @@ pub mod usage;
 
 pub use agent::{Agent, AgentItem, AgentProgress, AgentTask, AgentWindow, CancelProbe};
 pub use client::LlmClient;
-pub use params::{LlmParams, ModelCaps, ReasoningLevel, ThinkingWire};
+pub use params::{InputModalities, LlmParams, ModelCaps, ReasoningLevel};

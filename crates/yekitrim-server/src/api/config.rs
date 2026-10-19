@@ -411,6 +411,11 @@ pub(super) fn config_llm_put_locked(path: &Path, body: &serde_json::Value) -> Ap
 ///    （key 不对 / 这个地址没有 /models / 连不上 / 其它，实现只在 `yekitrim_llm::discovery`）；
 /// 3. **一律不落盘**：请求带的 `base_url` 只是**草稿**、回的是候选 —— `llm.toml` 仍然只由
 ///    `PUT /config/llm` 决定。
+///
+/// 响应形状：
+/// * `{"source":"catalog","models":[{id,name}]}` —— 表命中，**不探、不回 caps**（零网络）；
+/// * `{"source":"probe","models":[{id,name,caps}]}` —— 真探；`caps` 只在这份回包**带了能力**时才非 null
+///   （见 `yekitrim_llm::discovery::DiscoverCaps`，键名与 `/config/llm/catalog` 的 caps 同源）。
 pub(super) async fn llm_models(
     Extension(user): Extension<crate::auth::CurrentUser>,
     Query(q): Query<BaseUrlQuery>,
@@ -450,7 +455,15 @@ pub(super) async fn llm_models(
             "source": "probe",
             "models": models
                 .into_iter()
-                .map(|m| serde_json::json!({ "id": m.id, "name": m.name }))
+                .map(|m| {
+                    // **能获取就获取**：回包里带了能力就一并回（界面据此画控件）；没带就 null，**不编**。
+                    // ⚠️ 这只是"这一趟探到的"，**不落盘**（草稿不落盘那条口径没变）。
+                    serde_json::json!({
+                        "id": m.id,
+                        "name": m.name,
+                        "caps": m.caps.as_ref().map(|c| c.to_json()),
+                    })
+                })
                 .collect::<Vec<_>>(),
         })),
         Err(e) => Err(err(StatusCode::BAD_GATEWAY, e)),
