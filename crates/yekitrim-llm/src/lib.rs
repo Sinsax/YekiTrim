@@ -24,6 +24,8 @@
 
 pub mod agent;
 pub mod catalog;
+/// **能力读取器注册表**：`/v1/models` 里各家的自描述字段 → 能力片段（加标准只加表项）。
+pub mod caps;
 pub mod client;
 /// **方言注册表**：一家 API 标准 = 一条表项（加标准只加表项，不碰 wire/params/catalog）。
 pub mod dialect;

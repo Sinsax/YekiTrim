@@ -457,12 +457,14 @@ pub(super) async fn llm_models(
                 .into_iter()
                 .map(|m| {
                     // **能获取就获取**：回包里带了能力就一并回（界面据此画控件）；没带就 null，**不编**。
+                    // 形状走与 /config/llm/catalog **同一个渲染器**：表里的底 + 探测结果**只补不抹**
+                    // （reader 没说的字段一律保留表里的值）。
                     // ⚠️ 这只是"这一趟探到的"，**不落盘**（草稿不落盘那条口径没变）。
-                    serde_json::json!({
-                        "id": m.id,
-                        "name": m.name,
-                        "caps": m.caps.as_ref().map(|c| c.to_json()),
-                    })
+                    let caps = m
+                        .caps
+                        .as_ref()
+                        .map(|p| yekitrim_llm::catalog::caps_json_merged(&base, &m.id, Some(p)));
+                    serde_json::json!({ "id": m.id, "name": m.name, "caps": caps })
                 })
                 .collect::<Vec<_>>(),
         })),
@@ -603,6 +605,71 @@ mod tests {
 
 
     use axum::body::Body;
+
+    /// **真机验证**（默认不跑：要真端点、真 key、真网络）：打的是 `GET /api/llm/models` 的**真 handler**
+    /// （probe_request → `discovery::discover` → 读取器注册表 → caps 合并，一条都不少）。
+    ///
+    /// 为什么是 handler 级而不是另起一个进程：**本机 26320 上跑着用户的实例**，
+    /// `target/debug/yekitrim.exe` 被它占着 ⇒ cargo 换不掉那个文件（`os error 5`）。
+    /// 停服后要复现进程级那条路：`cargo build -p yekitrim-cli && yekitrim server --port 26321 --local-no-auth`
+    /// 再 `curl "http://127.0.0.1:26321/api/llm/models"`。
+    ///
+    /// PowerShell 跑法（key 从 llm.toml 现取，**别写进代码/日志**）：
+    /// ```text
+    /// $k = (Select-String -Path target/debug/users/1/.yekitrim/llm.toml -Pattern 'api_key\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+    /// $env:VT_LLM_BASE = "http://192.168.0.107:7863/v1"; $env:VT_LLM_KEY = $k
+    /// cargo test -p yekitrim-server --lib -- real_endpoint --ignored --nocapture
+    /// ```
+    #[tokio::test]
+    #[ignore = "要真端点与真 key（VT_LLM_BASE / VT_LLM_KEY）"]
+    async fn real_endpoint_models_carry_caps() {
+        // 两种跑法：① 只给 YEKITRIM_DATA_DIR（=程序目录）⇒ 用 llm.toml 里那把 key；
+        // ② 给 VT_LLM_KEY 草稿 key —— ⚠️ 这条还要求 llm.toml 里**已经有**一把 key
+        //    （probe_request 先查它，草稿只覆盖"用哪把"）。
+        let base = std::env::var("VT_LLM_BASE").ok();
+        let key = std::env::var("VT_LLM_KEY").ok();
+        let user = crate::auth::CurrentUser {
+            id: 1,
+            username: "admin".into(),
+            role: "admin".into(),
+            must_change_password: false,
+            session_id: "real-endpoint-probe".into(),
+        };
+        let Json(v) = llm_models(
+            Extension(user),
+            Query(BaseUrlQuery { base_url: base, api_key: key }),
+        )
+        .await
+        .expect("真端点应当回 200（502/400 会在这里炸）");
+
+        let models = v["models"].as_array().expect("models 是数组");
+        let with_caps = models.iter().filter(|m| !m["caps"].is_null()).count();
+        let with_levels = models
+            .iter()
+            .filter(|m| m["caps"]["levels"].as_object().map(|o| !o.is_empty()).unwrap_or(false))
+            .count();
+        println!("SOURCE={} TOTAL={} WITH_CAPS={} WITH_LEVELS={}", v["source"], models.len(), with_caps, with_levels);
+        // 目标那支 + **档位清单缺字段的**（证明"没这个字段"不会被猜成支持）
+        let mut shown_missing = 0;
+        for m in models {
+            let no_levels = m["caps"]["levels"]
+                .as_object()
+                .map(|o| o.is_empty())
+                .unwrap_or(true);
+            if m["id"] == "cn:deepseek-v4.1-flash" {
+                println!("TARGET={} CAPS={}", m["id"], m["caps"]);
+            } else if no_levels && shown_missing < 2 {
+                shown_missing += 1;
+                println!("NO_LEVELS={} CAPS={}", m["id"], m["caps"]);
+            }
+        }
+        assert_eq!(v["source"], "probe", "这条路径应当真探（不是查表）");
+        assert!(models.len() >= 20, "真端点有 21 支");
+        assert_eq!(with_caps, models.len(), "每支都带能力（这家自描述）");
+        assert!(with_levels >= 18, "绝大多数带档位清单：{with_levels}");
+    }
+
+
 
 
 /// **程序配置按账号分开 + 明文 key 一个字都不出接口 + 空值不覆盖真 key**。
