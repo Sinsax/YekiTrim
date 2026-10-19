@@ -172,7 +172,13 @@
                ⚠️ **R4**：后端没回 providers ⇒ llmProviderMode=false ⇒ 走下面这个老的单配置表单 -->
           <LlmProviders v-if="llmProviderMode" :providers="form.llm.providers"
                         v-model:active-id="form.llm.active"
-                        :protocols="protocols" :protocols-source="protocolsSource" />
+                        :protocols="protocols" :protocols-source="protocolsSource"
+                        :caps="caps" :caps-error="capsError" :json-mode="jsonModeOn"
+                        :caps-text="capsText" :caps-title="capsTitle"
+                        :input-text="inputText" :input-image="inputImage" :input-declared="inputDeclared"
+                        @update:jsonMode="setJsonMode"
+                        @update:inputText="setInputKind('text', $event)"
+                        @update:inputImage="setInputKind('image', $event)" />
           <div v-else class="form-grid">
             <div class="span-2">
               <label>base_url</label>
@@ -191,21 +197,65 @@
           </div>
         </div>
 
-        <!-- ② 生成：**能力驱动** —— 只画这个模型支持的旋钮（档位清单来自能力表，别在前端写死） -->
-        <div class="form-section">
+        <!-- ② 生成：**能力驱动** —— 只画这个模型支持的旋钮（档位清单来自能力表，别在前端写死）。
+             ⚠️ 多 provider 模式下它**搬进 provider 展开面板的「参数」那一节**（整页只出现一处）；
+                没有 providers（R4）时留在这儿，改的仍是全局 [llm.params]。
+             并发数不在这里（它是进程级旋钮，见「高级」）。 -->
+        <div v-if="!llmProviderMode" class="form-section">
           <div class="form-section-title">生成<span class="t-sub caps-src" :title="capsTitle">{{ capsText }}</span></div>
-          <div class="form-grid">
-            <div class="span-all">
-              <LlmParamFields :caps="caps" :target="llmParamsTarget" id-prefix="llm-g"
-                              :json-mode="jsonModeOn" @update:jsonMode="setJsonMode"
-                              :input-text="inputText" :input-image="inputImage" :input-declared="inputDeclared"
-                              @update:inputText="setInputKind('text', $event)"
-                              @update:inputImage="setInputKind('image', $event)" />
-            </div>
-            <SliderField v-model="form.llm.max_concurrent" class="span-2" label="并发请求数"
-                         :min="1" :max="32" :step="1" hint="对所有 LLM 调用生效" />
-          </div>
+          <LlmParamFields :caps="caps" :target="llmParamsTarget" id-prefix="llm-g"
+                          :json-mode="jsonModeOn" @update:jsonMode="setJsonMode"
+                          :input-text="inputText" :input-image="inputImage" :input-declared="inputDeclared"
+                          @update:inputText="setInputKind('text', $event)"
+                          @update:inputImage="setInputKind('image', $event)" />
           <div v-if="capsError" class="muted small mt-4 caps-err" :title="capsError">{{ capsError }}</div>
+        </div>
+
+
+        <!-- ③ 按链路：行由 llm_config.overrides 的键**自动生成**（后端加链路，这里一行都不用改）。
+             「跟随全局」由**勾选框**表达：不勾 = 保存时发 null = 删键（别用空输入框 —— 那表达不出"没有值"）。 -->
+        <div class="form-section">
+          <div class="form-section-title">按链路覆盖<span class="t-sub">勾上才覆盖，不勾 = 跟随全局</span></div>
+          <div class="llm-cols">
+            <div class="llm-link-row" v-for="l in llmLinks" :key="l.key">
+              <label class="ln-name">
+                <input type="checkbox" v-model="form.llm.overrides[l.key].on">
+                <span class="ln-text">{{ l.label }}<span v-if="l.hint" class="ln-hint">（{{ l.hint }}）</span></span>
+              </label>
+              <LlmParamFields v-if="form.llm.overrides[l.key].on" :caps="caps"
+                              :target="form.llm.overrides[l.key]"
+                              :fields="['reasoning', 'temperature', 'max_tokens']"
+                              :id-prefix="'llm-' + l.key" compact />
+              <span v-else class="muted small ln-inherit" :title="inheritTitle(l.key)">
+                跟随全局（{{ llmParamsTarget.temperature }} · {{ llmParamsTarget.max_tokens }}）
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <!-- ④ 高级：并发（进程级旋钮）· extra_params 逃逸口 · 源文件编辑 -->
+        <div class="form-section">
+          <div class="form-section-title">高级<span class="t-sub">并发 · 逃逸口 · 源文件</span></div>
+          <div class="form-grid">
+            <SliderField v-model="form.llm.max_concurrent" class="span-2" label="并发请求数"
+                         :min="1" :max="32" :step="1" hint="对所有 LLM 调用生效（进程级旋钮）" />
+          </div>
+          <div class="llm-cols">
+            <div>
+              <label title="原样进请求体，覆盖上面所有同名参数；留空 = 不带额外参数">extra_params（JSON）</label>
+              <textarea v-model="form.llm.extra_params" class="mono llm-extra" spellcheck="false"
+                        rows="10" placeholder="留空 = 不带额外参数"></textarea>
+            </div>
+            <div>
+              <label>llm.toml 源文件</label>
+              <div class="muted small mb-8" title="表单没暴露的键（含注释）都在源文件里改；保存 = 整份原文覆盖">
+                表单之外的键与注释在这里改
+              </div>
+              <button class="btn" @click="toggleLlmSource">
+                <Icon name="edit" :size="13" /> 编辑源文件
+              </button>
+            </div>
+          </div>
         </div>
 
         <!-- ⚠️ 「提示词」从**程序配置页**搬来这里（2026-10，用户要求）：参考标题 + 两个检测
@@ -250,99 +300,6 @@
             <textarea v-model="form.detection.prompt_template" rows="12" placeholder="留空使用内建默认"></textarea>
           </div>
           </details>
-        </div>
-
-        <!-- ③ 按链路：行由 llm_config.overrides 的键**自动生成**（后端加链路，这里一行都不用改）。
-             「跟随全局」由**勾选框**表达：不勾 = 保存时发 null = 删键（别用空输入框 —— 那表达不出"没有值"）。 -->
-        <div class="form-section">
-          <div class="form-section-title">按链路覆盖<span class="t-sub">勾上才覆盖，不勾 = 跟随全局</span></div>
-          <div class="llm-cols">
-            <div class="llm-link-row" v-for="l in llmLinks" :key="l.key">
-              <label class="ln-name">
-                <input type="checkbox" v-model="form.llm.overrides[l.key].on">
-                <span class="ln-text">{{ l.label }}<span v-if="l.hint" class="ln-hint">（{{ l.hint }}）</span></span>
-              </label>
-              <LlmParamFields v-if="form.llm.overrides[l.key].on" :caps="caps"
-                              :target="form.llm.overrides[l.key]"
-                              :fields="['reasoning', 'temperature', 'max_tokens']"
-                              :id-prefix="'llm-' + l.key" compact />
-              <span v-else class="muted small ln-inherit" :title="inheritTitle(l.key)">
-                跟随全局（{{ llmParamsTarget.temperature }} · {{ llmParamsTarget.max_tokens }}）
-              </span>
-            </div>
-          </div>
-        </div>
-
-        <!-- ④ 高级：extra_params 逃逸口 + 源文件编辑（表单没暴露的键与注释都在源文件里改） -->
-        <div class="form-section">
-          <div class="form-section-title">高级<span class="t-sub">逃逸口 · 源文件</span></div>
-          <div class="llm-cols">
-            <div>
-              <label title="原样进请求体，覆盖上面所有同名参数；留空 = 不带额外参数">extra_params（JSON）</label>
-              <textarea v-model="form.llm.extra_params" class="mono llm-extra" spellcheck="false"
-                        rows="10" placeholder="留空 = 不带额外参数"></textarea>
-            </div>
-            <div>
-              <label>llm.toml 源文件</label>
-              <div class="muted small mb-8" title="表单没暴露的键（含注释）都在源文件里改；保存 = 整份原文覆盖">
-                表单之外的键与注释在这里改
-              </div>
-              <button class="btn" @click="toggleLlmSource">
-                <Icon name="edit" :size="13" /> 编辑源文件
-              </button>
-            </div>
-          </div>
-
-          <!-- 模型能力覆盖：**只在能力表没收录这个模型时出现**（caps.hit:false）。
-               表里没有 (host, model) 时，那几个旋钮在「生成」组里画不出来 —— 这块就是手填的出口。 -->
-          <div v-if="showModelCaps && modelCapsRow" class="llm-caps">
-            <div class="form-section-title">模型能力覆盖
-              <span class="t-sub" :title="'写入 [llm.models.&quot;' + form.llm.model + '&quot;]，只影响这个模型；四项都留空 = 保存时删掉这条'">
-                写入 [llm.models."…"]
-              </span>
-            </div>
-            <!-- 勾选（生成能力）就写在 `input` 这一项上；这行让用户看见"到底会写下去什么" -->
-            <div class="muted small mb-4"
-                 :title="'生成能力 → input = ' + JSON.stringify(['text', 'image'].filter((k) => (k === 'text' ? inputText : inputImage)))">
-              生成能力：{{ inputZh({ text: inputText, image: inputImage }) }}{{ modelInputRow ? '（手填）' : '（来自能力）' }}
-            </div>
-            <!-- 方言清单来源：**照实标**（后端注册表 / 内置只读兜底），别让人以为内置那份是服务端给的 -->
-            <div class="muted small mb-4"
-                 :title="dialectError || '来自后端 Dialect 注册表（GET /api/config/llm/dialects）；选「自定义…」可手填清单外的 id'">
-              {{ dialectHint }}
-            </div>
-            <div class="form-grid">
-              <div>
-                <label title="推理参数用哪种拼写发出去；留空 = 按能力面的保守默认（未收录 ⇒ 不发推理参数）">推理参数怎么发</label>
-                <select :value="wireSelectValue" @change="pickWire($event.target.value)" title="已知方言来自清单；清单外的选「自定义…」">
-                  <option value="">不填</option>
-                  <option v-for="d in dialectList" :key="d.id" :value="d.id">{{ d.label }}</option>
-                  <option :value="CUSTOM">自定义…</option>
-                </select>
-                <input v-if="wireCustomOn" v-model="modelCapsRow.thinking_wire" type="text"
-                       class="mono mt-4" placeholder="方言 id，如 thinking_budget"
-                       title="清单里没有的方言：填服务端认的 id（写进 [llm.models].thinking_wire）">
-              </div>
-              <div>
-                <label title="输出上限写哪个字段名；留空 = max_tokens">输出上限字段</label>
-                <select :value="maxOutSelectValue" @change="pickMaxOut($event.target.value)" title="两条标准字段 + 清单里出现过的；清单外的选「自定义…」">
-                  <option value="">不填</option>
-                  <option v-for="o in maxOutList" :key="o" :value="o">{{ o }}</option>
-                  <option :value="CUSTOM">自定义…</option>
-                </select>
-                <input v-if="maxOutCustomOn" v-model="modelCapsRow.max_output_wire" type="text"
-                       class="mono mt-4" placeholder="字段名，如 max_completion_tokens"
-                       title="清单里没有的字段名（写进 [llm.models].max_output_wire）">
-              </div>
-              <div>
-                <label title="这个模型收不收 temperature；留空 = 收（照发）">温度</label>
-                <select v-model="modelCapsRow.temperature">
-                  <option value="">不填</option>
-                  <option v-for="o in MODEL_TEMP_OPTS" :key="o" :value="o">{{ o }}</option>
-                </select>
-              </div>
-            </div>
-          </div>
         </div>
 
         <div class="muted small mt-8">{{ llmResult }}</div>
@@ -411,10 +368,9 @@
 <script setup>
 import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { api } from '../api/client'
-import { fetchCatalog, fetchDialects, fetchProtocols, saveLlm as putLlm, saveLlmRaw as putLlmRaw, testConnection } from '../api/llm'
+import { fetchCatalog, fetchProtocols, saveLlm as putLlm, saveLlmRaw as putLlmRaw, testConnection } from '../api/llm'
 import { BUILTIN_PROTOCOLS } from '../components/llm/protocols.js'
-import { BUILTIN_DIALECTS, CUSTOM, dialectChoices, maxOutputChoices } from '../components/llm/dialects.js'
-import { CAPS_SOURCE_ZH, DEFAULT_INPUT, inputToArray, inputZh, mergeCaps, normalizeCaps, normalizeLevel } from '../components/llm/caps.js'
+import { CAPS_SOURCE_ZH, DEFAULT_INPUT, inputToArray, mergeCaps, normalizeCaps, normalizeLevel } from '../components/llm/caps.js'
 import { toast } from '../stores/toast'
 import Icon from '../components/Icon.vue'
 import SliderField from '../components/SliderField.vue'
@@ -657,80 +613,10 @@ watch(() => [effBaseUrl.value, effModel.value], () => {
 })
 onBeforeUnmount(() => { if (capsTimer) clearTimeout(capsTimer) })
 
-/** 模型能力覆盖（`[llm.models."<id>"]`）手填的几项 —— 能力未收录 / 与勾选不一致 / 已手填时露出来。
- *  ⚠️ 选项与 Rust 侧同一套拼写（`ModelOverrideToml`）；认不出的值服务端会降级成"不发"。 */
-const MODEL_TEMP_OPTS = ['supported', 'unsupported']
+/** [llm.models.<id>] 的手填行仍然保留（生成能力勾选写它的 input，R4：老 TOML 照读照写） —— 界面上的方言下拉/温度下拉已随「模型能力覆盖」整块删掉（方言由能力读取器自动判定）。 */
 
-// ---- 方言清单（推理参数怎么发 / 输出上限写哪个字段名）----
-// 来源：后端 `GET /api/config/llm/dialects`（`Dialect` 注册表）；那条接口还没做/回空 ⇒ 退回
-// **内置只读清单**并在界面上标注「内置」—— 不静默假装是服务端给的（R4：老行为照旧可用）。
-const dialects = ref([])
-const dialectSource = ref('')      // 'server' | 'builtin'
-const dialectError = ref('')
-const dialectList = computed(() => dialectChoices(dialects.value))
-const maxOutList = computed(() => maxOutputChoices(dialects.value))
-const dialectHint = computed(() => {
-  const n = dialectList.value.length
-  if (!n) return '方言清单：未拿到（可手填）'
-  return '方言清单：' + (dialectSource.value === 'server' ? '后端注册表' : '内置') + '（' + n + ' 条）'
-})
-async function loadDialects() {
-  try {
-    const list = await fetchDialects()
-    if (Array.isArray(list) && list.length) {
-      dialects.value = list; dialectSource.value = 'server'; dialectError.value = ''
-      return
-    }
-    dialects.value = BUILTIN_DIALECTS.slice(); dialectSource.value = 'builtin'
-    dialectError.value = '后端回的方言清单是空的 ⇒ 用了内置只读清单'
-  } catch (e) {
-    dialects.value = BUILTIN_DIALECTS.slice(); dialectSource.value = 'builtin'
-    dialectError.value = '方言接口不可用（' + ((e && e.message) || e) + '）⇒ 用了内置只读清单'
-  }
-}
-/** 「自定义…」态（按模型 id 存）：选了自定义，或文件里那个值不在清单里 —— 两种都要露输入框 */
-const customWire = reactive({})
-const customMaxOut = reactive({})
-const curModelId = computed(() => String(form.llm.model || '').trim())
-const wireCustomOn = computed(() => {
-  const id = curModelId.value
-  const row = modelCapsRow.value
-  if (!id || !row) return false
-  // ⚠️ 清单是**内置**的（后端没给）⇒ 永远给手填框：老行为（随便填 id）不能因为清单缺席就消失（R4）
-  if (dialectSource.value !== 'server') return true
-  if (customWire[id]) return true
-  return !!row.thinking_wire && !dialectList.value.some((d) => d.id === row.thinking_wire)
-})
-const maxOutCustomOn = computed(() => {
-  const id = curModelId.value
-  const row = modelCapsRow.value
-  if (!id || !row) return false
-  if (dialectSource.value !== 'server') return true
-  if (customMaxOut[id]) return true
-  return !!row.max_output_wire && !maxOutList.value.includes(row.max_output_wire)
-})
-const wireSelectValue = computed(() => (wireCustomOn.value ? CUSTOM
-  : ((modelCapsRow.value && modelCapsRow.value.thinking_wire) || '')))
-const maxOutSelectValue = computed(() => (maxOutCustomOn.value ? CUSTOM
-  : ((modelCapsRow.value && modelCapsRow.value.max_output_wire) || '')))
-function pickWire(v) {
-  const id = curModelId.value
-  const row = modelCapsRow.value
-  if (!id || !row) return
-  if (v === CUSTOM) { customWire[id] = true; row.thinking_wire = ''; return }
-  customWire[id] = false
-  row.thinking_wire = v
-}
-function pickMaxOut(v) {
-  const id = curModelId.value
-  const row = modelCapsRow.value
-  if (!id || !row) return
-  if (v === CUSTOM) { customMaxOut[id] = true; row.max_output_wire = ''; return }
-  customMaxOut[id] = false
-  row.max_output_wire = v
-}
-/** 内置表**没收录**这对 (host, model)（hit:false）⇒ 「高级」里给一块手填能力的表单 */
-const capsUnlisted = computed(() => !!(caps.value && caps.value.hit === false))
+
+
 /** 当前模型那一行（reactive 对象；由下面的 watch 保证存在） */
 const modelCapsRow = computed(() => {
   const id = String(form.llm.model || '').trim()
@@ -751,20 +637,7 @@ const capsInput = computed(() => (caps.value && caps.value.input) || DEFAULT_INP
 const inputText = computed(() => (modelInputRow.value ? modelInputRow.value.includes('text') : capsInput.value.text))
 const inputImage = computed(() => (modelInputRow.value ? modelInputRow.value.includes('image') : capsInput.value.image))
 const inputDeclared = computed(() => !!(caps.value && caps.value.input && caps.value.input.declared))
-/** 能力与勾选**不一致**（用户改过勾选）⇒ 覆盖那块必须出现，否则"改了存不下来" */
-const capsInputDiffers = computed(() => !!modelInputRow.value
-  && (inputText.value !== capsInput.value.text || inputImage.value !== capsInput.value.image))
-/**
- * 「模型能力覆盖」什么时候出现：
- *  ① 能力表**没收录**（hit:false）—— 手填是唯一出口；
- *  ② **能力与勾选不一致**（用户在「生成能力」里改了勾选）—— 不出现的话那次手改保存不下来；
- *  ③ 已经手填过 —— 让这块**留住**（不然用户存完再打开就找不到自己那条覆盖了）。
- */
-const showModelCaps = computed(() => {
-  const id = String(form.llm.model || '').trim()
-  if (!id) return false
-  return !!(capsUnlisted.value || capsInputDiffers.value || manualCapsOn.value)
-})
+
 /** 勾 / 取消一个输入模态：**写进手填那一行**（`[llm.models."<id>"].input`）。
  *  ⚠️ 手填优先于能力表 —— 否则用户勾了、保存后又被能力表的值盖回去（"改了没反应"）。 */
 function setInputKind(kind, on) {
@@ -1240,8 +1113,6 @@ onMounted(async () => {
   // /api/config 只有程序配置与 LLM 两个子页用（含源码编辑器）；模型列表只有「账号与模型」用。
   // 其余子页的组件自带接口，别白拉一遍。
   if (props.section === 'config' || props.section === 'llm') loadConfig()
-  // 方言清单只服务 LLM 页「模型能力覆盖」那两个下拉（失败退内置清单，界面上标注）
-  if (props.section === 'llm') loadDialects()
   // API 协议清单只服务多 provider 的「API 协议」下拉（失败退内置清单，界面上标注）
   if (props.section === 'llm') loadProtocols()
   // 每个子页都要：标签条靠它过滤掉本地模式下不显示的项（store 有缓存，只有首次真发请求）。
@@ -1260,8 +1131,6 @@ onMounted(async () => {
    extra_params 与「源文件」并排（各 50%）：JSON 正文不需要更宽，再宽也是换行看不清。 */
 textarea.llm-extra { min-height:230px; resize:vertical; font-size:12px; line-height:1.6; }
 .llm-cols { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:10px 20px; align-items:start; }
-/* 模型能力覆盖（只在能力表未收录时出现）：与上面两栏隔开，别混成一张表单 */
-.llm-caps { margin-top:12px; padding-top:10px; border-top:1px dashed var(--line); }
 @media (max-width:1200px) { .llm-cols { grid-template-columns:minmax(0,1fr); gap:14px 0; } }
 /* 按链路覆盖：一条链路一格（两栏 = 2×2）—— [勾选框 + 链路名] + 该链路的参数控件（LlmParamFields）。
    没勾的只留一行灰字（跟随全局），勾开才长出控件。控件的出现与否由**模型能力**决定。

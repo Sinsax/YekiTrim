@@ -181,7 +181,7 @@ function toggleInherit(inherit) {
 
     <!-- 只在**全局**那一份说一次（compact = 按链路那几份，不再重复同一句） -->
     <div v-if="capsUnlisted && show('input')" class="muted small lpf-note"
-         title="未收录 ⇒ 走保守默认：不发推理参数、温度照发、max_tokens；要改就在「高级 · 模型能力覆盖」里手填">
+         title="未收录 ⇒ 走保守默认：不发推理参数、温度照发、max_tokens；要改就在这份配置的「模型目录」里手填这支模型">
       未收录 ⇒ 默认不发推理参数
     </div>
 
