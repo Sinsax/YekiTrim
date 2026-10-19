@@ -120,6 +120,16 @@ fn redact_api_key_line(line: &str) -> String {
     out
 }
 
+
+/// 界面「按链路覆盖」要显示的**链路键名**（前端照它出行，**别自己写死四个**）。
+///
+/// 来源是 [`yekitrim_core::config::LlmLink::ui_visible`]：`detect/polish/title/utility`。
+/// ⚠️ `correct` **不在这里**（用户口径："字幕订正删除"）—— 但代码与 `[llm.overrides.correct]`
+/// 照旧生效（`asr/correct.rs` 还在用），只是不给界面一行。
+fn override_link_keys() -> Vec<&'static str> {
+    yekitrim_core::config::LlmLink::ui_visible().iter().map(|l| l.key()).collect()
+}
+
 pub(super) fn config_get_impl(owner: yekitrim_core::owner::Owner) -> ApiResult {
     // ⚠️ 按 **Owner** 取目录：单人 = 程序目录（现状），多用户 = 该账号自己的 `.yekitrim/`。
     // **别退回 `path::yekitrim_home()`** —— 那会让所有账号共用同一份配置（含明文 LLM key）。
@@ -166,6 +176,10 @@ pub(super) fn config_get_impl(owner: yekitrim_core::owner::Owner) -> ApiResult {
         }
     }
     let mut llm_json = serde_json::to_value(&llm_cfg).unwrap_or_default();
+    // 界面「按链路覆盖」的行 = 后端给的清单（Correct 只隐藏不删 —— 别让前端自己写死）
+    if let Some(o) = llm_json.as_object_mut() {
+        o.insert("override_links".into(), serde_json::json!(override_link_keys()));
+    }
     if let Some(arr) = llm_json.get_mut("providers").and_then(|v| v.as_array_mut()) {
         for (i, item) in arr.iter_mut().enumerate() {
             if let Some(o) = item.as_object_mut() {
@@ -1563,6 +1577,19 @@ fn redact_api_key_只抹值() {
     assert!(out.contains("# 顶注"), "注释整行保留：\n{out}");
     // 行数不变（源文件编辑器靠行号对齐）
     assert_eq!(out.lines().count(), raw.lines().count());
+}
+
+
+/// 界面链路清单：**有 title、没有 correct**（用户口径：字幕订正删掉、加标题生成）。
+/// 这一条钉的是"后端给清单"这件事本身 —— 前端不许自己写死四个。
+#[test]
+fn override_links_hide_correct_and_show_title() {
+    let keys = override_link_keys();
+    assert_eq!(keys, vec!["detect", "polish", "title", "utility"], "{keys:?}");
+    assert!(keys.contains(&"title"), "标题生成要在界面上");
+    assert!(!keys.contains(&"correct"), "字幕订正只从界面隐藏（代码与 TOML 里还在）：{keys:?}");
+    // 但它在结构里**仍然存在**（asr/correct.rs 还在用）
+    assert_eq!(yekitrim_core::config::LlmLink::Correct.key(), "correct");
 }
 
 /// **inline table 里的 key 也要抹**（多 provider 的 patch 会把 providers 写成一行一个 inline table）：

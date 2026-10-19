@@ -259,14 +259,15 @@
           <div class="llm-cols">
             <div class="llm-link-row" v-for="l in llmLinks" :key="l.key">
               <label class="ln-name">
-                <input type="checkbox" v-model="form.llm.overrides[l.key].on"> {{ l.label }}
+                <input type="checkbox" v-model="form.llm.overrides[l.key].on">
+                <span class="ln-text">{{ l.label }}<span v-if="l.hint" class="ln-hint">（{{ l.hint }}）</span></span>
               </label>
               <LlmParamFields v-if="form.llm.overrides[l.key].on" :caps="caps"
                               :target="form.llm.overrides[l.key]"
                               :fields="['reasoning', 'temperature', 'max_tokens']"
                               :id-prefix="'llm-' + l.key" compact />
               <span v-else class="muted small ln-inherit" :title="inheritTitle(l.key)">
-                跟随全局（{{ form.llm.params.temperature }} · {{ form.llm.params.max_tokens }}）
+                跟随全局（{{ llmParamsTarget.temperature }} · {{ llmParamsTarget.max_tokens }}）
               </span>
             </div>
           </div>
@@ -520,6 +521,10 @@ const form = reactive({
     // 按链路覆盖：每行 = { on, max_tokens, temperature, reasoning }（**与 params 同一套字段**）；
     // `on` 决定保存时写值还是发 null（服务端 patch 的 null = 删键 = 回到跟随全局，见 buildLlmPatch）
     overrides: {},
+    /** **界面可见的链路**（后端 `override_links`，不含 correct）；null/空 = 退回老的四行（R4） */
+    overrideLinks: null,
+    /** 后端这次真的回了哪几个 overrides 键 —— 只在这些键上做"不勾 = 删键"，别给新键写空表 */
+    knownLinks: [],
     // **能力面**（v2 的 [llm.models."<id>"]）：内置表没收录这个模型时，由「高级」那一小块编辑
     models: {},
     // **多 provider**（P3）：`active` = 当前在用的那份；`providers === null` = 后端还没回这个字段
@@ -529,8 +534,16 @@ const form = reactive({
   }
 })
 
-/** 链路 key → 中文名（key 与后端 `LlmLink::key()` 一致；表行按 llm_config.overrides 的键来） */
-const LLM_LINK_ZH = { detect: '事件检测', polish: '精修剪辑', correct: '字幕订正', utility: '零散单发' }
+/** 链路 key → 中文名（key 与后端 `LlmLink::key()` 一致；**哪几行可见由后端 `override_links` 给**） */
+const LLM_LINK_ZH = {
+  detect: '事件检测',
+  polish: '精修剪辑',
+  title: '标题生成',
+  correct: '字幕订正',       // ⚠️ 只从界面隐藏（后端 override_links 不含它），代码/TOML 仍在用 —— 别删这一项
+  utility: '零散单发'
+}
+/** 行内补一句"这条链路具体管什么"（只在需要时） */
+const LLM_LINK_HINT = { title: '封面文案', utility: '贴纸包·扫描标签·测试连接' }
 /** 该链路 reasoning 不写时的生效值（与 `LlmLink::default_thinking` 一致）—— 只用于"跟随全局"那句灰字的展示 */
 const LLM_LINK_THINKING = { polish: '关思考', utility: '关思考' }
 function defaultThinking(key) {
@@ -775,13 +788,19 @@ watch(() => String(form.llm.model || '').trim(), (id) => {
   }
 }, { immediate: true })
 
-/** 表行：只列后端回给你的链路（新增链路不用改这里就会冒出来） */
-const llmLinks = computed(() =>
-  Object.keys(form.llm.overrides || {}).map((key) => ({
+/** 链路行：**可见列表由后端 `override_links` 给**（不含 correct / 以后加链路前端不用改）。
+ *  ⚠️ **R4**：没有 `override_links`（老后端）⇒ 退回 `overrides` 的键 = 老四行（含字幕订正）。 */
+const llmLinks = computed(() => {
+  const ov = form.llm.overrides || {}
+  const listed = (Array.isArray(form.llm.overrideLinks) && form.llm.overrideLinks.length)
+    ? form.llm.overrideLinks.filter((k) => typeof k === 'string' && k)
+    : Object.keys(ov)
+  return listed.map((key) => ({
     key,
-    label: LLM_LINK_ZH[key] || key
+    label: LLM_LINK_ZH[key] || key,
+    hint: LLM_LINK_HINT[key] || ''
   }))
-)
+})
 
 /** 只夹范围、不吸附 step（SliderField 的手填也是这个口径）；非数字回落 fallback。 */
 function clampNum(v, min, max, fallback) {
@@ -862,6 +881,29 @@ function setJsonMode(on) {
   form.llm.extra_params = Object.keys(obj).length ? JSON.stringify(obj, null, 2) : ''
 }
 
+/**
+ * 按链路覆盖 → patch。**不勾 = 发 null = 删键**（回到跟随全局）。
+ * ⚠️ 后端这次**没回**的键（不在 `knownLinks` 里）且没勾 ⇒ 整条发 `null`（连空表都别留）——
+ *    否则"后端刚列出来的 title"会写出一个空 `[llm.overrides.title]`；勾上了才写值。
+ */
+function buildOverrides(f, baseParams) {
+  const base = baseParams || {}
+  const known = Array.isArray(f.knownLinks) ? f.knownLinks : Object.keys(f.overrides || {})
+  const out = {}
+  for (const [key, row] of Object.entries(f.overrides || {})) {
+    if (!row.on && !known.includes(key)) { out[key] = null; continue }
+    out[key] = row.on
+      ? {
+          max_tokens: Math.round(clampNum(row.max_tokens, 256, 65536, base.max_tokens ?? 65536)),
+          temperature: clampNum(row.temperature, 0, 2, base.temperature ?? 0),
+          // reasoning 留「默认」就不写这个键（生效值由链路默认 / [llm.params].reasoning 决定）
+          reasoning: row.reasoning ? row.reasoning : null
+        }
+      : { max_tokens: null, temperature: null, reasoning: null }
+  }
+  return out
+}
+
 /** provider 的参数面（与 `[llm.params]` 同一套字段） */
 function buildProviderParams(v) {
   const x = v || {}
@@ -914,15 +956,7 @@ function buildProviderPatch(f) {
     try { llm.extra_params = JSON.parse(f.extra_params) } catch (e) { throw new Error('extra_params 不是合法 JSON，请检查格式') }
   }
   const activeParams = ((llm.providers.find((x) => x.id === f.active) || {}).params) || {}
-  for (const [key, row] of Object.entries(f.overrides || {})) {
-    llm.overrides[key] = row.on
-      ? {
-          max_tokens: Math.round(clampNum(row.max_tokens, 256, 65536, activeParams.max_tokens ?? 65536)),
-          temperature: clampNum(row.temperature, 0, 2, activeParams.temperature ?? 0),
-          reasoning: row.reasoning ? row.reasoning : null
-        }
-      : { max_tokens: null, temperature: null, reasoning: null }
-  }
+  llm.overrides = buildOverrides(f, activeParams)
   return llm
 }
 
@@ -982,17 +1016,7 @@ function buildLlmPatch() {
   // 按链路覆盖：勾上的写值，没勾的**发 null** —— `patch_config_file` 把 null 当「删键」，
   // 这样"取消勾选 = 回到跟随全局"才表达得出来（发空串会写出 max_tokens = ""，
   // 下次读配置直接解析失败、整份 LLM 配置被打回默认值）。
-  llm.overrides = {}
-  for (const [key, row] of Object.entries(f.overrides || {})) {
-    llm.overrides[key] = row.on
-      ? {
-          max_tokens: Math.round(clampNum(row.max_tokens, 256, 65536, p.max_tokens)),
-          temperature: clampNum(row.temperature, 0, 2, p.temperature),
-          // reasoning 留「默认」就不写这个键（生效值由链路默认 / [llm.params].reasoning 决定）
-          reasoning: row.reasoning ? row.reasoning : null
-        }
-      : { max_tokens: null, temperature: null, reasoning: null }
-  }
+  llm.overrides = buildOverrides(f, p)
   return { llm }
 }
 
@@ -1054,6 +1078,20 @@ async function loadConfig() {
     const p = l.params || {}
     const gMax = p.max_tokens ?? 65536
     const gTemp = p.temperature ?? 0
+    // **链路行**：可见列表 = 后端 `override_links`（不含 correct）；缺失 ⇒ null（R4：老四行）
+    const linkList = Array.isArray(l.override_links)
+      ? l.override_links.filter((k) => typeof k === 'string' && k)
+      : null
+    const rowOf = (v) => ({
+      on: v?.max_tokens != null || v?.temperature != null || !!v?.reasoning,
+      max_tokens: v?.max_tokens ?? gMax,
+      temperature: v?.temperature ?? gTemp,
+      reasoning: normalizeLevel(v?.reasoning)
+    })
+    const knownLinks = Object.keys(l.overrides || {})
+    const gOverrides = Object.fromEntries(Object.entries(l.overrides || {}).map(([k, v]) => [k, rowOf(v)]))
+    // 后端**列了**但还没序列化出来的链路（比如刚加的 title）：补一行默认值，否则那一行没有可勾的对象
+    for (const k of (linkList || [])) if (!gOverrides[k]) gOverrides[k] = rowOf(null)
     form.llm = {
       // ⚠️ api_key **不预填**（P3 起接口只回 api_key_set 布尔；老服务端回明文也不填进表单）——
       //    留空 = 不修改，填了才覆盖（见 buildLlmPatch）
@@ -1114,19 +1152,10 @@ async function loadConfig() {
           }))
         : null,
       extra_params: l.extra_params ? JSON.stringify(l.extra_params, null, 2) : '',
-      // 后端把四张覆盖表都序列化出来（缺席的项是 null）→ 行按它的键走。
-      // on = 这条链路在 llm.toml 里已经有一项覆盖；控件显示值取"覆盖值，否则当前全局值"。
-      overrides: Object.fromEntries(
-        Object.entries(l.overrides || {}).map(([k, v]) => [
-          k,
-          {
-            on: v?.max_tokens != null || v?.temperature != null || !!v?.reasoning,
-            max_tokens: v?.max_tokens ?? gMax,
-            temperature: v?.temperature ?? gTemp,
-            reasoning: normalizeLevel(v?.reasoning)
-          }
-        ])
-      )
+      // 覆盖表：键 = 后端回了的那几个（+ override_links 里列了但还没回的先补默认）
+      overrides: gOverrides,
+      overrideLinks: linkList,
+      knownLinks,
     }
     loaded.value = true
   } catch (e) { loaded.value = false }
@@ -1252,6 +1281,8 @@ textarea.llm-extra { min-height:230px; resize:vertical; font-size:12px; line-hei
 .llm-cols .llm-link-row :deep(.lpf) { grid-column:1 / -1; }
 .ln-name { display:flex; align-items:center; gap:6px; font-size:12.5px; white-space:nowrap; cursor:pointer; }
 .ln-name input { margin:0; }
+.ln-text { min-width:0; }
+.ln-hint { font-size:11px; font-weight:400; color:var(--ink-faint); }
 .ln-inherit { font-size:11.5px; overflow-wrap:anywhere; }
 /* 能力读取失败：照实说（红色常驻，不是一闪就没的 toast） */
 .caps-err { color:var(--pink-text); }

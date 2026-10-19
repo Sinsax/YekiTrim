@@ -921,7 +921,9 @@ max_tokens = 8192
         }
         fn bodies(text: &str) -> Vec<(String, String)> {
             let f: File = toml::from_str(text).expect("老形状必须能解析");
-            super::super::types::LlmLink::ALL
+            // ⚠️ **v1 的四条**（不是 ALL）：金色数据是"迁移前的老代码真跑出来的" 12 条，
+            // 加了新链路（Title）之后继续用 ALL 会去找第 5 条 —— 那是改判据去凑数据。
+            super::super::types::LlmLink::LEGACY_V1
                 .iter()
                 .map(|link| {
                     let linked = f.llm.for_link(*link);
@@ -981,7 +983,7 @@ thinking = "disabled"
                 migrated.starts_with(&format!("config_version = {CONFIG_VERSION}\n")),
                 "{tag} 没升版本：\n{migrated}"
             );
-            let want = golden[tag].as_array().expect("每组 4 条（顺序 = LlmLink::ALL）");
+            let want = golden[tag].as_array().expect("每组 4 条（顺序 = LlmLink::LEGACY_V1）");
             let got = bodies(&migrated);
             assert_eq!(got.len(), want.len(), "{tag} 条数不对");
             for (i, (link, body)) in got.iter().enumerate() {
