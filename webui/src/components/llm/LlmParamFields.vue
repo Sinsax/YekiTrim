@@ -10,26 +10,34 @@
 //     不是档位的东西，且"选项数 == levels 条数"这条判据会失真）。
 //  ② caps.temperature === 'unsupported' ⇒ 温度滑块**禁用 + 行内写明原因**（只挂 title = 用户拖不动只能猜）。
 //  ③ 能力**未知**（null / hit:false）⇒ 只画通用控件，并写明"能力未知 / 未收录"；绝不猜一份档位出来。
+//  ④ **生成能力（输入模态）是勾选框**：勾选状态由父层给（它要写进 [llm.models."<id>"].input），
+//     本组件只 emit。默认值 = 能力表的 `input`；**不勾图片时给一句灰字说明**（别用禁用态写死 ——
+//     用户要能自己勾上覆盖，这正是"能获取当然最好、获取不到就手填"那条路）。
 //
-// ⚠️ target 是父层的 **reactive 行对象**（全局 form.llm 或某条链路的覆盖行），本组件只改它的属性、
+// ⚠️ target 是父层的 **reactive 行对象**（全局 form.llm.params 或某条链路的覆盖行），本组件只改它的属性、
 //    不替换它 —— 所以父层不用写一串 update: 事件（设置页 16 处数值项也是这个绑法）。
 import { computed } from 'vue'
 import SliderField from '../SliderField.vue'
-import { LEVEL_ZH } from './caps.js'
+import { INPUT_ZH, LEVEL_ZH } from './caps.js'
 
 const props = defineProps({
   /** 归一化后的能力（caps.js::normalizeCaps）；null = 未知 */
   caps: { type: Object, default: null },
   /** 直接绑定的参数对象（父层 reactive；只改属性） */
   target: { type: Object, required: true },
-  /** 画哪几个控件（按链路那几行没有 json_mode：它写的是全局 extra_params） */
-  fields: { type: Array, default: () => ['reasoning', 'temperature', 'max_tokens', 'json_mode'] },
+  /** 画哪几个控件（按链路那几行没有 json_mode / input：它们写的是模型级与全局的键） */
+  fields: { type: Array, default: () => ['input', 'reasoning', 'temperature', 'max_tokens', 'json_mode'] },
   /** json_mode 的**真值**由父层算（那是 extra_params.response_format 的一个视图） */
   jsonMode: { type: Boolean, default: false },
+  /** 生成能力（输入模态）：勾选状态由父层算（能力表的值，或用户手填的覆盖） */
+  inputText: { type: Boolean, default: true },
+  inputImage: { type: Boolean, default: false },
+  /** 服务端**声明过** input 没有（没声明 = 用的是保守默认，灰字里要说清） */
+  inputDeclared: { type: Boolean, default: false },
   /** 同一页会出现多份（全局 + 四条链路）⇒ id 要能区分 */
   idPrefix: { type: String, default: 'llm-p' }
 })
-const emit = defineEmits(['update:jsonMode'])
+const emit = defineEmits(['update:jsonMode', 'update:inputText', 'update:inputImage'])
 
 const show = (f) => props.fields.includes(f)
 
@@ -66,6 +74,12 @@ const thinkNote = computed(() => {
   if (!levels.value.length) return '该模型没有推理档位'
   return ''
 })
+const inputImageTitle = computed(() => {
+  const base = props.inputDeclared
+    ? '能力表/探针说这个模型不吃图片'
+    : '能力没声明图片（保守默认：只吃文字）'
+  return base + ' —— 勾上就写进 [llm.models."<当前模型>"].input 覆盖它（保存后生效）'
+})
 const jsonTitle = computed(() => '写 [llm] extra_params.response_format = {"type":"json_object"}；清掉它就是不要求 JSON'
   + '（[llm.params] json_mode 是一等公民键，可在「编辑源文件」里写）')
 
@@ -78,6 +92,22 @@ function toggleInherit(inherit) {
 
 <template>
   <div class="lpf">
+    <!-- 生成能力（输入模态）：**勾选**，不是"支持/不支持"的只读展示 —— 勾错了用户能自己改回来 -->
+    <div v-if="show('input')" class="lpf-line">
+      <span class="lpf-name">生成能力</span>
+      <label class="lpf-check" title="能吃文字输入（chat/completions 基本都支持）">
+        <input type="checkbox" :checked="inputText" @change="emit('update:inputText', $event.target.checked)">
+        <span>{{ INPUT_ZH.text }}</span>
+      </label>
+      <label class="lpf-check" :title="inputImageTitle">
+        <input type="checkbox" :checked="inputImage" @change="emit('update:inputImage', $event.target.checked)">
+        <span>{{ INPUT_ZH.image }}</span>
+      </label>
+    </div>
+    <div v-if="show('input') && !inputImage" class="muted small lpf-note" :title="inputImageTitle">
+      图片输入未声明（可勾上覆盖）
+    </div>
+
     <!-- 推理档位：清单 = caps.levels 的键（数据驱动）；「跟随默认」用勾选框（= 删键） -->
     <div v-if="show('reasoning') && levels.length" class="lpf-line">
       <span class="lpf-name">推理档位</span>
@@ -110,8 +140,9 @@ function toggleInherit(inherit) {
       <span>要求 JSON 输出</span>
     </label>
 
-    <div v-if="capsUnlisted && show('reasoning')" class="muted small lpf-note">
-      能力表未收录，按通用参数（可在「高级」里手填能力）
+    <div v-if="capsUnlisted && show('reasoning')" class="muted small lpf-note"
+         title="未收录 ⇒ 走保守默认：不发推理参数、温度照发、max_tokens；要改就在「高级 · 模型能力覆盖」里手填">
+      未收录 ⇒ 默认不发推理参数
     </div>
   </div>
 </template>
