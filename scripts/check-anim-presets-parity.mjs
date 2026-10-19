@@ -166,6 +166,12 @@ if (kindsStart > 0) {
     kind: (p.match(/kind:\s*'([a-z_]+)'/) || [])[1] || '',
     axis: (p.match(/axis:\s*'([a-z_]+)'/) || [])[1] || '',
     values: [...p.matchAll(/\{\s*value:\s*'([a-z0-9_]*)'/g)].map((m) => m[1]),
+    // ⚠️ **下拉里不该出现的那几个**（`legacy: true` 写在同一个 variant 行里）。
+    //    `perchar_big` / `perchar_small` 只为"认得出来"而留在表里，**不给选** ——
+    //    所以"下拉集合 == 轴集合"那条判据（⑦）比的是**这一份**，不是 `values`。
+    //    负向先行断言只在本行的 `{ … }` 内生效（`[^}]*` 不跨右花括号）。
+    nonLegacyValues: [...p.matchAll(/\{\s*value:\s*'([a-z0-9_]*)'(?![^}]*\blegacy:\s*true)/g)]
+      .map((m) => m[1]),
   }))
 }
 
@@ -348,10 +354,72 @@ for (const b of kindBlocks) {
   }
 }
 
+// ---- ⑦ ⚠⚠ **下拉里真的列出来的那一份** == 过渡轴的档集合（2026-10-20）----
+//
+// # 为什么 ③⑤ 抓不到这一类（2026-10-19 那次事故正是从这个洞漏过去的）
+//
+// ③ 比的是 `ANIM_KINDS`（档位表）↔ 转译器，⑤ 比的是**轴归属** —— 两者都只读 `ANIM_KINDS`。
+// 而用户真正看到的是**下拉里那一份清单**：`TimelineEditor.vue` 的 `TRANSITION_OPTIONS`
+// 曾是**手写的两项**（`pop` / `fade`）。2026-10-18 把「逐字」从动效轴挪到过渡轴时
+// `ANIM_KINDS` 改了、那份没改 ⇒ 逐字在过渡轴里存在、**下拉里选不到**，
+// 而本脚本当时**全绿**（用户 2026-10-19 报的原文：「过渡里只有弹出和淡入淡出」）。
+//
+// ⇒ 判据：把 `TRANSITION_OPTIONS` 的**取值算出来**，与「`ANIM_KINDS` 里 axis==='transition'
+//   且非 legacy 的档集合」逐档相等。谁把它硬编码回两项，这里当场红。
+//
+// ⚠️ `.vue` 不能 import（要 Vue 编译器）⇒ 从源码里取出两段**纯字面量 / 纯表达式**，
+//    用 `new Function` 求值。仍然零依赖、不加载 Vue。
+//    形状变了（取不到那两段 / 求值抛错）**要明确报红** ——
+//    判据静默空转比报错难查得多（见文件头那段）。
+{
+  let dropdown = null
+  let reason = ''
+  try {
+    // ① `ANIM_KINDS` 的字面量：从定义到紧跟的那个只有 ] 的行。
+    const kStart = editorSrc.indexOf('const ANIM_KINDS = [')
+    const kEnd = kStart > 0 ? editorSrc.indexOf('\n]\n', kStart) : -1
+    const kindLit = kStart >= 0 && kEnd > kStart ? editorSrc.slice(kStart, kEnd + 2) : ''
+    // ② `TRANSITION_OPTIONS` 那条表达式：到下一条顶层文档注释之前。
+    const oStart = editorSrc.indexOf('const TRANSITION_OPTIONS =')
+    const oEnd = oStart > 0 ? editorSrc.indexOf('\n/**', oStart) : -1
+    const optExpr = oStart > 0 ? editorSrc.slice(oStart, oEnd > oStart ? oEnd : editorSrc.length) : ''
+
+    ok(kindLit.length > 0, '⑦ 取不到 `ANIM_KINDS` 的字面量（源码形状变了）')
+    ok(optExpr.length > 0, '⑦ 取不到 `TRANSITION_OPTIONS` 的定义（源码形状变了）')
+    // ⚠️ 反向：**它必须是派生的**。写回一份手写清单、值恰好对得上，今天绿、明天就漂。
+    ok(/ANIM_KINDS/.test(optExpr),
+      '⑦ `TRANSITION_OPTIONS` 不是从 `ANIM_KINDS` 派生的 —— 又是一份手写清单' +
+      '（这正是 2026-10-19「过渡里只有弹出和淡入淡出」的形状）')
+
+    const kinds = new Function(kindLit + '; return ANIM_KINDS')()
+    dropdown = new Function('ANIM_KINDS', optExpr + '; return TRANSITION_OPTIONS')(kinds)
+  } catch (err) {
+    reason = String((err && err.message) || err)
+  }
+  ok(reason === '', '⑦ 求值 `TRANSITION_OPTIONS` 失败（它必须是纯表达式）：' + reason)
+
+  if (dropdown) {
+    const actual = dropdown.map((o) => o.value).filter((v) => v !== '').sort()
+    // ⚠️ 期望集合**独立**从正则扒的 `kindBlocks` 算 —— 不复用上面那次求值，
+    //    否则就是拿同一份数据自证自己。
+    const expected = [...new Set(
+      kindBlocks.filter((b) => b.axis === 'transition').flatMap((b) => b.nonLegacyValues),
+    )].filter((v) => v !== '').sort()
+    ok(actual.length > 0, '⑦ 过渡下拉一个选项都没有')
+    ok(JSON.stringify(actual) === JSON.stringify(expected),
+      '⑦ 过渡下拉的选项集合 != 过渡轴的档集合：' +
+      '下拉 ' + JSON.stringify(actual) + ' / 轴 ' + JSON.stringify(expected) + ' —— ' +
+      '用户在过渡下拉里**看不到**某一档（2026-10-19「过渡里只有弹出和淡入淡出」就是这么来的）')
+    // 兜底：逐档点名哪一档选不到，比整串相等更好读。
+    const missing = expected.filter((v) => !actual.includes(v))
+    ok(missing.length === 0, '⑦ 这些过渡档在下拉里选不到：' + JSON.stringify(missing))
+  }
+}
+
 // ---- 结果 ----
 if (fails.length === 0) {
   console.log(
-    `✓ 三轴 9 档动效清单两侧一致（${checks} 项判据 / 转译器 ${transKeys.length} 档 · ` +
+    `✓ 三轴 ${EXPECTED_TIERS} 档动效清单两侧一致（${checks} 项判据 / 转译器 ${transKeys.length} 档 · ` +
     `界面 ${uiNonEmpty.length} 档 + 默认）`,
   )
   console.log(
@@ -361,6 +429,6 @@ if (fails.length === 0) {
   )
   process.exit(0)
 }
-console.log(`✗ 三轴 9 档动效清单对拍失败（${fails.length} / ${checks}）：`)
+console.log(`✗ 三轴 ${EXPECTED_TIERS} 档动效清单对拍失败（${fails.length} / ${checks}）：`)
 for (const f of fails.slice(0, 20)) console.log('    ' + f)
 process.exit(1)
