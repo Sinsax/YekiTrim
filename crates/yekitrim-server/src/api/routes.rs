@@ -212,6 +212,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         //  落到前端的 R4 兜底 —— 那正是"清单腐坏"的老路）。
         // ⚠️ 清单**从 llm crate 的 DIALECTS 现算**，别在这层或 handler 里抄一份。
         .route("/config/llm/dialects", get(llm_dialects))
+        // **协议**清单（前端「API 协议」下拉）：同样从注册表现算、纯静态 ⇒ 用户层
+        .route("/config/llm/protocols", get(llm_protocols))
         .route("/config/llm", put(config_llm_put))
         .route("/llm/test", post(llm_test));
 

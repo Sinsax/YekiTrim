@@ -15,6 +15,7 @@
 //!
 //! # 模块
 //!
+//! * [`protocol`] —— **协议注册表**：请求路径 + 鉴权头（"请求怎么发"，一家标准一条）。
 //! * [`dialect`] —— **方言注册表**：推理参数怎么写 + 输出上限发哪个字段名（一家标准一行）。
 //! * [`params`] —— 一次调用的全部参数（归一化面）。
 //! * [`client`] —— HTTP + 重试 + 请求体 + **用量采集的唯一一处**。
@@ -31,6 +32,8 @@ pub mod client;
 pub mod dialect;
 pub mod discovery;
 pub mod params;
+/// **协议注册表**：一份 provider 的「请求怎么发」（路径 + 鉴权头）。与 `dialect`（参数怎么拼）分工不同。
+pub mod protocol;
 pub mod wire;
 pub mod usage;
 
