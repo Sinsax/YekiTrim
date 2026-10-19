@@ -12,7 +12,7 @@ import { reactive, ref } from 'vue'
 import Icon from '../Icon.vue'
 import { confirmDialog } from '../../stores/dialog'
 import { toast } from '../../stores/toast'
-import { MODEL_SOURCE_ZH, fetchModels } from '../../api/llm'
+import { MODEL_SOURCE_ZH, fetchModels, testConnection } from '../../api/llm'
 import { LEVEL_VOCAB, LEVEL_ZH } from './caps.js'
 import { protocolLabel } from './protocols.js'
 import LlmParamFields from './LlmParamFields.vue'
@@ -27,26 +27,33 @@ const props = defineProps({
   /** 'server' | 'builtin' —— 界面上照实标清单来源 */
   protocolsSource: { type: String, default: '' },
   // ---- 「参数」那一节要的输入（原来挂在页面顶层「生成」组，2026-10-19 搬进来）----
-  /** 当前模型的能力（只对 active 那份有意义：档位/温度都是按模型取的） */
-  caps: { type: Object, default: null },
-  capsError: { type: String, default: '' },
-  /** 能力来源那行文案（「内置目录 · 未收录」这类；父层算好传进来） */
-  capsText: { type: String, default: '' },
-  capsTitle: { type: String, default: '' },
-  jsonMode: { type: Boolean, default: false },
-  inputText: { type: Boolean, default: true },
-  inputImage: { type: Boolean, default: false },
-  inputDeclared: { type: Boolean, default: false }
+  /** 当前模型的能力（「推理档位」下拉按它派生） */
+  caps: { type: Object, default: null }
 })
-const emit = defineEmits(['update:activeId', 'update:jsonMode', 'update:inputText', 'update:inputImage'])
+const emit = defineEmits(['update:activeId'])
 
-/** **同一时间只展开一份**；再点同一个 = 折叠 */
+/** **同一时间只展开一份**；再点「编辑」同一个 = 折叠 */
 const expandedId = ref('')
-/** provider.id → 「自定义设置」是否展开（默认折叠 = 次要项默认看不见） */
-const subOpen = reactive({})
+/** 展开后**定位到哪一块**：`${id}|io` 或 `${id}|models`（行尾两个入口各管一块） */
+const focusBlock = ref('')
 /** provider.id → 正在获取模型 / 状态行 */
 const busy = reactive({})
 const note = reactive({})
+/** provider.id → 正在测这份接口的连通性 */
+const testing = reactive({})
+/** 只测**这一份**接口：成功/失败都写进行内那行字（别用 toast 一闪） */
+async function testOne(p) {
+  testing[p.id] = true
+  note[p.id] = ''
+  try {
+    const r = await testConnection(p.id)
+    note[p.id] = '连通正常' + (r && r.model ? '（' + r.model + '）' : '')
+  } catch (e) {
+    note[p.id] = '测试失败：' + ((e && e.message) || e)   // **不许静默**
+  } finally {
+    testing[p.id] = false
+  }
+}
 /** `${pid}/${mid}` → 模型行 / 推理等级是否展开 */
 const openModel = reactive({})
 const openLevels = reactive({})
@@ -54,9 +61,22 @@ const openLevels = reactive({})
 const key = (pid, mid) => String(pid) + '/' + String(mid)
 const canExpand = (p) => !!p && !!p.id
 
+/** 展开并定位到某一块（滚动 + 高亮）——「编辑」→ io，「模型」→ models */
+function focusSection(id, block) {
+  if (!id) return
+  expandedId.value = id
+  focusBlock.value = id + '|' + block
+  // 展开是异步渲染的 ⇒ 下一帧再滚
+  requestAnimationFrame(() => {
+    const el = document.querySelector('.pv-panel[data-pv-id="' + id + '"] [data-pv-block="' + block + '"]')
+    if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' })
+  })
+}
+/** 行尾「编辑」：管**接口字段**；再点同一个 = 折叠（状态机与从前一致） */
 function toggleEdit(id) {
   if (!id) return
-  expandedId.value = expandedId.value === id ? '' : id
+  if (expandedId.value === id) { expandedId.value = ''; focusBlock.value = ''; return }
+  focusSection(id, 'io')
 }
 function setActive(id) {
   if (id) emit('update:activeId', id)
@@ -72,6 +92,8 @@ function blankProvider(n) {
     model: '',
     // ⚠️ 不给 reasoning 空串（P0：空串进 llm.toml ⇒ 整份配置回退默认）；键缺席即可
     params: { temperature: 0.3, max_tokens: 65536, json_mode: false },
+    // 新的一份没有"原值"快照 ⇒ 保存时这些键都算改过（会写实，别让它落到后端的代码默认值）
+    paramsOrig: null,
     models: []
   }
 }
@@ -93,7 +115,8 @@ function addModel(p) {
   p.models = p.models || []
   const m = {
     id: '', name: '', context_window: null, max_output: null,
-    input: null, reasoning: null, levels: []
+    // 新建默认**只吃文字**（用户口径）；图片仍由能力面决定 ⇒ 默认不勾
+    input: ['text'], reasoning: null, levels: []
   }
   p.models.push(m)
   openModel[key(p.id, p.models.length - 1)] = true
@@ -119,11 +142,12 @@ function restoreDefaults(p) {
 /** 「获取可用模型」= 走既有探针接口（表命中不联网 / 表外才探），把新 id 并进目录 */
 async function fetchAvailable(p) {
   const base = String(p.base_url || '').trim()
-  if (!base) { note[p.id] = '先填 API 地址（「自定义设置」里）'; subOpen[p.id] = true; return }
+  if (!base) { note[p.id] = '先填 API 地址（上面「接口」那一块）'; return }
   busy[p.id] = true
   note[p.id] = ''
   try {
-    const r = await fetchModels(base, p.api_key)
+    // ⚠️ 带 provider id：不带的话后端会去顶层 [llm] api_key 找钥匙（多配置下那里是空的）
+    const r = await fetchModels(base, p.api_key, p.id)
     p.models = p.models || []
     const have = new Set(p.models.map((m) => String(m.id || '').trim()).filter(Boolean))
     let added = 0
@@ -149,7 +173,8 @@ function addLevel(m) {
 function removeLevel(m, i) {
   m.levels.splice(i, 1)
 }
-function inputOf(m) { return Array.isArray(m.input) ? m.input : [] }
+/** 输入类型：**显式存过**就照存的；没存过（null）= 未知 ⇒ 默认只吃文字（新建模型也是这个默认） */
+function inputOf(m) { return Array.isArray(m.input) ? m.input : ['text'] }
 function toggleInput(m, kind, on) {
   const cur = new Set(inputOf(m))
   if (on) cur.add(kind)
@@ -176,42 +201,22 @@ function setLevel(l, v) {
               :title="p.api_key_set ? '已配置 API 密钥' : '还没配 API 密钥'"></span>
         <span class="pv-muted" :title="'协议：' + protocolLabel(protocols, p.api)">{{ protocolLabel(protocols, p.api) }}</span>
         <span class="pv-spacer"></span>
-        <button class="pv-ico" :class="{ on: expandedId === p.id }" :title="expandedId === p.id ? '收起' : '编辑'"
+        <!-- 两条入口分开（用户口径）：「模型」= 这份接口的模型目录；「编辑」= 接口字段（名称/地址/密钥/协议）。
+             「测试连接」也在这行上（只测这一份接口，结果是行内一行字，不是一闪而过的 toast）。 -->
+        <button class="pv-models" :title="'设置这份接口的模型目录（' + (p.models || []).length + ' 个）'"
+                @click="focusSection(p.id, 'models')">模型 {{ (p.models || []).length }}</button>
+        <button class="pv-mini pv-test" :disabled="testing[p.id]"
+                :title="'只测这一份接口（POST /api/llm/test?provider=' + p.id + '）'"
+                @click="testOne(p)">{{ testing[p.id] ? '测试中…' : '测试连接' }}</button>
+        <button class="pv-ico" :class="{ on: expandedId === p.id }" :title="expandedId === p.id ? '收起' : '编辑接口字段'"
                 @click="toggleEdit(p.id)"><Icon :name="expandedId === p.id ? 'check' : 'edit'" :size="12" /></button>
         <button class="pv-ico danger" title="删除这份配置" @click="removeProvider(p)"><Icon name="trash" :size="12" /></button>
       </div>
 
-      <!-- 展开：紧凑，一节一行 -->
+      <!-- 展开：**两块**（接口 / 模型），一行一项、标签定宽；行尾两个入口各管一块 -->
       <div v-if="expandedId === p.id" class="pv-panel" :data-pv-id="p.id">
-        <label class="pv-line">
-          <span class="pv-lbl">API 密钥</span>
-          <input class="pv-input" type="password" autocomplete="off" v-model="p.api_key"
-                 :placeholder="p.api_key_set ? '已设置（留空 = 不修改）' : 'sk-…'"
-                 title="只写不读：服务端不回明文；留空 = 不动这个键">
-        </label>
-
-        <!-- 参数：**整页只此一处**（原「生成」组搬进来的）。只对「使用中」那份显示 ——
-             档位/温度这些旋钮是按**当前模型的能力**算的，给未使用的配置画同一批会读错模型。 -->
-        <div v-if="activeId === p.id" class="pv-params">
-          <div class="pv-line pv-params-head">
-            <span class="pv-lbl">参数</span>
-            <span class="pv-muted caps-src" :title="capsTitle">{{ capsText }}</span>
-          </div>
-          <LlmParamFields :caps="caps" :target="p.params" :id-prefix="'llm-p-' + p.id"
-                          :json-mode="jsonMode"
-                          :input-text="inputText" :input-image="inputImage" :input-declared="inputDeclared"
-                          @update:jsonMode="emit('update:jsonMode', $event)"
-                          @update:inputText="emit('update:inputText', $event)"
-                          @update:inputImage="emit('update:inputImage', $event)" />
-          <div v-if="capsError" class="pv-note" :title="capsError">{{ capsError }}</div>
-        </div>
-        <div v-else class="pv-note">这份不是「使用中」：参数跟着当前模型的能力走，点左侧圆点切过去再改</div>
-
-        <button class="pv-toggle" @click="subOpen[p.id] = !subOpen[p.id]"
-                :aria-expanded="subOpen[p.id] ? 'true' : 'false'">
-          <span class="pv-caret">{{ subOpen[p.id] ? '▾' : '▸' }}</span> 自定义设置
-        </button>
-        <div v-show="subOpen[p.id]" class="pv-sub" data-pv-sub>
+        <!-- ① 接口字段：四行平铺（「自定义设置」那层折叠已拆掉 —— 用户：和 api_key 放一起） -->
+        <div class="pv-block" data-pv-block="io" :class="{ 'is-focus': focusBlock === p.id + '|io' }">
           <label class="pv-line">
             <span class="pv-lbl">显示名称</span>
             <input class="pv-input" v-model="p.name" placeholder="给人看的名字">
@@ -219,6 +224,12 @@ function setLevel(l, v) {
           <label class="pv-line">
             <span class="pv-lbl">API 地址</span>
             <input class="pv-input" v-model="p.base_url" placeholder="https://api.deepseek.com/v1">
+          </label>
+          <label class="pv-line">
+            <span class="pv-lbl">API 密钥</span>
+            <input class="pv-input" type="password" autocomplete="off" v-model="p.api_key"
+                   :placeholder="p.api_key_set ? '已设置（留空 = 不修改）' : 'sk-…'"
+                   title="只写不读：服务端不回明文；留空 = 不动这个键">
           </label>
           <label class="pv-line">
             <span class="pv-lbl">API 协议</span>
@@ -229,13 +240,15 @@ function setLevel(l, v) {
           </label>
         </div>
 
+        <!-- ② 模型：标题行右端是「获取模型」（属于"模型"这块；有地址就能取，草稿 key 也行） -->
+        <div class="pv-block" data-pv-block="models" :class="{ 'is-focus': focusBlock === p.id + '|models' }">
         <div class="pv-line pv-well">
-          <span class="pv-lbl">模型目录</span>
-          <span class="pv-muted">{{ (p.models || []).length }} 条</span>
+          <span class="pv-lbl">模型目录（{{ (p.models || []).length }}）</span>
           <span class="pv-spacer"></span>
           <button class="pv-mini" title="清空各模型手填的能力（回到由能力表决定）" @click="restoreDefaults(p)">恢复默认</button>
-          <button class="pv-mini" :disabled="busy[p.id]" title="按 API 地址取可用模型（表命中不联网，表外才真探）"
-                  @click="fetchAvailable(p)">{{ busy[p.id] ? '获取中…' : '获取可用模型' }}</button>
+          <button class="pv-mini pv-get" :disabled="busy[p.id]"
+                  title="按这份接口的地址取可用模型（没保存的地址/密钥也能取；表命中不联网，表外才真探）"
+                  @click="fetchAvailable(p)">{{ busy[p.id] ? '获取中…' : '获取模型' }}</button>
         </div>
         <div v-if="note[p.id]" class="pv-note" :title="note[p.id]">{{ note[p.id] }}</div>
 
@@ -255,26 +268,20 @@ function setLevel(l, v) {
           </div>
 
           <div v-if="openModel[key(p.id, mi)]" class="pv-model-panel" :data-pv-model-panel="m.id">
-            <div class="pv-two">
-              <label class="pv-line">
-                <span class="pv-lbl">上下文窗口</span>
-                <input class="pv-input" type="number" min="0" :value="m.context_window ?? ''"
-                       placeholder="由能力表" @input="m.context_window = $event.target.value === '' ? null : Number($event.target.value)">
-              </label>
-              <label class="pv-line">
-                <span class="pv-lbl">最大输出</span>
-                <input class="pv-input" type="number" min="0" :value="m.max_output ?? ''"
-                       placeholder="由能力表" @input="m.max_output = $event.target.value === '' ? null : Number($event.target.value)">
-              </label>
-              <div class="pv-line">
-                <span class="pv-lbl">输入类型</span>
-                <label class="pv-chk"><input type="checkbox" :checked="inputOf(m).includes('text')"
-                       @change="toggleInput(m, 'text', $event.target.checked)"> 文字</label>
-                <label class="pv-chk"><input type="checkbox" :checked="inputOf(m).includes('image')"
-                       @change="toggleInput(m, 'image', $event.target.checked)"> 图片</label>
-                <span v-if="!m.input" class="pv-muted" title="没手填 = 由能力表/探针决定">未声明</span>
-              </div>
+            <div class="pv-line">
+              <span class="pv-lbl">输入类型</span>
+              <label class="pv-chk"><input type="checkbox" :checked="inputOf(m).includes('text')"
+                     @change="toggleInput(m, 'text', $event.target.checked)"> 文字</label>
+              <label class="pv-chk"><input type="checkbox" :checked="inputOf(m).includes('image')"
+                     @change="toggleInput(m, 'image', $event.target.checked)"> 图片</label>
+              <span v-if="!m.input" class="pv-muted" title="没存过 = 默认只吃文字（勾掉文字会显式存成「都不支持」）">默认只吃文字</span>
             </div>
+
+            <!-- 推理档位：只对**这份接口正在用的那个模型**显示（档位清单来自 caps.levels） -->
+            <LlmParamFields v-if="activeId === p.id && p.model && m.id === p.model"
+                            :caps="caps" :target="p.params" :fields="['reasoning']"
+                            :id-prefix="'llm-r-' + p.id" compact />
+            <div v-else class="pv-note">推理档位跟着「使用中」的模型走（上面圆点选一个，再切到这份接口）</div>
 
             <div class="pv-line">
               <label class="pv-chk"><input type="checkbox" :checked="m.reasoning === true"
@@ -305,6 +312,7 @@ function setLevel(l, v) {
           <button class="pv-mini" title="往模型目录里加一条（手填）" @click="addModel(p)">+ 添加模型</button>
           <span class="pv-spacer"></span>
           <span v-if="p.model" class="pv-muted" :title="'当前模型 id'">使用中：{{ p.model }}</span>
+        </div>
         </div>
       </div>
     </div>
@@ -358,8 +366,15 @@ select.pv-input { height:26px; padding:1px 4px; }
 .pv-toggle-inline { height:24px; padding:0 4px; font-size:11.5px; color:var(--ink-dim); }
 .pv-caret { font-size:10px; color:var(--ink-faint); }
 .pv-sub { display:flex; flex-direction:column; gap:0; }
-.pv-params { padding:2px 0 4px; min-width:0; }
-.pv-params-head { gap:8px; }
+/* 两块（接口 / 模型）：块之间一条细分隔线；行尾入口点哪块就给哪块一点底色提示 */
+.pv-block { min-width:0; padding:2px 4px 4px; border-radius:var(--r-sm); }
+.pv-block + .pv-block { margin-top:4px; border-top:1px dashed var(--line-soft); padding-top:6px; }
+.pv-block.is-focus { background:var(--bg-soft); }
+.pv-models { flex:none; height:22px; padding:0 6px; font-size:11px; border-radius:var(--r-sm);
+  border:1px solid var(--line); background:var(--card); color:var(--ink-dim); cursor:pointer; }
+.pv-models:hover { border-color:var(--main); color:var(--main); }
+.pv-get { max-width:96px; }
+.pv-test { flex:none; }
 .pv-well { gap:8px; }
 .pv-mini { flex:none; height:24px; padding:0 7px; font-size:11.5px; border-radius:var(--r-sm);
   border:1px solid var(--line); background:var(--card); color:var(--ink); cursor:pointer; }

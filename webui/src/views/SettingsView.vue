@@ -155,15 +155,13 @@
     <div class="section-title row spread">
       <span>LLM 配置 llm.toml</span>
       <span class="row">
-        <!-- 「编辑源文件」的入口在下面「高级」组里（同一个入口只留一处） -->
-        <button class="btn" @click="testLlm" title="用**已保存**的 llm.toml 发一次最小请求（草稿里的改动要先保存）">测试连接</button>
+        <!-- 「测试连接」已经挪到**每一份配置的行尾**（只测那一份）；这里不再有全局按钮 -->
         <button class="btn btn-primary" @click="saveLlm" :disabled="!loaded">
-          <Icon name="save" :size="13" /> {{ editLlmSource ? '保存源文件' : '保存 LLM' }}
+          <Icon name="save" :size="13" /> 保存 LLM
         </button>
       </span>
     </div>
     <div class="card">
-      <template v-if="!editLlmSource">
         <!-- ① 接口：填好 key → 取模型 → 选中（模型选择器见 components/llm/LlmModelPicker.vue） -->
         <div class="form-section">
           <div class="form-section-title">接口<span class="t-sub">{{ llmProviderMode
@@ -172,13 +170,7 @@
                ⚠️ **R4**：后端没回 providers ⇒ llmProviderMode=false ⇒ 走下面这个老的单配置表单 -->
           <LlmProviders v-if="llmProviderMode" :providers="form.llm.providers"
                         v-model:active-id="form.llm.active"
-                        :protocols="protocols" :protocols-source="protocolsSource"
-                        :caps="caps" :caps-error="capsError" :json-mode="jsonModeOn"
-                        :caps-text="capsText" :caps-title="capsTitle"
-                        :input-text="inputText" :input-image="inputImage" :input-declared="inputDeclared"
-                        @update:jsonMode="setJsonMode"
-                        @update:inputText="setInputKind('text', $event)"
-                        @update:inputImage="setInputKind('image', $event)" />
+                        :protocols="protocols" :protocols-source="protocolsSource" :caps="caps" />
           <div v-else class="form-grid">
             <div class="span-2">
               <label>base_url</label>
@@ -197,14 +189,14 @@
           </div>
         </div>
 
-        <!-- ② 生成：**能力驱动** —— 只画这个模型支持的旋钮（档位清单来自能力表，别在前端写死）。
-             ⚠️ 多 provider 模式下它**搬进 provider 展开面板的「参数」那一节**（整页只出现一处）；
-                没有 providers（R4）时留在这儿，改的仍是全局 [llm.params]。
-             并发数不在这里（它是进程级旋钮，见「高级」）。 -->
+        <!-- ② 生成（**只有 R4 单配置模式**）：能力驱动的两个旋钮 —— 输入类型 + 推理档位。
+             ⚠️ 温度 / 输出上限 / JSON 都挪去「按链路覆盖」的**全局默认**那一行（2026-10-20 用户口径：
+                它们不属于接口配置，属于请求参数）；provider 模式下这里整块不渲染。
+             并发数见「高级」（进程级旋钮）。 -->
         <div v-if="!llmProviderMode" class="form-section">
           <div class="form-section-title">生成<span class="t-sub caps-src" :title="capsTitle">{{ capsText }}</span></div>
           <LlmParamFields :caps="caps" :target="llmParamsTarget" id-prefix="llm-g"
-                          :json-mode="jsonModeOn" @update:jsonMode="setJsonMode"
+                          :fields="['input', 'reasoning']"
                           :input-text="inputText" :input-image="inputImage" :input-declared="inputDeclared"
                           @update:inputText="setInputKind('text', $event)"
                           @update:inputImage="setInputKind('image', $event)" />
@@ -217,6 +209,14 @@
         <div class="form-section">
           <div class="form-section-title">按链路覆盖<span class="t-sub">勾上才覆盖，不勾 = 跟随全局</span></div>
           <div class="llm-cols">
+            <!-- 全局默认（写 [llm.params]；provider 模式下 = 当前接口自己的 params）——
+                 温度 / 输出上限 / JSON 从接口面板挪到这里：它们是**请求参数**，不是接口字段 -->
+            <div class="llm-default-row">
+              <span class="ln-name">全局默认<span class="ln-hint">（{{ llmProviderMode ? '当前接口的参数' : '[llm.params]' }}）</span></span>
+              <LlmParamFields :caps="caps" :target="llmParamsTarget" id-prefix="llm-def"
+                              :fields="['temperature', 'max_tokens', 'json_mode']"
+                              :json-mode="jsonModeOn" @update:jsonMode="setJsonMode" compact />
+            </div>
             <div class="llm-link-row" v-for="l in llmLinks" :key="l.key">
               <label class="ln-name">
                 <input type="checkbox" v-model="form.llm.overrides[l.key].on">
@@ -233,28 +233,17 @@
           </div>
         </div>
 
-        <!-- ④ 高级：并发（进程级旋钮）· extra_params 逃逸口 · 源文件编辑 -->
+        <!-- ④ 高级：并发（进程级旋钮）· extra_params 逃逸口。⚠️「源文件」那块已删（用户：没必要有） -->
         <div class="form-section">
-          <div class="form-section-title">高级<span class="t-sub">并发 · 逃逸口 · 源文件</span></div>
+          <div class="form-section-title">高级<span class="t-sub">并发 · 逃逸口</span></div>
           <div class="form-grid">
             <SliderField v-model="form.llm.max_concurrent" class="span-2" label="并发请求数"
                          :min="1" :max="32" :step="1" hint="对所有 LLM 调用生效（进程级旋钮）" />
           </div>
-          <div class="llm-cols">
-            <div>
-              <label title="原样进请求体，覆盖上面所有同名参数；留空 = 不带额外参数">extra_params（JSON）</label>
-              <textarea v-model="form.llm.extra_params" class="mono llm-extra" spellcheck="false"
-                        rows="10" placeholder="留空 = 不带额外参数"></textarea>
-            </div>
-            <div>
-              <label>llm.toml 源文件</label>
-              <div class="muted small mb-8" title="表单没暴露的键（含注释）都在源文件里改；保存 = 整份原文覆盖">
-                表单之外的键与注释在这里改
-              </div>
-              <button class="btn" @click="toggleLlmSource">
-                <Icon name="edit" :size="13" /> 编辑源文件
-              </button>
-            </div>
+          <div>
+            <label title="原样进请求体，覆盖上面所有同名参数；留空 = 不带额外参数">extra_params（JSON）</label>
+            <textarea v-model="form.llm.extra_params" class="mono llm-extra" spellcheck="false"
+                      rows="10" placeholder="留空 = 不带额外参数"></textarea>
           </div>
         </div>
 
@@ -302,17 +291,6 @@
           </details>
         </div>
 
-        <div class="muted small mt-8">{{ llmResult }}</div>
-      </template>
-      <template v-else>
-        <div class="row spread mb-8">
-          <div class="muted small" title="保存后立即生效；「返回表单」会放弃未保存的修改；api_key 留空 = 不修改">
-            直接编辑 llm.toml 原文
-          </div>
-          <button class="btn" @click="toggleLlmSource">返回表单</button>
-        </div>
-        <textarea v-model="llmRaw" rows="24" class="mono source-editor"></textarea>
-      </template>
     </div>
     </template>
 
@@ -368,7 +346,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { api } from '../api/client'
-import { fetchCatalog, fetchProtocols, saveLlm as putLlm, saveLlmRaw as putLlmRaw, testConnection } from '../api/llm'
+import { fetchCatalog, fetchProtocols, saveLlm as putLlm } from '../api/llm'
 import { BUILTIN_PROTOCOLS } from '../components/llm/protocols.js'
 import { normalizeParams } from '../components/llm/params.js'
 import { CAPS_SOURCE_ZH, DEFAULT_INPUT, inputToArray, mergeCaps, normalizeCaps, normalizeLevel } from '../components/llm/caps.js'
@@ -396,9 +374,7 @@ const props = defineProps({
 const active = computed(() => settingsSection(props.section))
 
 const globalRaw = ref('')
-const llmRaw = ref('')
 const configError = ref('')
-const llmResult = ref('')
 /** 模型能力（caps）：`GET /api/config/llm/catalog`（内置目录）+ 探针带回的那份**覆盖**它；null = 未知。 */
 const caps = ref(null)
 const capsSource = ref('')
@@ -431,7 +407,6 @@ const visibleSections = computed(() =>
   SETTINGS_SECTIONS.filter((s) => !(s.localHidden && localNoAuth.value))
 )
 const editSource = ref(false)
-const editLlmSource = ref(false)
 // 只有成功读到 /api/config 才允许保存：否则表单里的内建默认值会覆盖真实配置
 const loaded = ref(false)
 
@@ -780,13 +755,25 @@ function buildOverrides(f) {
   return out
 }
 
-/** provider 的参数面（与 `[llm.params]` 同一套字段；**类型归一**后再出 patch） */
-function buildProviderParams(v) {
-  const x = v || {}
-  const out = normalizeParams(x)
-  // 「要求 JSON 输出」的**取消** = 删键（null），不是写 false —— false 会覆盖源文件里手写的那份
-  out.json_mode = x.json_mode === true ? true : null
+/**
+ * 参数面**只发改过的键**（2026-10-20 硬约束）：没改的键不发 ⇒ 后端深合并保留原值。
+ * 温度 / 输出上限在 interface 面板里已不可见，若每次都发，一改名字就会把它们写回默认值。
+ * ⚠️ json_mode 的 true→false 发 `null`（= 删键），不是写 false（false 会覆盖源文件里手写的那份）。
+ */
+function changedParams(v, orig) {
+  const o = orig || {}
+  const now = normalizeParams(v)
+  const out = {}
+  if (now.temperature !== undefined && now.temperature !== o.temperature) out.temperature = now.temperature
+  if (now.max_tokens !== undefined && now.max_tokens !== o.max_tokens) out.max_tokens = now.max_tokens
+  if (now.reasoning !== undefined && now.reasoning !== o.reasoning) out.reasoning = now.reasoning
+  if (typeof now.json_mode === 'boolean' && now.json_mode !== o.json_mode) out.json_mode = now.json_mode ? true : null
   return out
+}
+
+/** provider 的参数面（与 `[llm.params]` 同一套字段；**类型归一 + 只发改过的键**） */
+function buildProviderParams(p) {
+  return changedParams(p && p.params, p && p.paramsOrig)
 }
 
 /**
@@ -842,13 +829,9 @@ function buildLlmPatch() {
     base_url: f.base_url || '',
     model: f.model || '',
     max_concurrent: Math.max(1, Math.round(Number(f.max_concurrent) || 3)),
-    // ⚠️ **请求参数面写 [llm.params]**（v2）：这三个键不再是 [llm] 的一等公民键。
-    // 值一律过**类型归一**（空串/NaN/认不出的档位 ⇒ 不写这个值，后端保留原值）。
-    // 推理档位"不表态"= **发 null 删键**；不要求 JSON 也发 null（老位置 extra_params.response_format 由 setJsonMode 同步）
-    params: {
-      ...normalizeParams(p),
-      json_mode: p.json_mode === true ? true : null
-    }
+    // ⚠️ **请求参数面写 [llm.params]**（v2）：只发**改过的键**（见 changedParams）——
+    // 没改的不发 = 后端保留原值；类型不对/空串在 changedParams 里已经被归一掉了。
+    params: changedParams(p, f.paramsOrig)
   };
   // **能力面**（[llm.models."<id>"]）：只发**有内容的行**；四项都空的那行整条删掉（别在文件里留空表）
   const models = {}
@@ -895,7 +878,6 @@ async function loadConfig() {
   try {
     const d = await api('/api/config')
     globalRaw.value = d.global_raw || ''
-    llmRaw.value = d.llm_raw || ''
     // config 解析失败时后端会给出原因，必须显式提示，否则表单只是静默显示默认值
     configError.value = d.config_error || ''
     // 留空「参考标题」时**实际会用**的那几条（服务端给，别在前端再抄一份字面量）。
@@ -979,6 +961,13 @@ async function loadConfig() {
         reasoning: normalizeLevel(p.reasoning),
         json_mode: p.json_mode === true
       },
+      // 保存时只发**和这里不一样**的键（没改的不发 ⇒ 后端保留原值）
+      paramsOrig: {
+        temperature: gTemp,
+        max_tokens: gMax,
+        reasoning: normalizeLevel(p.reasoning),
+        json_mode: p.json_mode === true
+      },
       // 能力面：整份带过来（只编辑当前模型那一行，其余原样回写）
       // `input` 用 **null** 表示"没手填"（`[]` 是"手填成都不勾"，两者不能混）
       models: Object.fromEntries(
@@ -1006,6 +995,12 @@ async function loadConfig() {
             builtin: pr.builtin === true,
             model: pr.model || '',
             params: {
+              temperature: pr.params?.temperature ?? 0.3,
+              max_tokens: pr.params?.max_tokens ?? 65536,
+              reasoning: normalizeLevel(pr.params?.reasoning),
+              json_mode: pr.params?.json_mode === true
+            },
+            paramsOrig: {
               temperature: pr.params?.temperature ?? 0.3,
               max_tokens: pr.params?.max_tokens ?? 65536,
               reasoning: normalizeLevel(pr.params?.reasoning),
@@ -1042,15 +1037,6 @@ async function toggleSource() {
   }
 }
 
-async function toggleLlmSource() {
-  if (!editLlmSource.value) {
-    await loadConfig()
-    editLlmSource.value = true
-  } else {
-    editLlmSource.value = false
-  }
-}
-
 /** 文本框（每行一条）→ `form.detection.reference_titles`。
  *  ⚠️ **两页共用一个函数**（程序配置页的保存 + LLM 页的保存都要它）：
  *  抄两份必然漂移，而漂移的表现是"在某一页改的没生效"。 */
@@ -1080,31 +1066,15 @@ async function saveGlobal() {
 async function saveLlm() {
   if (!loaded.value) { toast('配置未加载成功，已禁止保存', 'err'); return }
   try {
-    if (editLlmSource.value) {
-      await putLlmRaw(llmRaw.value)
-      toast('llm.toml 已保存')
-    } else {
-      await putLlm(buildLlmPatch())
-      // ⚠️ **提示词那一组写的是 config.toml 的 [detection]**，不是 llm.toml ——
-      //    它只是**摆在**这一页（用户要求），归属没变。所以这一页的保存必须**两个文件都存**，
-      //    否则用户在这里改了参考标题、点「保存」看着成功、实际一个字节都没落盘。
-      syncReferenceTitlesFromText()
-      await api('/api/config/global', { method: 'PUT', body: JSON.stringify({ patch: buildGlobalPatch() }) })
-      toast('LLM 配置已保存')
-    }
+    await putLlm(buildLlmPatch())
+    // ⚠️ **提示词那一组写的是 config.toml 的 [detection]**，不是 llm.toml ——
+    //    它只是**摆在**这一页（用户要求），归属没变。所以这一页的保存必须**两个文件都存**，
+    //    否则用户在这里改了参考标题、点「保存」看着成功、实际一个字节都没落盘。
+    syncReferenceTitlesFromText()
+    await api('/api/config/global', { method: 'PUT', body: JSON.stringify({ patch: buildGlobalPatch() }) })
+    toast('LLM 配置已保存')
     await loadConfig()
-    editLlmSource.value = false
   } catch (e) { toast(e.message, 'err') }
-}
-
-async function testLlm() {
-  llmResult.value = '测试中…'
-  try {
-    const r = await testConnection()
-    llmResult.value = '连接成功 ' + r.latency_ms + 'ms'
-  } catch (e) {
-    llmResult.value = e.message
-  }
 }
 
 onMounted(async () => {
@@ -1135,6 +1105,11 @@ textarea.llm-extra { min-height:230px; resize:vertical; font-size:12px; line-hei
    ⚠️ **半宽列里的控件必须跨满整行**：并排的实测结果是滑条被压到 **59px**（1280px 下只剩 41px），
    刻度根本看不见。下面这条 `:deep(.slf)` 是判据钉着的不变式
    （webui/scripts/check-layout-invariants.mjs ①②，都带变异自证）—— 动它之前先读那个脚本。 */
+.llm-cols .llm-default-row {
+  grid-column:1 / -1;
+  display:grid; grid-template-columns:minmax(0,1fr); gap:2px 10px; align-items:center;
+  padding-bottom:6px; margin-bottom:2px; border-bottom:1px dashed var(--line-soft);
+}
 .llm-cols .llm-link-row {
   display:grid; grid-template-columns:minmax(0,1fr) max-content;
   gap:2px 10px; align-items:center;
