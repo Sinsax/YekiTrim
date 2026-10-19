@@ -9,14 +9,16 @@
 //      也是"不认识的老网关不许被猜成支持图片"那条保守口径）；`declared:false` = 服务端**没说**。
 //    · 未知档位 / 未知 wire **原样留着**（不丢、也不猜）。
 //
-// ⚠️ **档位顺序按规格排**（off→minimal→low→medium→high→xhigh），认不出的档位按服务端给的原序追加；
+// ⚠️ **档位顺序按规格排**（off→minimal→low→medium→high→xhigh→**max**），认不出的档位按服务端给的原序追加；
 //    **只排不改集合** —— 「档位下拉的选项数 == levels 的条数」仍是判据。
+// ⚠️ **下拉选项完全由能力面派生**：`levels` 的键就是全部候选，`can_disable:false` / `only_reasoning:true`
+//    时把 `off` 摘掉（关不掉就别摆）；**`can_disable` 缺失/null = 未声明 ⇒ 按老行为**（R4）。
 
 /** 档位的显示名（认不出的档位原样显示 key，不丢也不猜）。 */
-export const LEVEL_ZH = { off: '关思考', minimal: '最小', low: '低', medium: '中', high: '高', xhigh: '极高' }
+export const LEVEL_ZH = { off: '关思考', minimal: '最小', low: '低', medium: '中', high: '高', xhigh: '极高', max: '最高' }
 
-/** 规格里的显示顺序（**只排序**：不补齐、不裁剪）。 */
-const LEVEL_ORDER = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh']
+/** 规格里的显示顺序（**只排序**：不补齐、不裁剪）。`max` 是那家自描述网关在用的档（2026-10-19 实测）。 */
+const LEVEL_ORDER = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
 
 /** 输入模态的显示名。 */
 export const INPUT_ZH = { text: '文字', image: '图片' }
@@ -32,7 +34,9 @@ const LEVEL_ALIAS = {
   enabled: 'high', on: 'high', true: 'high', yes: 'high',
   disabled: 'off', none: 'off', false: 'off', no: 'off',
   minimal: 'minimal', low: 'low', medium: 'medium', mid: 'medium',
-  high: 'high', xhigh: 'xhigh', max: 'xhigh'
+  high: 'high', xhigh: 'xhigh'
+  // ⚠️ 别再把 `max` 折成 `xhigh`：它现在是**独立档**（那家网关的清单里就有）。
+  //    折了 = 界面显示 xhigh、文件里写的是 max，用户看到与生效值不一致。
 }
 
 /** 归一一个档位值（'' / null / undefined → ''）。认不出的值原样返回（不静默改写用户手改的东西）。 */
@@ -109,7 +113,19 @@ export function normalizeCaps(raw) {
 
   const hit = (typeof c.hit === 'boolean') ? c.hit : ((typeof raw.hit === 'boolean') ? raw.hit : null)
 
+  // **关得掉吗**：契约叫 `can_disable`，那家网关自己的字段叫 `can_disable_thinking`（两种都认）。
+  // ⚠️ **null = 未声明 ⇒ 按老行为**（表里有没有 off 就照画）—— R4：不能因为缺字段就把"关闭"拿掉。
+  const canDisable = (typeof c.can_disable === 'boolean') ? c.can_disable
+    : ((typeof c.can_disable_thinking === 'boolean') ? c.can_disable_thinking : null)
+  // **只会推理**（没有"不思考"这一档）。缺 = null = 未声明。
+  const onlyReasoning = (typeof c.only_reasoning === 'boolean') ? c.only_reasoning : null
+  // 服务端声明的**默认档**：只用来把"跟随默认"的落点写清楚，**不拿它改用户的值**。
+  const defaultLevel = normalizeLevel(c.default_level ?? c.reasoning_default_effort ?? '')
+
   return {
+    canDisable,
+    onlyReasoning,
+    defaultLevel,
     levels: orderLevels(keys),
     temperature,
     jsonMode,
@@ -122,6 +138,29 @@ export function normalizeCaps(raw) {
   }
 }
 
+/** 这个模型**关不掉**思考吗（`only_reasoning` 或 `can_disable:false`）。
+ *  ⚠️ `can_disable === null` / 缺字段 = **未声明 ⇒ 按老行为**（R4）：不算关不掉，照画表里的 off。 */
+export function disableBlocked(caps) {
+  if (!caps) return false
+  return caps.onlyReasoning === true || caps.canDisable === false
+}
+
+/** 下拉该画哪些档位：**就是能力面给的那份清单**，只把"关不掉"时的 `off` 摘掉。
+ *  ⚠️ 不补齐、不裁剪别的档 —— 「选项数 == levels 条数」仍是判据（关得掉时逐项相等）。 */
+export function visibleLevels(caps) {
+  if (!caps) return []
+  const levels = Array.isArray(caps.levels) ? caps.levels : []
+  return disableBlocked(caps) ? levels.filter((l) => l !== 'off') : levels
+}
+
+/** 「关不掉」那句灰字的正文（空串 = 不显示）。 */
+export function disableReason(caps) {
+  if (!caps) return ''
+  if (caps.onlyReasoning === true) return '该模型只会推理，关不掉'
+  if (caps.canDisable === false) return '能力说关不掉思考（未列 off）'
+  return ''
+}
+
 /**
  * 用 `over` 里**声明过**的字段覆盖 `base`（探针真拿到的能力覆盖内置表）。
  *
@@ -132,6 +171,10 @@ export function mergeCaps(base, over) {
   if (!base) return over || null
   if (!over) return base
   return {
+    // 三个新信号各自"声明过才覆盖"：null / 空串 都算没声明（与 levels 同一条纪律）
+    canDisable: over.canDisable != null ? over.canDisable : base.canDisable,
+    onlyReasoning: over.onlyReasoning != null ? over.onlyReasoning : base.onlyReasoning,
+    defaultLevel: over.defaultLevel || base.defaultLevel,
     levels: over.levels.length ? over.levels : base.levels,
     temperature: over.temperature !== 'unknown' ? over.temperature : base.temperature,
     jsonMode: over.jsonMode != null ? over.jsonMode : base.jsonMode,

@@ -5,9 +5,11 @@
 // 本组件**不联网、不自己推能力**。
 //
 // 三条纪律（每条都对着一个真踩过的坑）：
-//  ① **档位清单只来自 caps.levels**（就是那个对象的键，顺序也原样用）—— 写死一份 off/low/high
-//     正是这轮要消灭的东西；「跟随默认」用**勾选框**表达，不占一个 option（否则下拉里就混进了
-//     不是档位的东西，且"选项数 == levels 条数"这条判据会失真）。
+//  ① **档位清单只来自 caps.levels**（就是那个对象的键）—— 写死一份 off/low/high 正是这轮要消灭的东西；
+//     「跟随默认」用**勾选框**表达，不占一个 option（否则下拉里就混进了不是档位的东西，
+//     且"选项数 == levels 条数"这条判据会失真）。
+//     ⚠️ **关不掉就别摆**：`can_disable:false` / `only_reasoning:true` ⇒ 摘掉 off 并写一句灰字原因；
+//        这两个字段**缺失/null = 未声明 ⇒ 按老行为**（R4，表里有没有 off 就照画）。
 //  ② caps.temperature === 'unsupported' ⇒ 温度滑块**禁用 + 行内写明原因**（只挂 title = 用户拖不动只能猜）。
 //  ③ 能力**未知**（null / hit:false）⇒ 只画通用控件，并写明"能力未知 / 未收录"；绝不猜一份档位出来。
 //  ④ **生成能力（输入模态）是勾选框**：勾选状态由父层给（它要写进 [llm.models."<id>"].input），
@@ -18,7 +20,7 @@
 //    不替换它 —— 所以父层不用写一串 update: 事件（设置页 16 处数值项也是这个绑法）。
 import { computed } from 'vue'
 import SliderField from '../SliderField.vue'
-import { INPUT_ZH, LEVEL_ZH } from './caps.js'
+import { INPUT_ZH, LEVEL_ZH, disableBlocked, disableReason, visibleLevels } from './caps.js'
 
 const props = defineProps({
   /** 归一化后的能力（caps.js::normalizeCaps）；null = 未知 */
@@ -41,8 +43,12 @@ const emit = defineEmits(['update:jsonMode', 'update:inputText', 'update:inputIm
 
 const show = (f) => props.fields.includes(f)
 
-/** 档位清单：**服务端给的键，原样不排序、不补齐** */
-const levels = computed(() => (props.caps && Array.isArray(props.caps.levels)) ? props.caps.levels : [])
+/** 档位清单：**服务端给的键**（caps.js 已按规格排好序），关不掉时摘掉 off；不补齐、不裁剪别的档 */
+const levels = computed(() => visibleLevels(props.caps))
+/** 服务端声明的默认档（「跟随默认」的落点）—— 只用于显示，不改用户的值 */
+const defaultLevel = computed(() => (props.caps && props.caps.defaultLevel) || '')
+/** 关不掉的原因（空串 = 不显示那行灰字） */
+const capsDisableNote = computed(() => disableReason(props.caps))
 const tempUnsupported = computed(() => !!props.caps && props.caps.temperature === 'unsupported')
 const jsonUnsupported = computed(() => !!props.caps && props.caps.jsonMode === false)
 /** 输出上限的能力值只做**滑块的 max**（它不是每请求默认值）；未知就沿用老界面的 65536 */
@@ -59,15 +65,22 @@ const maxOutHint = computed(() => {
 const capsUnlisted = computed(() => !!props.caps && props.caps.hit === false)
 
 const cur = computed(() => String(props.target.reasoning ?? ''))
-/** 指定了档位（写这个键）还是跟随默认（删这个键） */
-const hasLevel = computed(() => !!cur.value)
-/** 手改出来的、这个模型没有的档位：照实显示（补一条），不静默改写 */
+/** 文件里写的是 off，但这个模型关不掉（灰字里照实说，别把 off 塞回下拉） */
+const offBlocked = computed(() => disableBlocked(props.caps) && cur.value === 'off')
+/** 指定了档位（写这个键）还是跟随默认（删这个键）。关不掉的 off 不算"选中了某一档"。 */
+const hasLevel = computed(() => !!cur.value && !offBlocked.value)
+/** 手改出来的、这个模型没有的档位：照实显示（补一条），不静默改写（关不掉的 off 除外） */
 const strayLevel = computed(() => (hasLevel.value && !levels.value.includes(cur.value)) ? cur.value : '')
 
 const thinkingTitle = computed(() => {
   if (props.caps == null) return '还没拿到这个模型的能力（先「获取模型」或填好 base_url + model）'
   if (!levels.value.length) return '能力表里这个模型没有推理档位，所以没有这个控件'
-  return '档位清单来自模型能力表；勾「跟随默认」= 不写 [llm.params] reasoning 这个键（由链路默认 / extra_params 决定）'
+  const bits = ['档位清单来自能力面（内置目录 / 联网探测 / 手填）']
+  bits.push(defaultLevel.value
+    ? '勾「跟随默认」= 不写 [llm.params] reasoning 这个键，落点是服务端声明的默认档 ' + defaultLevel.value
+    : '勾「跟随默认」= 不写 [llm.params] reasoning 这个键（由链路默认 / extra_params 决定）')
+  if (capsDisableNote.value) bits.push(capsDisableNote.value)
+  return bits.join('；')
 })
 const thinkNote = computed(() => {
   if (props.caps == null) return '能力未知，未列推理档位'
@@ -108,12 +121,13 @@ function toggleInherit(inherit) {
       图片输入未声明（可勾上覆盖）
     </div>
 
-    <!-- 推理档位：清单 = caps.levels 的键（数据驱动）；「跟随默认」用勾选框（= 删键） -->
+    <!-- 推理档位：选项**完全由能力面派生**（caps.levels 的键；关不掉时已摘掉 off）；
+         「跟随默认」用勾选框（= 删键），并在 label 里写清落点是哪一档 -->
     <div v-if="show('reasoning') && levels.length" class="lpf-line">
       <span class="lpf-name">推理档位</span>
       <label class="lpf-inherit" :title="thinkingTitle">
         <input type="checkbox" :checked="!hasLevel" @change="toggleInherit($event.target.checked)">
-        <span>跟随默认</span>
+        <span>跟随默认{{ defaultLevel ? '（' + defaultLevel + '）' : '' }}</span>
       </label>
       <select v-if="hasLevel" :id="idPrefix + '-reasoning'" v-model="target.reasoning"
               class="lpf-sel" :title="thinkingTitle" aria-label="推理档位">
@@ -123,6 +137,15 @@ function toggleInherit(inherit) {
       <span v-else class="muted small lpf-note">用链路默认</span>
     </div>
     <div v-else-if="show('reasoning')" class="muted small lpf-note" :title="thinkingTitle">{{ thinkNote }}</div>
+    <!-- 关不掉：能力面说了算 —— 不摆"关闭"那一档，灰字写清原因（别让用户以为界面漏了） -->
+    <div v-if="show('reasoning') && capsDisableNote" class="muted small lpf-note" :title="thinkingTitle">
+      {{ capsDisableNote }}
+    </div>
+    <!-- 文件里那份是 off、但这模型关不掉：照实说，别静默改用户的值 -->
+    <div v-if="show('reasoning') && offBlocked" class="muted small lpf-note"
+         title="配置里写的是 off；这个模型的能力面说关不掉思考 ⇒ 保存后按默认档发，建议改选一档">
+      当前写的是 off，该模型关不掉
+    </div>
 
     <!-- 温度：不支持就**禁用 + 行内原因**（不是只挂 title） -->
     <SliderField v-if="show('temperature')" v-model="target.temperature" label="温度"
