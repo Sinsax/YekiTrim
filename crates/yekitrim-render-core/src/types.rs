@@ -134,7 +134,8 @@ pub enum Event {
         /// 结束秒。普通景别 = 推移到位窗口的终点；`远`（画中画）= 待在画面上的终点。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         end: Option<f64>,
-        /// "远"(画中画) | "中" | "近"。缺省中景——只写 `anchor` 的事件也应当能解析。
+        /// "远"(画中画 0.55) | "全"(原画 1.0，**缺省**) | "中"(1.3) | "近"(1.5) | "特写"(2.0)。
+        /// 缺省是「全」——只写 `anchor` 的事件也应当能解析（2026-10-20 用户口径）。
         #[serde(default = "default_camera_zoom")]
         zoom: String,
         /// 聚焦中心的字面坐标 "x% y%"。由 `anchor` 解析回填，也可直接手写。
@@ -527,9 +528,13 @@ pub(crate) fn is_false(v: &bool) -> bool {
     !*v
 }
 
-/// 运镜缺省档位：中景（与 `CameraStyle::factor` 认不出档位时的行为一致）。
+/// 运镜缺省档位：**全（原画不缩放，1.0）**。
+///
+/// 2026-10-20 用户口径：「增加一个默认 1.0 作为默认景别」 ⇒ 缺省从「中」(1.3) 改成「全」(1.0)。
+/// ⚠️ **认不出的档位仍按中景处理**（`CameraStyle::factor` 的 `_` 分支），两者不再一致 ——
+/// 这是刻意的：写错档位不该静默变成"原画"，而**没写**档位就是用户要的"全"。
 fn default_camera_zoom() -> String {
-    "中".to_string()
+    "全".to_string()
 }
 
 impl Event {
@@ -854,9 +859,16 @@ pub struct CameraStyle {
     /// 近景特写缩放 (camera zoom="近")
     #[serde(default = "default_zoom_close")]
     pub zoom_close: f64,
+    /// **全**（原画不缩放）= `camera zoom="全"`，**缺省档位**（2026-10-20 用户口径）。
+    ///
+    /// 1.0 = 不做任何缩放：与"没有运镜"在画面上等价，但它是**显式的一档**（能写进文件、
+    /// 能在编辑器里选、能参与过渡）。新增它没有动任何既有档位的值 ⇒ 存量工程零影响。
+    #[serde(default = "default_zoom_full")]
+    pub zoom_full: f64,
     /// **特写**缩放（`camera zoom="特写"`，规格 `camera-and-noise-spec.md` §3.3 方案 A）。
     ///
-    /// 用户拍板 **1.8**（2026-10-11）。`近`(1.5) 保持不变 ⇒ 存量工程零影响。
+    /// 用户拍板 **2.0**（2026-10-20，由 1.8 上调：「改成 2.0 倍率」）。`近`(1.5) 保持不变
+    /// ⇒ 存量工程里显式写过的档位零影响（只有"从没写过运镜"的段会跟着缺省档位走）。
     ///
     /// ⚠️ **露边余量比 `近` 大得多**：单侧可平移 `(1.8−1)×1920/2 = 768px`
     /// （`近` 是 480px、`中` 是 288px）。参考基准是那次 `scale=1.3` 的 622px 实测。
@@ -879,11 +891,15 @@ impl CameraStyle {
     ///
     /// 四个渲染/求值路径（render-core、模板 canvas、模板 GSAP、engine.js）都必须走同一张表，
     /// 否则「预览看到的不是成片」——1.5/1.8 的硬编码就是这么来的。
+    ///
+    /// 五档（2026-10-20）：`远`(0.55) / **`全`(1.0，缺省)** / `中`(1.3) / `近`(1.5) / `特写`(2.0)。
+    /// **认不出的档位仍按中景**（历史行为，别改成"全"：写错不该静默变原画）。
     pub fn factor(&self, label: &str) -> f64 {
         match label.trim() {
             "特写" => self.zoom_closeup,
             "近" => self.zoom_close,
             "远" => self.zoom_wide,
+            "全" => self.zoom_full,
             _ => self.zoom_mid,
         }
     }
@@ -892,6 +908,7 @@ impl CameraStyle {
 impl Default for CameraStyle {
     fn default() -> Self {
         Self {
+            zoom_full: default_zoom_full(),
             zoom_mid: default_zoom_mid(),
             zoom_closeup: default_zoom_closeup(),
             zoom_close: default_zoom_close(),
@@ -939,6 +956,35 @@ impl HandheldSway {
 /// ⚠️ 改这里的常数必须同步 `templates/index.html::handheldSway` 与
 /// `webui/src/polish/engine.js::handheldSway`（后者由 `webui/scripts/check-handheld.mjs` 对拍，
 /// Rust↔JS 由 `timeline.rs` 的 `handheld_sway_matches_js_reference` 钉住）。
+#[cfg(test)]
+mod camera_zoom_tests {
+    use super::*;
+
+    /// **五档表**（2026-10-20 用户口径：「特写 2.0」「增加一个默认 1.0 作为默认景别」）。
+    ///
+    /// 变异自证：把 factor 里那行「全」删掉 ⇒ 本条红（会落到兜底的中景 1.3）。
+    #[test]
+    fn factor_covers_all_five_tiers() {
+        let cam = CameraStyle::default();
+        assert!((cam.factor("远") - 0.55).abs() < 1e-9);
+        assert!((cam.factor("全") - 1.0).abs() < 1e-9, "全新档 = 原画不缩放");
+        assert!((cam.factor("中") - 1.3).abs() < 1e-9);
+        assert!((cam.factor("近") - 1.5).abs() < 1e-9);
+        assert!((cam.factor("特写") - 2.0).abs() < 1e-9, "特写 1.8 → 2.0（用户拍板）");
+        // 认不出的档位仍按中景（写错不该静默变成原画）
+        assert!((cam.factor("瞎写") - 1.3).abs() < 1e-9);
+        assert!((cam.factor("  近 ") - 1.5).abs() < 1e-9, "两侧空白要吃掉");
+    }
+
+    /// **缺省景别 = 全（1.0）**：模型漏写 zoom 时落到这一档。
+    ///
+    /// 变异自证：把 default_camera_zoom 改回「中」 ⇒ 本条红。
+    #[test]
+    fn default_camera_zoom_is_full() {
+        assert_eq!(default_camera_zoom(), "全");
+        assert!((CameraStyle::default().factor(&default_camera_zoom()) - 1.0).abs() < 1e-9);
+    }
+}
 pub fn handheld_sway(t: f64, amp: f64) -> HandheldSway {
     if amp <= 0.0 {
         return HandheldSway::OFF;
@@ -958,19 +1004,23 @@ pub fn handheld_sway(t: f64, amp: f64) -> HandheldSway {
 /// （`overflow:hidden` 裁掉多出来的部分），画面上不可能出现背景色/背景层；只有画中画
 /// （`zoom_wide < 1`）才刻意留黑边。所以这两个值不存在「推得太近会出框」的问题，只有
 /// 「推得够不够近」的观感问题——调大是安全的。
+/// 全（原画不缩放）：**缺省档位**（2026-10-20 用户口径「增加一个默认 1.0 作为默认景别」）。
+fn default_zoom_full() -> f64 {
+    1.0
+}
 fn default_zoom_mid() -> f64 {
     1.3
 }
 fn default_zoom_close() -> f64 {
     1.5
 }
-/// 特写倍率（用户拍板 1.8，规格 §3.3 方案 A）。
+/// 特写倍率（**2.0**，2026-10-20 用户口径「改成 2.0 倍率」；此前是 1.8）。
 ///
-/// ⚠️ 这个值与 `近`(1.5) 一起决定了"两档之间看得出区别"：
-/// 1.35× 的差距（1.8/1.5）在画面上是明显的一档，而 2.0/1.5=1.33×
-/// 与它几乎一样 —— 所以取 2.0 的收益很小、露边代价却更大（960px vs 768px）。
+/// 历史注记（保留，免得再被问一遍）：1.8 时与 `近`(1.5) 的差距是 1.35×，2.0 是 1.33×，
+/// 观感上几乎一样，而单侧可平移量从 768px 涨到 960px（画面更满）。用户在此基础上仍然要 2.0
+/// —— **以用户口径为准**，别再按旧注记改回去。
 fn default_zoom_closeup() -> f64 {
-    1.8
+    2.0
 }
 /// 画中画倍率：0.55 = 画面缩到 55%，四周黑边各 `(1-0.55)/2×1920 = 432px`
 /// （0.7 时是 288px）。旧工程里的 0.7 由 `cmd_process` 的迁移改成新默认。

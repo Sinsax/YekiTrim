@@ -4937,7 +4937,9 @@ function checkMappings(mod) {
   eq(mod.zoomFactor('近', undefined), 1.5, 'zoom="近" 默认 1.5');
   // §18-A：**第四档**。少了这条，把 特写 退回 1.5 的变异不会被打红
   // （加完那处变异才发现这里没有对应断言 —— 变异台先于断言存在，正是它该抓的）。
-  eq(mod.zoomFactor('特写', undefined), 1.8, 'zoom="特写" 默认 1.8（§18-A 的第四档）');
+  // 2026-10-20：特写 1.8 → **2.0**，并新增第五档「全」= 1.0（成为缺省景别）。
+  eq(mod.zoomFactor('特写', undefined), 2.0, 'zoom="特写" 默认 2.0（§18-A 第四档，2026-10-20 调大）');
+  eq(mod.zoomFactor('全', undefined), 1.0, 'zoom="全" 默认 1.0（原画不缩放，第五档 / 缺省景别）');
   eq(mod.zoomFactor('特写', { zoom_closeup: 2.2 }), 2.2, '特写配了就用配置的值');
   eq(mod.zoomFactor('中', undefined), 1.3, 'zoom="中" 默认 1.3');
   eq(mod.zoomFactor('认不出的档位', undefined), 1.3, '认不出的档位按**中景**（模板 else 分支）');

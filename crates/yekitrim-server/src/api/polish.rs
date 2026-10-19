@@ -2051,6 +2051,8 @@ pub(super) fn polish_project_put_locked(dir: &Path, body: &serde_json::Value) ->
             // 这里、`webui/src/views/PolishView.vue` 的滑杆、以及门禁的期望表。
             ("zoom_closeup", &mut cam.zoom_closeup, 1.0, 3.0),
             ("zoom_close", &mut cam.zoom_close, 1.0, 3.0),
+            // 「全」（原画不缩放，缺省档，2026-10-20）：与中/近同区间（< 1 会缩出黑边 = 画中画语义）。
+            ("zoom_full", &mut cam.zoom_full, 1.0, 3.0),
             ("zoom_wide", &mut cam.zoom_wide, 0.05, 1.0),
         ] {
             if !value.is_finite() {

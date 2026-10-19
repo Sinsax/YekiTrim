@@ -61,14 +61,28 @@ pub fn normalize_event_ends(segments: &mut [Segment]) {
     }
 }
 
-/// 画中画（`zoom = "远"`）在**整片**里最多几条（用户要求：一个切片只能有一次）。
-pub const MAX_PIP_SHOTS: usize = 1;
+/// 画中画（`zoom = "远"`）在**整片**里最多几条（2026-10-20 运镜导演化 §三⑧：1 → 每段 1 条 / 全片 ≤3）。
+pub const MAX_PIP_SHOTS_TOTAL: usize = 3;
 
-/// 画中画降频守卫（用户要求：一个切片只能有一次）。
+/// 画中画在**同一段**里最多几条（段内互斥：同段两条仍降级）。
+pub const MAX_PIP_SHOTS_PER_SEGMENT: usize = 1;
+
+/// 旧的"整片只有一次"配额。**保留作兼容常量**（老判据/文档还在引用它）：
+/// 现在它只表示"一个**段**里的上限"，与 [`MAX_PIP_SHOTS_PER_SEGMENT`] 同值。
+pub const MAX_PIP_SHOTS: usize = MAX_PIP_SHOTS_PER_SEGMENT;
+
+/// 画中画降频守卫（**每段 1 条 / 全片 ≤3**，2026-10-20 运镜导演化 §三⑧）。
 ///
-/// **LLM 是按段窗口生成的，数不出"整片几次"**，所以配额只能在这里兜：按时间序遍历所有运镜事件，
-/// 只保留**最早的一条**「远」，其余降级成「中」（只改 zoom，anchor/origin 原样留着）。
-/// 上一版还有"不能连续 / 间隔 ≥60s"两条规则 —— 配额收到 1 之后被完全包含，删掉了。
+/// # 为什么从"整片只有一次"放宽
+///
+/// 旧配额（整片 1 条）的本意是"画中画是罕见的戏剧手段"，但它同时把「同一段里有两处同屏信息源
+/// （对比/揭穿）」也一起禁掉了 —— 而那正是画中画**最合适**的用法。新口径：**段内互斥、全片限量**。
+///
+/// * 段内：同一段最多 [`MAX_PIP_SHOTS_PER_SEGMENT`] 条（同段两条仍**降级**，保住互斥）；
+/// * 全片：最多 [`MAX_PIP_SHOTS_TOTAL`] 条（按**时间序**取最早的，超出降级）。
+///
+/// **LLM 是按段窗口生成的，数不出"整片几次"**，所以配额只能在这里兜。
+/// 降级 = **只改 zoom 成「中」**，`anchor`/`origin` 原样留着（效果仍在，只是不再是画中画）。
 ///
 /// 放在 `cmd_process` 补默认运镜**之后**调用。幂等：降级后的轨道再跑一次不会再变。
 /// 返回被降级的条数。
@@ -84,8 +98,10 @@ pub fn cap_pip_shots(segments: &mut [Segment]) -> usize {
     }
     order.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
 
+    // 段内计数 + 全片计数（两个上限各自独立：段内 1 条、全片 3 条）。
     let mut demoted = 0usize;
-    let mut kept = 0usize;
+    let mut kept_total = 0usize;
+    let mut per_seg: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
     for (si, ei, time) in order {
         let is_pip = matches!(
             &segments[si].events[ei],
@@ -94,15 +110,93 @@ pub fn cap_pip_shots(segments: &mut [Segment]) -> usize {
         if !is_pip {
             continue;
         }
-        if kept >= MAX_PIP_SHOTS {
+        let in_seg = *per_seg.get(&si).unwrap_or(&0);
+        let over_seg = in_seg >= MAX_PIP_SHOTS_PER_SEGMENT;
+        let over_total = kept_total >= MAX_PIP_SHOTS_TOTAL;
+        if over_seg || over_total {
             if let Event::Camera { zoom, .. } = &mut segments[si].events[ei] {
                 *zoom = "中".into();
             }
             demoted += 1;
-            tracing::info!("  ⚠ 画中画太密（{:.1}s · 整片只允许 {} 条）：降级为中景", time, MAX_PIP_SHOTS);
+            let why = if over_seg {
+                format!("同段已有 {in_seg} 条（段内上限 {MAX_PIP_SHOTS_PER_SEGMENT}）")
+            } else {
+                format!("全片已有 {kept_total} 条（上限 {MAX_PIP_SHOTS_TOTAL}）")
+            };
+            tracing::info!("  ⚠ 画中画太密（{time:.1}s · {why}）：降级为中景");
         } else {
-            kept += 1;
+            kept_total += 1;
+            per_seg.insert(si, in_seg + 1);
         }
+    }
+    demoted
+}
+
+/// **③ 切镜必须「变化一个维度」**（2026-10-20 运镜导演化 §一③）。
+///
+/// 一条 `cut: true` 的运镜若**景别与焦点都没变**，切过去和上一条一模一样 ——
+/// 观众只看到"画面抖了一下"，而它占掉了硬切这个手法。
+/// ⇒ 把这类事件的 `cut` **去掉**（退回平滑），**不删事件**（时间/焦点可能还有用）。
+///
+/// "变了" ＝ **景别不同** 或 **聚焦目标/落点不同** 之一：
+///   * 景别：`zoom` 字面量不同；
+///   * 焦点：`anchor` 不同，或（解析后的）`origin` 不同。
+///     两处都看是有意的 —— Step 2d 之前 `origin` 还是占位（`50% 50%`），之后才是真坐标；
+///     **本函数必须在 2d 之后调用**，否则"同一锚点换坐标"会被误判成没变。
+///
+/// ⚠️ **`manual` 事件不碰**（用户自己摆的运镜，后处理一律不改写）。
+/// ⚠️ **第一条运镜不动**：没有"上一条"可比，去掉 cut 反而让开场变缓。
+/// ⚠️ 幂等：去掉的 `cut` 第二趟仍是 `false` ⇒ 不再计数、也不再改。
+pub fn demote_cut_without_change(segments: &mut [Segment]) -> usize {
+    // 按**时间**收集（段之间会重叠，文件顺序不可靠 —— 与 `cap_pip_shots` 同一条教训）。
+    let mut order: Vec<(usize, usize, f64)> = Vec::new();
+    for (si, seg) in segments.iter().enumerate() {
+        for (ei, ev) in seg.events.iter().enumerate() {
+            if let Event::Camera { time, .. } = ev {
+                order.push((si, ei, *time));
+            }
+        }
+    }
+    order.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
+
+    #[derive(Clone, PartialEq)]
+    struct State {
+        zoom: String,
+        anchor: Option<String>,
+        origin: String,
+    }
+
+    let mut demoted = 0usize;
+    let mut prev: Option<State> = None;
+    for (si, ei, time) in order {
+        let (cur, manual, cut) = match &segments[si].events[ei] {
+            Event::Camera { zoom, anchor, origin, cut, manual, .. } => (
+                State {
+                    zoom: zoom.trim().to_string(),
+                    anchor: anchor.as_ref().map(|a| a.trim().to_string()),
+                    origin: origin.trim().to_string(),
+                },
+                *manual,
+                *cut,
+            ),
+            _ => continue,
+        };
+        if cut && !manual {
+            let changed = match &prev {
+                None => true,
+                Some(p) => p.zoom != cur.zoom || p.anchor != cur.anchor || p.origin != cur.origin,
+            };
+            if !changed {
+                if let Event::Camera { cut, .. } = &mut segments[si].events[ei] {
+                    *cut = false;
+                }
+                demoted += 1;
+                tracing::info!(
+                    "  ⚠ 运镜 @{time:.1}s：cut 但景别/焦点都没变 -> 退回平滑（切镜必须变化一个维度）"
+                );
+            }
+        }
+        prev = Some(cur);
     }
     demoted
 }
@@ -491,6 +585,12 @@ pub fn cap_dutch_angle(segments: &mut [Segment]) -> usize {
 ///
 /// ⚠️ **调用点成对**：`cmd_process` Step 1d2b 与 `llm/mod.rs` Step 4b（落盘前那一遍）——
 /// 只改一处的话，编辑器里看到的与出片时的不一样。
+/// 每段最多留几条文字元素（2026-10-20 用户口径「视觉特效可以放宽一点」：**1 → 2**）。
+///
+/// 只放宽**配额**：贴纸互斥、manual 豁免、屏蔽段跳过，以及 ELEMENT_MIN/MAX_SECS
+/// 那套合法性一律不动。
+pub const MAX_TEXT_ELEMENTS_PER_SEGMENT: usize = 2;
+
 pub fn cap_text_elements(segments: &mut [Segment], mute_ranges: &[MuteRange]) -> usize {
     // 全片贴纸窗口（**两个载体都要收**：老 `Sticker` 与 `Element{kind:"sticker"}`）。
     let mut sticker_spans: Vec<(f64, f64)> = Vec::new();
@@ -508,7 +608,7 @@ pub fn cap_text_elements(segments: &mut [Segment], mute_ranges: &[MuteRange]) ->
 
     let mut removed = 0usize;
     for seg in segments.iter_mut() {
-        let mut slot_taken = false;
+        let mut kept_text = 0usize;
         let old = std::mem::take(&mut seg.events);
         let mut kept: Vec<Event> = Vec::with_capacity(old.len());
         for ev in old {
@@ -523,16 +623,157 @@ pub fn cap_text_elements(segments: &mut [Segment], mute_ranges: &[MuteRange]) ->
             }
             let (s, e) = (ev.get_time(), ev.end().unwrap_or(ev.get_time() + 1.0));
             let clashes_sticker = sticker_spans.iter().any(|(ss, se)| *ss < e && *se > s);
-            if clashes_sticker || slot_taken {
+            // 每段最多 MAX_TEXT_ELEMENTS_PER_SEGMENT 条（2026-10-20：1 → 2，配额放宽）
+            if clashes_sticker || kept_text >= MAX_TEXT_ELEMENTS_PER_SEGMENT {
                 removed += 1;
                 continue;
             }
-            slot_taken = true;
+            kept_text += 1;
             kept.push(ev);
         }
         seg.events = kept;
     }
     removed
+}
+
+// ── 空窗补位（2026-10-20 用户口径「太平行、少内容」）──────────────────────
+//
+// 用户实测 clip-15：内容事件 0.13/s、段 1 有 **14 秒零内容事件**、camera 占 57%。
+// prompt 已加下限（每 8 秒一个 / 空窗 ≤6 秒必须补），但 LLM 不一定听话 ——
+// 这一段是**确定性兜底**：不花 token、不联网、幂等。
+
+/// 自动补位事件的**标记**（幂等判据）。落在 `anchor` 上。
+///
+/// ⚠️ **为什么用标记，而不是"窗口里有没有事件"**：后者会被**自己补的那一条**满足 ——
+/// 只能证明"上一次跑过"，证明不了"这一趟该不该再补"（用户删掉补的那条再跑，判据会说
+/// "有事件了"）。标记是持久的、能跨文件往返的。
+///
+/// ⚠️ 为什么落在 `anchor` 上而不是新增字段：瞬时效（pulse…）的 `anchor` **渲染侧完全不读**
+/// （只有贴纸 `stickerAnchor` 与 camera 读它），所以它既是可持久化的既有字段、又不影响任何像素，
+/// 也**不用**给 `Event` 加字段（那会动 `polish.toml` 的文件格式）。
+pub const AUTO_FILL_ANCHOR: &str = "auto_fill";
+
+/// 「太久没有内容事件」的门槛（秒）。
+///
+/// prompt 里写的是「任何连续 ≥6 秒没有视觉事件的窗口都必须补一个」；这里的确定性兜底
+/// **同口径取 6 秒** —— 它不是宽松版，而是「LLM 没做到就由程序补上」的那一半。
+/// 实测目标（clip-15）：最长无内容窗口 ≤6s。
+pub const VISUAL_GAP_SECS: f64 = 5.0;
+
+/// 补位用的特效时长（瞬时档的量级，transient_duration_cap 也会再夹一次）。
+const AUTO_FILL_SECS: f64 = 0.35;
+
+/// 单段最多补几条（防跑飞：一个 60s 空心段理论上要 10 条，8 条够用）。
+const MAX_AUTO_FILLS_PER_SEGMENT: usize = 8;
+
+/// 内容事件：视觉上真的有东西 / 有声音的事件。**camera 不算** ——
+/// 运镜在 process 里是全程开着的（每段至少补一条），拿它凑数等于没补。
+fn is_content_event(ev: &Event) -> bool {
+    !matches!(ev, Event::Camera { .. })
+}
+
+/// 是不是「我们补的」那一条。两种温和特效都带同一个标记。
+fn is_auto_fill(ev: &Event) -> bool {
+    match ev {
+        Event::Pulse { anchor, .. } | Event::Blur { anchor, .. } => {
+            anchor.as_deref() == Some(AUTO_FILL_ANCHOR)
+        }
+        _ => false,
+    }
+}
+
+/// **空窗补位守卫**：每段内反复找「最长且 ≥VISUAL_GAP_SECS 没有内容事件」的窗口，
+/// 在窗口**靠前**的位置补一个**最温和**的瞬时特效（pulse / blur 轮换）。
+///
+/// 为什么是「反复找 + 靠前放」而不是「每个窗口只补一条」：clip-15 实测有一个 14s 的空窗，
+/// 只补中间一条会留下两个 7s 的空窗（仍 >6s）。放靠前（窗口起点 +3s 内，优先吸附到一句
+/// 未屏蔽字幕的起点）能保证**收敛**：一补就把窗口劈成「≤3s + 剩余」，剩余 ≥6s 时再补一条。
+///
+/// 四条规矩：
+/// 1. **不跨段边界**（按段扫）；
+/// 2. **屏蔽区间不补**（窗口里挑不到未屏蔽字幕就跳过这个窗口）；
+/// 3. **manual 事件不改写**（这里只新增，不动任何既有事件）；
+/// 4. **幂等**：窗口里已经有标记事件 ⇒ 不再补。判据用 [a, b] **闭区间** ——
+///    补的那条正好落在子窗口边界上，用开区间会让它看不见，第二趟又会补一条。
+///
+/// 返回补了几条。
+pub fn fill_visual_gaps(
+    segments: &mut [Segment],
+    subtitles: &[Subtitle],
+    mute_ranges: &[MuteRange],
+) -> usize {
+    let mut added = 0usize;
+    for seg in segments.iter_mut() {
+        let mut made = 0usize;
+        loop {
+            if made >= MAX_AUTO_FILLS_PER_SEGMENT {
+                break;
+            }
+            let mut marks: Vec<(f64, bool)> = seg
+                .events
+                .iter()
+                .filter(|e| is_content_event(e))
+                .map(|e| (e.get_time(), is_auto_fill(e)))
+                .collect();
+            marks.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+            // 切出所有空窗，挑**最长**的那个（同长取最早）
+            let mut best: Option<(f64, f64)> = None;
+            let mut cursor = seg.start;
+            for (t, _) in marks.iter() {
+                let (a, b) = (cursor, *t);
+                if b - a >= VISUAL_GAP_SECS
+                    && !marks.iter().any(|(m, filled)| *filled && *m >= a && *m <= b)
+                    && best.is_none_or(|(ba, bb): (f64, f64)| (b - a) > (bb - ba))
+                {
+                    best = Some((a, b));
+                }
+                cursor = cursor.max(*t);
+            }
+            {
+                let (a, b) = (cursor, seg.end);
+                if b - a >= VISUAL_GAP_SECS
+                    && !marks.iter().any(|(m, filled)| *filled && *m >= a && *m <= b)
+                    && best.is_none_or(|(ba, bb): (f64, f64)| (b - a) > (bb - ba))
+                {
+                    best = Some((a, b));
+                }
+            }
+            let Some((a, b)) = best else { break };
+            // 落点 = 窗口中点（**对半劈**保证收敛），能吸附到 ±2s 内一条未屏蔽字幕的起点就吸
+            let mid = (a + b) * 0.5;
+            if mute_ranges.iter().any(|r| r.overlaps(mid, mid + AUTO_FILL_SECS)) {
+                // 窗口中心本身在屏蔽区里 ⇒ 这一趟不补它（跳过、继续找别的窗口没意义，直接收手）
+                break;
+            }
+            let at = subtitles
+                .iter()
+                .filter(|s| !mute_ranges.iter().any(|r| r.overlaps(s.start, s.end)))
+                .filter(|s| s.start >= a && s.end <= b)
+                .filter(|s| (s.start - mid).abs() <= 2.0)
+                .min_by(|x, y| {
+                    (x.start - mid).abs().partial_cmp(&(y.start - mid).abs()).unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .map(|s| s.start)
+                .unwrap_or(mid);
+            let at = at.min(b - AUTO_FILL_SECS).max(a);
+            let marker = Some(AUTO_FILL_ANCHOR.to_string());
+            // 轮换：交替 pulse / blur（两类都温和，也让用到的特效种类 ≥4）
+            let ev = if made % 2 == 0 {
+                Event::Pulse { time: at, end: Some(at + AUTO_FILL_SECS), anchor: marker, sfx: None, sfx_volume: None }
+            } else {
+                Event::Blur { time: at, end: Some(at + AUTO_FILL_SECS), anchor: marker, sfx: None, sfx_volume: None }
+            };
+            seg.events.push(ev);
+            made += 1;
+            added += 1;
+        }
+        if made > 0 {
+            seg.events.sort_by(|x, y| {
+                x.get_time().partial_cmp(&y.get_time()).unwrap_or(std::cmp::Ordering::Equal)
+            });
+        }
+    }
+    added
 }
 
 // ── 冷开场 / 回忆回溯（第 5 批）──────────────────────────────────────
@@ -1376,14 +1617,17 @@ fn normalize_event_end(event: &mut Event) {
 /// 规格给这条配额的理由值得留在这里：既有守卫 `cap_pip_shots`（画中画整片 ≤1）与
 /// `cap_handheld_sway` 的先例 ⇒ **跳切必须有配额**，否则"连续硬切会让画面很跳"
 /// （LLM 提示词原话已经这么说）。
-pub const MAX_JUMPS_PER_SEGMENT: usize = 2;
+/// 2026-10-20 用户口径「视觉特效可以放宽一点」：**2 → 3**（只放宽配额，合法性不动）。
+pub const MAX_JUMPS_PER_SEGMENT: usize = 3;
 
 /// 相邻两次跳切至少隔这么久（秒）—— 即"全片约每 20s 一次"（规格 §2.3）。
 ///
 /// 实现成"按时间扫、两次至少隔 [`JUMP_MIN_GAP_SECS`]"而不是"整片 ≤ 时长/20"：
 /// 两者在**均匀分布**时等价，但后者依赖总时长 —— 时长未知（`duration == 0`）
 /// 或极端长片下会算出一个没意义的配额。
-pub const JUMP_MIN_GAP_SECS: f64 = 20.0;
+/// 2026-10-20：**20 → 4 秒**（20 秒那档太狠 —— 78s 的片子里最多只放得下 3 次跳切，
+/// 而用户要的是"更有内容"）。接缝判定、夹到段内这些合法性一律不动。
+pub const JUMP_MIN_GAP_SECS: f64 = 4.0;
 
 /// 接缝判定的容差（秒）。取 1 帧量级：`cut` 的 `time` 与 mute 边界计算路径不同，
 /// 会有微小浮点差；取 0 = 只有**完全相同**才算，实际会漏掉几乎全部真实接缝。
@@ -1798,6 +2042,130 @@ mod tests {
         }
     }
 
+
+    // ── ③ 切镜必须变化一个维度（2026-10-20）─────────────────────────
+    /// 造一条运镜：可以指定 cut / manual / origin / anchor。
+    fn cam_film(time: f64, zoom: &str, origin: &str, anchor: Option<&str>, cut: bool, manual: bool) -> Event {
+        Event::Camera {
+            time,
+            end: Some(time + 2.0),
+            zoom: zoom.into(),
+            origin: origin.into(),
+            anchor: anchor.map(str::to_string),
+            anchor_to: None,
+            to_origin: None,
+            cut,
+            handheld: false,
+            manual,
+            speed: None,
+            tilt: None,
+        }
+    }
+
+    /// ★ 判据：**景别与焦点都没变的 cut 必须被降级成平滑**。
+    #[test]
+    fn cut_without_any_change_is_demoted() {
+        let mut segs = vec![Segment {
+            start: 0.0,
+            end: 30.0,
+            events: vec![
+                cam_film(0.0, "中", "50% 50%", None, false, false),
+                cam_film(5.0, "中", "50% 50%", None, true, false), // 同一景别同一焦点 ⇒ 假切镜
+            ],
+            fx: "low".into(),
+            note: String::new(),
+            role: String::new(),
+            extra: Default::default(),
+        }];
+        let n = demote_cut_without_change(&mut segs);
+        assert_eq!(n, 1, "零变化的 cut 必须被降级");
+        assert!(matches!(&segs[0].events[1], Event::Camera { cut: false, .. }),
+            "降级方式是把 cut 去掉（事件本身保留）");
+    }
+
+    /// 反向：**变了景别** 或 **变了焦点** 的 cut 一律保留（判据不能一刀切）。
+    #[test]
+    fn cut_with_a_changed_dimension_is_kept() {
+        let mut segs = vec![Segment {
+            start: 0.0,
+            end: 30.0,
+            events: vec![
+                cam_film(0.0, "中", "50% 50%", None, false, false),
+                cam_film(5.0, "近", "50% 50%", None, true, false), // 景别变了
+                cam_film(9.0, "近", "65% 40%", None, true, false), // 焦点变了
+                cam_film(13.0, "近", "65% 40%", Some("danmaku"), true, false), // 锚点变了
+            ],
+            fx: "low".into(),
+            note: String::new(),
+            role: String::new(),
+            extra: Default::default(),
+        }];
+        assert_eq!(demote_cut_without_change(&mut segs), 0, "变了维度就不该动它");
+        for i in 1..4 {
+            assert!(matches!(&segs[0].events[i], Event::Camera { cut: true, .. }),
+                "第 {i} 条 cut 应当保留");
+        }
+    }
+
+    /// ⚠️ `manual` 不碰；第一条没有可比对象也不动；**幂等**（第二趟 0 条）。
+    #[test]
+    fn cut_guard_is_idempotent_and_spares_manual_and_first() {
+        let mut segs = vec![Segment {
+            start: 0.0,
+            end: 30.0,
+            events: vec![
+                cam_film(0.0, "中", "50% 50%", None, true, false), // 第一条：保持
+                cam_film(4.0, "中", "50% 50%", None, true, true),  // manual：保持
+                cam_film(8.0, "中", "50% 50%", None, true, false), // 零变化非 manual：降级
+            ],
+            fx: "low".into(),
+            note: String::new(),
+            role: String::new(),
+            extra: Default::default(),
+        }];
+        assert_eq!(demote_cut_without_change(&mut segs), 1);
+        assert!(matches!(&segs[0].events[0], Event::Camera { cut: true, .. }), "第一条不动");
+        assert!(matches!(&segs[0].events[1], Event::Camera { cut: true, .. }), "manual 不动");
+        assert!(matches!(&segs[0].events[2], Event::Camera { cut: false, .. }));
+        assert_eq!(demote_cut_without_change(&mut segs), 0, "幂等：第二趟不该再改");
+    }
+
+    // ── ⑧ 画中画配额：每段 1 条 / 全片 ≤3 ──────────────────────────
+    #[test]
+    fn pip_quota_is_per_segment_and_total_three() {
+        // 4 段各 1 条 ⇒ 全片上限 3：最后一条降级成「中」。
+        let mut segs: Vec<Segment> = (0..4)
+            .map(|i| Segment {
+                start: i as f64 * 10.0,
+                end: i as f64 * 10.0 + 10.0,
+                events: vec![cam(i as f64 * 10.0 + 1.0, "远")],
+                fx: "low".into(),
+                note: String::new(),
+                role: String::new(),
+                extra: Default::default(),
+            })
+            .collect();
+        assert_eq!(cap_pip_shots(&mut segs), 1, "全片 4 条里只允许 3 条");
+        let pips = segs.iter().flat_map(|s| s.events.iter())
+            .filter(|e| matches!(e, Event::Camera { zoom, .. } if zoom == "远")).count();
+        assert_eq!(pips, MAX_PIP_SHOTS_TOTAL);
+        assert_eq!(cap_pip_shots(&mut segs), 0, "幂等");
+    }
+
+    #[test]
+    fn pip_is_still_mutually_exclusive_inside_one_segment() {
+        let mut segs = vec![Segment {
+            start: 0.0,
+            end: 20.0,
+            events: vec![cam(1.0, "远"), cam(8.0, "远")],
+            fx: "low".into(),
+            note: String::new(),
+            role: String::new(),
+            extra: Default::default(),
+        }];
+        assert_eq!(cap_pip_shots(&mut segs), 1, "同段两条：留一条、降一条");
+        assert!(matches!(&segs[0].events[1], Event::Camera { zoom, .. } if zoom == "中"));
+    }
     /// 带 `anchor`（可空）的运镜 —— 验特写焦点守卫用。
     fn cam_a(time: f64, zoom: &str, anchor: Option<&str>, anchor_to: Option<&str>) -> Event {
         let Event::Camera {
@@ -2338,15 +2706,22 @@ mod tests {
         assert!(text_bodies(&segs).is_empty());
     }
 
+    /// 每段最多留 MAX_TEXT_ELEMENTS_PER_SEGMENT 条（2026-10-20：**1 → 2**）。
+    ///
+    /// 变异自证：把常量改回 1 ⇒ 本条红（会只剩"第一条"）。
     #[test]
-    fn text_element_is_capped_to_one_per_segment() {
+    fn text_element_is_capped_per_segment() {
         let mut segs = text_seg(vec![
             text_el(2.0, 1.0, "第一条"),
             text_el(10.0, 1.0, "第二条"),
             text_el(20.0, 1.0, "第三条"),
         ]);
-        assert_eq!(cap_text_elements(&mut segs, &[]), 2, "一段最多留一条");
-        assert_eq!(text_bodies(&segs), vec!["第一条".to_string()], "留最早那条");
+        assert_eq!(cap_text_elements(&mut segs, &[]), 1, "一段最多留两条");
+        assert_eq!(
+            text_bodies(&segs),
+            vec!["第一条".to_string(), "第二条".to_string()],
+            "留最早的两条"
+        );
         assert_eq!(cap_text_elements(&mut segs, &[]), 0, "幂等（process 会被隐式重跑）");
     }
 
@@ -3319,21 +3694,23 @@ mod tests {
         assert_eq!(cuts(&segs2), vec![true, true], "普通切镜不许被碰");
     }
 
-    /// ③ **单段配额**：同一段内第 3 条跳切要降级（间隔闸在这里被时间拉开、不干扰）。
+    /// ③ **单段配额**：同一段内第 4 条跳切才降级（2026-10-20 配额 2 → 3；
+    /// 间隔闸在这里被时间拉开、不干扰）。
     #[test]
-    fn per_segment_quota_demotes_the_third_jump() {
+    fn per_segment_quota_demotes_the_fourth_jump() {
         let segs = segs_with(vec![
             cam_cut(10.0, true),
             cam_cut(40.0, true),
-            cam_cut(70.0, true), // 第 3 条：超出 MAX_JUMPS_PER_SEGMENT(2)
+            cam_cut(70.0, true),
+            cam_cut(100.0, true), // 第 4 条：超出 MAX_JUMPS_PER_SEGMENT(3)
         ]);
-        // 三条 mute 的边界恰好落在这些时刻上
-        let mutes = [mute(9.0, 10.0), mute(39.0, 40.0), mute(69.0, 70.0)];
+        // 四条 mute 的边界恰好落在这些时刻上
+        let mutes = [mute(9.0, 10.0), mute(39.0, 40.0), mute(69.0, 70.0), mute(99.0, 100.0)];
         let seams = find_jump_seams(&segs, &mutes);
-        assert_eq!(seams.len(), 3);
+        assert_eq!(seams.len(), 4);
         let mut segs2 = segs.clone();
         assert_eq!(cap_jump_cuts(&mut segs2, &mutes, &[]), 1);
-        assert_eq!(cuts(&segs2), vec![true, true, false], "只剔第 3 条");
+        assert_eq!(cuts(&segs2), vec![true, true, true, false], "只剔第 4 条");
     }
 
     /// ④ **密度闸**：跨段也算 —— 两段各一条、但只隔 5s ⇒ 第二条被剔
@@ -3349,11 +3726,19 @@ mod tests {
             events: vec![cam_cut(at, true)],
             extra: Default::default(),
         };
-        let mut segs = vec![mk(0.0, 10.0), mk(30.0, 15.0)]; // 10.0 与 15.0 相隔 5s
+        // 2026-10-20：间隔门槛 20s → 4s —— 5s 现在是**合法**的
+        let mut segs = vec![mk(0.0, 10.0), mk(30.0, 15.0)]; // 相隔 5s
         let mutes = [mute(9.5, 10.0), mute(14.5, 15.0)];
         let mut segs_clone = segs.clone();
         let demoted = cap_jump_cuts(&mut segs_clone, &mutes, &[]);
-        assert_eq!(demoted, 1, "跨段的第二次也太密");
+        assert_eq!(demoted, 0, "5s ≥ 门槛 4s，跨段也不该剔");
+        // 但 3s（< 4s）仍要剔 —— 密度闸本身不能失效
+        let mut tight = vec![mk(0.0, 10.0), mk(30.0, 13.0)];
+        let mutes_tight = [mute(9.5, 10.0), mute(12.5, 13.0)];
+        assert_eq!(cap_jump_cuts(&mut tight, &mutes_tight, &[]), 1, "跨段的第二次太密（3s）");
+        let mut segs_clone = tight.clone();
+        let demoted = cap_jump_cuts(&mut segs_clone, &mutes_tight, &[]);
+        assert_eq!(demoted, 0, "再跑一遍不该又剔（幂等）");
         assert_eq!(segs_clone[0].events.len(), 1, "事件本身要留着（只收回手法资格）");
         assert_eq!(segs_clone[1].events.len(), 1);
         let _ = &mut segs;
@@ -3362,8 +3747,9 @@ mod tests {
     /// ⑤ **幂等**：跑两遍与跑一遍结果相同（process 每次预览/出片都会被隐式触发）。
     #[test]
     fn jump_cap_is_idempotent() {
-        let mutes = [mute(9.0, 10.0), mute(14.0, 15.0)];
-        let mut segs = segs_with(vec![cam_cut(10.0, true), cam_cut(15.0, true)]);
+        // 2026-10-20：门槛 4s ⇒ 用 2s 间隔才触发（10.0 与 12.0）
+        let mutes = [mute(9.0, 10.0), mute(11.0, 12.0)];
+        let mut segs = segs_with(vec![cam_cut(10.0, true), cam_cut(12.0, true)]);
         let first = cap_jump_cuts(&mut segs, &mutes, &[]);
         let after_first = cuts(&segs);
         let second = cap_jump_cuts(&mut segs, &mutes, &[]);
@@ -3683,3 +4069,91 @@ mod tests {
     }
 
 }
+
+#[cfg(test)]
+mod auto_fill_tests {
+    use super::*;
+    use crate::parse::srt::Subtitle;
+    use crate::project::{MuteRange, Segment};
+
+    fn seg(start: f64, end: f64) -> Segment {
+        Segment {
+            role: String::new(),
+            start,
+            end,
+            fx: "med".into(),
+            note: String::new(),
+            events: vec![],
+            extra: Default::default(),
+        }
+    }
+    fn sub(start: f64, end: f64) -> Subtitle {
+        Subtitle { index: 0, start, end, text: "一句话".into(), html: String::new() }
+    }
+
+    /// **空窗补位**：20s 的段没有任何内容事件 ⇒ 在窗口里最居中的那条字幕上补一条 pulse，
+    /// **第二趟不再补**（幂等）。变异自证：删掉幂等判据 ⇒ 第二趟又多一条，本条红。
+    #[test]
+    fn fill_visual_gaps_adds_one_per_empty_window_and_is_idempotent() {
+        let mut segs = vec![seg(0.0, 20.0)];
+        let subs = vec![sub(2.0, 3.0), sub(10.1, 11.1)];
+        let first = fill_visual_gaps(&mut segs, &subs, &[]);
+        assert!(first >= 1, "20s 空段要补上（实际 {first} 条）");
+        assert!(segs[0].events.iter().all(is_auto_fill), "补出来的必须都带标记");
+        let n = segs[0].events.len();
+        assert_eq!(fill_visual_gaps(&mut segs, &subs, &[]), 0, "第二趟必须 0（process 会被隐式重跑）");
+        assert_eq!(segs[0].events.len(), n, "第二趟一条都不许加");
+    }
+
+    /// 屏蔽区间里的字幕**不当落点**（那一段成片里不存在）。
+    #[test]
+    fn fill_visual_gaps_skips_muted_windows() {
+        let mut segs = vec![seg(0.0, 20.0)];
+        let subs = vec![sub(10.0, 11.0)];
+        let mutes = vec![MuteRange { start: 9.0, end: 12.0 }];
+        assert_eq!(fill_visual_gaps(&mut segs, &subs, &mutes), 0, "唯一可选的字幕在屏蔽区里");
+    }
+
+    /// **camera 不算内容事件**（运镜全程开着）：只有 camera 的段照样要补。
+    #[test]
+    fn camera_does_not_count_as_content() {
+        let mut s = seg(0.0, 20.0);
+        s.events.push(Event::Camera {
+            time: 0.0,
+            end: Some(20.0),
+            zoom: "中".into(),
+            origin: "50% 50%".into(),
+            anchor: None,
+            anchor_to: None,
+            to_origin: None,
+            cut: false,
+            handheld: false,
+            manual: false,
+            speed: None,
+            tilt: None,
+        });
+        let mut segs = vec![s];
+        let subs = vec![sub(10.0, 11.0)];
+        assert_eq!(fill_visual_gaps(&mut segs, &subs, &[]), 1, "光有运镜不算有内容");
+    }
+
+    /// **幂等判据本身**：窗口里已经有带标记的补位事件 ⇒ **不再补**（哪怕窗口仍 > 门槛）。
+    ///
+    /// 这条才是"标记"的判据（另一条只证明收敛性）。变异自证：把 `is_auto_fill` 那个过滤
+    /// 从窗口判据里去掉 ⇒ 这里会补出 2 条，本条红。
+    #[test]
+    fn marked_window_is_never_refilled_even_if_wide() {
+        let mut s = seg(0.0, 20.0);
+        s.events.push(Event::Pulse {
+            time: 10.0,
+            end: Some(10.35),
+            anchor: Some(AUTO_FILL_ANCHOR.to_string()),
+            sfx: None,
+            sfx_volume: None,
+        });
+        let mut segs = vec![s];
+        let subs = vec![sub(4.0, 5.0), sub(10.0, 11.0)];
+        assert_eq!(fill_visual_gaps(&mut segs, &subs, &[]), 0, "带标记的窗口不许再补");
+    }
+}
+
