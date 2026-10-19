@@ -294,20 +294,33 @@
                  :title="'生成能力 → input = ' + JSON.stringify(['text', 'image'].filter((k) => (k === 'text' ? inputText : inputImage)))">
               生成能力：{{ inputZh({ text: inputText, image: inputImage }) }}{{ modelInputRow ? '（手填）' : '（来自能力）' }}
             </div>
+            <!-- 方言清单来源：**照实标**（后端注册表 / 内置只读兜底），别让人以为内置那份是服务端给的 -->
+            <div class="muted small mb-4"
+                 :title="dialectError || '来自后端 Dialect 注册表（GET /api/config/llm/dialects）；选「自定义…」可手填清单外的 id'">
+              {{ dialectHint }}
+            </div>
             <div class="form-grid">
               <div>
-                <label title="推理参数用哪种拼写发出去；留空 = 按内置表的保守默认（表里没这模型 ⇒ 不发推理参数）">推理参数怎么发</label>
-                <select v-model="modelCapsRow.thinking_wire">
+                <label title="推理参数用哪种拼写发出去；留空 = 按能力面的保守默认（未收录 ⇒ 不发推理参数）">推理参数怎么发</label>
+                <select :value="wireSelectValue" @change="pickWire($event.target.value)" title="已知方言来自清单；清单外的选「自定义…」">
                   <option value="">不填</option>
-                  <option v-for="o in MODEL_WIRE_OPTS" :key="o" :value="o">{{ o }}</option>
+                  <option v-for="d in dialectList" :key="d.id" :value="d.id">{{ d.label }}</option>
+                  <option :value="CUSTOM">自定义…</option>
                 </select>
+                <input v-if="wireCustomOn" v-model="modelCapsRow.thinking_wire" type="text"
+                       class="mono mt-4" placeholder="方言 id，如 thinking_budget"
+                       title="清单里没有的方言：填服务端认的 id（写进 [llm.models].thinking_wire）">
               </div>
               <div>
                 <label title="输出上限写哪个字段名；留空 = max_tokens">输出上限字段</label>
-                <select v-model="modelCapsRow.max_output_wire">
+                <select :value="maxOutSelectValue" @change="pickMaxOut($event.target.value)" title="两条标准字段 + 清单里出现过的；清单外的选「自定义…」">
                   <option value="">不填</option>
-                  <option v-for="o in MODEL_MAXOUT_OPTS" :key="o" :value="o">{{ o }}</option>
+                  <option v-for="o in maxOutList" :key="o" :value="o">{{ o }}</option>
+                  <option :value="CUSTOM">自定义…</option>
                 </select>
+                <input v-if="maxOutCustomOn" v-model="modelCapsRow.max_output_wire" type="text"
+                       class="mono mt-4" placeholder="字段名，如 max_completion_tokens"
+                       title="清单里没有的字段名（写进 [llm.models].max_output_wire）">
               </div>
               <div>
                 <label title="这个模型收不收 temperature；留空 = 收（照发）">温度</label>
@@ -386,7 +399,8 @@
 <script setup>
 import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { api } from '../api/client'
-import { fetchCatalog, saveLlm as putLlm, saveLlmRaw as putLlmRaw, testConnection } from '../api/llm'
+import { fetchCatalog, fetchDialects, saveLlm as putLlm, saveLlmRaw as putLlmRaw, testConnection } from '../api/llm'
+import { BUILTIN_DIALECTS, CUSTOM, dialectChoices, maxOutputChoices } from '../components/llm/dialects.js'
 import { CAPS_SOURCE_ZH, DEFAULT_INPUT, inputToArray, inputZh, mergeCaps, normalizeCaps, normalizeLevel } from '../components/llm/caps.js'
 import { toast } from '../stores/toast'
 import Icon from '../components/Icon.vue'
@@ -573,11 +587,78 @@ watch(() => [form.llm.base_url, form.llm.model], () => {
 })
 onBeforeUnmount(() => { if (capsTimer) clearTimeout(capsTimer) })
 
-/** 模型能力覆盖（`[llm.models."<id>"]`）手填的三项 —— 只在能力**未收录**时露出来。
+/** 模型能力覆盖（`[llm.models."<id>"]`）手填的几项 —— 能力未收录 / 与勾选不一致 / 已手填时露出来。
  *  ⚠️ 选项与 Rust 侧同一套拼写（`ModelOverrideToml`）；认不出的值服务端会降级成"不发"。 */
-const MODEL_WIRE_OPTS = ['openai_effort', 'thinking_type', 'qwen_enable_thinking', 'openrouter_effort']
-const MODEL_MAXOUT_OPTS = ['max_tokens', 'max_completion_tokens']
 const MODEL_TEMP_OPTS = ['supported', 'unsupported']
+
+// ---- 方言清单（推理参数怎么发 / 输出上限写哪个字段名）----
+// 来源：后端 `GET /api/config/llm/dialects`（`Dialect` 注册表）；那条接口还没做/回空 ⇒ 退回
+// **内置只读清单**并在界面上标注「内置」—— 不静默假装是服务端给的（R4：老行为照旧可用）。
+const dialects = ref([])
+const dialectSource = ref('')      // 'server' | 'builtin'
+const dialectError = ref('')
+const dialectList = computed(() => dialectChoices(dialects.value))
+const maxOutList = computed(() => maxOutputChoices(dialects.value))
+const dialectHint = computed(() => {
+  const n = dialectList.value.length
+  if (!n) return '方言清单：未拿到（可手填）'
+  return '方言清单：' + (dialectSource.value === 'server' ? '后端注册表' : '内置') + '（' + n + ' 条）'
+})
+async function loadDialects() {
+  try {
+    const list = await fetchDialects()
+    if (Array.isArray(list) && list.length) {
+      dialects.value = list; dialectSource.value = 'server'; dialectError.value = ''
+      return
+    }
+    dialects.value = BUILTIN_DIALECTS.slice(); dialectSource.value = 'builtin'
+    dialectError.value = '后端回的方言清单是空的 ⇒ 用了内置只读清单'
+  } catch (e) {
+    dialects.value = BUILTIN_DIALECTS.slice(); dialectSource.value = 'builtin'
+    dialectError.value = '方言接口不可用（' + ((e && e.message) || e) + '）⇒ 用了内置只读清单'
+  }
+}
+/** 「自定义…」态（按模型 id 存）：选了自定义，或文件里那个值不在清单里 —— 两种都要露输入框 */
+const customWire = reactive({})
+const customMaxOut = reactive({})
+const curModelId = computed(() => String(form.llm.model || '').trim())
+const wireCustomOn = computed(() => {
+  const id = curModelId.value
+  const row = modelCapsRow.value
+  if (!id || !row) return false
+  // ⚠️ 清单是**内置**的（后端没给）⇒ 永远给手填框：老行为（随便填 id）不能因为清单缺席就消失（R4）
+  if (dialectSource.value !== 'server') return true
+  if (customWire[id]) return true
+  return !!row.thinking_wire && !dialectList.value.some((d) => d.id === row.thinking_wire)
+})
+const maxOutCustomOn = computed(() => {
+  const id = curModelId.value
+  const row = modelCapsRow.value
+  if (!id || !row) return false
+  if (dialectSource.value !== 'server') return true
+  if (customMaxOut[id]) return true
+  return !!row.max_output_wire && !maxOutList.value.includes(row.max_output_wire)
+})
+const wireSelectValue = computed(() => (wireCustomOn.value ? CUSTOM
+  : ((modelCapsRow.value && modelCapsRow.value.thinking_wire) || '')))
+const maxOutSelectValue = computed(() => (maxOutCustomOn.value ? CUSTOM
+  : ((modelCapsRow.value && modelCapsRow.value.max_output_wire) || '')))
+function pickWire(v) {
+  const id = curModelId.value
+  const row = modelCapsRow.value
+  if (!id || !row) return
+  if (v === CUSTOM) { customWire[id] = true; row.thinking_wire = ''; return }
+  customWire[id] = false
+  row.thinking_wire = v
+}
+function pickMaxOut(v) {
+  const id = curModelId.value
+  const row = modelCapsRow.value
+  if (!id || !row) return
+  if (v === CUSTOM) { customMaxOut[id] = true; row.max_output_wire = ''; return }
+  customMaxOut[id] = false
+  row.max_output_wire = v
+}
 /** 内置表**没收录**这对 (host, model)（hit:false）⇒ 「高级」里给一块手填能力的表单 */
 const capsUnlisted = computed(() => !!(caps.value && caps.value.hit === false))
 /** 当前模型那一行（reactive 对象；由下面的 watch 保证存在） */
@@ -975,6 +1056,8 @@ onMounted(async () => {
   // /api/config 只有程序配置与 LLM 两个子页用（含源码编辑器）；模型列表只有「账号与模型」用。
   // 其余子页的组件自带接口，别白拉一遍。
   if (props.section === 'config' || props.section === 'llm') loadConfig()
+  // 方言清单只服务 LLM 页「模型能力覆盖」那两个下拉（失败退内置清单，界面上标注）
+  if (props.section === 'llm') loadDialects()
   // 每个子页都要：标签条靠它过滤掉本地模式下不显示的项（store 有缓存，只有首次真发请求）。
   // ⚠️ 别挪回 `account` 分支里 —— 那样只有进账号页时标签才收缩，别处照旧显示 5 个。
   localNoAuth.value = await localNoAuthFromServer()

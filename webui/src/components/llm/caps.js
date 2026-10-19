@@ -90,7 +90,8 @@ function str(v) {
  *   temperature / supports_temperature：'supported' | 'unsupported' | bool；
  *   max_output / max_output_ceiling / max_tokens_ceiling：number（能力上限，不是每请求默认值）；
  *   json_mode / supports_json_mode：bool（表里目前没有这个维度 ⇒ null = 未知）；
- *   thinking_wire / max_output_wire：方言名（只做展示与手填对照，界面不拿它做判断）。
+ *   thinking_wire / max_output_wire：方言名（只做展示与手填对照，界面不拿它做判断）；
+ *   tool_call / supports_tool_call：bool（**只展示**，界面上不做开关；null = 未声明）。
  */
 export function normalizeCaps(raw) {
   if (!raw || typeof raw !== 'object') return null
@@ -121,11 +122,15 @@ export function normalizeCaps(raw) {
   const onlyReasoning = (typeof c.only_reasoning === 'boolean') ? c.only_reasoning : null
   // 服务端声明的**默认档**：只用来把"跟随默认"的落点写清楚，**不拿它改用户的值**。
   const defaultLevel = normalizeLevel(c.default_level ?? c.reasoning_default_effort ?? '')
+  // `tool_call`（工具调用）：**只展示**，不做开关。null = 未声明 —— 别默认成 true/false。
+  const toolCall = (typeof c.tool_call === 'boolean') ? c.tool_call
+    : ((typeof c.supports_tool_call === 'boolean') ? c.supports_tool_call : null)
 
   return {
     canDisable,
     onlyReasoning,
     defaultLevel,
+    toolCall,
     levels: orderLevels(keys),
     temperature,
     jsonMode,
@@ -175,6 +180,7 @@ export function mergeCaps(base, over) {
     canDisable: over.canDisable != null ? over.canDisable : base.canDisable,
     onlyReasoning: over.onlyReasoning != null ? over.onlyReasoning : base.onlyReasoning,
     defaultLevel: over.defaultLevel || base.defaultLevel,
+    toolCall: over.toolCall != null ? over.toolCall : base.toolCall,
     levels: over.levels.length ? over.levels : base.levels,
     temperature: over.temperature !== 'unknown' ? over.temperature : base.temperature,
     jsonMode: over.jsonMode != null ? over.jsonMode : base.jsonMode,
