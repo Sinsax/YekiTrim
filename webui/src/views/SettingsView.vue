@@ -156,7 +156,7 @@
       <span>LLM 配置 llm.toml</span>
       <span class="row">
         <!-- 「编辑源文件」的入口在下面「高级」组里（同一个入口只留一处） -->
-        <button class="btn" @click="testLlm">测试连接</button>
+        <button class="btn" @click="testLlm" title="用**已保存**的 llm.toml 发一次最小请求（草稿里的改动要先保存）">测试连接</button>
         <button class="btn btn-primary" @click="saveLlm" :disabled="!loaded">
           <Icon name="save" :size="13" /> {{ editLlmSource ? '保存源文件' : '保存 LLM' }}
         </button>
@@ -166,7 +166,7 @@
       <template v-if="!editLlmSource">
         <!-- ① 接口：填好 key → 取模型 → 选中（模型选择器见 components/llm/LlmModelPicker.vue） -->
         <div class="form-section">
-          <div class="form-section-title">接口<span class="muted small">填好 key → 获取模型 → 选中</span></div>
+          <div class="form-section-title">接口<span class="t-sub">填好 key → 获取模型 → 选中</span></div>
           <div class="form-grid">
             <div class="span-2">
               <label>base_url</label>
@@ -187,7 +187,7 @@
 
         <!-- ② 生成：**能力驱动** —— 只画这个模型支持的旋钮（档位清单来自能力表，别在前端写死） -->
         <div class="form-section">
-          <div class="form-section-title">生成<span class="muted small" :title="capsTitle">{{ capsText }}</span></div>
+          <div class="form-section-title">生成<span class="t-sub caps-src" :title="capsTitle">{{ capsText }}</span></div>
           <div class="form-grid">
             <div class="span-all">
               <LlmParamFields :caps="caps" :target="form.llm.params" id-prefix="llm-g"
@@ -206,7 +206,11 @@
              prompt 都是喂给 LLM 的文本。⚠️ 写的是 **config.toml 的 [detection]**（不是 llm.toml）
              —— 搬的是**位置**，不是归属，保存仍走 buildGlobalPatch。 -->
         <div class="form-section">
-          <div class="form-section-title">提示词<span class="muted small">写入 config.toml 的 [detection]</span></div>
+          <div class="form-section-title">提示词<span class="t-sub">写入 config.toml 的 [detection]</span></div>
+          <!-- 默认折叠：三块 textarea 合计 ~600px，展开会把「按链路覆盖」顶到第二屏。
+               ⚠️ 只是**视觉折叠**（内容仍在 DOM、保存读的是 reactive 表单）—— 不改任何交互契约。 -->
+          <details class="form-adv">
+          <summary>参考标题 / 检测 system_prompt / prompt_template</summary>
           <div class="prompt-pair">
             <div>
               <label title="每行一条，可含 emoji；清空保存则运行时用内建示例">参考标题</label>
@@ -239,12 +243,13 @@
             <label>检测 prompt_template<span class="muted small">（{segments} 会被替换）</span></label>
             <textarea v-model="form.detection.prompt_template" rows="12" placeholder="留空使用内建默认"></textarea>
           </div>
+          </details>
         </div>
 
         <!-- ③ 按链路：行由 llm_config.overrides 的键**自动生成**（后端加链路，这里一行都不用改）。
              「跟随全局」由**勾选框**表达：不勾 = 保存时发 null = 删键（别用空输入框 —— 那表达不出"没有值"）。 -->
         <div class="form-section">
-          <div class="form-section-title">按链路覆盖<span class="muted small">勾上才覆盖，不勾 = 跟随全局</span></div>
+          <div class="form-section-title">按链路覆盖<span class="t-sub">勾上才覆盖，不勾 = 跟随全局</span></div>
           <div class="llm-cols">
             <div class="llm-link-row" v-for="l in llmLinks" :key="l.key">
               <label class="ln-name">
@@ -253,7 +258,7 @@
               <LlmParamFields v-if="form.llm.overrides[l.key].on" :caps="caps"
                               :target="form.llm.overrides[l.key]"
                               :fields="['reasoning', 'temperature', 'max_tokens']"
-                              :id-prefix="'llm-' + l.key" />
+                              :id-prefix="'llm-' + l.key" compact />
               <span v-else class="muted small ln-inherit" :title="inheritTitle(l.key)">
                 跟随全局（{{ form.llm.params.temperature }} · {{ form.llm.params.max_tokens }}）
               </span>
@@ -263,7 +268,7 @@
 
         <!-- ④ 高级：extra_params 逃逸口 + 源文件编辑（表单没暴露的键与注释都在源文件里改） -->
         <div class="form-section">
-          <div class="form-section-title">高级<span class="muted small">逃逸口 · 源文件</span></div>
+          <div class="form-section-title">高级<span class="t-sub">逃逸口 · 源文件</span></div>
           <div class="llm-cols">
             <div>
               <label title="原样进请求体，覆盖上面所有同名参数；留空 = 不带额外参数">extra_params（JSON）</label>
@@ -285,7 +290,7 @@
                表里没有 (host, model) 时，那几个旋钮在「生成」组里画不出来 —— 这块就是手填的出口。 -->
           <div v-if="showModelCaps && modelCapsRow" class="llm-caps">
             <div class="form-section-title">模型能力覆盖
-              <span class="muted small" :title="'写入 [llm.models.&quot;' + form.llm.model + '&quot;]，只影响这个模型；四项都留空 = 保存时删掉这条'">
+              <span class="t-sub" :title="'写入 [llm.models.&quot;' + form.llm.model + '&quot;]，只影响这个模型；四项都留空 = 保存时删掉这条'">
                 写入 [llm.models."…"]
               </span>
             </div>
@@ -525,10 +530,11 @@ const capsText = computed(() => {
   const bits = []
   if (capsSource.value) bits.push(CAPS_SOURCE_ZH[capsSource.value] || capsSource.value)
   if (manualCapsOn.value) bits.push(CAPS_SOURCE_ZH.manual)
+  // ⚠️ 别带"能力："前缀：它接在标题「生成」后面会被读成"生成能力：…"（上一版就是这样）
   if (!bits.length && capsError.value) return '能力读取失败'
   if (!bits.length) return ''
-  const base = '能力：' + bits.join(' + ')
-  if (caps.value && caps.value.hit === false) return base + '（未收录）'
+  const base = bits.join(' · ')
+  if (caps.value && caps.value.hit === false) return base + ' · 未收录'
   return base
 })
 const capsTitle = computed(() => capsError.value
@@ -1085,6 +1091,8 @@ textarea.llm-extra { min-height:230px; resize:vertical; font-size:12px; line-hei
 .llm-cols .llm-link-row {
   display:grid; grid-template-columns:minmax(0,1fr) max-content;
   gap:2px 10px; align-items:center;
+  /* 一张轻卡片：4 条链路才看得出是"4 个格子"（以前只有 10px 间隙，看着像 4 个孤立勾选） */
+  border:1px solid var(--line-soft); border-radius:8px; padding:6px 8px;
 }
 .llm-cols .llm-link-row .ln-name { grid-column:1; }
 .llm-cols .llm-link-row :deep(.slf),
@@ -1100,6 +1108,9 @@ textarea.llm-extra { min-height:230px; resize:vertical; font-size:12px; line-hei
 .form-section:first-child { padding-top:0; }
 .form-section:last-child { border-bottom:none; padding-bottom:0; }
 .form-section-title { font-weight:700; font-size:13px; margin-bottom:6px; }
+/* 标题后面的**副标题**：与标题拉开距离、字更淡、不加粗 —— 以前是 .muted small 紧贴着标题，
+   读起来像"生成能力：内置目录（未收录）"这样一个长名字（用户找不到主次）。 */
+.t-sub { margin-left:8px; font-weight:400; font-size:11.5px; color:var(--ink-faint); }
 .form-grid { display:grid; grid-template-columns:repeat(6, 1fr); gap:8px 12px; align-items:start; }
 /* 注册与邀请码 / 模型管理：两张卡都短，并排省一屏竖高（窄屏回落成上下） */
 .two-up { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:0 16px; align-items:start; }
