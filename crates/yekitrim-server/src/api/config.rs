@@ -12,6 +12,8 @@ use yekitrim_service::Workspace;
 
 use crate::model::AppState;
 use crate::jobs::{JobClass, JobSpec};
+// 明文脱敏**只此一份实现**在 core（同一条也用在"解析失败的 WARN"上）
+use yekitrim_core::config::redact_secrets;
 use super::*;
 
 pub(super) async fn models_get() -> ApiResult {
@@ -64,61 +66,10 @@ fn models_impl() -> ApiResult {
 /// 为什么连**注释掉的老 key** 也抹：`# api_key = "sk-…"` 同样是明文。
 /// 行尾注释一并抹掉（注释里也可能写着 key）—— 宁可多抹一个注解，不可漏一个字。
 fn redact_api_key(raw: &str) -> String {
-    raw.split('\n').map(redact_api_key_line).collect::<Vec<_>>().join("\n")
+    // **只此一份实现**在 core —— 别在这儿抄第二份（它也是"解析失败的 WARN 要脱敏"那条用的）。
+    redact_secrets(raw)
 }
 
-/// 抹掉**一行里所有** `api_key = "…"` 的值（行首的、inline table 里的、注释里的都算）。
-///
-/// ⚠️ **不能只看行首**（2026-10-19 修的洞）：多 provider 的 patch 会把 `providers` 写成
-/// `providers = [{ id = "a", api_key = "sk-…" }]` 这种**一行里带键值**的形态 —— 老实现只认
-/// 行首的 `api_key`，于是明文 key 从 `llm_raw` 原样漏出去（而且看起来一切正常）。
-fn redact_api_key_line(line: &str) -> String {
-    const TOKEN: &str = "api_key";
-    let mut out = String::with_capacity(line.len());
-    let mut rest = line;
-    while let Some(pos) = rest.find(TOKEN) {
-        let before = &rest[..pos];
-        out.push_str(before);
-        out.push_str(TOKEN);
-        let mut tail = &rest[pos + TOKEN.len()..];
-        // 键名边界：`api_key_extra` 这种前缀相同的不许误伤
-        let boundary = !before
-            .chars()
-            .last()
-            .map(|c| c.is_alphanumeric() || c == '_')
-            .unwrap_or(false);
-        let trimmed = tail.trim_start_matches([' ', '\t']);
-        let ws = tail.len() - trimmed.len();
-        if !boundary || !trimmed.starts_with('=') {
-            rest = tail;
-            continue;
-        }
-        out.push_str(&tail[..ws]);
-        out.push('=');
-        tail = &trimmed[1..];
-        let trimmed = tail.trim_start_matches([' ', '\t']);
-        out.push_str(&tail[..tail.len() - trimmed.len()]);
-        // 值：带引号 ⇒ 只抹引号里的内容（引号与键名/缩进原样留，源文件编辑器读起来才像原样）
-        if let Some(q) = trimmed.chars().next().filter(|c| *c == '"' || *c == '\'') {
-            if let Some(rel) = trimmed[1..].find(q) {
-                out.push(q);
-                out.push(q);
-                let after = &trimmed[1 + rel + 1..];
-                // 行尾注释里也可能写着 key ⇒ 一并抹掉（老行为）；inline table 的后续键继续扫
-                let after_trimmed = after.trim_start();
-                if after_trimmed.starts_with('#') || after_trimmed.is_empty() {
-                    return out;
-                }
-                rest = after;
-                continue;
-            }
-        }
-        // 裸值 / 说不清 ⇒ 抹到行尾（宁可多抹一个注解，不可漏一个字）
-        return out;
-    }
-    out.push_str(rest);
-    out
-}
 
 
 /// 界面「按链路覆盖」要显示的**链路键名**（前端照它出行，**别自己写死四个**）。
@@ -617,6 +568,16 @@ fn check_provider_raw(raw: &str) -> Result<(), AppError> {
     }
 }
 
+/// 写 `llm.toml` 的**唯一通道**（patch / raw 都走这里）。
+///
+/// # ⚠️ 两条硬规矩（P0 事故 2026-10-19）
+///
+/// 1. **先写临时文件 → 用真正的反序列化器验一遍 → 再 `rename`**：
+///    那次事故是保存路径把 `json_mode = ""`（字符串）写进了布尔字段 —— 文件**是合法 TOML**，
+///    只有反序列化到 `LlmConfig` 才炸，而炸的后果是**整份 LLM 配置回退默认值**（界面"更糟了"）。
+///    所以守卫必须在"合法 TOML"之上再加一层**真反序列化**，且**失败时一个字节都不许落到原文件上**。
+/// 2. 失败回 **400 + 人话**（哪个字段 / 期望什么 / 实际什么），而那条人话里的 key 已脱敏
+///    （见 `yekitrim_core::config::redact_secrets`）。
 pub(super) fn config_llm_put_locked(path: &Path, body: &serde_json::Value) -> ApiResult {
     if let Some(patch) = body.get("patch") {
         let patch = drop_blank_api_key(patch);
@@ -626,9 +587,14 @@ pub(super) fn config_llm_put_locked(path: &Path, body: &serde_json::Value) -> Ap
         // 老客户端发 llm.model/base_url/api_key ⇒ 镜像进 active provider（否则"改了没生效"）
         let patch = mirror_legacy_into_active_provider(&patch, &stored);
         check_provider_patch(&patch)?;
-        yekitrim_core::config::patch_config_file(path, &patch)
-            .map_err(|e| err(StatusCode::BAD_REQUEST, format!("LLM 配置保存失败: {e:#}")))?;
-        return ok(serde_json::json!({ "ok": true }));
+        // 在**临时副本**上做 patch（原文件全程不动），验过再换上去
+        let tmp = staged_copy(path)?;
+        let written = yekitrim_core::config::patch_config_file(&tmp, &patch);
+        if let Err(e) = written {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(err(StatusCode::BAD_REQUEST, format!("LLM 配置保存失败: {e:#}")));
+        }
+        return commit_validated(&tmp, path);
     }
     let raw = body.get("raw").and_then(|v| v.as_str()).or_else(|| body.get("content").and_then(|v| v.as_str()));
     let Some(raw) = raw else { return Err(err(StatusCode::BAD_REQUEST, "缺少 raw 或 patch 字段")); };
@@ -645,14 +611,56 @@ pub(super) fn config_llm_put_locked(path: &Path, body: &serde_json::Value) -> Ap
     let restored = yekitrim_core::config::restore_llm_provider_keys(raw, &stored_text);
     let raw = restored.as_deref().unwrap_or(raw);
     check_provider_raw(raw)?;
-    if let Some(parent) = path.parent() { std::fs::create_dir_all(parent).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("创建目录失败: {e}")))?; }
-    std::fs::write(path, raw).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("保存失败: {e}")))?;
+    // 仍走"临时文件 → 验 → rename"：raw 这条路以前是直接覆盖原文件的
+    let tmp = path.with_extension("toml.guard");
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("创建目录失败: {e}")))?;
+    }
+    std::fs::write(&tmp, raw).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("保存失败: {e}")))?;
     if incoming_key.trim().is_empty() && !stored_key.trim().is_empty() {
         // 整份写完之后再把已存的 key 补回去：走 patch 通道（会自己建 `[llm]` 表 / 补键），
         // 比在文本上做"插一行"的手术稳得多（源文件可能把那一行整个删了）
-        yekitrim_core::config::patch_config_file(path, &serde_json::json!({ "llm": { "api_key": stored_key } }))
-            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("LLM 配置保存失败: {e:#}")))?;
+        if let Err(e) = yekitrim_core::config::patch_config_file(&tmp, &serde_json::json!({ "llm": { "api_key": stored_key } })) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(err(StatusCode::INTERNAL_SERVER_ERROR, format!("LLM 配置保存失败: {e:#}")));
+        }
     }
+    commit_validated(&tmp, path)
+}
+
+/// 把现有文件拷进同目录的临时路径（不存在就建空的）—— 后续所有改动都在它上面做。
+fn staged_copy(path: &Path) -> Result<std::path::PathBuf, AppError> {
+    let tmp = path.with_extension("toml.guard");
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("创建目录失败: {e}")))?;
+    }
+    if path.exists() {
+        std::fs::copy(path, &tmp)
+            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("准备临时文件失败: {e}")))?;
+    } else {
+        std::fs::write(&tmp, "")
+            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("准备临时文件失败: {e}")))?;
+    }
+    Ok(tmp)
+}
+
+/// **写盘前守卫**：解析临时文件 → 失败则删掉临时文件、**原文件一个字节都没动**，回 400；
+/// 成功则 `rename` 换上去（同卷 rename 是原子的：要么旧文件完好、要么新内容已验证）。
+fn commit_validated(tmp: &Path, path: &Path) -> ApiResult {
+    let text = std::fs::read_to_string(tmp)
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读临时文件失败: {e}")))?;
+    if let Err(bad) = yekitrim_core::config::validate_llm_toml(&text) {
+        let _ = std::fs::remove_file(tmp);
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            format!("这份 llm.toml 解析不过，**没有保存**（原文件未改动）：{bad}"),
+        ));
+    }
+    std::fs::rename(tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(tmp);
+        err(StatusCode::INTERNAL_SERVER_ERROR, format!("保存失败: {e}"))
+    })?;
     ok(serde_json::json!({ "ok": true }))
 }
 
@@ -1579,6 +1587,72 @@ fn redact_api_key_只抹值() {
     assert_eq!(out.lines().count(), raw.lines().count());
 }
 
+
+
+/// **写盘前守卫**（P0 事故 2026-10-19）：`json_mode = ""` 这种"合法 TOML 但反序列化不过"的内容
+/// **不许落盘**，而且要回 400 + 人话；**原文件一个字节都不许动**（对比写前后字节）。
+///
+/// 事故现场：保存路径把字符串写进了布尔字段 ⇒ 整份 LLM 配置解析失败 ⇒ **回退默认值**
+/// （用户看到的"界面更糟了"）。守卫必须用 `LlmConfig` 那层反序列化，`toml::Value` 挡不住。
+#[test]
+fn broken_patch_is_rejected_and_the_file_is_untouched() {
+    let dir = std::env::temp_dir().join(format!(
+        "vt-llm-guard-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("llm.toml");
+    // 夹具里的 key 一律 "k"（**不许把真 key 写进仓库/输出**）
+    let original = "[llm]\napi_key = \"k\"\nmodel = \"m\"\n";
+    std::fs::write(&path, original).unwrap();
+
+    let bad = serde_json::json!({ "patch": { "llm": { "params": { "json_mode": "" } } } });
+    let e = config_llm_put_locked(&path, &bad).expect_err("这种 patch 必须被拦下");
+    assert_eq!(e.0, StatusCode::BAD_REQUEST, "要回 400（不是 200、也不是 500）");
+    let msg = e.1 .0["error"].as_str().unwrap_or("").to_string();
+    assert!(msg.contains("json_mode"), "要点名哪个字段：{msg}");
+    assert!(msg.contains("boolean"), "要说期望什么类型：{msg}");
+    assert!(msg.contains("没有保存"), "要明说没保存：{msg}");
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        original,
+        "**原文件一个字节都不许动**（先写临时文件、验过才 rename）"
+    );
+    assert!(
+        !path.with_extension("toml.guard").exists(),
+        "临时文件要清掉（别在配置目录里留垃圾）"
+    );
+
+    // 合法 patch ⇒ 200，且文件真的能反序列化
+    let _ = config_llm_put_locked(&path, &serde_json::json!({ "patch": { "llm": { "model": "m2" } } }))
+        .expect("合法 patch 必须能存");
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("m2"), "改动生效：\n{text}");
+    assert!(
+        yekitrim_core::config::validate_llm_toml(&text).is_ok(),
+        "存完的文件必须解析得动：\n{text}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **解析失败的文案必须脱敏**（安全）：TOML 的报错会带出错那一行的原文 ——
+/// 一行写全的 `params = { … api_key = "sk-…" }` 就是明文泄漏（用户已经贴过一次日志）。
+#[test]
+fn parse_error_message_does_not_leak_the_api_key() {
+    // 夹具：key 故意写在**出错那一行**上（事故现场的形状）
+    let bad = "[llm]\nparams = { json_mode = \"\", api_key = \"sk-LEAK-FIXTURE\" }\n";
+    let e = yekitrim_core::config::validate_llm_toml(bad).expect_err("必须解析不过");
+    assert!(!e.contains("sk-LEAK-FIXTURE"), "错误文案里不许有明文 key：{e}");
+    assert!(!e.contains("sk-"), "连前缀都不该出现：{e}");
+    assert!(
+        e.contains("json_mode") || e.contains("boolean"),
+        "但判据要留着（哪个字段 / 期望什么类型）：{e}"
+    );
+}
 
 /// 界面链路清单：**有 title、没有 correct**（用户口径：字幕订正删掉、加标题生成）。
 /// 这一条钉的是"后端给清单"这件事本身 —— 前端不许自己写死四个。

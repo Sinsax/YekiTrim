@@ -242,6 +242,13 @@ reasoning = "off"          # 精修默认关思考（链路代码默认给的就
 下次读配置才发现值没了）。回归钉子：`config::patch_config_tests`（含"兄弟键与注释不丢"）。
 新增需要写嵌套 section 的表单时直接用这个通道，不必再开专用端点。
 
+⚠️ **写 `llm.toml` 之前必须"反序列化验一遍"**（P0 事故 2026-10-19）：保存路径曾把 `json_mode = ""`
+（字符串）写进布尔字段 —— 文件**是合法 TOML**，只有反序列化到 `LlmConfig` 才炸，而炸的后果是
+**整份 LLM 配置回退默认值**。守卫 = `config::validate_llm_toml`（server 写通道：先写同目录临时文件 →
+验 → 才 `rename`；失败回 400 且**原文件一个字节不动**）。迁移回写（`version::prepare`）也吃同一道闸。
+⚠️ **日志里的错误文案必须先脱敏**：TOML 报错会带出错那一行的原文 ⇒ 一律走 `config::redact_secrets`
+（`api_key` 的值抹成空串，键名/行号保留）。**只此一份实现**（server 的 `redact_api_key` 转调它）。
+
 ⚠️ **`null` = 删键**（`merge_into_table` 的第一条分支）：patch 是合并语义，这是唯一能表达
 "取消该键 / 回到跟随全局"的写法 —— 设置页把「按链路覆盖」那条的勾**取消**走的就是它。
 **别再退回"null → 空串"**：`max_tokens = ""` 是合法 TOML 但读不出 u32，`load_llm_config`

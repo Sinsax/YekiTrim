@@ -477,6 +477,18 @@ pub fn prepare(path: &Path, kind: ConfigKind) -> Result<Prepared> {
         return Ok(prepared);
     }
     if prepared.changed && kind.persists() {
+        // ⚠️ **写盘前守卫**（P0 2026-10-19）：迁移产物必须能被**真正的反序列化器**吃下去。
+        // 只校验 `LlmConfig` 那一种（其它两家的结构体在 core 之外，且它们没有"解析失败就回退默认"
+        // 这条后果）。解析不过 ⇒ **拒绝回写**：原文件保持完好，内存里那份照常用（下次再试，幂等）。
+        if kind == ConfigKind::Llm {
+            if let Err(bad) = crate::config::validate_llm_toml(&prepared.text) {
+                tracing::warn!(
+                    "{} 迁移后解析不过，**没有**回写（原文件保持不动，本次按内存里那份跑）：{bad}",
+                    path.display()
+                );
+                return Ok(prepared);
+            }
+        }
         match backup_before_upgrade(path, prepared.from) {
             Ok(Some(bak)) => tracing::info!(
                 "{} 已从 v{} 升级到 v{}（原文件备份在 {}）",

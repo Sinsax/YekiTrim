@@ -810,6 +810,80 @@ fn merge(base: &mut Config, overlay: Config) {
     }
 }
 
+
+// ── 明文脱敏 + 写盘前守卫（P0，2026-10-19）────────────────────────────────────
+
+/// 把一段**可能夹着明文 key** 的文本抹成"可以打日志/回接口"的样子。
+///
+/// 为什么要它在 core 里：TOML 解析错误**会带出错那一行的原文**（
+/// `params = { json_mode = "", api_key = "sk-…" }` 这种一行写全的配置就是明文泄漏）——
+/// 而这种错误文本出现在**两个 crate** 的日志里（core 读配置、server 写配置）。
+/// **只此一份实现**（server 的 `redact_api_key` 已改成转调这里）。
+///
+/// 口径：行首的、inline table 里的、注释掉的 `api_key = "…"` 全抹；键名/缩进/行数一律保留。
+pub fn redact_secrets(raw: &str) -> String {
+    raw.split('\n').map(redact_secrets_line).collect::<Vec<_>>().join("\n")
+}
+
+fn redact_secrets_line(line: &str) -> String {
+    const TOKEN: &str = "api_key";
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(pos) = rest.find(TOKEN) {
+        let before = &rest[..pos];
+        out.push_str(before);
+        out.push_str(TOKEN);
+        let mut tail = &rest[pos + TOKEN.len()..];
+        // 键名边界：`api_key_extra` 这种前缀相同的不许误伤
+        let boundary = !before
+            .chars()
+            .last()
+            .map(|c| c.is_alphanumeric() || c == '_')
+            .unwrap_or(false);
+        let trimmed = tail.trim_start_matches([' ', '\t']);
+        let ws = tail.len() - trimmed.len();
+        if !boundary || !trimmed.starts_with('=') {
+            rest = tail;
+            continue;
+        }
+        out.push_str(&tail[..ws]);
+        out.push('=');
+        tail = &trimmed[1..];
+        let trimmed = tail.trim_start_matches([' ', '\t']);
+        out.push_str(&tail[..tail.len() - trimmed.len()]);
+        // 值：带引号 ⇒ 只抹引号里的内容（引号/键名/缩进原样留）
+        if let Some(q) = trimmed.chars().next().filter(|c| *c == '"' || *c == '\'') {
+            if let Some(rel) = trimmed[1..].find(q) {
+                out.push(q);
+                out.push(q);
+                let after = &trimmed[1 + rel + 1..];
+                let after_trimmed = after.trim_start();
+                // 行尾注释里也可能写着 key ⇒ 一并抹掉；inline table 的后续键继续扫
+                if after_trimmed.starts_with('#') || after_trimmed.is_empty() {
+                    return out;
+                }
+                rest = after;
+                continue;
+            }
+        }
+        // 裸值 / 说不清 ⇒ 抹到行尾（宁可多抹一个注解，不可漏一个字）
+        return out;
+    }
+    out.push_str(rest);
+    out
+}
+
+/// **写盘前守卫**：把 `llm.toml` 文本用**真正的反序列化器**吃一遍。
+///
+/// 为什么必须有（P0 事故 2026-10-19）：保存路径把 `json_mode = ""`（字符串）写进了布尔字段，
+/// 文件本身是**合法 TOML**（`toml::Value` 解析得动），只有反序列化到 `LlmConfig` 才会炸 ——
+/// 而炸的后果是**整份 LLM 配置回退默认值**（界面"更糟了"）。所以守卫必须用 `LlmConfig` 这层。
+///
+/// 返回 `Err` 时给的是**脱敏后**的人话（哪个字段 / 期望什么 / 实际什么）。
+pub fn validate_llm_toml(text: &str) -> Result<(), String> {
+    toml::from_str::<LlmFile>(text).map(|_| ()).map_err(|e| redact_secrets(&e.to_string()))
+}
+
 /// 从 .yekitrim/llm.toml 加载 LLM 配置（独立于工程配置和全局配置）
 pub fn load_llm_config() -> LlmConfig {
     let path = crate::path::yekitrim_home().join("llm.toml");
@@ -827,7 +901,9 @@ pub fn load_llm_config() -> LlmConfig {
     toml::from_str::<LlmFile>(&content)
         .map(|f| f.llm)
         .unwrap_or_else(|e| {
-            tracing::warn!("解析 {} 失败: {}，使用默认 LLM 配置", path.display(), e);
+            // ⚠️ **脱敏**：TOML 错误文本带出错那一行的原文 —— 一行写全的 `[llm]` 就是明文 key。
+            let why = redact_secrets(&e.to_string());
+            tracing::warn!("解析 {} 失败: {}，使用默认 LLM 配置", path.display(), why);
             LlmConfig::default()
         })
 }
@@ -941,7 +1017,9 @@ pub fn load_llm_config_for(owner: crate::owner::Owner) -> LlmConfig {
     match toml::from_str::<LlmFile>(&content) {
         Ok(f) => f.llm,
         Err(e) => {
-            tracing::warn!("解析 {} 失败: {}，使用默认 LLM 配置", path.display(), e);
+            // ⚠️ **脱敏**：同上（错误文本会带出错行的原文）
+            let why = redact_secrets(&e.to_string());
+            tracing::warn!("解析 {} 失败: {}，使用默认 LLM 配置", path.display(), why);
             LlmConfig::default()
         }
     }
