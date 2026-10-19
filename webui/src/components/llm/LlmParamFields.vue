@@ -12,6 +12,8 @@
 //        这两个字段**缺失/null = 未声明 ⇒ 按老行为**（R4，表里有没有 off 就照画）。
 //  ② caps.temperature === 'unsupported' ⇒ 温度滑块**禁用 + 行内写明原因**（只挂 title = 用户拖不动只能猜）。
 //  ③ 能力**未知**（null / hit:false）⇒ 只画通用控件，并写明"能力未知 / 未收录"；绝不猜一份档位出来。
+//     ⚠️ **"未声明" ≠ "不支持"**：`levels: {}` / `temperature` 缺字段时照实写「未声明（默认…）」，
+//        不要画一个空下拉、也不要把控件灰掉假装"这家不支持"（那会让人以为功能坏了）。
 //  ④ **生成能力（输入模态）是勾选框**：勾选状态由父层给（它要写进 [llm.models."<id>"].input），
 //     本组件只 emit。默认值 = 能力表的 `input`；**不勾图片时给一句灰字说明**（别用禁用态写死 ——
 //     用户要能自己勾上覆盖，这正是"能获取当然最好、获取不到就手填"那条路）。
@@ -84,8 +86,21 @@ const thinkingTitle = computed(() => {
 })
 const thinkNote = computed(() => {
   if (props.caps == null) return '能力未知，未列推理档位'
-  if (!levels.value.length) return '该模型没有推理档位'
+  // ⚠️ **未声明**（能力面没给清单）≠ **不支持**：写清楚"默认不发推理参数"，而不是"这家没有"
+  if (!levels.value.length) return '该模型未声明推理档位（默认不发推理参数）'
   return ''
+})
+/** 温度：**未声明**时说"照发"，别说成"不支持"（后者才禁用控件） */
+const tempHint = computed(() => {
+  if (tempUnsupported.value) return '该模型不支持温度，已禁用'
+  if (props.caps && props.caps.temperature === 'unknown') return '模型未声明温度（照发）'
+  return ''
+})
+/** 工具调用：**只展示**（不是开关）。null = 未声明。 */
+const toolCallText = computed(() => {
+  if (!props.caps) return ''
+  if (props.caps.toolCall == null) return '工具调用：未声明'
+  return props.caps.toolCall ? '工具调用：支持' : '工具调用：不支持'
 })
 const inputImageTitle = computed(() => {
   const base = props.inputDeclared
@@ -150,7 +165,7 @@ function toggleInherit(inherit) {
     <!-- 温度：不支持就**禁用 + 行内原因**（不是只挂 title） -->
     <SliderField v-if="show('temperature')" v-model="target.temperature" label="温度"
                  :min="0" :max="2" :step="0.1" :disabled="tempUnsupported"
-                 :hint="tempUnsupported ? '该模型不支持温度，已禁用' : ''" />
+                 :hint="tempHint" />
 
     <!-- 输出上限：滑块上限 = 模型能力值（未知才回落到 65536） -->
     <SliderField v-if="show('max_tokens')" v-model="target.max_tokens" label="输出上限"
@@ -166,6 +181,12 @@ function toggleInherit(inherit) {
     <div v-if="capsUnlisted && show('reasoning')" class="muted small lpf-note"
          title="未收录 ⇒ 走保守默认：不发推理参数、温度照发、max_tokens；要改就在「高级 · 模型能力覆盖」里手填">
       未收录 ⇒ 默认不发推理参数
+    </div>
+
+    <!-- 能力摘要（**只展示**，不是开关）：工具调用。null = 未声明，别猜成"支持"。 -->
+    <div v-if="show('input') && toolCallText" class="muted small lpf-note"
+         title="能力面给的 tool_call，仅展示 —— 这一版不把工具调用接到请求里">
+      {{ toolCallText }}
     </div>
   </div>
 </template>

@@ -38,6 +38,15 @@ export async function fetchCatalog(baseUrl, model) {
   return api('/api/config/llm/catalog?' + q, { label: '读取模型能力' })
 }
 
+/**
+ * 方言清单（`GET /api/config/llm/dialects` → `{ dialects: [{id,label,max_output_field}] }`）。
+ * **失败抛出**：调用方退回**内置只读清单**并在界面上标注「内置」—— 不许静默假装是服务端给的。
+ */
+export async function fetchDialects() {
+  const r = await api('/api/config/llm/dialects', { label: '读取方言清单' })
+  return Array.isArray(r && r.dialects) ? r.dialects.filter((d) => d && d.id) : []
+}
+
 /** 保存 LLM 配置（patch 语义）。api_key 在**没填**时由调用方整个省略 —— 合并语义下等于不修改。 */
 export async function saveLlm(patch) {
   return api('/api/config/llm', { method: 'PUT', body: JSON.stringify({ patch }), label: '保存 LLM 配置' })
