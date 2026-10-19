@@ -1843,18 +1843,67 @@ fn apply_model_override(caps: &mut yekitrim_llm::ModelCaps, ov: &ModelOverrideTo
     }
 }
 
-/// 一个 provider 的明文 key：显式 api_key 优先，其次 api_key_env 指的环境变量。
-///
-/// ⚠️ 两条都空 ⇒ 空串（**别报错**：测试连接 / 探针要能自己给一句人话）。
+impl LlmProvider {
+    /// 这份配置的明文 key：显式 `api_key` 优先，其次 `api_key_env` 指的环境变量。
+    ///
+    /// ⚠️ 两条都空 ⇒ 空串（**别报错**：测试连接 / 探针要能自己给一句人话）。
+    /// 这是**唯一**取值实现 —— `From<&LlmConfig>`、server 的 `resolve_llm_conn`、精修各命令的
+    /// "配没配 key" 判定都读它，别再自己去拼 `api_key` / `api_key_env`。
+    pub fn provider_key(&self) -> String {
+        if !self.api_key.trim().is_empty() {
+            return self.api_key.clone();
+        }
+        let var = self.api_key_env.trim();
+        if var.is_empty() {
+            return String::new();
+        }
+        std::env::var(var).unwrap_or_default()
+    }
+}
+
+/// 旧名字（`From<&LlmConfig>` 里还在用）：转调 [`LlmProvider::provider_key`]。
 fn provider_key(p: &LlmProvider) -> String {
-    if !p.api_key.trim().is_empty() {
-        return p.api_key.clone();
+    p.provider_key()
+}
+
+/// 模板里那个占位 key（老 llm.toml 模板带的）：**等于没配**。
+const PLACEHOLDER_API_KEY: &str = "sk-your-api-key-here";
+
+impl LlmConfig {
+    /// **当前生效的那把 key**：`active` 那份 provider 的（`LlmProvider::provider_key`），否则 legacy 顶层。
+    ///
+    /// ⚠️ 多配置（`config_version = 3`）之后密钥在 `providers[].api_key` 里、**顶层恒空** ——
+    /// 任何"配没配 key"的判断都必须走这里（或 [`Self::has_api_key`]），**别再直接读 `self.api_key`**：
+    /// 2026-10-20 的事故就是"LLM 剪辑读顶层 key ⇒ 恒空 ⇒ 静默空跑、作业显示完成"。
+    pub fn effective_api_key(&self) -> String {
+        match self.active_provider() {
+            Some(p) => p.provider_key(),
+            None => self.api_key.clone(),
+        }
     }
-    let var = p.api_key_env.trim();
-    if var.is_empty() {
-        return String::new();
+
+    /// **配没配 key** 的唯一判定入口（占位值 = 没配，与老行为一致）。
+    pub fn has_api_key(&self) -> bool {
+        let k = self.effective_api_key();
+        let k = k.trim();
+        !k.is_empty() && k != PLACEHOLDER_API_KEY
     }
-    std::env::var(var).unwrap_or_default()
+
+    /// **当前生效的模型 id**（active 那份的，否则顶层）。日志/doctor 用，别拿空的 `self.model` 去打印。
+    pub fn effective_model(&self) -> &str {
+        match self.active_provider() {
+            Some(p) => p.model.as_str(),
+            None => self.model.as_str(),
+        }
+    }
+
+    /// **当前生效的 base_url**（同上）。
+    pub fn effective_base_url(&self) -> &str {
+        match self.active_provider() {
+            Some(p) => p.base_url.as_str(),
+            None => self.base_url.as_str(),
+        }
+    }
 }
 
 /// 把 provider **模型目录**里那一条盖到 caps 上（只覆盖它说了的字段）。

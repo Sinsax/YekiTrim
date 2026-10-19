@@ -223,12 +223,47 @@ fn open_in_file_manager(path: &std::path::Path) -> std::io::Result<()> {
     yekitrim_core::process::cmd(program).arg(path).spawn().map(|_| ())
 }
 
+
+/// **`/api/health.llm` 在多配置下也必须是 true**（2026-10-20 那一族 bug：读顶层 api_key ⇒ 恒 false）。
+#[test]
+fn llm_ready_is_provider_aware() {
+    fn cfg_with(p: Option<&str>, legacy: &str) -> yekitrim_core::config::Config {
+        let mut c = yekitrim_core::config::Config::default();
+        c.llm.api_key = legacy.into();
+        if let Some(key) = p {
+            c.llm.active = Some("a".into());
+            c.llm.providers = vec![yekitrim_core::config::LlmProvider {
+                id: "a".into(),
+                api: "openai-chat".into(),
+                api_key: key.into(),
+                ..Default::default()
+            }];
+        }
+        c
+    }
+    // provider 有 key、顶层没有 ⇒ true（这就是用户那份配置）
+    assert!(llm_ready(&cfg_with(Some("k"), "")), "多配置下不许再判成未配置");
+    // 两份都没有 ⇒ false
+    assert!(!llm_ready(&cfg_with(None, "")));
+    // legacy 顶层有 ⇒ true（老配置行为不变）
+    assert!(llm_ready(&cfg_with(None, "k")));
+    // 模板占位值仍算没配
+    assert!(!llm_ready(&cfg_with(None, "sk-your-api-key-here")));
+}
+
+/// `/api/health` 的能力位：**当前配置配没配 API 密钥**（纯谓词，便于钉住）。
+fn llm_ready(cfg: &yekitrim_core::config::Config) -> bool {
+    cfg.llm.has_api_key()
+}
+
 /// 本地排查 `yekitrim doctor`（直接读本机账本，信息更全）。
 /// 顺带一个好处：`/api/health` 会被前端反复轮询，去掉这里两次同步 SQLite 查询后它不再碰磁盘。
 pub(crate) async fn health(State(state): State<Arc<AppState>>, headers: axum::http::HeaderMap) -> ApiResult {
     // 能力位只看平台级配置（global-only）：health 是公开接口，不该泄露任何工程信息
     let cfg = yekitrim_core::config::load_global_config();
-    let llm = !cfg.llm.api_key.is_empty() && cfg.llm.api_key != "sk-your-api-key-here";
+    // ⚠️ 判定走 `has_api_key()`（= active provider 的 key）：多配置下顶层 `api_key` **恒空**，
+    // 读顶层会让 `/api/health.llm` **一直 false**（前端据此把 LLM 相关入口置灰/提示未配置）。
+    let llm = llm_ready(&cfg);
     // ⚠️ 只查一次，别在 json! 里连着调两遍：`find_ytdlp` 会做 sha256 校验（17.8MB），
     // 而 health 是前端反复轮询的接口（registry 侧另有 (path,len,mtime) 缓存兜底，但两次调用仍多余）。
     let dl = yekitrim_service::downloader::registry::find_ytdlp(&cfg);

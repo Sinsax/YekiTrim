@@ -1079,7 +1079,9 @@ fn default_sub_outer_stroke() -> String {
     "auto #ffffff".into()
 }
 fn default_highlight_color() -> String {
-    "#f56b41".into()
+    // A 套「柔和莫兰迪」（2026-10-20）：旧 "#f56b41"（ΔE 11.2，压描边对比度 5.85→6.24）。
+    // 封面 hl_color 直接读这一条（cover.rs::cover_frame_vars）—— 改这里两处一起变。
+    "#CF8A72".into()
 }
 fn default_sub_position() -> String {
     "bottom".into()

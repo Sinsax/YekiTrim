@@ -640,7 +640,10 @@ impl TextStyle {
             // 白字 + 深描边：与字幕同一套对比度做法。
             Self::Hook | Self::Chapter | Self::Count => [255, 255, 255, 255],
             // 吐槽用暖黄 —— 它是"旁白"，与正文字幕要分得开。
-            Self::Comment => [255, 226, 122, 255],
+            // ⚠️ **必须与 `ElementColor::Yellow.rgba()` 逐值相等**（A 套 2026-10-20：旧 [255,226,122]）。
+            //    不等的话「同一句话写不写 color」会得到两种黄 —— 判据
+            //    `color_presets_round_trip_and_are_all_parseable` 就是钉这个的。
+            Self::Comment => [0xD9, 0xC4, 0x8A, 255],
         }
     }
 
@@ -803,11 +806,14 @@ impl ElementColor {
     pub const fn rgba(self) -> [u8; 4] {
         match self {
             Self::White => [255, 255, 255, 255],
-            Self::Pink => [255, 128, 192, 255],
-            Self::Red => [255, 64, 64, 255],
-            Self::Yellow => [255, 226, 122, 255],
-            Self::Cyan => [96, 224, 255, 255],
-            Self::Green => [128, 232, 128, 255],
+            // ---- A 套「柔和莫兰迪」（2026-10-20 用户口径：上一版只降饱和 ⇒ 看不出来 ⇒ 本轮改 L+S）----
+            // 每一条 vs 旧值的 CIEDE2000：粉 7.4 / 红 10.8 / 黄 10.3 / 青 11.3 / 绿 12.6（报告有整张表）。
+            // 旧值留在行尾注释里 —— 回滚一条或做 A/B 时直接照抄。
+            Self::Pink => [0xD9, 0x8B, 0xAE, 255], // 旧 [255,128,192]
+            Self::Red => [0xC9, 0x6A, 0x62, 255], // 旧 [255, 64, 64]
+            Self::Yellow => [0xD9, 0xC4, 0x8A, 255], // 旧 [255,226,122]（与转译器 TEXT_STYLE_FALLBACK.comment 同值）
+            Self::Cyan => [0x8F, 0xBF, 0xC9, 255], // 旧 [ 96,224,255]
+            Self::Green => [0x93, 0xC7, 0x9B, 255], // 旧 [128,232,128]
             Self::Black => [24, 24, 24, 255],
         }
     }

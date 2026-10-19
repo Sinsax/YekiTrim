@@ -110,8 +110,10 @@ impl Stage for EventDetector {
         let cancel: Option<yekitrim_llm::agent::CancelProbe> =
             Some(std::sync::Arc::new(move || progress.cancelled()));
 
-        let mut events = if llm_config.api_key.is_empty() {
-            tracing::warn!("未配置 LLM API key (llm.api_key)，使用默认事件");
+        // ⚠️ 判定走 `has_api_key()`（= active provider 的 key）：多配置下顶层 `api_key` **恒空**，
+        // 读顶层会把每个用户都判成"没配" ⇒ 静默退化成默认事件（2026-10-20 那一族 bug）。
+        let mut events = if !llm_config.has_api_key() {
+            tracing::warn!("未配置 LLM API 密钥（设置 → LLM 配置 里当前那一份），使用默认事件");
             vec![llm::create_default_event(segments)]
         } else {
             process_with_llm(
@@ -133,7 +135,8 @@ impl Stage for EventDetector {
         //   ① 它**不走** `postprocess_events`（那条 30s 吞并会把小块吃光）；
         //   ② 跨窗去重的丢弃门槛按趟取（第二趟传 0，见 `call_with_progress`）；
         //   ③ 并回主列表时，"被普通事件盖住/紧贴"的**丢掉**（普通事件的标题与切点是权威）。
-        if detect_config.scattered.enabled && !llm_config.api_key.is_empty() {
+        // 没有密钥 ⇒ **跳过**这趟（不是报错）：它在整条链路里是可选的增强。
+        if detect_config.scattered.enabled && llm_config.has_api_key() {
             match process_scattered_with_llm(
                 segments,
                 llm_config,
@@ -226,7 +229,7 @@ impl Stage for EventDetector {
 
         // 标题+摘要 LLM 传播潜力评分：只喂 label+summary，加权进最终 popularity。
         // 失败不阻断检测，回退到原弹幕/字幕热度。
-        let llm_scores = if !llm_config.api_key.is_empty() {
+        let llm_scores = if llm_config.has_api_key() {
             match llm::score_events_with_llm(
                 &events,
                 llm_config,
@@ -1560,9 +1563,10 @@ mod scatter_diag {
             segments.first().map(|s| s.start).unwrap_or(0.0),
             segments.last().map(|s| s.end).unwrap_or(0.0),
         );
-        let llm = crate::config::load_llm_config();
-        if llm.api_key.is_empty() {
-            eprintln!("程序目录没有 LLM key，跳过");
+        // ⚠️ 按 owner 读（无 owner 版读顶层旧位置，多配置下那份里没有 key）
+        let llm = crate::config::load_llm_config_for(crate::owner::Owner::from_env());
+        if !llm.has_api_key() {
+            eprintln!("当前配置没有 LLM API 密钥，跳过");
             return;
         }
         let mut detect = crate::config::DetectionConfig::default();
@@ -1670,9 +1674,9 @@ mod scatter_stage_diag {
         .expect("写临时 transcript");
 
         let mut cfg = crate::config::Config::default();
-        cfg.llm = crate::config::load_llm_config();
-        if cfg.llm.api_key.is_empty() {
-            eprintln!("程序目录没有 LLM key（可给 YEKITRIM_DATA_DIR=target/debug），跳过");
+        cfg.llm = crate::config::load_llm_config_for(crate::owner::Owner::from_env());
+        if !cfg.llm.has_api_key() {
+            eprintln!("当前配置没有 LLM API 密钥（可给 YEKITRIM_DATA_DIR=target/debug），跳过");
             return;
         }
         cfg.detection.scattered.enabled = true;
@@ -1800,9 +1804,10 @@ mod scatter_stage_diag {
             100.0 * covered / (win.1 - win.0).max(1e-6)
         );
 
-        let llm = crate::config::load_llm_config();
-        if llm.api_key.is_empty() {
-            eprintln!("程序目录没有 LLM key，跳过");
+        // ⚠️ 按 owner 读（无 owner 版读顶层旧位置，多配置下那份里没有 key）
+        let llm = crate::config::load_llm_config_for(crate::owner::Owner::from_env());
+        if !llm.has_api_key() {
+            eprintln!("当前配置没有 LLM API 密钥，跳过");
             return;
         }
         let mut detect = crate::config::DetectionConfig::default();

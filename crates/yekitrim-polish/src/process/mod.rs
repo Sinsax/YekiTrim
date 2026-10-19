@@ -2588,7 +2588,7 @@ y = "10%"
         let pink = run(Some("pink"));
         assert_eq!(pink[9], "pink", "第 10 段必须是预设名");
         assert_eq!(
-            pink[3], "255,128,192,255",
+            pink[3], "217,139,174,255",
             "写了 pink 但填充色没变 —— 面板上选了粉色、成片却是白的（且不报错）"
         );
         assert_ne!(pink[3], none[3], "pink 必须与默认白不同");

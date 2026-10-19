@@ -1381,8 +1381,11 @@ async fn attempt_call(
 }
 
 pub async fn test_llm(llm: &LlmConfig, prompt: &str) -> Result<String> {
-    if llm.api_key.is_empty() {
-        anyhow::bail!("LLM API key 未配置");
+    // ⚠️ 判定走 provider-aware 的入口（多配置下顶层 `api_key` 恒空）；这里**本来就是报错**，保持报错。
+    if !llm.has_api_key() {
+        anyhow::bail!(
+            "LLM 未配置 API 密钥：请在 设置 → LLM 配置 里为当前配置填好「API 密钥」"
+        );
     }
     let messages = serde_json::json!([
         {"role": "system", "content": "你是一个 AI 助手。"},

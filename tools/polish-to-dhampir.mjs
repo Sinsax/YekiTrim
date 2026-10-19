@@ -2899,7 +2899,9 @@ export function translate(config, clipDir, outPath, options = {}) {
   const TEXT_STYLE_FALLBACK = {
     hook: { fontPx: 80, strokePx: 6, color: [255, 255, 255, 255], strokeColor: [26, 26, 26, 255], weight: 900, backdrop: false },
     chapter: { fontPx: 80, strokePx: 5, color: [255, 255, 255, 255], strokeColor: [26, 26, 26, 255], weight: 700, backdrop: true },
-    comment: { fontPx: 80, strokePx: 2, color: [255, 226, 122, 255], strokeColor: [26, 26, 26, 255], weight: 700, backdrop: true },
+    // ⚠️ comment.color 必须与 Rust ElementColor::Yellow.rgba() 逐值相等（旧值 255,226,122）。
+    //    四处对拍由 webui/scripts/check-color-parity.mjs 钉住（改一处不改其余 ⇒ 红）。
+    comment: { fontPx: 80, strokePx: 2, color: [217, 196, 138, 255], strokeColor: [26, 26, 26, 255], weight: 700, backdrop: true },
     count: { fontPx: 80, strokePx: 4, color: [255, 255, 255, 255], strokeColor: [26, 26, 26, 255], weight: 800, backdrop: false },
   };
   /// **文字元素字号（文档像素，1080p 基准）** —— 与 Rust `ELEMENT_FONT_PX` 同值。
