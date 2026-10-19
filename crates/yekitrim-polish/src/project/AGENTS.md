@@ -74,6 +74,13 @@
   "该工程含**已下线的特效事件**（…）" + 两条路（旧版本删事件 / 直接编辑 `polish.toml`），
   **普通解析错误原样透传**（判据只在 serde 明说 `unknown variant \`X\`` 时命中，`expected one of` 列表不算 ——
   裸匹配类型名必然误判）。那份名单是**历史清单**，别拿效果词汇表去校验它（那几个类型正是要消失的）。
+- ⚠️ **`zoom_bounce` 是例外：读时迁移成 `pulse`**（2026-10-19，用户两个 09-21 的真实工程打不开）：
+  两者在出片模板里**是同一个缩放槽**（退役前 `finalZoom = Math.max(getZoomBounce(...), getPulse(...))`，
+  都乘在 `curZoom` 上）⇒ `legacy.rs::migrate_retired_effects` 在读时**只改 `type`**、其余键原样带过去
+  （`Pulse` 的字段是 `zoom_bounce` 的超集），并 `tracing::info!` 报条数；**只改内存、不写盘**
+  （下次保存才落盘）。映射**丢了什么**（峰值 1.10→1.06、多了 ×0.97 下沉、窗口 0.30→0.48s）写在那个
+  函数的文档注释里，别当成无损迁移。`split` / `stutter` / `color_shift` **没有**现役等价物，
+  仍走上面那条人话报错 —— **别把这条迁移扩成「什么都往最近邻塞」**。
 - **画面构成（`[canvas] orientation` + `[stage] position_x/y_pct / bg_mode / scale / padding / portrait_*`）与「衬底」**：
   摆放与背景由 `ProjectFile::resolve_stage(src)` **唯一推导**，模板与编辑器只读注入的 `_canvas.stage`，
   两边不各算一份。⚠️ **2026-10-05 改版**（用户拍板）：① **位置 = 两轴各自的
