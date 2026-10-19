@@ -26,6 +26,10 @@ pub enum ReasoningLevel {
     Medium,
     High,
     XHigh,
+    /// 最强档（**本网关在用**：`["low","high","max"]`）。
+    ///
+    /// ⚠️ 它只是**词**：发不发仍由能力面（`levels`）决定 —— 表里没有的档一个都不发。
+    Max,
 }
 
 impl ReasoningLevel {
@@ -37,6 +41,7 @@ impl ReasoningLevel {
             Self::Medium => "medium",
             Self::High => "high",
             Self::XHigh => "xhigh",
+            Self::Max => "max",
         }
     }
 
@@ -47,7 +52,9 @@ impl ReasoningLevel {
             "low" => Self::Low,
             "medium" | "mid" => Self::Medium,
             "high" => Self::High,
-            "xhigh" | "max" => Self::XHigh,
+            "xhigh" => Self::XHigh,
+            // ⚠️ max 曾经被折成 xhigh（pi-ai 数据里没有 max）；本网关在用，**分开**
+            "max" => Self::Max,
             _ => return None,
         })
     }
@@ -134,6 +141,17 @@ pub struct ModelCaps {
     pub max_output_ceiling: Option<u32>,
     /// **输入模态**（文字/图片）。默认只有文字。
     pub input: InputModalities,
+    /// **能不能关掉推理**（服务端自述 `can_disable_thinking`）。
+    ///
+    /// `None` = 未声明 —— **别默认 false**：那等于把"没说"说成"关不掉"，
+    /// 界面就会把"关闭"标成不可用（用户明明能关）。
+    pub can_disable: Option<bool>,
+    /// **只会推理**（`only_reasoning`）：没有"不思考"这一档。默认 false。
+    pub only_reasoning: bool,
+    /// 服务端给的**默认档**（`reasoning_default_effort`）；`None` = 未声明。
+    pub default_level: Option<ReasoningLevel>,
+    /// 支不支持工具调用（服务端自述）。**只用于展示**：我们这一版不发工具。
+    pub tool_call: Option<bool>,
 }
 
 impl Default for ModelCaps {
@@ -146,6 +164,10 @@ impl Default for ModelCaps {
             context_window: None,
             max_output_ceiling: None,
             input: InputModalities::default(),
+            can_disable: None,
+            only_reasoning: false,
+            default_level: None,
+            tool_call: None,
         }
     }
 }

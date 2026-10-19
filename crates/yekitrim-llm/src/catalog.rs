@@ -235,7 +235,25 @@ pub fn models_for(base_url: &str) -> Vec<(String, Option<String>)> {
 /// ⚠️ **不外泄 `thinking_wire` / `max_output_wire`**：那是"怎么发"，是本 crate 的内部知识，
 /// 界面拿它也没用（该显示的只有档位与"能不能带温度"）。
 pub fn caps_json(base_url: &str, model: &str) -> serde_json::Value {
-    let caps = caps_for(base_url, model);
+    caps_json_of(&caps_for(base_url, model), find_model(base_url, model).is_some())
+}
+
+/// 同上，但**先把探测结果补进来**（只补不抹，见 `caps::apply_partial`）——
+/// `GET /api/llm/models` 的 probe 那条路用它，这样两条路给前端的是**同一形状**。
+pub fn caps_json_merged(
+    base_url: &str,
+    model: &str,
+    partial: Option<&crate::caps::PartialCaps>,
+) -> serde_json::Value {
+    let mut caps = caps_for(base_url, model);
+    if let Some(p) = partial {
+        crate::caps::apply_partial(&mut caps, p);
+    }
+    caps_json_of(&caps, find_model(base_url, model).is_some())
+}
+
+/// 把一份**解析好的**能力渲染成给界面用的 JSON（`caps_json` / `caps_json_merged` 共用这一处）。
+pub fn caps_json_of(caps: &ModelCaps, hit: bool) -> serde_json::Value {
     let mut levels = serde_json::Map::new();
     for (level, wire) in &caps.levels {
         levels.insert(
@@ -247,7 +265,7 @@ pub fn caps_json(base_url: &str, model: &str) -> serde_json::Value {
         );
     }
     serde_json::json!({
-        "hit": find_model(base_url, model).is_some(),
+        "hit": hit,
         "levels": levels,
         "temperature": match caps.temperature {
             Support::Supported => "supported",
@@ -258,6 +276,11 @@ pub fn caps_json(base_url: &str, model: &str) -> serde_json::Value {
         "reasoning": caps.reasoning_supported(),
         // 输入模态（文字/图片）：老网关缺省就是 `{text: true, image: false}` —— 别猜它支持图片
         "input": caps.input.to_json(),
+        // 关不关得掉（null = 未声明 —— **别默认 false**）、只会推理、服务端给的默认档
+        "can_disable": caps.can_disable,
+        "only_reasoning": caps.only_reasoning,
+        "default_level": caps.default_level.map(|l| l.as_str()),
+        "tool_call": caps.tool_call,
     })
 }
 
@@ -330,6 +353,11 @@ mod tests {
         assert!(v.get("max_output_wire").is_none(), "{v}");
         // 输入模态（2026-10-19 新增）：deepseek 只吃文字
         assert_eq!(v["input"], serde_json::json!({"text": true, "image": false}), "{v}");
+        // 三件"服务端说了才算"的事：表里没有这些维度 ⇒ **null / false**，不是"关不掉"
+        assert!(v["can_disable"].is_null(), "表里没这个维度 ⇒ 未声明（别默认 false）：{v}");
+        assert_eq!(v["only_reasoning"], serde_json::json!(false), "{v}");
+        assert!(v["default_level"].is_null(), "{v}");
+        assert!(v["tool_call"].is_null(), "{v}");
 
         // 表没命中：hit=false + 保守默认（**不是**让它画出一堆档位）
         let u = caps_json("https://unknown.example.com/v1", "no-such-model");
@@ -352,6 +380,47 @@ mod tests {
         assert!(txt.input.text);
         assert!(!txt.input.image, "只写 text 的不许被猜成支持图片");
         // 用户覆盖（[llm.models."<id>"]）走的是另一步，见 core 的 config 测试
+    }
+
+    /// **探测结果只补不抹**（后端同口径；前端 mergeCaps 也踩过这条）：
+    /// 只回 `supports_images` 时，**表里的档位/上下文/输出上限/温度必须照留**。
+    #[test]
+    fn probe_caps_merge_never_wipes_table_values() {
+        let base = caps_json("https://api.deepseek.com/v1", "deepseek-v4-pro");
+        let levels_before = base["levels"].as_object().expect("有档位").len();
+        let part = crate::caps::read_all(&serde_json::json!({
+            "id": "deepseek-v4-pro",
+            "supports_images": true,
+            "can_disable_thinking": true,
+            "reasoning_default_effort": "high"
+        }))
+        .expect("supports_images 就是一条信息");
+
+        let merged = caps_json_merged("https://api.deepseek.com/v1", "deepseek-v4-pro", Some(&part));
+        assert_eq!(merged["hit"], serde_json::json!(true), "表里认识它：{merged}");
+        assert_eq!(merged["input"], serde_json::json!({"text": true, "image": true}), "读到的要生效");
+        assert_eq!(merged["can_disable"], serde_json::json!(true));
+        assert_eq!(merged["default_level"], "high");
+        assert_eq!(merged["levels"].as_object().unwrap().len(), levels_before, "表里的档位不许被抹掉：{merged}");
+        assert_eq!(merged["context_window"], base["context_window"], "表里的上下文不许被抹掉");
+        assert_eq!(merged["max_output_ceiling"], base["max_output_ceiling"]);
+        assert_eq!(merged["temperature"], base["temperature"], "没说温度 ⇒ 表里的值照留");
+
+        // 没探到任何东西（None）⇒ 与不传完全一样
+        assert_eq!(caps_json_merged("https://api.deepseek.com/v1", "deepseek-v4-pro", None), base);
+    }
+
+    /// 关不掉的推理：`can_disable=false` ⇒ **从 levels 里去掉 off**（摆一个"关闭"就是骗人）。
+    #[test]
+    fn off_level_is_dropped_when_probe_says_it_cannot_be_disabled() {
+        let mut caps = caps_for("https://api.deepseek.com/v1", "deepseek-v4-pro");
+        caps.levels.insert(ReasoningLevel::Off, None); // 先人为放一档 off
+        let part = crate::caps::PartialCaps { can_disable: Some(false), ..Default::default() };
+        crate::caps::apply_partial(&mut caps, &part);
+        let v = caps_json_of(&caps, true);
+        assert!(v["levels"].get("off").is_none(), "关不掉就不许有 off：{v}");
+        assert_eq!(v["can_disable"], serde_json::json!(false));
+        assert!(v["levels"].as_object().unwrap().len() >= 3, "别的档照留：{v}");
     }
 
     /// 空/垃圾模态串：忽略未知、`text` 仍在（"没提 textual" ≠ "不支持文字"）。
