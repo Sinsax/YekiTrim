@@ -683,11 +683,32 @@ pub(super) async fn llm_models(
     Extension(user): Extension<crate::auth::CurrentUser>,
     Query(q): Query<BaseUrlQuery>,
 ) -> ApiResult {
-    let BaseUrlQuery { base_url, api_key } = q;
-    let asked = base_url.unwrap_or_default().trim().to_string();
+    let BaseUrlQuery { base_url, api_key, provider } = q;
+    let draft_base = base_url.clone().unwrap_or_default().trim().to_string();
 
-    // ① 内置表命中：**零网络请求**（连 api_key 都不需要 —— 也不需要读盘）
-    let known = yekitrim_llm::catalog::models_for(&asked);
+    // ① 内置表命中：**零网络请求**（连 api_key 都不需要 —— 也不需要读盘）。
+    //    直接在表单里填了地址的就是这一档（最常见的路径，别为它去读盘）。
+    if !draft_base.is_empty() {
+        let known = yekitrim_llm::catalog::models_for(&draft_base);
+        if !known.is_empty() {
+            return ok(serde_json::json!({
+                "source": "catalog",
+                "models": known
+                    .into_iter()
+                    .map(|(id, name)| serde_json::json!({ "id": id, "name": name }))
+                    .collect::<Vec<_>>(),
+            }));
+        }
+    }
+
+    // ② 解析"用哪套连接"：**表单草稿 > provider=<id> 那份 > legacy 顶层**（见 resolve_llm_conn）。
+    //    key 取自那一份接口自己的已存值（用户就是踩在"只认顶层 key"上）；同步读盘下 blocking 池。
+    let owner = crate::auth::owner_of(&user);
+    let llm = blocking(move || Ok(yekitrim_core::config::load_llm_config_for(owner))).await?;
+    let conn = resolve_llm_conn(&llm, provider.as_deref(), base_url.as_deref(), api_key.as_deref(), true)?;
+    let base = conn.base_url.clone();
+    // provider 的地址也先查一次表（省一次网络）
+    let known = yekitrim_llm::catalog::models_for(&base);
     if !known.is_empty() {
         return ok(serde_json::json!({
             "source": "catalog",
@@ -697,17 +718,7 @@ pub(super) async fn llm_models(
                 .collect::<Vec<_>>(),
         }));
     }
-
-    // ② 表里没有 → 探。key 取**已存的那把**（请求里不带 key，草稿一律不落盘）、同步读盘下 blocking 池
-    let owner = crate::auth::owner_of(&user);
-    let llm = blocking(move || Ok(yekitrim_core::config::load_llm_config_for(owner))).await?;
-    let base = probe_request(&asked, &llm)?;
-    // 草稿 key 优先（刚填还没保存的那种）；空串等于没给。
-    let key = api_key
-        .map(|k| k.trim().to_string())
-        .filter(|k| !k.is_empty())
-        .unwrap_or_else(|| llm.api_key.clone());
-    match yekitrim_llm::discovery::discover(&key, &base).await {
+    match yekitrim_llm::discovery::discover(&conn.api_key, &base).await {
         // ⚠️ 200 + 空列表**不是失败**：连上了、地址也对，只是它没报模型 —— 别把它说成"不支持"
         Ok(d) if d.models.is_empty() => ok(serde_json::json!({
             "source": "probe",
@@ -741,10 +752,106 @@ pub(super) async fn llm_models(
     }
 }
 
+
+/// 这次请求**用哪一套连接参数**（取模型 / 读能力 / 测连接三处共用这一份）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LlmConn {
+    /// 用了哪一份 provider（`None` = legacy 顶层字段）
+    provider: Option<String>,
+    api_key: String,
+    base_url: String,
+    model: String,
+}
+
+/// **唯一解析入口**：这次用哪把 key / 哪个地址。
+///
+/// 优先级（用户口径 2026-10-20：「取模型/测试连接要用**该接口自己的** api_key」）：
+/// ① **表单草稿**：请求里显式给了 `base_url` / `api_key`（非空才算 —— 刚填还没保存的那种）；
+/// ② **`provider=<id>` 那一份**（没传 id 就用 `active` 那份）—— **该接口自己的已存 key**；
+/// ③ **legacy 顶层 `[llm]`**（没有 providers 的老文件 ⇒ 行为与从前一字不差，走 [probe_request]）。
+///
+/// ⚠️ 报错文案按模式分：provider 模式**绝不许**说 `[llm] api_key`（那是个用户在界面上看不见的字段，
+/// 他明明已经在「API 密钥」里填过了）。
+fn resolve_llm_conn(
+    llm: &yekitrim_core::config::LlmConfig,
+    provider_id: Option<&str>,
+    draft_base: Option<&str>,
+    draft_key: Option<&str>,
+    // 这条路径**要不要 key**（读能力只用地址/模型，不需要 key）
+    require_key: bool,
+) -> Result<LlmConn, AppError> {
+    let draft_base = draft_base.map(str::trim).filter(|s| !s.is_empty());
+    let draft_key = draft_key.map(str::trim).filter(|s| !s.is_empty());
+    // 选哪一份：显式 id > active（没有 providers / active 空 ⇒ legacy）
+    let wanted = provider_id.map(str::trim).filter(|s| !s.is_empty());
+    let chosen = match wanted {
+        Some(id) => Some(llm.providers.iter().find(|p| p.id == id).ok_or_else(|| {
+            err(StatusCode::BAD_REQUEST, format!("找不到这份配置：{id}"))
+        })?),
+        None => llm.active_provider(),
+    };
+
+    let Some(p) = chosen else {
+        // ── ③ legacy：**原样走老路径**（报错文案、缺省 base_url 都不变）
+        let base = if require_key {
+            probe_request(draft_base.unwrap_or(""), llm)?
+        } else {
+            let b = draft_base.map(str::to_string).unwrap_or_else(|| llm.base_url.trim().to_string());
+            if b.is_empty() {
+                return Err(err(StatusCode::BAD_REQUEST, "缺少 base_url：要读哪支模型的能力？"));
+            }
+            b
+        };
+        return Ok(LlmConn {
+            provider: None,
+            api_key: draft_key.map(str::to_string).unwrap_or_else(|| llm.api_key.clone()),
+            base_url: base,
+            model: llm.model.clone(),
+        });
+    };
+
+    // ── ② provider：草稿优先，其次**这份接口自己的**已存值
+    // （key 的取值口径与 `From<&LlmConfig>` 的 provider_key 一致：显式 key 优先，其次 api_key_env）
+    let saved_key = if !p.api_key.trim().is_empty() {
+        p.api_key.clone()
+    } else {
+        let var = p.api_key_env.trim();
+        if var.is_empty() { String::new() } else { std::env::var(var).unwrap_or_default() }
+    };
+    let base_url = draft_base
+        .map(str::to_string)
+        .unwrap_or_else(|| p.base_url.trim().to_string());
+    let api_key = draft_key.map(str::to_string).unwrap_or(saved_key);
+    if base_url.is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "缺少 API 地址：要探哪个地址的模型清单？"));
+    }
+    if require_key && api_key.trim().is_empty() {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "这份配置还没填 API 密钥（{}）—— 在「API 密钥」那一栏填好再试",
+                p.name.trim().if_empty_else(&p.id)
+            ),
+        ));
+    }
+    Ok(LlmConn { provider: Some(p.id.clone()), api_key, base_url, model: p.model.clone() })
+}
+
 /// 真探之前的两道检查：**key 没配就别发一个必然 401 的请求**；两个 base_url 都空就没得探。
 ///
 /// 拆成纯函数是为了**能钉住**：本机的真实程序目录（`target/debug/users/<uid>/.yekitrim/llm.toml`）
 /// 里通常已经躺着一把真 key，HTTP 级用例钉不了"没配 key"那条分支（会真发一个网络请求）。
+
+/// 显示名空着就用 id（只给上面的报错文案用）。
+trait IfEmptyElse {
+    fn if_empty_else<'a>(&'a self, fallback: &'a str) -> &'a str;
+}
+impl IfEmptyElse for str {
+    fn if_empty_else<'a>(&'a self, fallback: &'a str) -> &'a str {
+        if self.is_empty() { fallback } else { self }
+    }
+}
+
 fn probe_request(asked: &str, llm: &yekitrim_core::config::LlmConfig) -> Result<String, AppError> {
     if llm.api_key.trim().is_empty() {
         return Err(err(
@@ -817,9 +924,25 @@ pub(super) async fn llm_dialects() -> ApiResult {
 /// 设置页「按能力渲染控件」的唯一数据源：**只查内置表**（不联网、不读盘、不落盘）。
 /// 表里没有这对 (host, model) 时回**保守默认 + `hit: false`**，**不是 404** ——
 /// 界面照它画通用参数并写明"未收录"即可（回 404 会让人以为接口坏了）。
-pub(super) async fn llm_catalog(Query(q): Query<CatalogQuery>) -> ApiResult {
-    let base_url = q.base_url.unwrap_or_default();
-    let model = q.model.unwrap_or_default();
+pub(super) async fn llm_catalog(
+    Extension(user): Extension<crate::auth::CurrentUser>,
+    Query(q): Query<CatalogQuery>,
+) -> ApiResult {
+    let draft_base = q.base_url.clone().unwrap_or_default();
+    let draft_model = q.model.clone().unwrap_or_default();
+    // 常见路径（表单里填了地址+模型）：**只查表、不读盘**，保持不变
+    if !draft_base.trim().is_empty() && !draft_model.trim().is_empty() {
+        return ok(serde_json::json!({
+            "source": "catalog",
+            "caps": yekitrim_llm::catalog::caps_json(&draft_base, &draft_model),
+        }));
+    }
+    // 否则按"哪一份配置"补齐缺的那一半（读能力**不需要 key** ⇒ require_key = false）
+    let owner = crate::auth::owner_of(&user);
+    let llm = blocking(move || Ok(yekitrim_core::config::load_llm_config_for(owner))).await?;
+    let conn = resolve_llm_conn(&llm, q.provider.as_deref(), Some(&draft_base), None, false)?;
+    let base_url = if draft_base.trim().is_empty() { conn.base_url } else { draft_base };
+    let model = if draft_model.trim().is_empty() { conn.model } else { draft_model };
     ok(serde_json::json!({
         "source": "catalog",
         "caps": yekitrim_llm::catalog::caps_json(&base_url, &model),
@@ -837,6 +960,12 @@ pub(super) struct BaseUrlQuery {
     /// 但只传草稿会让「已配好、只是改地址」那一步 401。
     #[serde(default)]
     pub api_key: Option<String>,
+    /// **哪一份配置文件**（`[[llm.providers]]` 的 id）。
+    ///
+    /// 不传就用 `active` 那份（就是用户当前在用的）；**两种都没有才是 legacy 顶层字段**。
+    /// 用户实测踩的就是这条：provider 里填了密钥、探针却只认 `[llm] api_key`。
+    #[serde(default)]
+    pub provider: Option<String>,
 }
 
 /// `/api/config/llm/catalog` 的查询串。
@@ -846,22 +975,40 @@ pub(super) struct CatalogQuery {
     pub base_url: Option<String>,
     #[serde(default)]
     pub model: Option<String>,
+    /// 哪一份配置文件（不传 = `active` 那份；都没有 = legacy 顶层）。
+    #[serde(default)]
+    pub provider: Option<String>,
+}
+
+/// \`/api/llm/test\` 的查询串：\`?provider=<id>\`（不传 = \`active\` 那份；都没有 = legacy）。
+#[derive(serde::Deserialize)]
+pub(super) struct TestQuery {
+    #[serde(default)]
+    pub provider: Option<String>,
 }
 
 pub(super) async fn llm_test(
     Extension(user): Extension<crate::auth::CurrentUser>,
+    Query(q): Query<TestQuery>,
 ) -> ApiResult {
     // 只有"读配置"是同步 IO（HTTP 调用本身是 async，保持不动）
     let owner = crate::auth::owner_of(&user);
     let llm = blocking(move || Ok(yekitrim_core::config::load_llm_config_for(owner))).await?;
-    if llm.api_key.is_empty() {
-        return Err(err(StatusCode::BAD_REQUEST, "LLM API key 未配置"));
-    }
+    // **用该接口自己的 key**（表单草稿 > provider=<id> > legacy）；报错文案按模式分
+    let conn = resolve_llm_conn(&llm, q.provider.as_deref(), None, None, true)?;
+    // 测连接只需要"这一套连接参数"：把解析结果拍成 legacy 形状再交给 test_llm
+    //（它内部走 for_link → From<&LlmConfig>，active 分支会去读 provider 自己的字段）
+    let mut plain = llm.clone();
+    plain.active = None;
+    plain.providers.clear();
+    plain.api_key = conn.api_key;
+    plain.base_url = conn.base_url;
+    plain.model = conn.model.clone();
     let start = std::time::Instant::now();
-    let test_ok = yekitrim_core::detection::test_llm(&llm, "ping").await.is_ok();
+    let test_ok = yekitrim_core::detection::test_llm(&plain, "ping").await.is_ok();
     let latency_ms = start.elapsed().as_millis() as u64;
     if test_ok {
-        ok(serde_json::json!({ "ok": true, "latency_ms": latency_ms, "model": llm.model }))
+        ok(serde_json::json!({ "ok": true, "latency_ms": latency_ms, "model": plain.model, "provider": conn.provider }))
     } else {
         Err(err(StatusCode::INTERNAL_SERVER_ERROR, format!("LLM 连接失败 ({latency_ms}ms)")))
     }
@@ -1010,7 +1157,7 @@ mod tests {
         };
         let Json(v) = llm_models(
             Extension(user),
-            Query(BaseUrlQuery { base_url: base, api_key: key }),
+            Query(BaseUrlQuery { base_url: base, api_key: key, provider: None }),
         )
         .await
         .expect("真端点应当回 200（502/400 会在这里炸）");
@@ -1588,6 +1735,96 @@ fn redact_api_key_只抹值() {
 }
 
 
+
+
+/// **取模型/测连接用"该接口自己的" api_key**（P0 2026-10-20）：优先级 = 表单草稿 > `provider=<id>` > legacy。
+///
+/// 用户实测：provider 里填了密钥，探针却只认 `[llm] api_key` ⇒ 报"还没配置 API key"。
+/// 这条钉的就是三档优先级 + **两种模式各自的报错文案**。
+#[test]
+fn resolve_llm_conn_uses_the_providers_own_key() {
+    use yekitrim_core::config::{LlmConfig, LlmProvider};
+
+    fn cfg() -> LlmConfig {
+        let mut c = LlmConfig::default();
+        // legacy 顶层（老文件那套）
+        c.api_key = "k-legacy".into();
+        c.base_url = "https://legacy.example/v1".into();
+        c.model = "m-legacy".into();
+        c.providers = vec![
+            LlmProvider {
+                id: "a".into(),
+                name: "甲".into(),
+                api: "openai-chat".into(),
+                base_url: "https://a.example/v1".into(),
+                api_key: "k-a".into(),
+                model: "m-a".into(),
+                ..Default::default()
+            },
+            LlmProvider {
+                id: "b".into(),
+                name: "乙".into(),
+                api: "openai-chat".into(),
+                base_url: "https://b.example/v1".into(),
+                api_key: String::new(), // ← 没填 key（要能给出对味的报错）
+                model: "m-b".into(),
+                ..Default::default()
+            },
+        ];
+        c
+    }
+
+    // ① provider=<id> ⇒ **用那一份自己的 key**（不是 legacy 顶层那把）
+    let conn = resolve_llm_conn(&cfg(), Some("a"), None, None, true).expect("a 有 key");
+    assert_eq!(conn.provider.as_deref(), Some("a"));
+    assert_eq!(conn.api_key, "k-a", "必须是这份接口自己的 key");
+    assert_eq!(conn.base_url, "https://a.example/v1");
+    assert_eq!(conn.model, "m-a");
+
+    // ② 该接口没 key ⇒ 400 + **「这份配置还没填 API 密钥」**，且**不许**提 `[llm] api_key`
+    let e = resolve_llm_conn(&cfg(), Some("b"), None, None, true).expect_err("b 没 key 要报错");
+    assert_eq!(e.0, StatusCode::BAD_REQUEST);
+    let msg = e.1 .0["error"].as_str().unwrap_or("").to_string();
+    assert!(msg.contains("这份配置还没填 API 密钥"), "{msg}");
+    assert!(!msg.contains("[llm] api_key"), "别让用户去改一个看不见的字段：{msg}");
+
+    // ③ 表单草稿优先于已存值（刚填还没保存的那种）
+    let conn = resolve_llm_conn(&cfg(), Some("a"), Some("https://draft.example/v1"), Some("k-draft"), true)
+        .expect("草稿齐了");
+    assert_eq!(conn.api_key, "k-draft", "草稿 key 压过已存值");
+    assert_eq!(conn.base_url, "https://draft.example/v1", "草稿地址也优先");
+
+    // ④ legacy（没有 providers / 没指定 provider 且无 active）⇒ 行为与从前一样
+    let mut legacy = cfg();
+    legacy.providers.clear();
+    legacy.active = None;
+    let conn = resolve_llm_conn(&legacy, None, None, None, true).expect("legacy 有 key");
+    assert_eq!(conn.provider, None);
+    assert_eq!(conn.api_key, "k-legacy");
+    assert_eq!(conn.base_url, "https://legacy.example/v1");
+    let mut no_key = legacy.clone();
+    no_key.api_key.clear();
+    let e = resolve_llm_conn(&no_key, None, None, None, true).expect_err("legacy 没 key 也要报错");
+    let msg = e.1 .0["error"].as_str().unwrap_or("").to_string();
+    assert!(msg.contains("[llm] api_key"), "legacy 模式的文案保持不变：{msg}");
+
+    // ⑤ 没传 provider ⇒ 用 **active** 那份（用户当前在用的就是它）
+    let mut active = cfg();
+    active.active = Some("a".into());
+    let conn = resolve_llm_conn(&active, None, None, None, true).expect("active 有 key");
+    assert_eq!(conn.provider.as_deref(), Some("a"));
+    assert_eq!(conn.api_key, "k-a");
+
+    // ⑥ 明确要了不存在的那份 ⇒ 400 说清楚（别静默回退到别的 key 上）
+    let e = resolve_llm_conn(&cfg(), Some("nope"), None, None, true).expect_err("必须报错");
+    let msg = e.1 .0["error"].as_str().unwrap_or("").to_string();
+    assert!(msg.contains("nope"), "{msg}");
+
+    // ⑦ 读能力那条路**不需要 key**（catalog 只查表）
+    let conn = resolve_llm_conn(&cfg(), Some("b"), None, None, false).expect("catalog 不需要 key");
+    assert_eq!(conn.base_url, "https://b.example/v1");
+    assert_eq!(conn.api_key, "", "没 key 就是空串，但不报错");
+}
 
 /// **写盘前守卫**（P0 事故 2026-10-19）：`json_mode = ""` 这种"合法 TOML 但反序列化不过"的内容
 /// **不许落盘**，而且要回 400 + 人话；**原文件一个字节都不许动**（对比写前后字节）。
