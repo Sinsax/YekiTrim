@@ -733,8 +733,17 @@ pub(super) async fn polish_cover_title(
     // 读配置是同步 IO ⇒ 走 blocking 池（`api/AGENTS.md` 的同步 IO 纪律）。
     let owner = crate::auth::owner_of(&user);
     let llm = blocking(move || Ok(yekitrim_core::config::load_llm_config_for(owner))).await?;
-    if llm.base_url.is_empty() || llm.api_key.is_empty() {
-        return Err(err(StatusCode::BAD_REQUEST, "LLM 未配置"));
+    // ⚠️ 判定走 provider-aware 的入口：多配置下顶层 `api_key` **恒空** ——
+    // 读顶层会让封面文案**恒报"LLM 未配置"**（用户明明在 provider 里填了密钥）。
+    // 这里**本来就是 400**，保持报错；只是文案要指到用户能点的那个位置。
+    if llm.effective_base_url().trim().is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "LLM 未配置 API 地址：请在 设置 → LLM 配置 里填好「API 地址」"));
+    }
+    if !llm.has_api_key() {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "LLM 未配置 API 密钥：请在 设置 → LLM 配置 里为当前配置填好「API 密钥」",
+        ));
     }
     // 链路解析：**标题生成**（见 [llm.overrides.title]）；thinking 的默认关思考由那条链路的
     // `default_thinking` 给出（与它原来挂在零散单发上时一致 —— 行为不变）。
@@ -4160,8 +4169,13 @@ fn polish_project_put_writes_subtitle_style() {
     );
     assert_eq!(after.style.subtitle.size, 96, "字号必须写进去");
     assert_eq!(after.style.subtitle.position_pct, Some(25.0), "落点必须写进去");
-    // 没提交的键不能被顺手重置
-    assert_eq!(after.style.subtitle.highlight_color, "#f56b41", "没提到的字段必须原样保留");
+    // 没提交的键不能被顺手重置。
+    // ⚠️ 期望值取**当期默认**（不是写死的色值）：换色（2026-10-20 A 套柔和莫兰迪）不该再让这条红第二次。
+    assert_eq!(
+        after.style.subtitle.highlight_color,
+        yekitrim_polish::project::ProjectFile::example().style.subtitle.highlight_color,
+        "没提到的字段必须原样保留"
+    );
 
 
     // 2) 落到 toml 文本上（防"内存里对了但序列化没写"）。

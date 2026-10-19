@@ -138,15 +138,15 @@
   --blue-soft: rgba(143,180,245,.16);
   --mint: #7AD9C0;
   --mint-soft: rgba(122,217,192,.16);
-  --amber: #F2C14E;
-  --amber-deep: #F7D580;
-  --amber-soft: rgba(242,193,78,.16);
+  --amber: #D3B87A;   /* A 套柔和莫兰迪（旧 #F2C14E，ΔE 9.5，压 --bg 8.46） */
+  --amber-deep: #E6D3A0;
+  --amber-soft: rgba(211,184,122,.16);
   --green: #7AD9C0;
   --green-deep: #9CE8D4;
   --green-soft: rgba(122,217,192,.16);
-  --red: #F86860;        /* 蝙蝠红瞳原值 */
-  --red-deep: #FF9089;
-  --red-soft: rgba(248,104,96,.16);
+  --red: #D98A85;        /* A 套柔和莫兰迪（旧 #F86860「蝙蝠红瞳原值」，ΔE 10.1，压 --bg 6.15） */
+  --red-deep: #E8A8A3;
+  --red-soft: rgba(217,138,133,.16);
 
   /* 骨架类 */
   --scrim: rgba(0,0,0,.55);

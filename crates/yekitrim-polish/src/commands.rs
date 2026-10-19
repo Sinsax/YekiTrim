@@ -384,12 +384,10 @@ pub async fn cmd_llm_for(
     // ⚠️ 按 **owner** 读：无 owner 版读的是顶层 `.yekitrim/llm.toml`，
     // 迁移后顶层那份已经搬进 `users/<uid>/`，用它会永远读到默认值。
     let llm_cfg = yekitrim_core::config::load_llm_config_for(owner);
-    if llm_cfg.api_key.is_empty() || llm_cfg.api_key == "sk-your-api-key-here" {
-        tracing::info!("  ⚠ No LLM API key configured. Edit .yekitrim/llm.toml");
-        return Ok(());
-    }
-    tracing::info!("  Model: {}", llm_cfg.model);
-    tracing::info!("  Base:  {}", llm_cfg.base_url);
+    // ⚠️ **没有密钥 ⇒ 报错**（不是"返回成功"）：判定走 provider-aware 的那一个入口。
+    require_llm_key(&llm_cfg)?;
+    tracing::info!("  Model: {}", llm_cfg.effective_model());
+    tracing::info!("  Base:  {}", llm_cfg.effective_base_url());
 
     // 读取 event_type 用于运镜节奏
     let event_type: String = match std::fs::read_to_string(data_dir.join("clip-meta.json")) {
@@ -554,10 +552,8 @@ pub async fn cmd_llm_segment_for(
     // ⚠️ 按 **owner** 读：无 owner 版读的是顶层 `.yekitrim/llm.toml`，
     // 迁移后顶层那份已经搬进 `users/<uid>/`，用它会永远读到默认值。
     let llm_cfg = yekitrim_core::config::load_llm_config_for(owner);
-    if llm_cfg.api_key.is_empty() || llm_cfg.api_key == "sk-your-api-key-here" {
-        // 单段重做是用户明确点的动作：不做就报错，别静默返回"成功"
-        anyhow::bail!("未配置 LLM API key（设置页「LLM 配置」或 .yekitrim/llm.toml）");
-    }
+    // 单段重做是用户明确点的动作：不做就报错，别静默返回"成功"
+    require_llm_key(&llm_cfg)?;
 
     let event_type: String = std::fs::read_to_string(data_dir.join("clip-meta.json"))
         .ok()
@@ -808,7 +804,7 @@ font = "LXGW WenKai"
 size = 72
 color = "#dcbda0"
 stroke = "12px #403c3b"
-highlight_color = "#f56b41"
+highlight_color = "#CF8A72"
 position = "bottom"
 
 [style.danmaku]
@@ -925,10 +921,14 @@ pub fn cmd_doctor(_project_path: &Path) -> anyhow::Result<()> {
     // Check LLM config —— **按 owner 读**（无 owner 版读的是顶层 `.yekitrim/llm.toml`，那是单人时代的
     // 旧位置；`doctor` 报的必须与设置页/精修链路**同一份**）。
     let llm_cfg = yekitrim_core::config::load_llm_config_for(yekitrim_core::owner::Owner::from_env());
-    if !llm_cfg.api_key.is_empty() && llm_cfg.api_key != "sk-your-api-key-here" {
-        tracing::info!("  ✓ LLM: model={}, base={}", llm_cfg.model, llm_cfg.base_url);
+    if llm_cfg.has_api_key() {
+        tracing::info!(
+            "  ✓ LLM: model={}, base={}",
+            llm_cfg.effective_model(),
+            llm_cfg.effective_base_url()
+        );
     } else {
-        tracing::info!("  ⚠ LLM: no API key in .yekitrim/llm.toml");
+        tracing::info!("  ⚠ LLM: 当前配置还没填 API 密钥（设置 → LLM 配置 里那一份）");
     }
 
     // ---- Dhampir 出片通道（默认通道）----
@@ -1109,12 +1109,7 @@ pub async fn build_package_tags_for(
     // 迁移之后顶层那份**已经搬走了**，用无 owner 版会永远读到默认值 ⇒ 明明配了 key
     // 却报"未配置 LLM API key"。
     let llm_cfg = yekitrim_core::config::load_llm_config_for(owner);
-    if llm_cfg.api_key.is_empty() || llm_cfg.api_key == "sk-your-api-key-here" {
-        anyhow::bail!(
-            "未配置 LLM API key，无法 build 贴纸包 tags              (编辑 {} 里的 llm.toml)",
-            yekitrim_core::owner::state_dir(owner).display()
-        );
-    }
+    require_llm_key(&llm_cfg)?;
 
     tracing::info!("  🤖 用 LLM 生成 tags ({} 个文件)...", files.len());
     progress.stage_started("表情包标签");
@@ -1135,6 +1130,26 @@ pub async fn build_package_tags_for(
         batches,
         tags: meta.tags.len(),
     })
+}
+
+
+/// **"能不能跑 LLM"的唯一判定入口**（精修这边所有 LLM 命令都先过它）。
+///
+/// ⚠️ 2026-10-20 事故：这里以前读的是 **legacy 顶层** `llm.api_key`，而多配置之后密钥在
+/// `providers[].api_key` 里、读侧也不回显 ⇒ 顶层**恒空** ⇒ 每个用户点「LLM 剪辑」都
+/// **静默空跑**（作业显示"完成"、零调用）。判定必须走 `LlmConfig::has_api_key()`
+/// （= `active_provider().provider_key()`，与 `resolve_llm_conn` / `From<&LlmConfig>` 同口径）。
+///
+/// **没有密钥 ⇒ 硬失败**（不再"返回成功"）：静默成功是本仓最恨的那类 bug ——
+/// 用户以为跑过了，实际一个 token 都没花。
+fn require_llm_key(cfg: &yekitrim_core::config::LlmConfig) -> anyhow::Result<()> {
+    if cfg.has_api_key() {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "LLM 未配置 API 密钥：请在 设置 → LLM 配置 里为**当前配置**填好「API 密钥」\
+         （多配置时就是正在用的那一份；也可在 llm.toml 的 providers[].api_key 里写）"
+    )
 }
 
 /// 每批喂给 LLM 的文件数：太大输出会被截断，太小则调用次数爆炸。
@@ -1269,12 +1284,7 @@ pub async fn cmd_emoji_build(
 
     let owner = yekitrim_core::owner::Owner::from_env();
     let llm_cfg = yekitrim_core::config::load_llm_config_for(owner);
-    if llm_cfg.api_key.is_empty() || llm_cfg.api_key == "sk-your-api-key-here" {
-        anyhow::bail!(
-            "未配置 LLM API key（编辑 {} 里的 llm.toml）",
-            yekitrim_core::owner::state_dir(owner).display()
-        );
-    }
+    require_llm_key(&llm_cfg)?;
 
     tracing::info!(
         "  🤖 emoji 多维分类：{} 条 / 每批 {} 条（模型 {}）…",
@@ -1601,6 +1611,61 @@ pub fn derive_emoji_tag(dim_union: &[String], legacy: &[String]) -> Vec<String> 
 }
 
 #[cfg(test)]
+mod llm_key_tests {
+    use super::*;
+
+    #[derive(serde::Deserialize)]
+    struct FileLlm {
+        llm: yekitrim_core::config::LlmConfig,
+    }
+    fn parse(text: &str) -> yekitrim_core::config::LlmConfig {
+        toml::from_str::<FileLlm>(text).expect("夹具要能解析").llm
+    }
+
+    /// **P0 2026-10-20**：多配置下"有没有密钥"必须看 **active provider**（顶层恒空）。
+    ///
+    /// 事故：`cmd_llm` 读 legacy 顶层 `api_key` ⇒ 恒空 ⇒ **静默 `return Ok(())`**
+    /// （作业显示"完成"、一次 LLM 调用都没有）。判据 = 这个门的返回值：
+    /// `Ok` ⇒ 调用方继续往下走；`Err` ⇒ 作业**可见地失败**。
+    ///
+    /// 变异自证：把判定改回只看顶层 `cfg.api_key` ⇒ ① 当场红。
+    #[test]
+    fn require_llm_key_is_provider_aware() {
+        // ① v3 形状：key 在 providers[0]，顶层没有（就是用户那份配置的现场）
+        let cfg = parse("[llm]\nactive = \"a\"\n\n[[llm.providers]]\nid = \"a\"\nname = \"甲\"\napi = \"openai-chat\"\nbase_url = \"https://a.example/v1\"\napi_key = \"k\"\nmodel = \"m\"\n");
+        assert_eq!(cfg.api_key, "", "顶层确实没有 key —— 这正是那个 bug 的现场");
+        assert!(cfg.has_api_key(), "判定要看 provider（顶层恒空）");
+        assert!(require_llm_key(&cfg).is_ok(), "① provider 里有 key ⇒ 不许报未配置（= 调用方真的往下走了）");
+
+        // ② 两份都没有 ⇒ Err，文案能照着改、且不含 key 的样子
+        let mut none = cfg.clone();
+        none.providers[0].api_key.clear();
+        assert!(!none.has_api_key());
+        let e = require_llm_key(&none).expect_err("没密钥必须可见地失败（不许静默成功）");
+        let msg = format!("{e}");
+        assert!(msg.contains("LLM 未配置 API 密钥"), "{msg}");
+        assert!(msg.contains("设置"), "要指到界面上能改的那个位置：{msg}");
+        assert!(!msg.contains("sk-"), "文案里不许出现 key 的样子：{msg}");
+
+        // ③ legacy（没有 providers）⇒ 行为不变；模板占位 key 仍算"没配"
+        let legacy = parse("[llm]\napi_key = \"k\"\nmodel = \"m\"\n");
+        assert!(require_llm_key(&legacy).is_ok(), "老配置照常能跑");
+        let mut placeholder = legacy.clone();
+        placeholder.api_key = "sk-your-api-key-here".into();
+        assert!(!placeholder.has_api_key(), "模板里的占位 key = 没配（老行为）");
+        assert!(require_llm_key(&placeholder).is_err());
+
+        // ④ api_key_env 这条路也认（与 resolve_llm_conn / From 同口径）。
+        // ⚠️ 这里**不 set_var**：改进程级环境变量在多线程测试里是 UB 源（会偶发地带崩别的用例），
+        // 只用"变量不存在 ⇒ 空 key"这个**只读**方向验证分支被走到了。
+        let env_cfg = parse("[llm]\nactive = \"a\"\n[[llm.providers]]\nid = \"a\"\napi = \"openai-chat\"\napi_key_env = \"VT_T42_MISSING_VAR\"\nmodel = \"m\"\n");
+        assert_eq!(env_cfg.effective_api_key(), "", "变量不存在 ⇒ 空 key（不 panic）");
+        assert!(require_llm_key(&env_cfg).is_err(), "env 也没配 ⇒ 同样要报错");
+        assert_eq!(cfg.effective_model(), "m", "生效模型跟着 provider 走");
+        assert_eq!(cfg.effective_base_url(), "https://a.example/v1");
+    }
+}
+#[cfg(test)]
 mod emoji_build_tests {
     use super::*;
 
@@ -1732,11 +1797,13 @@ pub async fn cmd_stickers_scan(llm: bool) -> anyhow::Result<()> {
         .collect();
 
     if llm {
-        let llm_cfg = yekitrim_core::config::load_llm_config();
-        if llm_cfg.api_key.is_empty() || llm_cfg.api_key == "sk-your-api-key-here" {
-            tracing::info!("  ⚠ 未配置 LLM API key (编辑 .yekitrim/llm.toml), tags 留空");
-        } else {
-            tracing::info!("  🤖 用 LLM 生成 tags ({})...", llm_cfg.model);
+        // ⚠️ **按 owner 读**（无 owner 版读顶层那份 —— 迁移后顶层已经搬走了）；
+        // 且"没密钥"要**报错**（用户明确要了 --llm，静默留空同样是"看起来成功、实际没做"）。
+        let llm_cfg =
+            yekitrim_core::config::load_llm_config_for(yekitrim_core::owner::Owner::from_env());
+        require_llm_key(&llm_cfg)?;
+        {
+            tracing::info!("  🤖 用 LLM 生成 tags ({})...", llm_cfg.effective_model());
             if let Err(e) = llm_generate_tags(&llm_cfg, &mut metas, None).await {
                 tracing::info!("  ⚠ LLM tags 生成失败: {} (tags 留空)", e);
             }

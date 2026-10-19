@@ -387,7 +387,11 @@ async fn run_process(
 
 
     // LLM 订正（可配置，与 CLI 语义保持一致；Web 自动继续断点）
-    if current < STAGE_DETECT && cfg.asr.llm_correct.unwrap_or(false) && !cfg.llm.api_key.is_empty() {
+    //
+    // ⚠️ **没有密钥 ⇒ 跳过订正**（不是报错：订正是可选增强，跳过它主流程照常跑）。
+    // 判定必须走 `has_api_key()`：多配置下密钥在 `providers[].api_key`、顶层**恒空** ——
+    // 读顶层会让"开了订正却一直没跑"（2026-10-20 那一族 bug）。
+    if should_run_llm_correct(&cfg, current) {
         let already_corrected = cfg.project.transcript_file.as_ref()
             .filter(|p| !p.is_empty())
             .map(|p| ws.resolve(p))
@@ -489,9 +493,50 @@ fn load_danmaku_for_correct(cfg: &yekitrim_core::config::Config, ws: &Workspace)
     yekitrim_core::danmaku::load_danmaku_auto(&path).unwrap_or_default()
 }
 
+/// 要不要跑 LLM 订正（**纯谓词**，便于钉住语义：没密钥 ⇒ 跳过，不是报错）。
+///
+/// ⚠️ 判定走 `has_api_key()`（= active provider 的 key）：多配置下顶层 `api_key` **恒空**，
+/// 读顶层会让"开了订正却一直没跑"（2026-10-20 那一族 bug）。
+pub(crate) fn should_run_llm_correct(cfg: &yekitrim_core::config::Config, current: u32) -> bool {
+    current < STAGE_DETECT && cfg.asr.llm_correct.unwrap_or(false) && cfg.llm.has_api_key()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+
+    /// **多配置下"开没开订正"必须看 active provider 的 key**（2026-10-20 那一族 bug）。
+    ///
+    /// 语义：没密钥 ⇒ **跳过订正**（不是报错 —— 订正是可选增强，主流程照常跑）。
+    /// 变异自证：把谓词改回只看 `cfg.llm.api_key` ⇒ 第一条当场红。
+    #[test]
+    fn should_run_llm_correct_is_provider_aware() {
+        fn cfg(provider_key: Option<&str>, legacy_key: &str, enabled: bool) -> Config {
+            let mut c = Config::default();
+            c.asr.llm_correct = Some(enabled);
+            c.llm.api_key = legacy_key.into();
+            if let Some(k) = provider_key {
+                c.llm.active = Some("a".into());
+                c.llm.providers = vec![yekitrim_core::config::LlmProvider {
+                    id: "a".into(),
+                    api: "openai-chat".into(),
+                    api_key: k.into(),
+                    ..Default::default()
+                }];
+            }
+            c
+        }
+        // ① provider 有 key、顶层没有 ⇒ **要跑**（多配置下不许再判成没配）
+        assert!(should_run_llm_correct(&cfg(Some("k"), "", true), 2), "多配置下必须照常订正");
+        // ② 两份都没有 ⇒ 跳过（不是报错）
+        assert!(!should_run_llm_correct(&cfg(None, "", true), 2));
+        // ③ legacy 顶层有 ⇒ 照常跑（老配置行为不变）
+        assert!(should_run_llm_correct(&cfg(None, "k", true), 2));
+        // ④ 开关没开 / 已经过了检测阶段 ⇒ 跳过（既有语义不变）
+        assert!(!should_run_llm_correct(&cfg(Some("k"), "", false), 2));
+        assert!(!should_run_llm_correct(&cfg(Some("k"), "", true), STAGE_DETECT));
+    }
 
     /// 造一个"刚剪出来"的片段目录（`clip.mp4` + `clip.json`，够 `cmd_init` 认出标题）。
     fn made_clip(root: &Path) -> PathBuf {

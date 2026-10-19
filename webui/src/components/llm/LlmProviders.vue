@@ -8,7 +8,7 @@
 //    没有那个字段 ⇒ 父层继续用老的单配置界面，本文件一行都不参与。
 // ⚠️ **紧凑口径**（用户：「精简紧凑一点」）：行高 ≤32px、操作按钮图标化 + `title`、
 //    次要项（显示名/地址/协议/上下文窗口…）全收进折叠里；同一句解释只说一次。
-import { reactive, ref } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import Icon from '../Icon.vue'
 import { confirmDialog } from '../../stores/dialog'
 import { toast } from '../../stores/toast'
@@ -47,6 +47,104 @@ const testing = reactive({})
 const api = reactive({})
 /** provider.id → API 侧过滤词（按 id / 显示名即时筛，大小写不敏感） */
 const filters = reactive({})
+/** 行尾「模型 N ▾」的**小 popover**（就地选当前模型，**不展开整个面板**）：
+ *  popId = 哪一行开着；popUp = 靠底的行往上弹（避免超出视口）；popIndex = 键盘高亮项。 */
+const popId = ref('')
+const popUp = ref(false)
+const popIndex = ref(-1)
+function popModels(p) { return (p && p.models) || [] }
+/** 按钮标签 = `模型 <当前模型>`（没有才回退「模型 0」） */
+function curModelText(p) {
+  const id = String((p && p.model) || '').trim()
+  if (!id) return '模型 0'
+  const row = popModels(p).find((m) => String(m.id || '').trim() === id)
+  return '模型 ' + ((row && row.name) ? row.name : id)
+}
+/**
+ * **列表行** = `models[]` + （当 `providers[].model` 有值但没登记时）**补一行「使用中」**。
+ * ⚠️ 这一行**只用于显示**（`model: null` / `unregistered: true`）—— 它不进 `models[]`、不落盘；
+ *    显示模型（listRows）与实际写盘模型（p.models）**是两个东西**，别混。
+ */
+function listRows(p) {
+  const rows = popModels(p).map((m, i) => ({ key: 'm' + i, id: m.id, name: m.name || '', model: m, unregistered: false }))
+  const cur = String((p && p.model) || '').trim()
+  if (cur && !rows.some((r) => String(r.id || '').trim() === cur)) {
+    rows.unshift({ key: 'cur', id: cur, name: '', model: null, unregistered: true })
+  }
+  return rows
+}
+/** 打开面板时**自动取一次** API 模型：60 秒缓存（同一次会话里不重复打）、没地址/没钥匙不硬试、失败只行内提示 */
+function maybeAutoFetch(p) {
+  if (!p || !p.id) return
+  const st = api[p.id] || {}
+  const fresh = st.state && st.state !== 'idle' && (Date.now() - (st.at || 0)) < 60000
+  if (fresh || busy[p.id]) return
+  if (!String(p.base_url || '').trim()) { api[p.id] = { state: 'idle', models: st.models || [], note: '', at: Date.now() }; return }
+  if (!p.api_key_set && !String(p.api_key || '').trim()) {
+    api[p.id] = { state: 'idle', models: st.models || [], note: '这份接口还配 API 密钥 —— 填好再点「获取模型」', at: Date.now() }
+    return
+  }
+  fetchAvailable(p)
+}
+/** 开/关小列表。开着时再点 = 关。 */
+function togglePop(p) {
+  if (popId.value === p.id) { closePop(); return }
+  const btn = document.querySelector('[data-pv-model-btn="' + p.id + '"]')
+  if (btn) {
+    const b = btn.getBoundingClientRect()
+    // 下方放不下 ~340px 就往上弹（靠底的行）
+    popUp.value = (window.innerHeight - b.bottom) < 340 && b.top > 360
+  } else popUp.value = false
+  popId.value = p.id
+  const list = popModels(p)
+  popIndex.value = Math.max(0, list.findIndex((m) => m.id === p.model))
+}
+function closePop() { popId.value = ''; popIndex.value = -1 }
+/** 点某一项 = 把这支设为该接口的当前模型（**只改 providers[].model**），popover 关闭、面板不展开 */
+function pickModel(p, id) {
+  if (!id) return
+  p.model = id
+  closePop()
+}
+/** 底部「管理模型…」：这才是展开面板并定位模型区的入口 */
+function manageModels(p) {
+  closePop()
+  focusSection(p.id, 'models')
+}
+/** 键盘：↑↓ 在项间移动，Enter/Space 选中，Esc 关闭 */
+function popKeydown(p, e) {
+  const list = popModels(p)
+  if (e.key === 'Escape') { e.preventDefault(); closePop(); return }
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    if (!list.length) return
+    e.preventDefault()
+    const step = e.key === 'ArrowDown' ? 1 : -1
+    popIndex.value = (popIndex.value + step + list.length) % list.length
+    return
+  }
+  if (e.key === 'Enter' || e.key === ' ') {
+    if (popIndex.value >= 0 && list[popIndex.value]) { e.preventDefault(); pickModel(p, list[popIndex.value].id) }
+  }
+}
+/** 点外部就关（按钮自己的点击已经 stop 过） */
+function onDocPointerDown(e) {
+  if (!popId.value) return
+  const t = e.target
+  if (t && t.closest && (t.closest('[data-pv-pop]') || t.closest('[data-pv-model-btn]'))) return
+  closePop()
+}
+function onDocKeydown(e) { if (e.key === 'Escape' && popId.value) closePop() }
+onMounted(() => {
+  document.addEventListener('pointerdown', onDocPointerDown, true)
+  // 也听 click：脚本里/别的组件里 .click() 不会带 pointerdown，光有 pointerdown 会"点外部关不掉"
+  document.addEventListener('click', onDocPointerDown, true)
+  document.addEventListener('keydown', onDocKeydown, true)
+})
+onBeforeUnmount(() => {
+  document.removeEventListener('pointerdown', onDocPointerDown, true)
+  document.removeEventListener('click', onDocPointerDown, true)
+  document.removeEventListener('keydown', onDocKeydown, true)
+})
 function apiState(p) {
   return api[p.id] || { state: 'idle', models: [], note: '' }
 }
@@ -95,6 +193,9 @@ function focusSection(id, block) {
   if (!id) return
   expandedId.value = id
   focusBlock.value = id + '|' + block
+  // 打开面板 ⇒ 自动取一次 API 模型（nextTick：先让面板渲染出来再发；60s 内不重复）
+  const p = props.providers.find((x) => x.id === id)
+  if (p) nextTick(() => maybeAutoFetch(p))
   // 展开是异步渲染的 ⇒ 下一帧再滚
   requestAnimationFrame(() => {
     const el = document.querySelector('.pv-panel[data-pv-id="' + id + '"] [data-pv-block="' + block + '"]')
@@ -175,17 +276,17 @@ async function fetchAvailable(p) {
   if (!base) { note[p.id] = '先填 API 地址（上面「接口」那一块）'; return }
   busy[p.id] = true
   note[p.id] = ''
-  api[p.id] = { state: 'loading', models: (apiState(p).models || []), note: '' }
+  api[p.id] = { state: 'loading', models: (apiState(p).models || []), note: '', at: Date.now() }
   try {
     // ⚠️ 带 provider id：不带的话后端会去顶层 [llm] api_key 找钥匙（多配置下那里是空的）
     const r = await fetchModels(base, p.api_key, p.id)
-    api[p.id] = { state: 'done', models: r.models, note: r.note || '' }
+    api[p.id] = { state: 'done', models: r.models, note: r.note || '', at: Date.now() }
     // 探针这次带回的能力（每支模型可能带 caps）交给父层：**只影响展示**（模型上限/档位/输入类型），不写盘
     emit('probe', { providerId: p.id, models: r.models })
     note[p.id] = '来源：' + (MODEL_SOURCE_ZH[r.source] || r.source) + '（' + r.models.length + ' 支）'
   } catch (e) {
     // **失败 ≠ 空列表**：记在 error 态里，界面照实说 + 给重试
-    api[p.id] = { state: 'error', models: [], note: (e && e.message) || String(e) }
+    api[p.id] = { state: 'error', models: [], note: (e && e.message) || String(e), at: Date.now() }
   } finally {
     busy[p.id] = false
   }
@@ -229,9 +330,13 @@ function setLevel(l, v) {
         <span class="pv-spacer"></span>
         <!-- 两条入口分开（用户口径）：「模型」= 这份接口的模型目录；「编辑」= 接口字段（名称/地址/密钥/协议）。
              「测试连接」也在这行上（只测这一份接口，结果是行内一行字，不是一闪而过的 toast）。 -->
-        <button class="pv-models" :title="'为这份配置选择模型（点开已选 / API 侧两个列表）'"
-                :aria-label="'为这份配置选择模型（' + (p.models || []).length + ' 个已选）'"
-                @click="focusSection(p.id, 'models')">模型 {{ (p.models || []).length }}
+        <button class="pv-models" :data-pv-model-btn="p.id"
+                :title="'当前模型：' + (p.model || '（未选）') + ' —— 点开就地切换，不展开面板'"
+                :aria-label="'当前模型 ' + (p.model || '未选') + '，点开切换'"
+                aria-haspopup="listbox" :aria-expanded="popId === p.id ? 'true' : 'false'"
+                @click.stop="togglePop(p)"
+                @keydown.down.prevent="popId !== p.id && togglePop(p)"
+                @keydown.esc="closePop()"><span class="pv-models-txt">{{ curModelText(p) }}</span>
           <span class="pv-caret-down">▾</span></button>
         <button class="pv-mini pv-test" :disabled="testing[p.id]"
                 :title="'只测这一份接口（POST /api/llm/test?provider=' + p.id + '）'"
@@ -239,6 +344,31 @@ function setLevel(l, v) {
         <button class="pv-ico" :class="{ on: expandedId === p.id }" :title="expandedId === p.id ? '收起' : '编辑接口字段'"
                 @click="toggleEdit(p.id)"><Icon :name="expandedId === p.id ? 'check' : 'edit'" :size="12" /></button>
         <button class="pv-ico danger" title="删除这份配置" @click="removeProvider(p)"><Icon name="trash" :size="12" /></button>
+      </div>
+
+      <!-- 行下方就地弹出的**小列表**（点「模型 <当前模型> ▾」出来）：只用来切当前模型，**不展开面板**。
+           ⚠️ 行来自 `listRows()`：= models[] + （用着但没登记时）补的那一行（**只显示、不写盘**）。 -->
+      <div v-if="popId === p.id" class="pv-pop" :class="{ up: popUp }" role="listbox" tabindex="-1"
+           :data-pv-pop="p.id" :aria-label="'已选模型（' + listRows(p).length + '）'"
+           @keydown="popKeydown(p, $event)">
+        <div class="pv-pop-head">已选模型（{{ listRows(p).length }}）</div>
+        <div v-if="!listRows(p).length" class="pv-pop-empty">还没有已选模型 —— 点下面「管理模型…」去加</div>
+        <button v-for="(r, mi) in listRows(p)" :key="r.key" class="pv-pop-item"
+                :class="{ on: p.model === r.id, hl: popIndex === mi }"
+                role="option" :aria-selected="p.model === r.id ? 'true' : 'false'"
+                :data-pv-pop-item="r.id" :data-pv-pop-unreg="r.unregistered ? '1' : null"
+                @click="pickModel(p, r.id)">
+          <span class="pv-pop-dot">{{ p.model === r.id ? '●' : '○' }}</span>
+          <span class="pv-pop-text" :title="r.id + (r.name && r.name !== r.id ? '（' + r.name + '）' : '')">
+            {{ r.name || r.id }}<span v-if="r.name && r.name !== r.id" class="pv-pop-id">{{ r.id }}</span>
+          </span>
+          <span v-if="p.model === r.id && r.unregistered" class="pv-pop-now">使用中（未单独登记）</span>
+          <span v-else-if="p.model === r.id" class="pv-pop-now">使用中</span>
+        </button>
+        <div class="pv-pop-foot">
+          <button class="pv-mini" title="打开这份配置的完整面板（已选 + API 侧两个列表）"
+                  @click="manageModels(p)">管理模型…</button>
+        </div>
       </div>
 
       <!-- 展开：**两块**（接口 / 模型），一行一项、标签定宽；行尾两个入口各管一块 -->
@@ -274,10 +404,20 @@ function setLevel(l, v) {
         <div class="pv-lists">
           <div class="pv-list pv-picked" data-pv-list="picked">
             <div class="pv-line pv-well">
-              <span class="pv-lbl">已选模型（{{ (p.models || []).length }}）</span>
+              <span class="pv-lbl">已选模型（{{ listRows(p).length }}）</span>
               <span class="pv-spacer"></span>
               <button class="pv-mini" title="清空各模型手填的能力（回到由能力表决定）" @click="restoreDefaults(p)">恢复默认</button>
             </div>
+
+        <!-- 用着但**没登记**进目录的那一支：只读显示（不进 models[]、不落盘） -->
+        <div v-if="listRows(p).length && listRows(p)[0].unregistered" class="pv-row pv-model-row pv-model-unreg"
+             :data-pv-model-unreg="p.model"
+             :title="'正在用但没登记进模型目录：' + p.model + '（用「+ 添加模型」或 API 侧「加入」才会写进 TOML）'">
+          <span class="pv-pop-dot">●</span>
+          <span class="pv-unreg-id">{{ p.model }}</span>
+          <span class="pv-muted">使用中（未单独登记）</span>
+          <span class="pv-spacer"></span>
+        </div>
 
         <div v-for="(m, mi) in (p.models || [])" :key="key(p.id, mi) + '-' + (m.id || 'new')" class="pv-model">
           <div class="pv-row pv-model-row" :data-pv-model="m.id">
@@ -437,10 +577,37 @@ select.pv-input { height:26px; padding:1px 4px; }
 .pv-block { min-width:0; padding:2px 4px 4px; border-radius:var(--r-sm); }
 .pv-block + .pv-block { margin-top:4px; border-top:1px dashed var(--line-soft); padding-top:6px; }
 .pv-block.is-focus { background:var(--bg-soft); }
-.pv-models { flex:none; height:22px; padding:0 6px; font-size:11px; border-radius:var(--r-sm);
+.pv-models { flex:none; display:inline-flex; align-items:center; gap:2px; min-width:120px; max-width:220px;
+  height:22px; padding:0 6px; font-size:11px; border-radius:var(--r-sm);
   border:1px solid var(--line); background:var(--card); color:var(--ink-dim); cursor:pointer; }
 .pv-models:hover { border-color:var(--main); color:var(--main); background:var(--main-soft); }
-.pv-caret-down { font-size:9px; opacity:.7; margin-left:2px; }
+.pv-models-txt { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.pv-caret-down { flex:none; font-size:9px; opacity:.7; margin-left:2px; }
+/* 「用着但没登记」那一行：只读（没有 ▾ / 🗑） */
+.pv-model-unreg { opacity:.92; }
+.pv-unreg-id { min-width:0; max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  font-size:11.5px; color:var(--main); }
+/* 行下方的小列表：锚在这一行（.pv-item 是定位上下文），靠底的行往上弹 */
+.pv-item { position:relative; }
+.pv-pop {
+  position:absolute; left:36px; top:100%; z-index:30; width:300px; max-width:calc(100% - 40px);
+  max-height:320px; overflow:auto; display:flex; flex-direction:column;
+  background:var(--card); border:1px solid var(--line); border-radius:var(--r); box-shadow:var(--shadow);
+  padding:2px 0;
+}
+.pv-pop.up { top:auto; bottom:100%; }
+.pv-pop-head { font-size:11px; color:var(--ink-faint); padding:4px 10px 2px; }
+.pv-pop-empty { font-size:11.5px; color:var(--ink-dim); padding:6px 10px 8px; }
+.pv-pop-item { display:flex; align-items:center; gap:6px; width:100%; height:28px; padding:0 10px;
+  border:0; background:transparent; color:var(--ink); font-size:12px; text-align:left; cursor:pointer; }
+.pv-pop-item:hover, .pv-pop-item.hl { background:var(--bg-soft); }
+.pv-pop-item.on { color:var(--main); }
+.pv-pop-dot { flex:none; width:12px; font-size:9px; color:var(--ink-faint); }
+.pv-pop-text { min-width:0; flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.pv-pop-id { margin-left:6px; font-size:10.5px; color:var(--ink-faint); }
+.pv-pop-now { flex:none; font-size:10.5px; color:var(--main); }
+.pv-pop-foot { border-top:1px dashed var(--line-soft); margin-top:2px; padding:4px 8px; display:flex; }
+@media (max-width:900px) { .pv-pop { left:4px; width:calc(100% - 8px); } }
 .pv-get { max-width:96px; }
 .pv-test { flex:none; }
 /* 模型块：两个列表。窄（默认）上下两段，≥1100px 视口才并排（760px 内容列下两栏各 ~376px） */
