@@ -497,6 +497,44 @@ fn probe_request(asked: &str, llm: &yekitrim_core::config::LlmConfig) -> Result<
     Ok(base.to_string())
 }
 
+
+/// `GET /api/config/llm/dialects`：**方言注册表的清单**（设置页「模型能力覆盖」的下拉数据源）。
+///
+/// 三条硬口径：
+/// 1. **从 `yekitrim_llm::dialect::DIALECTS` 现算** —— 这里**绝不抄一份清单**（那就是第二个腐坏源：
+///    以后加一条方言，没人会记得回来改 server）；
+/// 2. **按 id 去重**，但把该 id 支持的 `max_output_field` **全列出来**（同一套推理写法 +
+///    不同输出字段名 = 两种标准；界面只需要"这家能手写哪两个值"）；
+/// 3. **只读、不联网、不读盘**（纯静态数据，所以它和 `/config/llm` 同一层：每个账号都要能拿到）。
+///
+/// `none` 也在清单里（`none_id`）—— 前端用它表示"不发推理参数"，那是合法状态、不是"没选"。
+pub(super) async fn llm_dialects() -> ApiResult {
+    // id → (label, 该 id 支持的输出字段名，按 DIALECTS 顺序去重)
+    let mut out: Vec<serde_json::Value> = Vec::new();
+    for d in yekitrim_llm::dialect::DIALECTS {
+        match out.iter_mut().find(|v| v["id"] == d.id) {
+            Some(existing) => {
+                let fields = existing["max_output_fields"]
+                    .as_array_mut()
+                    .expect("上面刚建的是数组");
+                if !fields.iter().any(|f| f == d.max_output_field) {
+                    fields.push(serde_json::json!(d.max_output_field));
+                }
+            }
+            None => out.push(serde_json::json!({
+                "id": d.id,
+                "label": d.label,
+                "max_output_fields": [d.max_output_field],
+            })),
+        }
+    }
+    ok(serde_json::json!({
+        "dialects": out,
+        // "不发推理参数"的那一条：**从注册表现取**，不在前端/这里写死
+        "none_id": yekitrim_llm::dialect::none().id,
+    }))
+}
+
 /// `GET /api/config/llm/catalog?base_url=…&model=…`（**仅 admin**）：这支模型**支持哪些旋钮**。
 ///
 /// 设置页「按能力渲染控件」的唯一数据源：**只查内置表**（不联网、不读盘、不落盘）。
@@ -611,6 +649,58 @@ mod tests {
 
 
     use axum::body::Body;
+
+    /// **方言清单必须从注册表现算**（server 里不许抄一份）：id 去重后的条数 == `DIALECTS` 的 id 数；
+    /// 每条都有非空 label 与至少一个输出字段名；`none` 也在清单里（前端用它表示"不发推理参数"）。
+    ///
+    /// ⚠️ 期望值一律**从注册表现算**（不写死条数、不写死字段名字面量 —— 后者会撞
+    /// `only_llm_knows_wire`，而且写死就等于又抄了一份清单）。
+    #[tokio::test]
+    async fn llm_dialects_are_computed_from_the_registry() {
+        use yekitrim_llm::dialect;
+        let Json(v) = llm_dialects().await.expect("纯静态数据，不该失败");
+        let list = v["dialects"].as_array().expect("dialects 是数组");
+
+        let mut expect_ids: Vec<&str> = dialect::DIALECTS.iter().map(|d| d.id).collect();
+        expect_ids.sort_unstable();
+        expect_ids.dedup();
+        assert_eq!(list.len(), expect_ids.len(), "id 去重后的条数必须等于注册表：{list:?}");
+        for id in &expect_ids {
+            assert!(list.iter().any(|d| d["id"] == *id), "{id} 不在清单里：{list:?}");
+        }
+        for item in list {
+            assert!(!item["label"].as_str().unwrap_or("").is_empty(), "每条都要有中文名：{item}");
+            assert!(
+                !item["max_output_fields"].as_array().map(|a| a.is_empty()).unwrap_or(true),
+                "每条至少一个输出字段名：{item}"
+            );
+        }
+        // "不发推理参数"那条也在（且 id 是现算的）
+        assert_eq!(v["none_id"], dialect::none().id);
+        assert!(list.iter().any(|d| d["id"] == dialect::none().id), "{list:?}");
+
+        // 同一 id 的多行 → **一个条目、字段名全列**（拿表里行数最多的那个 id 验）
+        let busiest = expect_ids
+            .iter()
+            .max_by_key(|id| dialect::DIALECTS.iter().filter(|d| d.id == **id).count())
+            .expect("注册表非空");
+        let entry = list.iter().find(|d| d["id"] == *busiest).expect("必须能找到");
+        let mut got: Vec<&str> = entry["max_output_fields"]
+            .as_array()
+            .expect("数组")
+            .iter()
+            .filter_map(|f| f.as_str())
+            .collect();
+        got.sort_unstable();
+        let mut want: Vec<&str> = dialect::DIALECTS
+            .iter()
+            .filter(|d| d.id == *busiest)
+            .map(|d| d.max_output_field)
+            .collect();
+        want.sort_unstable();
+        want.dedup();
+        assert_eq!(got, want, "{busiest} 的输出字段名要列全且不重复");
+    }
 
     /// **真机验证**（默认不跑：要真端点、真 key、真网络）：打的是 `GET /api/llm/models` 的**真 handler**
     /// （probe_request → `discovery::discover` → 读取器注册表 → caps 合并，一条都不少）。

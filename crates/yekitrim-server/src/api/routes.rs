@@ -207,6 +207,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         // （配置不属于任何工程），但仍在 `protected` 下 ⇒ 未登录 401。
         .route("/config", get(config_get))
         .route("/config/global", put(config_global_put))
+        // 方言注册表的**清单**（下拉数据源）：纯静态、不联网/不读盘 ⇒ 与下面的 /config/llm 同层
+        // （每个账号都要能拿到它来画"推理参数怎么发"那个下拉；只挂 admin 会让普通账号
+        //  落到前端的 R4 兜底 —— 那正是"清单腐坏"的老路）。
+        // ⚠️ 清单**从 llm crate 的 DIALECTS 现算**，别在这层或 handler 里抄一份。
+        .route("/config/llm/dialects", get(llm_dialects))
         .route("/config/llm", put(config_llm_put))
         .route("/llm/test", post(llm_test));
 
