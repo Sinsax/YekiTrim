@@ -961,6 +961,11 @@ pub struct ModelOverrideToml {
     /// 档位 → wire 拼写；**空串 = 支持但不发送**（与内置表里的 `null` 同义）。
     #[serde(default)]
     pub reasoning: Option<std::collections::BTreeMap<String, String>>,
+    /// **输入模态**（`["text","image"]`）：这个模型吃不吃图片。
+    ///
+    /// ⚠️ 表里没收录、又确实是多模态的网关靠它手填；没写 = 跟随表（表也没有 ⇒ 只吃文字）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<Vec<String>>,
 }
 
 /// 按链路的覆盖表（`[llm.overrides]`）。未知键忽略，与其余配置类型一致 ——
@@ -1241,14 +1246,16 @@ reasoning = "high"
     /// （而且**不报错**，最难查）。
     #[test]
     fn model_level_caps_override_reaches_llm_params() {
-        use yekitrim_llm::params::MaxOutputWire;
         // 先拿一支**表里认识**的模型当底（deepseek：thinking_type + 非默认的输出字段名）
         let mut c = LlmConfig::default();
         c.base_url = "https://api.deepseek.com/v1".into();
         c.model = "deepseek-v4-pro".into();
         let before: yekitrim_llm::LlmParams = (&c).into();
-        assert_eq!(before.caps.thinking_wire, yekitrim_llm::ThinkingWire::ThinkingType);
-        assert_eq!(before.caps.max_output_wire, MaxOutputWire::MaxCompletionTokens);
+        assert_eq!(before.caps.dialect.id, "thinking_type");
+        // 这里不写 wire 字面量（门禁 only_llm_knows_wire：那种拼写只许住 llm crate）。
+        // 判据走**语义**：覆盖前后的方言必须真的换了一条（比断言某个具体串更结实，也不怕换表）。
+        let before_dialect = before.caps.dialect;
+        assert!(!before.caps.input.image, "deepseek 只吃文字");
 
         c.models.insert(
             "deepseek-v4-pro".into(),
@@ -1261,11 +1268,17 @@ reasoning = "high"
                         .into_iter()
                         .collect(),
                 ),
+                // 输入模态也走同一张覆盖表（表里说只吃文字，这里手填成多模态）
+                input: Some(vec!["text".to_string(), "image".to_string()]),
             },
         );
         let after: yekitrim_llm::LlmParams = (&c).into();
-        assert_eq!(after.caps.thinking_wire, yekitrim_llm::ThinkingWire::OpenAIEffort);
-        assert_eq!(after.caps.max_output_wire, MaxOutputWire::MaxTokens, "输出上限字段名被改回来了");
+        assert_eq!(after.caps.dialect.id, "openai_effort", "推理写法被换掉了");
+        assert_ne!(
+            after.caps.dialect.max_output_field, before_dialect.max_output_field,
+            "输出上限字段名也被改回来了（覆盖真的生效）"
+        );
+        assert!(after.caps.input.image, "手填的 input 必须真的进 caps");
         assert!(after.caps.reasoning_supported(), "手填的档位要算数");
         assert_eq!(after.caps.wire_for(yekitrim_llm::ReasoningLevel::High), Some(&Some("high".into())));
         assert_eq!(
@@ -1278,20 +1291,21 @@ reasoning = "high"
         // 键的大小写不该决定生效与否（模型 id 各家拼法不一）
         c.model = "DeepSeek-V4-Pro".into();
         let ci: yekitrim_llm::LlmParams = (&c).into();
-        assert_eq!(ci.caps.thinking_wire, yekitrim_llm::ThinkingWire::OpenAIEffort);
+        assert_eq!(ci.caps.dialect.id, "openai_effort");
 
         // 表里**完全没收录**的那对：手填照样生效（这就是这块存在的理由）
         let mut u = LlmConfig::default();
         u.base_url = "https://unknown.example.com/v1".into();
         u.model = "my-gateway-model".into();
         let before_u: yekitrim_llm::LlmParams = (&u).into();
-        assert_eq!(before_u.caps.thinking_wire, yekitrim_llm::ThinkingWire::None, "未知模型保守默认");
+        assert_eq!(before_u.caps.dialect.id, "none", "未知模型保守默认");
+        assert!(!before_u.caps.input.image, "未知模型不许被猜成多模态");
         u.models.insert(
             "my-gateway-model".into(),
             ModelOverrideToml { thinking_wire: Some("openai_effort".into()), ..Default::default() },
         );
         let after_u: yekitrim_llm::LlmParams = (&u).into();
-        assert_eq!(after_u.caps.thinking_wire, yekitrim_llm::ThinkingWire::OpenAIEffort);
+        assert_eq!(after_u.caps.dialect.id, "openai_effort");
     }
 
     /// 枚举 ↔ TOML 键名是契约（设置页与配置文件都按这个走）。
@@ -1420,12 +1434,17 @@ fn model_override_for<'a>(c: &'a LlmConfig) -> Option<&'a ModelOverrideToml> {
 
 /// 把手填能力盖到内置表查出来的 caps 上（**只覆盖写了的字段**）。
 fn apply_model_override(caps: &mut yekitrim_llm::ModelCaps, ov: &ModelOverrideToml) {
-    use yekitrim_llm::params::{MaxOutputWire, Support, ThinkingWire};
-    if let Some(w) = ov.thinking_wire.as_deref() {
-        caps.thinking_wire = ThinkingWire::parse(w);
+    use yekitrim_llm::params::Support;
+    // 推理写法 / 输出字段名：**任一改了就按 (写法, 字段名) 重新查一条方言**
+    // （"怎么发"只由 llm crate 的注册表决定，这里不写任何 wire 字面量）。
+    if ov.thinking_wire.is_some() || ov.max_output_wire.is_some() {
+        let id = ov.thinking_wire.as_deref().unwrap_or(caps.dialect.id);
+        let field = ov.max_output_wire.as_deref().unwrap_or(caps.dialect.max_output_field);
+        caps.dialect = yekitrim_llm::dialect::resolve(Some(id), Some(field));
     }
-    if let Some(w) = ov.max_output_wire.as_deref() {
-        caps.max_output_wire = MaxOutputWire::parse(w);
+    // 输入模态：认不出的串忽略；一个都认不出 ⇒ 回到"只有文字"
+    if let Some(items) = &ov.input {
+        caps.input = yekitrim_llm::InputModalities::parse(items.iter().map(String::as_str));
     }
     if let Some(t) = ov.temperature.as_deref() {
         // 与内置表同一套写法（unsupported / no / false 都算不支持）

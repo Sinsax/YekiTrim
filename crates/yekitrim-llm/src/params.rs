@@ -9,7 +9,8 @@
 //!
 //! 它的 `thinkingLevelMap: { level: string | null }` 就是这里的 [`ModelCaps::levels`]：
 //! **档位 → wire 拼写**；`null` = 支持但**不发送**；**缺档 = 该模型不提供这一档**。
-//! 它的 `compat.thinkingFormat` / `maxTokensField` 就是 [`ThinkingWire`] / [`MaxOutputWire`]。
+//! 它的 `compat.thinkingFormat` / `maxTokensField` 就是这里的**方言**（[`crate::dialect::Dialect`]）：
+//! 写成"注册表里的一行"，所以加一家新标准不用改本文件。
 
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -69,51 +70,53 @@ pub enum Support {
     Unsupported,
 }
 
-/// 推理参数**怎么发**（方言）。
+/// **输入模态**（能力面）：这个模型吃不吃图片。
 ///
-/// ⚠️ 未知方言一律降级成 [`ThinkingWire::None`] —— **宁可不发，也不瞎发**：
-/// 发错的参数要么 400，要么被静默忽略而用户以为生效了。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ThinkingWire {
-    /// `reasoning_effort: "high"`（OpenAI o 系 / gpt-5）
-    OpenAIEffort,
-    /// `thinking: { "type": "enabled" | "disabled" }`（DeepSeek / Anthropic 兼容层）
-    ThinkingType,
-    /// `enable_thinking: bool`（Qwen / DashScope）
-    QwenEnableThinking,
-    /// `reasoning: { "effort": "high" }`（OpenRouter）
-    OpenRouterEffort,
-    /// 不发推理参数。
-    #[default]
-    None,
+/// ⚠️ **保守默认 = 只有文字**：不认识的老网关不许被我们"猜"成支持图片
+/// （猜错的症状是把图片塞进不支持它的接口 → 400 / 静默丢掉那一张）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InputModalities {
+    pub text: bool,
+    pub image: bool,
 }
 
-impl ThinkingWire {
-    pub fn parse(s: &str) -> Self {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "openai_effort" | "reasoning_effort" => Self::OpenAIEffort,
-            "thinking_type" | "thinking" => Self::ThinkingType,
-            "qwen_enable_thinking" | "enable_thinking" => Self::QwenEnableThinking,
-            "openrouter_effort" => Self::OpenRouterEffort,
-            _ => Self::None,
-        }
+impl Default for InputModalities {
+    fn default() -> Self {
+        Self { text: true, image: false }
     }
 }
 
-/// `max_output` 发到哪个字段。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum MaxOutputWire {
-    #[default]
-    MaxTokens,
-    MaxCompletionTokens,
-}
-
-impl MaxOutputWire {
-    pub fn parse(s: &str) -> Self {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "max_completion_tokens" => Self::MaxCompletionTokens,
-            _ => Self::MaxTokens,
+impl InputModalities {
+    /// 从一串模态名（`["text","image"]`）解析；**未知串忽略**、`text` 缺省为真。
+    ///
+    /// 为什么 `text` 缺省为真：每一家 chat/completions 都能吃文字，"没写"不等于"不支持文字"。
+    pub fn parse<S: AsRef<str>>(items: impl IntoIterator<Item = S>) -> Self {
+        let mut out = Self { text: false, image: false };
+        for it in items {
+            match it.as_ref().trim().to_ascii_lowercase().as_str() {
+                "text" => out.text = true,
+                "image" | "vision" | "img" => out.image = true,
+                _ => {}
+            }
         }
+        if !out.text && !out.image {
+            // 一个都认不出（空数组 / 全是未知串）⇒ 回到"只有文字"（保守，同上理由）
+            return Self::default();
+        }
+        if !out.text {
+            // 只说了 image 没提 text：文字仍可用，别把"没提"当"没有"
+            out.text = true;
+        }
+        out
+    }
+
+    /// 给界面看的形状（与 `caps_json` 的 `input` 同一个键名）。
+    pub fn to_json(self) -> serde_json::Value {
+        serde_json::json!({ "text": self.text, "image": self.image })
+    }
+
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
     }
 }
 
@@ -122,24 +125,27 @@ impl MaxOutputWire {
 pub struct ModelCaps {
     /// 档位 → wire 拼写；`None` = 该档支持但**不发送**；**缺档 = 不支持**。
     pub levels: BTreeMap<ReasoningLevel, Option<String>>,
-    pub thinking_wire: ThinkingWire,
-    pub max_output_wire: MaxOutputWire,
+    /// **方言**（推理参数怎么写 + 输出上限发哪个字段名）。
+    /// 未知一律指向 [`crate::dialect::none()`]（什么都不发）。
+    pub dialect: &'static crate::dialect::Dialect,
     pub temperature: Support,
     pub context_window: Option<u32>,
     /// 该模型输出上限的**能力**（不是每请求默认值）。
     pub max_output_ceiling: Option<u32>,
+    /// **输入模态**（文字/图片）。默认只有文字。
+    pub input: InputModalities,
 }
 
 impl Default for ModelCaps {
-    /// **保守默认**：表没命中时用它 —— 不发推理参数、温度照发、`max_tokens`。
+    /// **保守默认**：表没命中时用它 —— 不发推理参数、温度照发、`max_tokens`、只吃文字。
     fn default() -> Self {
         Self {
             levels: BTreeMap::new(),
-            thinking_wire: ThinkingWire::None,
-            max_output_wire: MaxOutputWire::MaxTokens,
+            dialect: crate::dialect::none(),
             temperature: Support::Supported,
             context_window: None,
             max_output_ceiling: None,
+            input: InputModalities::default(),
         }
     }
 }
@@ -166,7 +172,7 @@ pub struct LlmParams {
     pub model: String,
     /// 采样温度（`caps.temperature == Unsupported` 时**不发送**）。
     pub temperature: f64,
-    /// 输出上限（字段名由 `caps.max_output_wire` 决定）。`None` = **不发送**。
+    /// 输出上限（字段名由 `caps.dialect.max_output_field` 决定）。`None` = **不发送**。
     pub max_tokens: Option<u32>,
     /// 推理档位。
     pub reasoning: ReasoningLevel,

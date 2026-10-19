@@ -15,7 +15,8 @@
 //!   改顺序会让存量 `llm.toml`（里面写死了 `response_format`）的请求体悄悄变样。
 //! * `reasoning` 再排最后：旧实现里 `[llm] thinking` 也是最后一个盖 `extra_params.thinking` 的。
 
-use crate::params::{LlmParams, MaxOutputWire, ReasoningLevel, Support, ThinkingWire};
+use crate::dialect::Dialect;
+use crate::params::{LlmParams, ReasoningLevel, Support};
 use serde_json::{json, Value};
 
 /// 把参数写进请求体。`body` 里已经有 `messages`。
@@ -23,12 +24,9 @@ pub fn apply(body: &mut Value, p: &LlmParams) {
     if !p.model.is_empty() {
         body["model"] = json!(p.model);
     }
-    // 输出上限：字段名按模型能力（o 系/gpt-5 只认 `max_completion_tokens`）；`None` = 不发送
+    // 输出上限：**字段名由方言给**（一家一个；o 系/gpt-5 只认 max_completion_tokens）；None = 不发送
     if let Some(n) = p.max_tokens {
-        match p.caps.max_output_wire {
-            MaxOutputWire::MaxTokens => body["max_tokens"] = json!(n),
-            MaxOutputWire::MaxCompletionTokens => body["max_completion_tokens"] = json!(n),
-        }
+        body[p.caps.dialect.max_output_field] = json!(n);
     }
     // 温度：模型不接受就**不发**（有的是 400，有的是静默忽略 —— 不发两边都不炸）
     if p.caps.temperature == Support::Supported {
@@ -66,43 +64,43 @@ fn apply_reasoning(body: &mut Value, p: &LlmParams) {
     match slot {
         // 支持但"不发送"（多数 provider 的"不思考"就是参数缺席）
         None => {}
-        Some(value) => emit(body, p.caps.thinking_wire, p.reasoning, value),
+        Some(value) => emit(body, p.caps.dialect, p.reasoning, value),
     }
 }
 
-/// 按方言把一档写成具体的键。未知方言（[`ThinkingWire::None`]）什么都不做。
-fn emit(body: &mut Value, wire: ThinkingWire, level: ReasoningLevel, value: &str) {
-    match wire {
-        ThinkingWire::OpenAIEffort => body["reasoning_effort"] = json!(value),
-        ThinkingWire::ThinkingType => {
-            let kind = if level == ReasoningLevel::Off { "disabled" } else { "enabled" };
-            body["thinking"] = json!({ "type": kind });
-        }
-        ThinkingWire::QwenEnableThinking => {
-            body["enable_thinking"] = json!(level != ReasoningLevel::Off);
-        }
-        ThinkingWire::OpenRouterEffort => body["reasoning"] = json!({ "effort": value }),
-        ThinkingWire::None => {}
+/// 按**方言**把一档写成具体的键。
+///
+/// ⚠️ 这里**不认识任何一家 API**：怎么写全由 `dialect.apply` 决定（注册表在 [`crate::dialect`]）。
+/// 未知方言（`dialect::none()`）的 apply 是空函数 ⇒ 什么都不发。
+fn emit(body: &mut Value, dialect: &'static Dialect, level: ReasoningLevel, value: &str) {
+    if let Some(map) = body.as_object_mut() {
+        (dialect.apply)(map, level, value);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::params::{ModelCaps, ReasoningLevel, Support, ThinkingWire};
+    use crate::dialect::{self, Dialect};
+    use crate::params::{ModelCaps, ReasoningLevel, Support};
 
-    fn params(levels: &[(ReasoningLevel, Option<&str>)], wire: ThinkingWire) -> LlmParams {
+    fn params(levels: &[(ReasoningLevel, Option<&str>)], d: &'static Dialect) -> LlmParams {
         let mut caps = ModelCaps::default();
-        caps.thinking_wire = wire;
+        caps.dialect = d;
         for (lv, v) in levels {
             caps.levels.insert(*lv, v.map(|s| s.to_string()));
         }
         LlmParams { caps, ..Default::default() }
     }
 
+    /// 取一条已登记的表项（id + 输出字段名）。
+    fn dlg(id: &str, field: &str) -> &'static Dialect {
+        dialect::resolve(Some(id), Some(field))
+    }
+
     #[test]
     fn 表里没有的档位一个都不发() {
-        let p = params(&[(ReasoningLevel::High, Some("high"))], ThinkingWire::OpenAIEffort);
+        let p = params(&[(ReasoningLevel::High, Some("high"))], dlg("openai_effort", "max_tokens"));
         let mut body = json!({});
         apply(&mut body, &LlmParams { reasoning: ReasoningLevel::Low, ..p });
         assert!(body.get("reasoning_effort").is_none(), "Low 不在表里就不许发：{body}");
@@ -110,7 +108,7 @@ mod tests {
 
     #[test]
     fn null_档位表示支持但不发送() {
-        let p = params(&[(ReasoningLevel::Off, None)], ThinkingWire::ThinkingType);
+        let p = params(&[(ReasoningLevel::Off, None)], dlg("thinking_type", "max_tokens"));
         let mut body = json!({});
         apply(&mut body, &LlmParams { reasoning: ReasoningLevel::Off, ..p });
         assert!(body.get("thinking").is_none(), "off 的 wire 是 null（缺席）⇒ 不许写键：{body}");
@@ -118,7 +116,7 @@ mod tests {
 
     #[test]
     fn 温度不支持的模型不发_temperature() {
-        let mut p = params(&[], ThinkingWire::None);
+        let mut p = params(&[], dialect::none());
         p.caps.temperature = Support::Unsupported;
         let mut body = json!({});
         apply(&mut body, &p);
@@ -127,8 +125,7 @@ mod tests {
 
     #[test]
     fn max_output_按能力换字段名() {
-        let mut p = params(&[], ThinkingWire::None);
-        p.caps.max_output_wire = MaxOutputWire::MaxCompletionTokens;
+        let mut p = params(&[], dlg("none", "max_completion_tokens"));
         p.max_tokens = Some(4096);
         let mut body = json!({});
         apply(&mut body, &p);
@@ -140,7 +137,7 @@ mod tests {
     fn extra_最后盖结构化项而_reasoning_再盖_extra() {
         let p = LlmParams {
             extra_params: Some(json!({"temperature": 1.5, "thinking": {"type": "disabled"}})),
-            ..params(&[(ReasoningLevel::High, Some("high"))], ThinkingWire::ThinkingType)
+            ..params(&[(ReasoningLevel::High, Some("high"))], dlg("thinking_type", "max_tokens"))
         };
         let mut body = json!({});
         apply(&mut body, &LlmParams { reasoning: ReasoningLevel::High, ..p });
@@ -148,9 +145,43 @@ mod tests {
         assert_eq!(body["thinking"]["type"], "enabled", "reasoning 再盖掉 extra（老行为）");
     }
 
+    /// **加一家新标准 = 加一条表项**：这里临时定义一条方言（推理写成 `test_reasoning`、
+    /// 输出上限发 `test_max_out`）—— `wire.rs` 与 `params.rs` **一行都没改**，它照样生效。
+    ///
+    /// 这是"方便后续适配更多标准 api"那条要求的判据：如果哪天有人把"怎么写"又焊回
+    /// `wire` 的 match 里，这条会红（新表项不再被认识）。
+    fn apply_test_dialect(
+        body: &mut serde_json::Map<String, serde_json::Value>,
+        _level: ReasoningLevel,
+        value: &str,
+    ) {
+        body.insert("test_reasoning".into(), serde_json::json!(value));
+    }
+
+    static TEST_DIALECT: Dialect = Dialect {
+        id: "test_dialect",
+        label: "测试方言",
+        max_output_field: "test_max_out",
+        apply: apply_test_dialect,
+    };
+
+    #[test]
+    fn new_dialect_needs_only_a_table_row() {
+        let p = params(&[(ReasoningLevel::High, Some("high"))], &TEST_DIALECT);
+        let mut body = json!({});
+        apply(
+            &mut body,
+            &LlmParams { max_tokens: Some(4096), reasoning: ReasoningLevel::High, ..p },
+        );
+        assert_eq!(body["test_reasoning"], "high", "新方言的推理写法直接生效（wire 不认识它）");
+        assert_eq!(body["test_max_out"], 4096, "新方言的输出字段名直接生效");
+        assert!(body.get("reasoning_effort").is_none(), "别串到别家方言上：{body}");
+        assert!(body.get("max_tokens").is_none(), "{body}");
+    }
+
     #[test]
     fn 未知方言降级成不发() {
-        let p = params(&[(ReasoningLevel::High, Some("high"))], ThinkingWire::None);
+        let p = params(&[(ReasoningLevel::High, Some("high"))], dialect::none());
         let mut body = json!({});
         apply(&mut body, &LlmParams { reasoning: ReasoningLevel::High, ..p });
         assert!(body.get("reasoning_effort").is_none());

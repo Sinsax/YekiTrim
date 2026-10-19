@@ -29,6 +29,53 @@ const SNIPPET_MAX: usize = 200;
 pub struct Discovered {
     pub id: String,
     pub name: Option<String>,
+    /// **顺手探到的能力**（`/models` 回包里带的话）。`None` = 这份回包没说，别编。
+    pub caps: Option<DiscoverCaps>,
+}
+
+/// 探测时**顺带**读到的能力（"能获取当然最好"那条）。
+///
+/// ⚠️ **只用于展示与"这一趟探到的能力"**：不落盘、不写进 `llm.toml`（既有口径：草稿不落盘）。
+/// 每个字段都可能是 `None`（回包没给）—— 调用方要保持表里的值，别拿"没探到"当"不支持"。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DiscoverCaps {
+    /// 输入模态（`["text","image"]` 之类）。
+    pub input: Option<crate::params::InputModalities>,
+    /// 推理写法（注册表 id：`openai_effort` / `thinking_type` …）；`None` = 没探出来。
+    pub dialect: Option<&'static str>,
+    /// 档位 → wire 拼写（只放**探到的**那几档）。
+    pub levels: Vec<(crate::params::ReasoningLevel, Option<String>)>,
+    /// 能不能带 `temperature`；`None` = 没探出来（保持表里的值）。
+    pub temperature: Option<bool>,
+}
+
+impl DiscoverCaps {
+    pub fn is_empty(&self) -> bool {
+        self.input.is_none()
+            && self.dialect.is_none()
+            && self.levels.is_empty()
+            && self.temperature.is_none()
+    }
+
+    /// 给界面用的形状（键名与 `catalog::caps_json` 同源，前端一套归一化就能吃）。
+    pub fn to_json(&self) -> serde_json::Value {
+        let mut levels = serde_json::Map::new();
+        for (level, wire) in &self.levels {
+            levels.insert(
+                level.as_str().to_string(),
+                match wire {
+                    Some(w) => serde_json::Value::String(w.clone()),
+                    None => serde_json::Value::Null,
+                },
+            );
+        }
+        serde_json::json!({
+            "input": self.input.map(|m| m.to_json()),
+            "dialect": self.dialect,
+            "levels": levels,
+            "temperature": self.temperature.map(|ok| if ok { "supported" } else { "unsupported" }),
+        })
+    }
 }
 
 /// 把用户填的 `base_url` 归一成**根**。
@@ -125,6 +172,62 @@ fn status_error(code: u16, url: &str, body: &str) -> String {
     }
 }
 
+/// 从一支模型的回包元素里**尽量**读能力；一个都读不到 ⇒ `None`。
+///
+/// 认这几种常见形状（都在 data/models/裸数组的元素上）：
+/// * OpenRouter：`architecture.input_modalities: ["text","image"]`
+/// * 通用：`input_modalities` / `modalities` / `capabilities.{input_modalities,modalities}`
+/// * 参数面：`supported_parameters: ["reasoning_effort","reasoning","temperature",…]`
+///
+/// ⚠️ **没有 `supported_parameters` 时不下结论**：那说明这家根本不说自己支持什么，
+/// "没说"不等于"不支持" —— 保持表里的值（这条路径什么都不回）。
+/// ⚠️ `temperature` 同理：只有那串**存在**时才判断有没有它。
+fn caps_of(item: &serde_json::Value) -> Option<DiscoverCaps> {
+    use crate::params::{InputModalities, ReasoningLevel};
+
+    let mut caps = DiscoverCaps::default();
+
+    // ① 输入模态
+    let list = item
+        .get("architecture")
+        .and_then(|a| a.get("input_modalities"))
+        .or_else(|| item.get("input_modalities"))
+        .or_else(|| item.get("modalities"))
+        .or_else(|| item.get("capabilities").and_then(|c| c.get("input_modalities")))
+        .or_else(|| item.get("capabilities").and_then(|c| c.get("modalities")))
+        .and_then(|v| v.as_array());
+    if let Some(arr) = list {
+        caps.input = Some(InputModalities::parse(arr.iter().filter_map(|v| v.as_str())));
+    }
+
+    // ② 参数面
+    if let Some(params) = item.get("supported_parameters").and_then(|v| v.as_array()) {
+        let has = |needle: &str| {
+            params
+                .iter()
+                .any(|p| p.as_str().map(|s| s.eq_ignore_ascii_case(needle)).unwrap_or(false))
+        };
+        // 推理：先看"能指定档位"（reasoning_effort），再看"只能开关"（reasoning / include_reasoning）
+        if has("reasoning_effort") {
+            caps.dialect = Some("openai_effort");
+            caps.levels = vec![
+                (ReasoningLevel::Off, None),                 // 关 = 不发这个参数
+                (ReasoningLevel::High, Some("high".into())), // 至少 high 档
+            ];
+        } else if has("reasoning") || has("include_reasoning") {
+            caps.dialect = Some("thinking_type");
+            caps.levels = vec![
+                (ReasoningLevel::Off, None),
+                (ReasoningLevel::High, Some("high".into())),
+            ];
+        }
+        // 温度：**列表存在才下结论**（没有它不代表不支持）
+        caps.temperature = Some(has("temperature"));
+    }
+
+    (!caps.is_empty()).then_some(caps)
+}
+
 /// 解析回包：`{"data":[…]}`（OpenAI）/ `{"models":[…]}`（部分中转）/ **裸数组**。
 ///
 /// 数组元素两种写法都认：`{"id":…,"name":…}` 与裸字符串（少数网关只给名字）。
@@ -154,14 +257,24 @@ fn parse_models(body: &str, url: &str) -> Result<Vec<Discovered>, String> {
         if id.is_empty() {
             continue;
         }
+        // 能力：带就取、不带就 None（**别编** —— "没探到"不等于"不支持"）
+        let caps = caps_of(item);
         match out.iter_mut().find(|m| m.id == id) {
             // 去重：同 id 出现两次时留下**有名字**的那条
             Some(prev) => {
                 if prev.name.is_none() {
                     prev.name = name.map(str::to_string);
                 }
+                // 同 id 重复出现时，能力也"留信息量大的那条"
+                if prev.caps.is_none() {
+                    prev.caps = caps;
+                }
             }
-            None => out.push(Discovered { id: id.to_string(), name: name.map(str::to_string) }),
+            None => out.push(Discovered {
+                id: id.to_string(),
+                name: name.map(str::to_string),
+                caps,
+            }),
         }
     }
     out.sort_by(|a, b| a.id.cmp(&b.id));
@@ -180,6 +293,7 @@ fn snippet(body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::params::ReasoningLevel;
     use std::sync::{Arc, Mutex};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -240,8 +354,8 @@ mod tests {
         assert_eq!(
             got,
             vec![
-                Discovered { id: "a-model".into(), name: None },
-                Discovered { id: "b-model".into(), name: Some("B 模型".into()) },
+                Discovered { id: "a-model".into(), name: None, caps: None },
+                Discovered { id: "b-model".into(), name: Some("B 模型".into()), caps: None },
             ],
             "data 形状 / 去重留名字 / id 升序"
         );
@@ -256,7 +370,7 @@ mod tests {
         let bare = r#"[{"id":"only-one","name":"唯一"}]"#;
         let (_s3, base3, _) = fake(vec![(200, bare.to_string())]).await;
         let got = discover("k", &base3).await.unwrap();
-        assert_eq!(got, vec![Discovered { id: "only-one".into(), name: Some("唯一".into()) }]);
+        assert_eq!(got, vec![Discovered { id: "only-one".into(), name: Some("唯一".into()), caps: None }]);
     }
 
     /// 用户把整条端点粘过来（`…/chat/completions`）时，要探的是**根**上的 `/models`。
@@ -328,6 +442,82 @@ mod tests {
         let err = discover("k", "not-a-url").await.unwrap_err();
         assert!(err.starts_with("请求 "), "{err}");
         assert!(!err.contains("HTTP"), "{err}");
+    }
+
+    /// **能获取就获取**：OpenRouter 那种回包（architecture.input_modalities + supported_parameters）
+    /// 里的能力必须被读出来，而不是只留 id/name。
+    #[tokio::test]
+    async fn openrouter_style_caps_are_read_from_the_same_payload() {
+        let body = r#"{"data":[
+            {"id":"router-a","name":"A",
+             "architecture":{"input_modalities":["text","image"]},
+             "supported_parameters":["temperature","reasoning_effort","max_tokens"]},
+            {"id":"plain-b","name":"B"}
+        ]}"#;
+        let (_s, base, _) = fake(vec![(200, body.to_string())]).await;
+        let got = discover("k", &base).await.unwrap();
+        let a = got.iter().find(|m| m.id == "router-a").unwrap();
+        let caps = a.caps.as_ref().expect("这支回包给了能力，必须读出来");
+        assert!(caps.input.unwrap().image, "input_modalities 里的 image");
+        assert_eq!(caps.dialect, Some("openai_effort"), "有 reasoning_effort");
+        assert_eq!(caps.levels.len(), 2, "至少 off + high 两档：{:?}", caps.levels);
+        assert!(caps.levels.iter().any(|(lv, w)| *lv == ReasoningLevel::High && w.as_deref() == Some("high")));
+        assert_eq!(caps.temperature, Some(true), "列表里有 temperature");
+        // 没有 supported_parameters 的那支：**不下结论**（caps = None，别编）
+        let b = got.iter().find(|m| m.id == "plain-b").unwrap();
+        assert!(b.caps.is_none(), "这家什么都没说 ⇒ 一个结论都不下：{:?}", b.caps);
+    }
+
+    /// 只有 reasoning ⇒ 开/关两档（thinking_type）；include_reasoning 也算推理信号。
+    #[tokio::test]
+    async fn reasoning_only_means_on_off() {
+        let body = r#"{"models":[
+            {"id":"m-onoff","supported_parameters":["reasoning"]},
+            {"id":"m-inc","supported_parameters":["include_reasoning"]}
+        ]}"#;
+        let (_s, base, _) = fake(vec![(200, body.to_string())]).await;
+        let got = discover("k", &base).await.unwrap();
+        let caps = got[0].caps.as_ref().expect("reasoning ⇒ 有结论");
+        assert_eq!(caps.dialect, Some("thinking_type"));
+        assert_eq!(caps.temperature, Some(false), "列表在但没有 temperature ⇒ 判不支持");
+        let inc = got[1].caps.as_ref().expect("include_reasoning 也算");
+        assert_eq!(inc.dialect, Some("thinking_type"));
+    }
+
+    /// 另外两种常见形状：顶层 input_modalities / capabilities.modalities。
+    #[tokio::test]
+    async fn other_modality_shapes_are_recognised() {
+        let body = r#"{"data":[
+            {"id":"top-level","input_modalities":["text","image"]},
+            {"id":"nested","capabilities":{"modalities":["text"]}}
+        ]}"#;
+        let (_s, base, _) = fake(vec![(200, body.to_string())]).await;
+        let got = discover("k", &base).await.unwrap();
+        // ⚠️ discover 按 id 升序返回（"nested" < "top-level"）—— 按 id 取，别按下标
+        let top = got.iter().find(|m| m.id == "top-level").unwrap();
+        assert!(top.caps.as_ref().unwrap().input.unwrap().image, "顶层 input_modalities");
+        let nested = got.iter().find(|m| m.id == "nested").unwrap();
+        let nested = nested.caps.as_ref().unwrap().input.unwrap();
+        assert!(nested.text && !nested.image, "只写 text ⇒ 不吃图片");
+    }
+
+    /// to_json 的形状（服务端直接回给界面；键名与 caps_json 同源）。
+    #[test]
+    fn discovered_caps_json_shape() {
+        let caps = DiscoverCaps {
+            input: Some(crate::params::InputModalities { text: true, image: true }),
+            dialect: Some("openai_effort"),
+            levels: vec![(ReasoningLevel::Off, None), (ReasoningLevel::High, Some("high".into()))],
+            temperature: Some(true),
+        };
+        let v = caps.to_json();
+        assert_eq!(v["input"], serde_json::json!({"text": true, "image": true}));
+        assert_eq!(v["dialect"], "openai_effort");
+        assert_eq!(v["levels"]["high"], "high");
+        assert!(v["levels"]["off"].is_null(), "off = 不发这个参数");
+        assert_eq!(v["temperature"], "supported");
+        assert!(!caps.is_empty());
+        assert!(DiscoverCaps::default().is_empty());
     }
 
     /// 形状不认识（既没有 data 也没有 models）要给一句能定位的话，而不是"没有模型"。
