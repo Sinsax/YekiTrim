@@ -191,7 +191,10 @@
           <div class="form-grid">
             <div class="span-all">
               <LlmParamFields :caps="caps" :target="form.llm.params" id-prefix="llm-g"
-                              :json-mode="jsonModeOn" @update:jsonMode="setJsonMode" />
+                              :json-mode="jsonModeOn" @update:jsonMode="setJsonMode"
+                              :input-text="inputText" :input-image="inputImage" :input-declared="inputDeclared"
+                              @update:inputText="setInputKind('text', $event)"
+                              @update:inputImage="setInputKind('image', $event)" />
             </div>
             <SliderField v-model="form.llm.max_concurrent" class="span-2" label="并发请求数"
                          :min="1" :max="32" :step="1" hint="对所有 LLM 调用生效" />
@@ -282,9 +285,14 @@
                表里没有 (host, model) 时，那几个旋钮在「生成」组里画不出来 —— 这块就是手填的出口。 -->
           <div v-if="showModelCaps && modelCapsRow" class="llm-caps">
             <div class="form-section-title">模型能力覆盖
-              <span class="muted small" :title="'写入 [llm.models.&quot;' + form.llm.model + '&quot;]，只影响这个模型；三个都留空 = 保存时删掉这条'">
+              <span class="muted small" :title="'写入 [llm.models.&quot;' + form.llm.model + '&quot;]，只影响这个模型；四项都留空 = 保存时删掉这条'">
                 写入 [llm.models."…"]
               </span>
+            </div>
+            <!-- 勾选（生成能力）就写在 `input` 这一项上；这行让用户看见"到底会写下去什么" -->
+            <div class="muted small mb-4"
+                 :title="'生成能力 → input = ' + JSON.stringify(['text', 'image'].filter((k) => (k === 'text' ? inputText : inputImage)))">
+              生成能力：{{ inputZh({ text: inputText, image: inputImage }) }}{{ modelInputRow ? '（手填）' : '（来自能力）' }}
             </div>
             <div class="form-grid">
               <div>
@@ -379,7 +387,7 @@
 import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { api } from '../api/client'
 import { fetchCatalog, saveLlm as putLlm, saveLlmRaw as putLlmRaw, testConnection } from '../api/llm'
-import { CAPS_SOURCE_ZH, normalizeCaps, normalizeLevel } from '../components/llm/caps.js'
+import { CAPS_SOURCE_ZH, DEFAULT_INPUT, inputToArray, inputZh, mergeCaps, normalizeCaps, normalizeLevel } from '../components/llm/caps.js'
 import { toast } from '../stores/toast'
 import Icon from '../components/Icon.vue'
 import SliderField from '../components/SliderField.vue'
@@ -406,9 +414,12 @@ const globalRaw = ref('')
 const llmRaw = ref('')
 const configError = ref('')
 const llmResult = ref('')
-/** 模型能力（caps）：来自 `GET /api/config/llm/catalog`，经 caps.js 归一化；null = 未知（只画通用控件）。 */
+/** 模型能力（caps）：`GET /api/config/llm/catalog`（内置目录）+ 探针带回的那份**覆盖**它；null = 未知。 */
 const caps = ref(null)
 const capsSource = ref('')
+/** `GET /api/llm/models` 真探到的能力（model id → 归一化 caps）—— 「能获取当然最好」：它能覆盖内置表。
+ *  只有**探针那条路**会带 caps（表命中零网络，服务端不带）。按 model id 存，切回来还在。 */
+const probeCaps = reactive({})
 /** 能力读失败的原因 —— **不许静默**：拿不到能力就说出来，别让用户以为"这个模型本来就没这些旋钮" */
 const capsError = ref('')
 const referenceTitlesText = ref('')
@@ -495,15 +506,20 @@ function defaultThinking(key) {
   return LLM_LINK_THINKING[key] || '跟随 extra_params'
 }
 
-/** 「生成」组标题右边那行小字：能力从哪来 / 有没有读到（细节挂 title）。 */
+/** 「生成」组标题右边那行小字：**能力来源**（内置目录 / 联网探测 / 手填）+ 有没有读到（细节挂 title）。 */
 const capsText = computed(() => {
-  if (capsError.value) return '能力读取失败'
-  if (!caps.value) return ''
-  if (caps.value.hit === false) return '能力：未收录（按通用参数）'
-  return '能力：' + (CAPS_SOURCE_ZH[capsSource.value] || capsSource.value)
+  const bits = []
+  if (capsSource.value) bits.push(CAPS_SOURCE_ZH[capsSource.value] || capsSource.value)
+  if (manualCapsOn.value) bits.push(CAPS_SOURCE_ZH.manual)
+  if (!bits.length && capsError.value) return '能力读取失败'
+  if (!bits.length) return ''
+  const base = '能力：' + bits.join(' + ')
+  if (caps.value && caps.value.hit === false) return base + '（未收录）'
+  return base
 })
 const capsTitle = computed(() => capsError.value
-  || '推理档位 / 温度 / 输出上限这些旋钮出不出现，由这个模型在能力表里的条目决定')
+  || '生成能力 / 推理档位 / 温度 / 输出上限这些旋钮由能力表决定；探针真拿到的能力会覆盖内置目录，'
+  + '手填的 [llm.models] 覆盖两者')
 
 /** api_key 只写不读：占位符照实说「已设置」（P3 起 /api/config 只回 api_key_set 布尔，不回明文）。 */
 const apiKeyPlaceholder = computed(() => (form.llm.api_key_set ? '已设置（留空 = 不修改）' : 'sk-…'))
@@ -523,11 +539,15 @@ async function loadCaps() {
   const model = String(form.llm.model || '').trim()
   if (!base || !model) { caps.value = null; capsSource.value = ''; capsError.value = ''; return }
   capsError.value = ''
+  // 探针真拿到的能力**覆盖**内置目录那份（只覆盖它声明过的字段，见 caps.js::mergeCaps）
+  const probe = probeCaps[model] || null
   try {
     const r = await fetchCatalog(base, model)
-    caps.value = normalizeCaps(r)
-    capsSource.value = 'catalog'
+    caps.value = mergeCaps(normalizeCaps(r), probe)
+    capsSource.value = probe ? 'probe' : 'catalog'
   } catch (e) {
+    // 目录接口没接上/失败，但探针给过能力 ⇒ 照用探针那份（比"什么都画不出来"强），来源照实写
+    if (probe) { caps.value = probe; capsSource.value = 'probe'; return }
     caps.value = null
     capsSource.value = ''
     capsError.value = (e && e.status === 404)
@@ -536,8 +556,12 @@ async function loadCaps() {
   }
 }
 
-/** 「获取模型」回来了：候选由选择器自己显示，这里只补一次当前模型的能力。 */
-function onModelsFetched() {
+/** 「获取模型」回来了：候选由选择器自己显示；**带 caps 的那些存下来**（"能获取当然最好"），
+ *  当前模型立刻用它覆盖内置目录。 */
+function onModelsFetched(r) {
+  for (const m of ((r && r.models) || [])) {
+    if (m && m.id && m.caps) probeCaps[String(m.id)] = normalizeCaps({ caps: m.caps })
+  }
   if (String(form.llm.model || '').trim()) loadCaps()
 }
 
@@ -555,18 +579,61 @@ const MODEL_WIRE_OPTS = ['openai_effort', 'thinking_type', 'qwen_enable_thinking
 const MODEL_MAXOUT_OPTS = ['max_tokens', 'max_completion_tokens']
 const MODEL_TEMP_OPTS = ['supported', 'unsupported']
 /** 内置表**没收录**这对 (host, model)（hit:false）⇒ 「高级」里给一块手填能力的表单 */
-const showModelCaps = computed(() => !!(caps.value && caps.value.hit === false
-  && String(form.llm.model || '').trim()))
+const capsUnlisted = computed(() => !!(caps.value && caps.value.hit === false))
 /** 当前模型那一行（reactive 对象；由下面的 watch 保证存在） */
 const modelCapsRow = computed(() => {
   const id = String(form.llm.model || '').trim()
   return id ? (form.llm.models[id] || null) : null
 })
-// 模型一变就把那一行补出来（值按模型 id 存，切回来还在）；三个都留空 = 保存时把这条删掉
+/** 手填过没有（`input` 数组 或 三个 wire 任一）—— 来源小字与"这块留不留"都用它 */
+const manualCapsOn = computed(() => {
+  const row = modelCapsRow.value
+  if (!row) return false
+  return Array.isArray(row.input) || !!(row.thinking_wire || row.max_output_wire || row.temperature)
+})
+/** 勾选（生成能力）的**当前值**：手填优先 → 否则能力表/探针的值 */
+const modelInputRow = computed(() => {
+  const row = modelCapsRow.value
+  return row && Array.isArray(row.input) ? row.input : null
+})
+const capsInput = computed(() => (caps.value && caps.value.input) || DEFAULT_INPUT)
+const inputText = computed(() => (modelInputRow.value ? modelInputRow.value.includes('text') : capsInput.value.text))
+const inputImage = computed(() => (modelInputRow.value ? modelInputRow.value.includes('image') : capsInput.value.image))
+const inputDeclared = computed(() => !!(caps.value && caps.value.input && caps.value.input.declared))
+/** 能力与勾选**不一致**（用户改过勾选）⇒ 覆盖那块必须出现，否则"改了存不下来" */
+const capsInputDiffers = computed(() => !!modelInputRow.value
+  && (inputText.value !== capsInput.value.text || inputImage.value !== capsInput.value.image))
+/**
+ * 「模型能力覆盖」什么时候出现：
+ *  ① 能力表**没收录**（hit:false）—— 手填是唯一出口；
+ *  ② **能力与勾选不一致**（用户在「生成能力」里改了勾选）—— 不出现的话那次手改保存不下来；
+ *  ③ 已经手填过 —— 让这块**留住**（不然用户存完再打开就找不到自己那条覆盖了）。
+ */
+const showModelCaps = computed(() => {
+  const id = String(form.llm.model || '').trim()
+  if (!id) return false
+  return !!(capsUnlisted.value || capsInputDiffers.value || manualCapsOn.value)
+})
+/** 勾 / 取消一个输入模态：**写进手填那一行**（`[llm.models."<id>"].input`）。
+ *  ⚠️ 手填优先于能力表 —— 否则用户勾了、保存后又被能力表的值盖回去（"改了没反应"）。 */
+function setInputKind(kind, on) {
+  const id = String(form.llm.model || '').trim()
+  if (!id) return
+  if (!form.llm.models[id]) {
+    form.llm.models[id] = { thinking_wire: '', max_output_wire: '', temperature: '', input: null }
+  }
+  const row = form.llm.models[id]
+  // 第一次勾：从"当前显示的"那份起算（只改用户点的那一个）
+  const cur = new Set(Array.isArray(row.input) ? row.input : inputToArray(capsInput.value))
+  if (on) cur.add(kind)
+  else cur.delete(kind)
+  row.input = ['text', 'image'].filter((k) => cur.has(k))
+}
+// 模型一变就把那一行补出来（值按模型 id 存，切回来还在）；四项都留空 = 保存时把这条删掉
 watch(() => String(form.llm.model || '').trim(), (id) => {
   if (!id) return
   if (!form.llm.models[id]) {
-    form.llm.models[id] = { thinking_wire: '', max_output_wire: '', temperature: '' }
+    form.llm.models[id] = { thinking_wire: '', max_output_wire: '', temperature: '', input: null }
   }
 }, { immediate: true })
 
@@ -672,17 +739,20 @@ function buildLlmPatch() {
       json_mode: p.json_mode === true ? true : null
     }
   };
-  // **能力面**（[llm.models."<id>"]）：只发**有内容的行**；三个都空的那行整条删掉（别在文件里留空表）
+  // **能力面**（[llm.models."<id>"]）：只发**有内容的行**；四项都空的那行整条删掉（别在文件里留空表）
   const models = {}
   for (const [id, row] of Object.entries(f.models || {})) {
-    if (!row || (!row.thinking_wire && !row.max_output_wire && !row.temperature)) {
+    // `input`：Array = 用户勾过（**空数组也是"勾过"**：表示"都不支持"），null/undefined = 没手填
+    const hasInput = !!row && Array.isArray(row.input)
+    if (!row || (!row.thinking_wire && !row.max_output_wire && !row.temperature && !hasInput)) {
       models[id] = null
       continue
     }
     models[id] = {
       thinking_wire: row.thinking_wire ? row.thinking_wire : null,
       max_output_wire: row.max_output_wire ? row.max_output_wire : null,
-      temperature: row.temperature ? row.temperature : null
+      temperature: row.temperature ? row.temperature : null,
+      input: hasInput ? row.input : null
     }
   }
   if (Object.keys(models).length) llm.models = models
@@ -795,13 +865,15 @@ async function loadConfig() {
         json_mode: p.json_mode === true
       },
       // 能力面：整份带过来（只编辑当前模型那一行，其余原样回写）
+      // `input` 用 **null** 表示"没手填"（`[]` 是"手填成都不勾"，两者不能混）
       models: Object.fromEntries(
         Object.entries(l.models || {}).map(([id, m]) => [
           id,
           {
             thinking_wire: m?.thinking_wire || '',
             max_output_wire: m?.max_output_wire || '',
-            temperature: m?.temperature || ''
+            temperature: m?.temperature || '',
+            input: Array.isArray(m?.input) ? [...m.input] : null
           }
         ])
       ),
