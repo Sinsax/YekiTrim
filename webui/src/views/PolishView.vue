@@ -2075,7 +2075,8 @@ function onSubtitlePosInput(e) {
 // "滑块拖到 3.0、保存后弹回 2.5"（后端夹了、前端没夹）或反过来"前端夹了、后端存了 5.0"。
 // 上下限的依据（露边 + 语义）见后端那段注释 —— 这里只镜像，别在别处再写一份。
 const ZOOM_FIELDS = [
-  { key: 'zoom_closeup', label: '特写', min: 1.0, max: 3.0, title: '特写缩放（camera zoom=特写）。默认 1.8，比近景更近一档' },
+  { key: 'zoom_closeup', label: '特写', min: 1.0, max: 3.0, title: '特写缩放（camera zoom=特写）。默认 2.0，比近景更近一档' },
+  { key: 'zoom_full', label: '全（原画）', min: 1.0, max: 3.0, title: '全：原画不缩放（camera zoom=全）。默认 1.0，是缺省景别' },
   { key: 'zoom_close', label: '近景', min: 1.0, max: 3.0, title: '近景特写缩放（camera zoom=近）。默认 1.5，越大越近' },
   { key: 'zoom_mid', label: '中景', min: 1.0, max: 3.0, title: '中景缩放（camera zoom=中）。默认 1.3' },
   { key: 'zoom_wide', label: '画中画', min: 0.05, max: 1.0, title: '画中画缩放（camera zoom=远），小于 1 时四周留黑边。默认 0.55' },
@@ -2083,10 +2084,15 @@ const ZOOM_FIELDS = [
 const zoomFields = ZOOM_FIELDS
 
 /** 读当前生效值；没写过这个键就回落到历史默认（与后端同一批数）。 */
-const ZOOM_DEFAULTS = { zoom_closeup: 1.8, zoom_close: 1.5, zoom_mid: 1.3, zoom_wide: 0.55 }
+const ZOOM_DEFAULTS = { zoom_closeup: 2.0, zoom_full: 1.0, zoom_close: 1.5, zoom_mid: 1.3, zoom_wide: 0.55 }
 function zoomValue(key) {
   const v = cfg.value?.style?.camera?.[key]
-  return Number.isFinite(v) ? v : ZOOM_DEFAULTS[key]
+  if (Number.isFinite(v)) return v
+  // ⚠️ **兜底必须返回有限数字**：`ZOOM_FIELDS` 加了新档而这里漏登记时，
+  //    返回 `undefined` 会让模板里的 `.toFixed(2)` 抛错 ⇒ **整个精修页挂载失败**
+  //    （2026-10-20 新增 `zoom_full` 时就这么崩过一次，被 `check-polish-page-loads` 抓到）。
+  const d = ZOOM_DEFAULTS[key]
+  return Number.isFinite(d) ? d : 1.0
 }
 
 /** 拖动只更新内存镜像（预览当场重算），松手才落盘 —— 与字幕位置滑杆同一套理由。 */
@@ -2105,12 +2111,10 @@ async function onZoomCommit(key, e) {
   if (!Number.isFinite(n)) return
   const f = ZOOM_FIELDS.find((x) => x.key === key)
   const next = Math.min(f.max, Math.max(f.min, Math.round(n * 100) / 100))
-  const camera = {
-    zoom_mid: zoomValue('zoom_mid'),
-    zoom_close: zoomValue('zoom_close'),
-    zoom_wide: zoomValue('zoom_wide'),
-    [key]: next,
-  }
+  // ⚠️ **五档全带**：后端那个分支收整块 `camera`，少带一档 = 那档被重置回默认。
+  //    用 `ZOOM_FIELDS` 派生，别再手写清单（加档时漏过两次：`zoom_full` 崩页、`zoom_closeup` 保存丢值）。
+  const camera = Object.fromEntries(ZOOM_FIELDS.map((x) => [x.key, zoomValue(x.key)]))
+  camera[key] = next
   if (next === zoomValue(key) && camera[key] === cfg.value?.style?.camera?.[key]) return
   await saveSubtitleStyle({ camera }, `${f.label}强度已保存（${next.toFixed(2)}）`)
 }

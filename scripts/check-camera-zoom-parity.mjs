@@ -35,7 +35,7 @@ const root = join(here, '..')
 const read = (rel) => readFileSync(join(root, rel), 'utf8')
 
 /** 五处默认值必须同时等于这三个数 —— 改档位就是改这里 + 五处（有变异钉着）。 */
-const EXPECTED = { 特写: 1.8, 近: 1.5, 远: 0.55, 中: 1.3 }
+const EXPECTED = { 特写: 2.0, 近: 1.5, 远: 0.55, 全: 1.0, 中: 1.3 }
 
 let failures = 0
 const check = (name, ok, detail) => {
@@ -56,6 +56,7 @@ function rustDefaults(src) {
     return m ? Number(m[1]) : null
   }
   return {
+    full: grab('default_zoom_full'),
     mid: grab('default_zoom_mid'),
     closeup: grab('default_zoom_closeup'),
     close: grab('default_zoom_close'),
@@ -84,6 +85,7 @@ function jsCamFactorDefaults(src) {
     closeup: grab('特写'),
     close: grab('近'),
     wide: grab('远'),
+    full: grab('全'),
     mid: grab('中') ?? midFallback(),
   }
 }
@@ -91,12 +93,12 @@ function jsCamFactorDefaults(src) {
 /** ④ 转译器：`const defaults = { 近: 1.5, 远: 0.55, 中: 1.3 }`。 */
 function translatorDefaults(src) {
   const m = src.match(/const defaults = \{([^}]+)\}/)
-  if (!m) return { closeup: null, close: null, wide: null, mid: null }
+  if (!m) return { closeup: null, close: null, wide: null, full: null, mid: null }
   const get = (label) => {
     const mm = m[1].match(new RegExp(`${label}:\\s*([0-9.]+)`))
     return mm ? Number(mm[1]) : null
   }
-  return { closeup: get('特写'), close: get('近'), wide: get('远'), mid: get('中') }
+  return { closeup: get('特写'), close: get('近'), wide: get('远'), full: get('全'), mid: get('中') }
 }
 
 /** ⑤ 后端：`("zoom_wide", &mut cam.zoom_wide, 0.05, 1.0)` 的夹取区间。 */
@@ -111,6 +113,7 @@ function serverClamps(src) {
     mid: grab('zoom_mid'),
     closeup: grab('zoom_closeup'),
     close: grab('zoom_close'),
+    full: grab('zoom_full'),
     wide: grab('zoom_wide'),
   }
 }
@@ -129,6 +132,7 @@ function run(variant) {
     ['特写', rust.closeup, tpl.closeup, eng.closeup, trans.closeup],
     ['近', rust.close, tpl.close, eng.close, trans.close],
     ['远', rust.wide, tpl.wide, eng.wide, trans.wide],
+    ['全', rust.full, tpl.full, eng.full, trans.full],
     ['中', rust.mid, tpl.mid, eng.mid, trans.mid],
   ]
   for (const [label, a, b, c, d] of all) {
@@ -146,11 +150,13 @@ function run(variant) {
   check('zoom_close 夹到 [1.0, 3.0]', eq(srv.close?.[0], 1.0) && eq(srv.close?.[1], 3.0), `实得 ${JSON.stringify(srv.close)}`)
   // 特写与中/近同一区间：它同样是"放大"，< 1 会缩出黑边（那是画中画的语义）。
   check('zoom_closeup 夹到 [1.0, 3.0]', eq(srv.closeup?.[0], 1.0) && eq(srv.closeup?.[1], 3.0), `实得 ${JSON.stringify(srv.closeup)}`)
+  // 「全」（原画 1.0）：与中/近同区间（< 1 会缩出黑边 = 画中画的语义）
+  check('zoom_full 夹到 [1.0, 3.0]', eq(srv.full?.[0], 1.0) && eq(srv.full?.[1], 3.0), `实得 ${JSON.stringify(srv.full)}`)
   // 画中画：> 1 就不是画中画了；下限取正数（0 会让画面缩成一个点）
   check('zoom_wide 夹到 [0.05, 1.0]', eq(srv.wide?.[0], 0.05) && eq(srv.wide?.[1], 1.0), `实得 ${JSON.stringify(srv.wide)}`)
 
   console.log('\n③ 后端夹取区间必须**包住**默认值（否则默认值一存就被夹坏）')
-  for (const [key, label] of [['mid', '中'], ['closeup', '特写'], ['close', '近'], ['wide', '远']]) {
+  for (const [key, label] of [['mid', '中'], ['closeup', '特写'], ['close', '近'], ['full', '全'], ['wide', '远']]) {
     const c = srv[key]
     const d = EXPECTED[label]
     check(
@@ -167,6 +173,7 @@ function run(variant) {
   check('zoom_close 前端滑杆区间 = 后端夹取区间', rangesEqual(fe.close, srv.close), `前端 ${JSON.stringify(fe.close)} / 后端 ${JSON.stringify(srv.close)}`)
   check('zoom_closeup 前端滑杆区间 = 后端夹取区间', rangesEqual(fe.closeup, srv.closeup), `前端 ${JSON.stringify(fe.closeup)} / 后端 ${JSON.stringify(srv.closeup)}`)
   check('zoom_mid 前端滑杆区间 = 后端夹取区间', rangesEqual(fe.mid, srv.mid), `前端 ${JSON.stringify(fe.mid)} / 后端 ${JSON.stringify(srv.mid)}`)
+  check('zoom_full 前端滑杆区间 = 后端夹取区间', rangesEqual(fe.full, srv.full), `前端 ${JSON.stringify(fe.full)} / 后端 ${JSON.stringify(srv.full)}`)
   check('zoom_wide 前端滑杆区间 = 后端夹取区间', rangesEqual(fe.wide, srv.wide), `前端 ${JSON.stringify(fe.wide)} / 后端 ${JSON.stringify(srv.wide)}`)
 }
 
@@ -178,6 +185,7 @@ function frontendRanges(src) {
   return {
     closeup: grab('zoom_closeup'),
     close: grab('zoom_close'),
+    full: grab('zoom_full'),
     mid: grab('zoom_mid'),
     wide: grab('zoom_wide'),
   }
@@ -247,7 +255,10 @@ function mutate() {
   //    ⇒ 变异体与原件逐字节相同 ⇒ 判据当然不翻面，而自证把它报成"守卫没抓到"。
   //    那是**假红**：真正的守卫一直在工作（另三条变异证明过），红的是这条变异自己没生效。
   //    教训与 `check-yekitrim-translator.mjs` 的 `--mutate` 同源：**每处变异都要先断言"替换命中一次"**。
-  expectRed('转译器 defaults 的近景改成 1.8', { ...base, dhampir: base.dhampir.replace('const defaults = { 特写: 1.8, 近: 1.5', 'const defaults = { 特写: 1.8, 近: 1.8') }, run, 'dhampir')
+  expectRed('转译器 defaults 的近景改成 1.8', { ...base, dhampir: base.dhampir.replace('const defaults = { 特写: 2.0, 近: 1.5', 'const defaults = { 特写: 2.0, 近: 1.8') }, run, 'dhampir')
+  // 「全」（2026-10-20 新增档）：把模板那一档的回落值改掉 ⇒ 五处不再一致
+  expectRed('出片模板的「全」回落值改成 1.2', { ...base, html: base.html.replace("else if(label==='全'){v=c.zoom_full;d=1.0;}", "else if(label==='全'){v=c.zoom_full;d=1.2;}") }, run, 'html')
+  expectRed('后端把 zoom_full 下限放到 0.5（原画档会缩出黑边）', { ...base, server: base.server.replace('("zoom_full", &mut cam.zoom_full, 1.0, 3.0)', '("zoom_full", &mut cam.zoom_full, 0.5, 3.0)') }, run, 'server')
   expectRed('后端放开 zoom_mid 下限到 0.5（中景会缩出黑边）', { ...base, server: base.server.replace('("zoom_mid", &mut cam.zoom_mid, 1.0_f64, 3.0_f64)', '("zoom_mid", &mut cam.zoom_mid, 0.5_f64, 3.0_f64)') }, run, 'server')
   expectRed('后端把 zoom_wide 上限放到 2.0（画中画不再是画中画）', { ...base, server: base.server.replace('("zoom_wide", &mut cam.zoom_wide, 0.05, 1.0)', '("zoom_wide", &mut cam.zoom_wide, 0.05, 2.0)') }, run, 'server')
   expectRed('前端滑杆上限与后端不同（3.0 → 5.0）', { ...base, polishView: base.polishView.replace("key: 'zoom_close', label: '近景', min: 1.0, max: 3.0", "key: 'zoom_close', label: '近景', min: 1.0, max: 5.0") }, run, 'polishView')

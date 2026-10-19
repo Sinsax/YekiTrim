@@ -151,7 +151,9 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
         if seg.events.iter().any(|e| matches!(e, crate::project::Event::Camera { .. })) { continue; }
         seg.events.push(crate::project::Event::Camera {
             time: seg.start, end: Some(seg.end),
-            zoom: "中".into(), origin: "50% 50%".into(),
+            // 2026-10-20 用户口径：缺省景别 = **「全」（原画 1.0）**；此前是「中」(1.3)。
+            // ⚠️ **只影响「从没写过运镜」的段**（有运镜的段在上面就 continue 了 ⇒ R4）。
+            zoom: "全".into(), origin: "50% 50%".into(),
             // 聚焦主播：由 resolve_camera_anchors 解析成坐标（origin 是解析前的占位值）
             anchor: Some("liver".into()), anchor_to: None, to_origin: None, cut: false,
             // 手持摇摆是可选项：补默认运镜从不自己开（非近景也会被守卫剔除）
@@ -521,6 +523,26 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
             remove_rhythm_report(&data_dir);
         }
     }
+    // Step 1i: **空窗补位**（2026-10-20 用户口径「太平行、少内容」）。
+    //
+    // prompt 已加了下限（每 8 秒一个 / 空窗 ≤6 秒必须补），但 LLM 不一定听话 ——
+    // 这一段是**确定性兜底**：不花 token、不联网、幂等（判据是补位事件自己的标记，见
+    // `fx::AUTO_FILL_ANCHOR`）。放在所有 cap_* 之后：补的那条按"窗口本来就空"算，
+    // 不会挤掉 LLM 已经安排好的内容。
+    {
+        let filled = crate::process::fx::fill_visual_gaps(
+            &mut config.segments,
+            &subtitles,
+            &config.mute_ranges,
+        );
+        if filled > 0 {
+            tracing::info!(
+                "  ✨ 内容空窗补位 {filled} 条（≥{}s 没有内容事件；确定性、幂等）",
+                crate::process::fx::VISUAL_GAP_SECS
+            );
+        }
+    }
+
     // Step 2: 根据 sticker_source 分配来源 + 解析 keyword → name (轮询 + 逐源兜底)
     {
         let sources = config.sticker_source.clone();
@@ -919,6 +941,16 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
     // Step 2d: 解析运镜锚点（"聚焦主播/弹幕/贴纸" → 具体坐标）
     // 必须排在贴纸落点(2b)与时长自适应(2c)之后：anchor="sticker" 要读最终位置
     resolve_camera_anchors(&mut config, &data_dir);
+
+    // Step 2e: **切镜必须变化一个维度**（2026-10-20 运镜导演化 §一③）。
+    // ⚠️ 必须排在 2d **之后**：判据要读**解析后**的 `origin`，否则"同一锚点换坐标"会被
+    //    误判成没变（锚点字符串相同、真坐标不同）。
+    {
+        let demoted = demote_cut_without_change(&mut config.segments);
+        if demoted > 0 {
+            tracing::info!("  · 运镜：{demoted} 条 cut 降级为平滑（景别与焦点都没变）");
+        }
+    }
 
     // Step 3: 规则引擎决定音效 — 按字幕上下文匹配关键词, 命中则设置引用并解析,
     // 未命中则删除独立 sfx 事件 / 清空特效的 sfx (宁缺毋滥, 所有声音必须有字幕依据)
@@ -2361,18 +2393,22 @@ fn resolve_camera_anchors(config: &mut project::ProjectFile, data_dir: &Path) {
     }
 }
 
-/// seg_count: Some(n) 时上限 max(1, n-1) (至少留一个 segment 无特效); None (LLM prompt) 时省略
-pub fn content_budget(subtitle_count: usize, duration: f64, seg_count: Option<usize>) -> (usize, usize) {
-    let cap = |v: usize, seg_count: Option<usize>| -> usize {
-        let v = seg_count.map_or(v, |n| v.min(n.saturating_sub(1)));
-        v.max(1)
-    };
-    // 密度: 每 5 条字幕/12s 一个贴纸, 每 8 条字幕/15s 一个 sfx (切片节奏更紧凑)
-    let sticker = (subtitle_count as f64 / 5.0).round() as usize;
-    let sticker = sticker.min((duration / 12.0).ceil() as usize);
-    let sfx = (subtitle_count as f64 / 8.0).round() as usize;
-    let sfx = sfx.min((duration / 15.0).ceil() as usize);
-    (cap(sticker, seg_count), cap(sfx, seg_count))
+/// 贴纸 / SFX 的**上限**：max(段数, 按时长算)（2026-10-20 用户口径「太平行、少内容」）。
+///
+/// 旧公式是 min(按时长算, seg_count-1).max(1) ⇒ 5 段 / 78s 的片子上限只有 **4**，
+/// 而按时长该给 7 —— clip-15 实测贴纸正好 4（**说明被抽稀删掉了**），内容密度掉到 0.13/s。
+///
+/// 现在两条**取大**：
+/// 1. **每段至少一个名额**（不再"至少留一段无特效" —— 那条约束随旧上限一起去掉）；
+/// 2. 按时长算：贴纸「每 12s 一个」、SFX「每 15s 一个」。
+///
+/// ⚠️ 这是**上限**不是配额：每段 0 个仍然允许，别为了凑数硬塞。
+/// seg_count 为 None（LLM prompt 那条路）时只按时长算。
+pub fn content_budget(_subtitle_count: usize, duration: f64, seg_count: Option<usize>) -> (usize, usize) {
+    let segs = seg_count.unwrap_or(0);
+    let sticker = segs.max((duration / 12.0).ceil() as usize).max(1);
+    let sfx = segs.max((duration / 15.0).ceil() as usize).max(1);
+    (sticker, sfx)
 }
 
 /// 将匹配 predicate 的事件抽稀到 budget 个 (均匀分布保留), 返回删除数量。
@@ -2425,6 +2461,86 @@ pub fn cap_events(
     targets.len() - budget
 }
 
+
+#[cfg(test)]
+mod diagnose_rhythm {
+    use super::*;
+
+    /// 四个节奏指标（内容事件密度 / 最长无内容窗口 / camera 占比 / 用了几种视觉特效）。
+    ///
+    /// ```text
+    /// VT_POLISH_DIR=<片段目录> [VT46_PROCESS=1] cargo test -p yekitrim-polish --lib \
+    ///   diagnose_rhythm_metrics -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    fn diagnose_rhythm_metrics() {
+        let Ok(dir) = std::env::var("VT_POLISH_DIR") else {
+            eprintln!("用法: VT_POLISH_DIR=<片段目录> [VT46_PROCESS=1] cargo test ...");
+            return;
+        };
+        let path = std::path::PathBuf::from(dir);
+        if std::env::var("VT46_PROCESS").is_ok() {
+            let rt = tokio::runtime::Runtime::new().expect("runtime");
+            rt.block_on(cmd_process(&path)).expect("process");
+        }
+        let cfg = crate::project::load_project(&path).expect("读 polish.toml");
+        let duration = cfg.segments.iter().map(|s| s.end).fold(0.0_f64, f64::max);
+        let content_of = |ev: &crate::project::Event| !matches!(ev, crate::project::Event::Camera { .. });
+        let is_fx = |ev: &crate::project::Event| matches!(
+            ev,
+            crate::project::Event::Flash { .. }
+                | crate::project::Event::Shake { .. }
+                | crate::project::Event::Pulse { .. }
+                | crate::project::Event::Blur { .. }
+                | crate::project::Event::Overlay { .. }
+                | crate::project::Event::HueShift { .. }
+        );
+        let evs: Vec<&crate::project::Event> =
+            cfg.segments.iter().flat_map(|s| s.events.iter()).collect();
+        let content = evs.iter().filter(|e| content_of(e)).count();
+        let cameras = evs.iter().filter(|e| matches!(e, crate::project::Event::Camera { .. })).count();
+        // 最长无内容窗口（只在段内算；窗口里已有内容事件就不算空窗）
+        let mut longest = 0.0_f64;
+        for seg in &cfg.segments {
+            let mut times: Vec<f64> = seg.events.iter().filter(|e| content_of(e)).map(|e| e.get_time()).collect();
+            times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let mut prev = seg.start;
+            for t in times {
+                longest = longest.max(t - prev);
+                prev = prev.max(t);
+            }
+            longest = longest.max(seg.end - prev);
+        }
+        let mut kinds: Vec<&str> = evs
+            .iter()
+            .filter(|e| is_fx(e))
+            .map(|e| match e {
+                crate::project::Event::Flash { .. } => "flash",
+                crate::project::Event::Shake { .. } => "shake",
+                crate::project::Event::Pulse { .. } => "pulse",
+                crate::project::Event::Blur { .. } => "blur",
+                crate::project::Event::Overlay { .. } => "overlay",
+                crate::project::Event::HueShift { .. } => "hue_shift",
+                _ => "other",
+            })
+            .collect();
+        kinds.sort();
+        kinds.dedup();
+        println!(
+            "METRICS duration={:.1} segs={} events={} content={} cameras={} density={:.3} camera_share={:.0}% longest_gap={:.1}s fx_kinds={:?}",
+            duration,
+            cfg.segments.len(),
+            evs.len(),
+            content,
+            cameras,
+            content as f64 / duration.max(1e-6),
+            100.0 * cameras as f64 / evs.len().max(1) as f64,
+            longest,
+            kinds
+        );
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3554,6 +3670,72 @@ y = "10%"
         assert!(crate::project::load_project(path).expect("重读").edl.clips.is_empty());
     }
 
+    /// **缺省景别 = 「全」（原画 1.0）**（2026-10-20 用户口径）：没有运镜的段由 Step 1 补一条
+    /// `zoom="全"`；**显式写过「中」的段一个字节都不动**（R4）。
+    ///
+    /// 变异自证：把 Step 1 的 `zoom: "全"` 改回 `"中"` ⇒ 第一条断言红；
+    /// 把 `if 段里已有运镜 then continue` 删掉 ⇒ 第二条断言红（显式中景被踩成「全」）。
+    #[tokio::test]
+    async fn process_fills_default_camera_with_full_tier() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let path = dir.path();
+        std::fs::create_dir_all(path.join("data")).expect("建 data/");
+        std::fs::write(
+            path.join("data").join("subtitles.json"),
+            serde_json::json!([
+                {"index": 1, "start": 1.0, "end": 3.0, "text": "普通叙述", "html": ""},
+            ]).to_string(),
+        ).expect("写字幕");
+
+        let mut cfg = ProjectFile::example();
+        cfg.sticker_source = Vec::new();
+        cfg.segments = vec![
+            // ① 空段：没有任何事件 ⇒ Step 1 要补默认运镜
+            Segment {
+                role: String::new(),
+                start: 0.0, end: 5.0, fx: "low".into(), note: String::new(),
+                events: vec![],
+                extra: Default::default(),
+            },
+            // ② 显式写过「中」：R4 —— 一个字节都不许动（原值 1.3，不是新的 1.0）
+            Segment {
+                role: String::new(),
+                start: 5.0, end: 10.0, fx: "low".into(), note: String::new(),
+                events: vec![Event::Camera {
+                    time: 5.0, end: Some(10.0), zoom: "中".into(), origin: "50% 50%".into(),
+                    anchor: None, anchor_to: None, to_origin: None, cut: false,
+                    handheld: false, manual: false, speed: None, tilt: None,
+                }],
+                extra: Default::default(),
+            },
+        ];
+        std::fs::write(path.join("polish.toml"), cfg.to_toml_commented().expect("序列化"))
+            .expect("写 polish.toml");
+
+        cmd_process(path).await.expect("后处理");
+        let after = crate::project::load_project(path).expect("重读");
+        let zoom_of = |idx: usize| -> String {
+            after.segments[idx]
+                .events
+                .iter()
+                .find_map(|e| match e {
+                    Event::Camera { zoom, .. } => Some(zoom.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default()
+        };
+        assert_eq!(zoom_of(0), "全", "空段要补「全」——原画不缩放是新的缺省景别");
+        assert!(
+            (after.style.camera.factor(&zoom_of(0)) - 1.0).abs() < 1e-9,
+            "「全」的倍率必须是 1.0，实得 {}",
+            after.style.camera.factor(&zoom_of(0))
+        );
+        assert_eq!(zoom_of(1), "中", "显式写过中景的段不许被改写（R4）");
+        assert!(
+            (after.style.camera.factor(&zoom_of(1)) - 1.3).abs() < 1e-9,
+            "显式中景仍是 1.3"
+        );
+    }
     /// **§6 爆点报告只在真的判出爆点时落盘**（R4 判据）。
     ///
     /// `write_punch_report` 让"算出即弃"的爆点判据变成可被别的进程读的产物。
@@ -3838,17 +4020,24 @@ y = "10%"
         assert_eq!((*time, *end), (0.0, Some(0.3)));
     }
 
+    /// **上限 = max(段数, 按时长算)**（2026-10-20 用户口径「太平行、少内容」）。
+    ///
+    /// 旧公式是 min(按时长算, seg_count-1).max(1)：clip-15（5 段 / 78.5s）只给 4 个贴纸，
+    /// 而按时长该给 7 —— 实测贴纸正好 4，**被抽稀删掉了**。
+    /// 变异自证：把公式改回 max(1, n-1) ⇒ 第一条当场红。
     #[test]
-    fn budget_scales_with_subtitles_and_duration() {
-        // clip-01 参考: 62 字幕 / 141s → 新公式 sticker 8, sfx 8
-        assert_eq!(content_budget(62, 141.4, Some(9)), (8, 8));
-        // 字幕少 → 预算少
-        assert_eq!(content_budget(5, 30.0, Some(3)), (1, 1));
-        // 长视频 + 多字幕 → 预算更多但受 segment 数约束
-        assert_eq!(content_budget(300, 500.0, Some(4)), (3, 3));
-        // 无 segment 约束 (LLM prompt 用): 省略 seg_cap
+    fn budget_scales_with_segments_and_duration() {
+        // clip-15 的现场：5 段 / 78.5s ⇒ 贴纸 max(5, ceil(78.5/12)) = 7、sfx max(5, 6) = 6
+        assert_eq!(content_budget(23, 78.5, Some(5)), (7, 6), "旧公式这里只给 4/4");
+        // clip-01 参考：9 段 / 141.4s ⇒ sticker 12、sfx 10
+        assert_eq!(content_budget(62, 141.4, Some(9)), (12, 10));
+        // 段数占优（段比"按时长"多）⇒ 每段至少一个名额
+        assert_eq!(content_budget(5, 30.0, Some(9)), (9, 9));
+        // 长视频 + 段少 ⇒ 按时长算
+        assert_eq!(content_budget(300, 500.0, Some(4)), (42, 34));
+        // 无 segment 约束（LLM prompt 用）：只按时长
         assert_eq!(content_budget(300, 500.0, None), (42, 34));
-        // 边界: 空输入也至少 1
+        // 边界：空输入也至少 1
         assert_eq!(content_budget(0, 0.0, Some(1)), (1, 1));
     }
 

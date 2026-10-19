@@ -192,7 +192,9 @@ pub async fn run_llm_pipeline(
         if !seg.events.iter().any(|e| matches!(e, Event::Camera { .. })) {
             seg.events.push(Event::Camera {
                 time: seg.start, end: Some(seg.end),
-                zoom: "中".into(), origin: "50% 50%".into(),
+                // 2026-10-20 用户口径：缺省景别 = **「全」（原画 1.0）**。
+                // ⚠️ 这是与 process/mod.rs Step 1 **重复实现**的那一份 —— 两处必须同改。
+                zoom: "全".into(), origin: "50% 50%".into(),
                 // 聚焦主播：由 process 解析成坐标（origin 是解析前的占位值）
                 anchor: Some("liver".into()), anchor_to: None, to_origin: None, cut: false,
                 // 手持摇摆是可选项：补默认运镜从不自己开（非近景也会被守卫剔除）
