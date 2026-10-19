@@ -446,14 +446,20 @@ pub(super) async fn llm_models(
         .unwrap_or_else(|| llm.api_key.clone());
     match yekitrim_llm::discovery::discover(&key, &base).await {
         // ⚠️ 200 + 空列表**不是失败**：连上了、地址也对，只是它没报模型 —— 别把它说成"不支持"
-        Ok(models) if models.is_empty() => ok(serde_json::json!({
+        Ok(d) if d.models.is_empty() => ok(serde_json::json!({
             "source": "probe",
             "models": [],
             "note": yekitrim_llm::discovery::empty_hint(&base),
+            // 空清单也要说清"我试过哪些路径"（P3：LiteLLM / Ollama 那两条）
+            "tried": d.tried,
         })),
-        Ok(models) => ok(serde_json::json!({
+        Ok(d) => ok(serde_json::json!({
             "source": "probe",
-            "models": models
+            // 试过哪些路径（含 `/model/info` / `/api/tags` / `/api/show`）；"试过"≠"成功"
+            "tried": d.tried,
+            // 能力是哪条路径级探测给的（空 = 只来自 /v1/models 的自描述）
+            "caps_from": d.caps_from,
+            "models": d.models
                 .into_iter()
                 .map(|m| {
                     // **能获取就获取**：回包里带了能力就一并回（界面据此画控件）；没带就 null，**不编**。

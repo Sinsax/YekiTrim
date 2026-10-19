@@ -198,6 +198,10 @@ pub struct LlmParams {
     pub max_tokens: Option<u32>,
     /// 推理档位。
     pub reasoning: ReasoningLevel,
+    /// **预算型方言的 token 数**（`thinking_budget` / `reasoning_max_tokens` / `thinking_token_budget`）。
+    ///
+    /// `None` = 没配 ⇒ 按档位映射表给默认（`dialect::budget_for`；off 档没有预算）。
+    pub thinking_budget: Option<u32>,
     /// **LLM 层是否表过态**（旧 `[llm] thinking` 的语义）。
     ///
     /// 链路自己的老开关（如 `[correct] thinking`）只在它为 `false` 时才生效 ——
@@ -224,6 +228,7 @@ impl Default for LlmParams {
             temperature: 0.3,
             max_tokens: None,
             reasoning: ReasoningLevel::Off,
+            thinking_budget: None,
             reasoning_explicit: false,
             top_p: None,
             json_mode: false,

@@ -298,8 +298,12 @@ temperature = 0
 # 最大 Token 数：**没在下面 [llm.overrides.*] 里单独配的链路**用它。
 # 这只是「跑飞的上限」——模型自己会停；检测窗口实测输出 1.9k~4.1k（思考占大头）。
 max_tokens = 16384
-# 推理档位：off|minimal|low|medium|high|xhigh（省略 = 不表态，由上面的 extra_params 决定）
+# 推理档位：off|minimal|low|medium|high|xhigh|max（省略 = 不表态，由上面的 extra_params 决定）
 # reasoning = "high"
+# **预算型方言**的 token 数（thinking_budget / reasoning_max_tokens / thinking_token_budget
+# 这三种"要一个数"的方言用，怎么发由模型能力面的方言决定）；省略 = 按档位给默认
+# （minimal 1024 / low 4096 / medium 8192 / high 16384 / xhigh 32768 / max 65536）
+# thinking_budget = 16384
 # top_p = 1.0
 # 要求 JSON 输出（结构化键，优先级高于 extra_params.response_format）
 # json_mode = true
@@ -307,7 +311,7 @@ max_tokens = 16384
 # ── 按链路覆盖（**同一套请求参数面**；缺一项 = 跟随 [llm.params]）──
 # 各链路要的输出长度天差地别，别用同一个上限互相迁就。想「恢复跟随全局」就把那一行删掉
 # （设置页把输入框清空也会删掉它）。
-# 可选键：temperature / max_tokens / reasoning / top_p / json_mode。
+# 可选键：temperature / max_tokens / reasoning / thinking_budget / top_p / json_mode。
 [llm.overrides.detect]
 # 事件检测窗口 + 标题摘要热度评分：实测输出 1.9k~4.1k token，8k 留 2× 余量
 max_tokens = 8192
@@ -325,7 +329,8 @@ max_tokens = 8192
 # ── 模型能力（**内置表没有的模型**在这里手填；只覆盖写了的字段）──
 # 内置表收了 17 家 / 181 支模型，命中时这里一个字都不用写。
 # [llm.models."my-gateway-model"]
-# 推理参数怎么发（**取值只在 llm crate 的 wire.rs**；设置页「模型能力覆盖」有下拉，别在这儿手抄清单）
+# 推理参数怎么发：取值 = llm crate **方言注册表的 id**（那是"别家的协议词汇"，清单**不在本文件**）。
+# 设置页「模型能力覆盖」有下拉可选（清单由 llm crate 现算，永不腐坏）；**别在任何注释里抄一份 id 清单**。
 # thinking_wire = "thinking_type"
 # 输出上限写哪个字段名（同上；不写 = max_tokens）
 # max_output_wire = "max_tokens"
