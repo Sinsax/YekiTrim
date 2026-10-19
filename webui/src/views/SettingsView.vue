@@ -161,7 +161,8 @@
         </button>
       </span>
     </div>
-    <div class="card">
+    <!-- ⚠️ 内容列宽度上限（用户：整体宽度压缩到一半）——左对齐、右边留白，别居中 -->
+    <div class="card llm-block">
         <!-- ① 接口：填好 key → 取模型 → 选中（模型选择器见 components/llm/LlmModelPicker.vue） -->
         <div class="form-section">
           <div class="form-section-title">接口<span class="t-sub">{{ llmProviderMode
@@ -170,7 +171,8 @@
                ⚠️ **R4**：后端没回 providers ⇒ llmProviderMode=false ⇒ 走下面这个老的单配置表单 -->
           <LlmProviders v-if="llmProviderMode" :providers="form.llm.providers"
                         v-model:active-id="form.llm.active"
-                        :protocols="protocols" :protocols-source="protocolsSource" :caps="caps" />
+                        :protocols="protocols" :protocols-source="protocolsSource" :caps="caps"
+                        @probe="onProbeCaps" />
           <div v-else class="form-grid">
             <div class="span-2">
               <label>base_url</label>
@@ -572,6 +574,23 @@ async function loadCaps() {
       ? '模型能力接口还没接入（404）—— 只显示通用控件'
       : '模型能力读取失败：' + ((e && e.message) || e)
   }
+}
+
+/**
+ * provider 面板「获取模型」带回的**探针能力**（每支模型可能带 `caps`）。
+ * ⚠️ 探针优先于内置表（表里查不到就老实回 null，界面上那个数才不会是别人的）——
+ *    存进 `probeCaps`（同 id **覆盖**，重取就跟着变）后重算 caps；**只影响展示与滑块 max，不写盘**。
+ */
+function onProbeCaps(payload) {
+  let changed = false
+  for (const m of ((payload && payload.models) || [])) {
+    if (!m || !m.id) continue
+    const id = String(m.id)
+    if (m.caps) { probeCaps[id] = normalizeCaps({ caps: m.caps }); changed = true }
+    // 这次探针**没给**能力 ⇒ 清掉旧的那份（别缓存住上一次的，否则"探针没有"会被旧值骗过去）
+    else if (probeCaps[id]) { delete probeCaps[id]; changed = true }
+  }
+  if (changed) loadCaps()
 }
 
 /** 「获取模型」回来了：候选由选择器自己显示；**带 caps 的那些存下来**（"能获取当然最好"），
@@ -1099,6 +1118,12 @@ onMounted(async () => {
    extra_params 与「源文件」并排（各 50%）：JSON 正文不需要更宽，再宽也是换行看不清。 */
 textarea.llm-extra { min-height:230px; resize:vertical; font-size:12px; line-height:1.6; }
 .llm-cols { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:10px 20px; align-items:start; }
+/* LLM 块：内容列压到 ~760px（min() 兜住窄屏），**左对齐**；容器查询量的是内容列而不是视口 */
+.llm-block { max-width:min(760px, 100%); container-type:inline-size; }
+/* 内容列 ≤820px 时：链路覆盖四条改成**单列四行**（两栏各 ~370 太挤，硬塞会腰斩滑条） */
+@container (max-width: 820px) {
+  .llm-block .llm-cols { grid-template-columns:minmax(0,1fr); gap:8px 0; }
+}
 @media (max-width:1200px) { .llm-cols { grid-template-columns:minmax(0,1fr); gap:14px 0; } }
 /* 按链路覆盖：一条链路一格（两栏 = 2×2）—— [勾选框 + 链路名] + 该链路的参数控件（LlmParamFields）。
    没勾的只留一行灰字（跟随全局），勾开才长出控件。控件的出现与否由**模型能力**决定。

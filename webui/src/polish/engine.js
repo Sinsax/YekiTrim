@@ -511,6 +511,28 @@ export function buildIndex({ config, subtitles, danmaku, duration, stickerSrc, k
         // 同一层（轨级），别混进形态字段里。
         entry.perCharOutFrames = animPerCharOut(styleAnimName) || animPerCharOut(effectAnimName)
           || animPerCharOut(transitionAnimName) || 0
+        // ---- 排版角度（`layout_angle_deg`，2026-10-20 接线）----
+        //
+        // ⚠️⚠️ 这个字段以前**一个消费者都没有**：`layoutAngleOf` 导出了、全仓 0 处调用
+        //    ⇒ 面板上拖「角度」滑杆，预览**一个像素都不变**；而成片里底座按转译器
+        //    写进去的 `rotation` / `per_char.rotation_to` 真转（实测 -12° / -20°）。
+        //    本仓「配了、预览看不见」的第 N 例 —— 这次连字段都没带进索引。
+        //
+        // 口径与转译器**逐条同源**（`tools/polish-to-dhampir.mjs` 的 `rotation` 与 `per_char` 两段）：
+        //   ① 只有 `tilt` 档把角度当**整行旋转**（`textTiltTransform` 读 `layoutAngle`）；
+        //   ② `arc` 的角度是**逐字旋转的幅度**（取绝对值、方向由档位定）；
+        //   ③ 别的档（`vtext` / 没选）**不读** —— 老工程里有脏值
+        //      （实测 clip-19：`layout_angle_deg=30` 但 `style_anim` 空）不许因此把字转歪。
+        const rawAngle = ev.layout_angle_deg
+        const hasLayoutAngle = rawAngle !== null && rawAngle !== undefined
+          && rawAngle !== '' && Number.isFinite(Number(rawAngle))
+        entry.layoutAngle = hasLayoutAngle ? Number(rawAngle) : undefined
+        // `arc`：把档位的缺省幅度换成**用户填的那个**（与转译器 `-abs(angle)` 同号同值）。
+        // ⚠️ 只在 `arc` 上做：`tilt` 走整行旋转，改 `per_char` 会是第二套语义。
+        if (entry.perChar && hasLayoutAngle
+          && Number.isFinite(animPreset(styleAnimName)?.arcToDefault)) {
+          entry.perChar = { ...entry.perChar, rotationTo: -Math.abs(entry.layoutAngle) }
+        }
           //   `local * idx.fps` / `idx.fps`）—— `buildIndex` 是**一次性**索引，
           //   那时**没有"当前时间"这个量**（写 `t` 直接 `ReferenceError`，实测）。
           //   ⚠ 这里曾经又写了一遍 `entry.perCharFps` —— **死代码**：
@@ -1816,7 +1838,7 @@ function parseTextSource(src) {
 //
 // 导出是为了让判据（`webui/scripts/check-text-tilt.mjs`）能 import 它，
 // 把"顺序"这件事钉成机器判据 —— 而不是靠下次改的人读到这段注释。
-export function textTiltTransform({ yOff = 0, shakeX = 0, shakeY = 0, scale = 1, rot = 0, style = {}, swayDeg = 0, animName = '' }) {
+export function textTiltTransform({ yOff = 0, shakeX = 0, shakeY = 0, scale = 1, rot = 0, style = {}, swayDeg = 0, animName = '', layoutAngle }) {
   // ---- 39 档（2026-10-13）：`tilt_*` / `slam_squash` **压过**样式档自带的那两个值 ----
   //
   // ⚠️ **优先"逐条 `anim` 预设"，其次才是 `style`**：
@@ -1829,8 +1851,14 @@ export function textTiltTransform({ yOff = 0, shakeX = 0, shakeY = 0, scale = 1,
   const squashY = Number.isFinite(preset?.squashY)
     ? preset.squashY
     : (Number.isFinite(style.squashY) ? style.squashY : 1)
+  // ⚠️ **用户显式填的角度优先**（`layout_angle_deg`）—— 与转译器「①事件字段 > ②档位缺省」同序。
+  //    `0` 是合法角度 ⇒ 判"填没填"用 `Number.isFinite`，不是 `||`（`0 || -6` 会得 -6）。
+  //    只有 `tilt` 档吃它：`arc` 的角度属于**逐字旋转**（在 `perChar.rotationTo` 上，见
+  //    `buildIndex` 那一段），`vtext` 没有旋转语义。
+  const hasLayoutAngle = layoutAngle !== null && layoutAngle !== undefined
+    && Number.isFinite(Number(layoutAngle))
   const tiltDeg = Number.isFinite(preset?.tiltDeg)
-    ? preset.tiltDeg
+    ? (hasLayoutAngle ? Number(layoutAngle) : preset.tiltDeg)
     : (Number.isFinite(style.tiltDeg) ? style.tiltDeg : 0)
   // 旋转角 = 样式倾斜 + 进场动画旋转 + 摇摆（P1）—— 三者绕**同一个中心** ⇒ 直接相加。
   //
@@ -2650,6 +2678,11 @@ export function getElements(idx, t) {
         styleAnimName: e.styleAnimName || '',
         effectAnimName: e.effectAnimName || '',
         transitionAnimName: e.transitionAnimName || '',
+        // ⚠️ **用户显式填的排版角度**（`layout_angle_deg`）必须跟着元素走 ——
+        //    否则 `textTiltTransform` 拿不到它（2026-10-20：以前连索引都没带，
+        //    于是滑杆拖到哪儿、预览都是档位缺省角）。
+        //    `undefined` 与 `0` 是**两个状态**（`0` 是合法的"我要它正着"）。
+        layoutAngle: e.layoutAngle,
         // ---- P4 补：逐字（2026-10-13）----
         //
         // 消费方拿这两样去算每个字自己的变换：

@@ -30,7 +30,7 @@ const props = defineProps({
   /** 当前模型的能力（「推理档位」下拉按它派生） */
   caps: { type: Object, default: null }
 })
-const emit = defineEmits(['update:activeId'])
+const emit = defineEmits(['update:activeId', 'probe'])
 
 /** **同一时间只展开一份**；再点「编辑」同一个 = 折叠 */
 const expandedId = ref('')
@@ -41,6 +41,35 @@ const busy = reactive({})
 const note = reactive({})
 /** provider.id → 正在测这份接口的连通性 */
 const testing = reactive({})
+/** provider.id → **API 侧模型**清单的三态：idle（还没获取）/ loading / done / error
+ *  ⚠️ **失败 ≠ 空列表**（本仓对"静默伪装"零容忍）：三态分别有文案，别让失败长得像"服务器没有模型"。
+ *  这份清单**不进 TOML**（只有用户点「加入」才会写进 providers[].models）。 */
+const api = reactive({})
+/** provider.id → API 侧过滤词（按 id / 显示名即时筛，大小写不敏感） */
+const filters = reactive({})
+function apiState(p) {
+  return api[p.id] || { state: 'idle', models: [], note: '' }
+}
+/** 这一支在不在「已选」里（= providers[].models） */
+function chosen(p, id) {
+  const want = String(id || '').trim()
+  return (p.models || []).some((x) => String(x.id || '').trim() === want)
+}
+function apiFiltered(p) {
+  const list = apiState(p).models || []
+  const q = String(filters[p.id] || '').trim().toLowerCase()
+  if (!q) return list
+  return list.filter((m) => String(m.id || '').toLowerCase().indexOf(q) >= 0
+    || String(m.name || '').toLowerCase().indexOf(q) >= 0)
+}
+/** 从 API 侧加入：**只**写 id/name/input（别的字段一律不落 TOML）；默认只吃文字（与新建模型同口径） */
+function addFromApi(p, m) {
+  const id = String((m && m.id) || '').trim()
+  if (!id || chosen(p, id)) return
+  p.models = p.models || []
+  p.models.push({ id, name: (m && m.name) || id, context_window: null, max_output: null, input: ['text'], reasoning: null, levels: [] })
+  if (!p.model) p.model = id
+}
 /** 只测**这一份**接口：成功/失败都写进行内那行字（别用 toast 一闪） */
 async function testOne(p) {
   testing[p.id] = true
@@ -139,27 +168,24 @@ function restoreDefaults(p) {
   }
   note[p.id] = '已清空手填能力（回到能力表决定）'
 }
-/** 「获取可用模型」= 走既有探针接口（表命中不联网 / 表外才探），把新 id 并进目录 */
+/** 「获取模型」= 走既有探针接口（表命中不联网 / 表外才探）填**API 侧**那列；
+ *  ⚠️ **不再自动并进「已选」**：用户明确要"两个列表"，加不加由他点「加入」。 */
 async function fetchAvailable(p) {
   const base = String(p.base_url || '').trim()
   if (!base) { note[p.id] = '先填 API 地址（上面「接口」那一块）'; return }
   busy[p.id] = true
   note[p.id] = ''
+  api[p.id] = { state: 'loading', models: (apiState(p).models || []), note: '' }
   try {
     // ⚠️ 带 provider id：不带的话后端会去顶层 [llm] api_key 找钥匙（多配置下那里是空的）
     const r = await fetchModels(base, p.api_key, p.id)
-    p.models = p.models || []
-    const have = new Set(p.models.map((m) => String(m.id || '').trim()).filter(Boolean))
-    let added = 0
-    for (const m of r.models) {
-      if (have.has(m.id)) continue
-      p.models.push({ id: m.id, name: m.name || '', context_window: null, max_output: null, input: null, reasoning: null, levels: [] })
-      added += 1
-    }
-    note[p.id] = '来源：' + (MODEL_SOURCE_ZH[r.source] || r.source) + ' · 新增 ' + added + ' 条'
-      + (r.note ? ' · ' + r.note : '') + (r.models.length ? '' : '（没拿到模型，可手填）')
+    api[p.id] = { state: 'done', models: r.models, note: r.note || '' }
+    // 探针这次带回的能力（每支模型可能带 caps）交给父层：**只影响展示**（模型上限/档位/输入类型），不写盘
+    emit('probe', { providerId: p.id, models: r.models })
+    note[p.id] = '来源：' + (MODEL_SOURCE_ZH[r.source] || r.source) + '（' + r.models.length + ' 支）'
   } catch (e) {
-    note[p.id] = '获取失败：' + ((e && e.message) || e)   // **不许静默**
+    // **失败 ≠ 空列表**：记在 error 态里，界面照实说 + 给重试
+    api[p.id] = { state: 'error', models: [], note: (e && e.message) || String(e) }
   } finally {
     busy[p.id] = false
   }
@@ -240,17 +266,16 @@ function setLevel(l, v) {
           </label>
         </div>
 
-        <!-- ② 模型：标题行右端是「获取模型」（属于"模型"这块；有地址就能取，草稿 key 也行） -->
+        <!-- ② 模型：**两个列表**（左「已选」= 会写进 TOML 的；右「API 侧」= 获取模型拿到的）
+             ⚠️ 加入/移除只改 `providers[].models` 这一份数组（写 patch 时是**整份替换**）。 -->
         <div class="pv-block" data-pv-block="models" :class="{ 'is-focus': focusBlock === p.id + '|models' }">
-        <div class="pv-line pv-well">
-          <span class="pv-lbl">模型目录（{{ (p.models || []).length }}）</span>
-          <span class="pv-spacer"></span>
-          <button class="pv-mini" title="清空各模型手填的能力（回到由能力表决定）" @click="restoreDefaults(p)">恢复默认</button>
-          <button class="pv-mini pv-get" :disabled="busy[p.id]"
-                  title="按这份接口的地址取可用模型（没保存的地址/密钥也能取；表命中不联网，表外才真探）"
-                  @click="fetchAvailable(p)">{{ busy[p.id] ? '获取中…' : '获取模型' }}</button>
-        </div>
-        <div v-if="note[p.id]" class="pv-note" :title="note[p.id]">{{ note[p.id] }}</div>
+        <div class="pv-lists">
+          <div class="pv-list pv-picked" data-pv-list="picked">
+            <div class="pv-line pv-well">
+              <span class="pv-lbl">已选模型（{{ (p.models || []).length }}）</span>
+              <span class="pv-spacer"></span>
+              <button class="pv-mini" title="清空各模型手填的能力（回到由能力表决定）" @click="restoreDefaults(p)">恢复默认</button>
+            </div>
 
         <div v-for="(m, mi) in (p.models || [])" :key="key(p.id, mi) + '-' + (m.id || 'new')" class="pv-model">
           <div class="pv-row pv-model-row" :data-pv-model="m.id">
@@ -308,10 +333,50 @@ function setLevel(l, v) {
           </div>
         </div>
 
-        <div class="pv-line pv-well">
-          <button class="pv-mini" title="往模型目录里加一条（手填）" @click="addModel(p)">+ 添加模型</button>
-          <span class="pv-spacer"></span>
-          <span v-if="p.model" class="pv-muted" :title="'当前模型 id'">使用中：{{ p.model }}</span>
+            <div class="pv-line pv-well">
+              <button class="pv-mini" title="手填一个模型（服务器啥都不说时的兜底）" @click="addModel(p)">+ 添加模型</button>
+              <span class="pv-spacer"></span>
+              <span v-if="p.model" class="pv-muted" :title="'当前模型 id'">使用中：{{ p.model }}</span>
+            </div>
+          </div>
+
+          <!-- 右：API 侧模型（点「获取模型」拿到的清单；**已选的不可重复加**） -->
+          <div class="pv-list pv-remote" data-pv-list="remote">
+            <div class="pv-line pv-well">
+              <span class="pv-lbl">API 侧模型（{{ (apiState(p).models || []).length }}）</span>
+              <span class="pv-spacer"></span>
+              <input class="pv-input pv-filter" v-model="filters[p.id]" placeholder="过滤…"
+                     title="按 id / 显示名即时筛（大小写不敏感）">
+              <button class="pv-mini pv-get" :disabled="busy[p.id]"
+                      title="按这份接口的地址取可用模型（没保存的地址/密钥也能取；表命中不联网，表外才真探）"
+                      @click="fetchAvailable(p)">{{ busy[p.id] ? '获取中…' : '获取模型' }}</button>
+            </div>
+            <div v-if="note[p.id]" class="pv-note" :title="note[p.id]">{{ note[p.id] }}</div>
+            <!-- 三态分开说，**失败 ≠ 空列表** -->
+            <div v-if="apiState(p).state === 'idle'" class="pv-note">
+              还没获取 —— 点「获取模型」按 API 地址取这份接口能用的模型
+            </div>
+            <div v-else-if="apiState(p).state === 'loading'" class="pv-note">获取中…</div>
+            <div v-else-if="apiState(p).state === 'error'" class="pv-note pv-err" :title="apiState(p).note" data-pv-api-state="error">
+              获取失败：{{ apiState(p).note }}
+              <button class="pv-mini" @click="fetchAvailable(p)">重试</button>
+            </div>
+            <template v-else>
+              <div v-if="!(apiState(p).models || []).length" class="pv-note">服务器没返回模型（可手填：左列「+ 添加模型」）</div>
+              <div v-else-if="!apiFiltered(p).length" class="pv-note">没有匹配「{{ filters[p.id] }}」的模型</div>
+              <div v-else class="pv-api-list">
+                <div v-for="m in apiFiltered(p)" :key="m.id" class="pv-row pv-api-row" :data-pv-api="m.id">
+                  <span class="pv-chkmark">{{ chosen(p, m.id) ? '☑' : '☐' }}</span>
+                  <span class="pv-api-id" :title="m.id">{{ m.id }}</span>
+                  <span class="pv-muted pv-api-name" :title="m.name || ''">{{ m.name || '' }}</span>
+                  <span class="pv-spacer"></span>
+                  <span v-if="chosen(p, m.id)" class="pv-muted">（已选）</span>
+                  <button v-else class="pv-mini" title="加进左列（只写 id / 显示名 / 输入类型）"
+                          @click="addFromApi(p, m)">加入</button>
+                </div>
+              </div>
+            </template>
+          </div>
         </div>
         </div>
       </div>
@@ -375,6 +440,23 @@ select.pv-input { height:26px; padding:1px 4px; }
 .pv-models:hover { border-color:var(--main); color:var(--main); }
 .pv-get { max-width:96px; }
 .pv-test { flex:none; }
+/* 模型块：两个列表。窄（默认）上下两段，≥1100px 视口才并排（760px 内容列下两栏各 ~376px） */
+.pv-lists { display:grid; grid-template-columns:minmax(0,1fr); gap:6px 12px; min-width:0; }
+@media (min-width:1100px) { .pv-lists { grid-template-columns:minmax(0,1fr) minmax(0,1fr); } }
+.pv-list { min-width:0; display:flex; flex-direction:column; gap:2px; }
+/* 模型行：id / 显示名**定宽**（以前 flex:1 会撑满整行，一屏只有一行） */
+.pv-id { flex:0 1 260px; max-width:260px; min-width:0; }
+.pv-disp { flex:0 1 200px; max-width:200px; min-width:0; }
+.pv-model-row { justify-content:flex-start; }
+/* API 侧 */
+.pv-filter { flex:0 0 110px; max-width:110px; height:24px; }
+.pv-api-list { display:flex; flex-direction:column; gap:0; max-height:260px; overflow:auto; min-width:0; }
+.pv-api-row { height:28px; }
+.pv-chkmark { flex:none; width:14px; text-align:center; font-size:11px; color:var(--ink-dim); }
+.pv-api-id { flex:0 1 auto; min-width:0; max-width:55%; overflow:hidden; text-overflow:ellipsis;
+  white-space:nowrap; font-size:11.5px; }
+.pv-api-name { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.pv-err { color:var(--pink-text); }
 .pv-well { gap:8px; }
 .pv-mini { flex:none; height:24px; padding:0 7px; font-size:11.5px; border-radius:var(--r-sm);
   border:1px solid var(--line); background:var(--card); color:var(--ink); cursor:pointer; }
