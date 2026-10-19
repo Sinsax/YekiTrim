@@ -230,22 +230,53 @@ async fn fetch_json(
     api_key: &str,
     body: Option<serde_json::Value>,
 ) -> Option<serde_json::Value> {
-    let url = format!("{root}{path}");
-    let req = match body {
-        // ⚠️ Ollama 的 `/api/show` 只认 POST（GET 会 405）
-        Some(v) => client.post(&url).json(&v),
-        None => client.get(&url),
-    };
-    let resp = req
-        .header("Authorization", format!("Bearer {api_key}"))
-        .send()
-        .await
-        .ok()?;
-    if !resp.status().is_success() {
-        return None;
+    for url in probe_urls(root, path) {
+        let req = match &body {
+            // ⚠️ Ollama 的 `/api/show` 只认 POST（GET 会 405）
+            Some(v) => client.post(&url).json(v),
+            None => client.get(&url),
+        };
+        let Ok(resp) = req
+            .header("Authorization", format!("Bearer {api_key}"))
+            .send()
+            .await
+        else {
+            continue;
+        };
+        if !resp.status().is_success() {
+            continue;
+        }
+        let Ok(text) = resp.text().await else { continue };
+        if let Ok(v) = serde_json::from_str(&text) {
+            return Some(v);
+        }
     }
-    let text = resp.text().await.ok()?;
-    serde_json::from_str(&text).ok()
+    None
+}
+
+/// 一条探测路径要试的 URL：先 `{root}{path}`，再**服务根** `{origin}{path}`。
+///
+/// 为什么两个都试：用户填的 `base_url` 一般是 `https://host/v1`（OpenAI 兼容面），而
+/// **LiteLLM 的 `/model/info` 与 Ollama 的 `/api/tags`+`/api/show` 都在服务根上**（不在 `/v1` 下）——
+/// 只试 `{root}` 的话真机上一次都问不到（实测 7863：两种变体都 404）。
+/// 失败的那个变体**不额外记 `tried`**：记的是"这条路径试过"，不是"试了几个 URL"。
+fn probe_urls(root: &str, path: &str) -> Vec<String> {
+    let first = format!("{root}{path}");
+    let mut out = vec![first.clone()];
+    if let Some(origin) = origin_of(root) {
+        let alt = format!("{origin}{path}");
+        if alt != first {
+            out.push(alt);
+        }
+    }
+    out
+}
+
+/// `scheme://host[:port]`（砍掉路径）—— 用户填的 `base_url` 的服务根。
+fn origin_of(root: &str) -> Option<String> {
+    let (scheme, rest) = root.split_once("://")?;
+    let host = rest.split('/').next()?;
+    (!scheme.is_empty() && !host.is_empty()).then(|| format!("{scheme}://{host}"))
 }
 
 /// **只补不抹**：把路径级探测读到的能力并进已有的片段。
@@ -768,21 +799,60 @@ mod tests {
         assert_eq!(d.tried, vec!["/models", "/model/info", "/api/tags"]);
     }
 
+    /// **服务根上的路径也认**：`base_url` 是 `…/v1`，而 LiteLLM 的 `/model/info` 在**根**上。
+    ///
+    /// 判据形状：`{root}/model/info` 先 404（第一笔），同一条路径**换到服务根**再打一次就 200。
+    #[tokio::test]
+    async fn 路径探测会退到服务根再试一次() {
+        let models = r#"{"data":[{"id":"m1"}]}"#;
+        let info = r#"{"data":[{"model_name":"m1","model_info":{"mode":"chat","supports_vision":true}}]}"#;
+        let (_s, base, _) = fake(vec![
+            (200, models.to_string()),
+            (404, "not here".to_string()), // {root}/model/info
+            (200, info.to_string()),       // {origin}/model/info
+            (404, "not here".to_string()), // {root}/api/tags
+            (404, "not here".to_string()), // {origin}/api/tags
+        ])
+        .await;
+        let d = discover("k", &base).await.unwrap();
+        assert_eq!(d.caps_from, vec!["litellm"], "根上的 /model/info 必须被用上");
+        assert!(d.models[0].caps.as_ref().unwrap().input.unwrap().image);
+        // `tried` 记的是**路径**（不因两个 URL 变体重复）
+        assert_eq!(d.tried, vec!["/models", "/model/info", "/api/tags"]);
+    }
+
+    /// 拼 URL 的两个变体（纯函数）：`{root}{path}` + `{origin}{path}`，重复只留一个。
+    #[test]
+    fn 探测路径会拼出根与服务根两个变体() {
+        assert_eq!(
+            probe_urls("https://h/v1", "/model/info"),
+            vec!["https://h/v1/model/info", "https://h/model/info"]
+        );
+        // `base_url` 本来就是服务根 ⇒ 只一个，不重复打
+        assert_eq!(probe_urls("https://h", "/api/tags"), vec!["https://h/api/tags"]);
+        assert_eq!(origin_of("https://h:8080/v1"), Some("https://h:8080".into()));
+        assert_eq!(origin_of("not-a-url"), None);
+    }
     /// **端到端：Ollama** —— 先 `/api/tags` 拿候选名，再逐支 POST `/api/show`；认不出的跳过。
     #[tokio::test]
     async fn ollama_路径探测逐支问且认不出就跳过() {
         let models = r#"{"data":[{"id":"llama3.2:latest"},{"id":"nomic-embed-text:latest"}]}"#;
-        // LiteLLM 那条先打（会 404）
         let tags = r#"{"models":[{"name":"llama3.2:latest"},{"name":"nomic-embed-text:latest"}]}"#;
         let show_llama = r#"{"capabilities":["completion","tools","thinking"],
             "model_info":{"llama.context_length":131072}}"#;
         let show_embed = r#"{"capabilities":["embedding"],"model_info":{"bert.context_length":512}}"#;
+        // ⚠️ 每条路径都会**先试 `{root}`（…/v1）再试服务根**，所以每一笔要按两下写：
+        //    Ollama 的原生面在根上 ⇒ `{root}/api/...` 404、根上 200。
         let (_s, base, _) = fake(vec![
             (200, models.to_string()),
-            (404, "not found".to_string()),
-            (200, tags.to_string()),
-            (200, show_llama.to_string()),
-            (200, show_embed.to_string()),
+            (404, "not here".to_string()), // {root}/model/info（LiteLLM 那条：两下都 404）
+            (404, "not here".to_string()), // {origin}/model/info
+            (404, "not here".to_string()), // {root}/api/tags
+            (200, tags.to_string()),       // {origin}/api/tags
+            (404, "not here".to_string()), // {root}/api/show（llama）
+            (200, show_llama.to_string()), // {origin}/api/show（llama）
+            (404, "not here".to_string()), // {root}/api/show（embedding）
+            (200, show_embed.to_string()), // {origin}/api/show（embedding）
         ])
         .await;
         let d = discover("k", &base).await.unwrap();
@@ -795,7 +865,6 @@ mod tests {
         let emb = d.models.iter().find(|m| m.id == "nomic-embed-text:latest").unwrap();
         assert!(emb.caps.is_none(), "非聊天模型不下结论：{:?}", emb.caps);
         assert_eq!(d.caps_from, vec!["ollama"]);
-        // `/api/show` **只打了一次**（embedding 那支按名字也问了，但它返回 None ⇒ 不算命中）
         assert!(d.tried.contains(&"/api/tags".to_string()));
         assert!(d.tried.contains(&"/api/show".to_string()));
     }
