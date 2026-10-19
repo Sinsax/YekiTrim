@@ -1885,6 +1885,8 @@ export function camFactor(label, camStyle) {
   // ⚠️ 与 Rust `CameraStyle`、模板 `camFactor` 逐值一致（门禁 check-camera-zoom-parity 钉住）。
   if (label === '特写') return pick(c.zoom_closeup, 2.0)
   if (label === '近') return pick(c.zoom_close, 1.5)
+  // 「微」= 1.06：process 侧句读级微推的极轻一档（2026-10-20）。
+  if (label === '微') return pick(c.zoom_micro, 1.06)
   if (label === '远') return pick(c.zoom_wide, 0.55)
   if (label === '全') return pick(c.zoom_full, 1.0)
   return pick(c.zoom_mid, 1.3)

@@ -2078,13 +2078,14 @@ const ZOOM_FIELDS = [
   { key: 'zoom_closeup', label: '特写', min: 1.0, max: 3.0, title: '特写缩放（camera zoom=特写）。默认 2.0，比近景更近一档' },
   { key: 'zoom_full', label: '全（原画）', min: 1.0, max: 3.0, title: '全：原画不缩放（camera zoom=全）。默认 1.0，是缺省景别' },
   { key: 'zoom_close', label: '近景', min: 1.0, max: 3.0, title: '近景特写缩放（camera zoom=近）。默认 1.5，越大越近' },
+  { key: 'zoom_micro', label: '微（句读微推）', min: 1.0, max: 3.0, title: '微：句读级微推用的极轻一档（camera zoom=微）。默认 1.06，1080p 上约 57px' },
   { key: 'zoom_mid', label: '中景', min: 1.0, max: 3.0, title: '中景缩放（camera zoom=中）。默认 1.3' },
   { key: 'zoom_wide', label: '画中画', min: 0.05, max: 1.0, title: '画中画缩放（camera zoom=远），小于 1 时四周留黑边。默认 0.55' },
 ]
 const zoomFields = ZOOM_FIELDS
 
 /** 读当前生效值；没写过这个键就回落到历史默认（与后端同一批数）。 */
-const ZOOM_DEFAULTS = { zoom_closeup: 2.0, zoom_full: 1.0, zoom_close: 1.5, zoom_mid: 1.3, zoom_wide: 0.55 }
+const ZOOM_DEFAULTS = { zoom_closeup: 2.0, zoom_full: 1.0, zoom_close: 1.5, zoom_micro: 1.06, zoom_mid: 1.3, zoom_wide: 0.55 }
 function zoomValue(key) {
   const v = cfg.value?.style?.camera?.[key]
   if (Number.isFinite(v)) return v

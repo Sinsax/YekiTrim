@@ -1464,8 +1464,9 @@ export function overlayBaseAngle(cssAngle) {
 export function zoomFactor(name, camera, where) {
   // ⚠️ 这张表与 Rust `CameraStyle`、模板 `camFactor`、`engine.js::camFactor`
   //    **四处逐值一致**（门禁 `check-camera-zoom-parity.mjs` 钉住）。
-  const defaults = { 特写: 2.0, 近: 1.5, 远: 0.55, 全: 1.0, 中: 1.3 };
-  const keys = { 特写: 'zoom_closeup', 近: 'zoom_close', 远: 'zoom_wide', 全: 'zoom_full', 中: 'zoom_mid' };
+  // 「微」= 1.06（2026-10-20 句读级微推）。认不出的档位仍按中景 —— 别把它并进 `全`。
+  const defaults = { 特写: 2.0, 近: 1.5, 微: 1.06, 远: 0.55, 全: 1.0, 中: 1.3 };
+  const keys = { 特写: 'zoom_closeup', 近: 'zoom_close', 微: 'zoom_micro', 远: 'zoom_wide', 全: 'zoom_full', 中: 'zoom_mid' };
   // 认不出的档位按**中景**（与模板的 `else` 分支同口径）。
   const key = keys[name] ?? 'zoom_mid';
   const fallback = defaults[name] ?? 1.3;

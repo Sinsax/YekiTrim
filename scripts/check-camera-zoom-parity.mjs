@@ -35,7 +35,7 @@ const root = join(here, '..')
 const read = (rel) => readFileSync(join(root, rel), 'utf8')
 
 /** 五处默认值必须同时等于这三个数 —— 改档位就是改这里 + 五处（有变异钉着）。 */
-const EXPECTED = { 特写: 2.0, 近: 1.5, 远: 0.55, 全: 1.0, 中: 1.3 }
+const EXPECTED = { 特写: 2.0, 近: 1.5, 微: 1.06, 远: 0.55, 全: 1.0, 中: 1.3 }
 
 let failures = 0
 const check = (name, ok, detail) => {
@@ -60,6 +60,7 @@ function rustDefaults(src) {
     mid: grab('default_zoom_mid'),
     closeup: grab('default_zoom_closeup'),
     close: grab('default_zoom_close'),
+    micro: grab('default_zoom_micro'),
     wide: grab('default_zoom_wide'),
   }
 }
@@ -84,6 +85,7 @@ function jsCamFactorDefaults(src) {
   return {
     closeup: grab('特写'),
     close: grab('近'),
+    micro: grab('微'),
     wide: grab('远'),
     full: grab('全'),
     mid: grab('中') ?? midFallback(),
@@ -98,7 +100,7 @@ function translatorDefaults(src) {
     const mm = m[1].match(new RegExp(`${label}:\\s*([0-9.]+)`))
     return mm ? Number(mm[1]) : null
   }
-  return { closeup: get('特写'), close: get('近'), wide: get('远'), full: get('全'), mid: get('中') }
+  return { closeup: get('特写'), close: get('近'), micro: get('微'), wide: get('远'), full: get('全'), mid: get('中') }
 }
 
 /** ⑤ 后端：`("zoom_wide", &mut cam.zoom_wide, 0.05, 1.0)` 的夹取区间。 */
@@ -131,6 +133,7 @@ function run(variant) {
   const all = [
     ['特写', rust.closeup, tpl.closeup, eng.closeup, trans.closeup],
     ['近', rust.close, tpl.close, eng.close, trans.close],
+    ['微', rust.micro, tpl.micro, eng.micro, trans.micro],
     ['远', rust.wide, tpl.wide, eng.wide, trans.wide],
     ['全', rust.full, tpl.full, eng.full, trans.full],
     ['中', rust.mid, tpl.mid, eng.mid, trans.mid],
@@ -249,6 +252,8 @@ function mutate() {
   expectRed('render-core 把 zoom_close 默认改成 1.8', { ...base, rust: base.rust.replace('fn default_zoom_close() -> f64 {\n    1.5', 'fn default_zoom_close() -> f64 {\n    1.8') }, run, 'rust')
   expectRed('出片模板的 `d=1.5` 改成 `d=1.8`', { ...base, html: base.html.replace("if(label==='近'){v=c.zoom_close;d=1.5;}", "if(label==='近'){v=c.zoom_close;d=1.8;}") }, run, 'html')
   expectRed('engine.js 的近景回落值改成 1.8', { ...base, engine: base.engine.replace("pick(c.zoom_close, 1.5)", "pick(c.zoom_close, 1.8)") }, run, 'engine')
+  // 「微」这一档（2026-10-20）：转译器表里 1.06 → 1.10 必须翻面。
+  expectRed('转译器的「微」改成 1.10', { ...base, dhampir: base.dhampir.replace('微: 1.06', '微: 1.10') }, run, 'dhampir')
   // ⚠️ 变异目标串必须**逐字**等于源码（`tools/polish-to-dhampir.mjs` 的 `zoomFactor` 里是
   //    `const defaults = { 特写: 1.8, 近: 1.5, 远: 0.55, 中: 1.3 };`）。
   //    曾经写成 `const defaults = { 近: 1.5`（**少了 `特写: 1.8,` 那一段**）⇒ `.replace` 静默不命中

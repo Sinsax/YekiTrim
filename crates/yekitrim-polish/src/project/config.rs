@@ -38,6 +38,29 @@ pub struct RhythmConfig {
     pub auto_events: Vec<RhythmAuto>,
 }
 
+/// **[camera] 运镜导演化**（2026-10-20，`docs/plan/camera-directing-plan-2026-10-20.md` §一）。
+///
+/// # 为什么必须是一个**默认关闭的开关**
+///
+/// 这批行为（爆点驱动景别 / 句读级微推 / 运镜音效同步 / 段首尾呼吸 / 竖素材纵向运镜）
+/// 都会**新增或改写事件**。无条件生效 ⇒ 每个存量工程跑一次 `process` 就变样，
+/// 而「老工程（无新字段）行为不变」是本仓的硬判据（R4）。
+/// ⇒ 门住：读不到 `direct` 就一切照旧，一个字节都不变。
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(deny_unknown_fields)]
+pub struct CameraDirectingConfig {
+    /// 总开关（缺省 false）。开着才走 [`crate::process::fx`] 那批导演化生成器。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub direct: bool,
+}
+
+impl CameraDirectingConfig {
+    /// 空 = 一个键都不写（老工程重存一次也是零字节变化）。
+    pub fn is_empty(&self) -> bool {
+        !self.direct
+    }
+}
+
 impl RhythmConfig {
     /// 空 = 一个键都不写（老工程重存一次也是零字节变化）。
     ///
@@ -192,6 +215,11 @@ pub struct ProjectFile {
     /// `Edl` 是一张**表**，内部字段被跳过之后 toml 仍然会写出空的 `[edl]` 段头（实测过）。
     #[serde(default, skip_serializing_if = "Edl::is_empty")]
     pub edl: Edl,
+
+    /// 16c. **运镜导演化**（§一，2026-10-20）—— 见 [`CameraDirectingConfig`]。
+    /// 缺省 false ⇒ 老工程零迁移（R4）。
+    #[serde(default, skip_serializing_if = "CameraDirectingConfig::is_empty")]
+    pub camera: CameraDirectingConfig,
 
     /// 16b. **节奏调度**（§26，2026-10-19）—— 见 [`RhythmConfig`]。
     /// 默认档 balanced：老工程**下次跑 process** 就会拿到重音表（用户口径「整体升一档」）。
@@ -2174,6 +2202,7 @@ impl ProjectFile {
             edl: Edl::default(),
             // ⚠️ 示例工程**不带账本**（空 ⇒ 不写这个表）；默认档仍然生效（balanced）。
             rhythm: RhythmConfig::default(),
+        camera: CameraDirectingConfig::default(),
             processed: false,
             // ⚠️ 决策理由**默认空**：示例工程不该带一条假理由（空 = 老行为，R4）。
             decisions: Vec::new(),
