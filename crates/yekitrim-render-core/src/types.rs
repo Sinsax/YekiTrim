@@ -878,6 +878,14 @@ pub struct CameraStyle {
     /// 挤出画面，"聚焦弹幕"会看不到目标。守卫在 `process::fx::cap_closeup_anchor`。
     #[serde(default = "default_zoom_closeup")]
     pub zoom_closeup: f64,
+    /// **微**（`camera zoom="微"`）= **1.06**（2026-10-20 运镜导演化 §一②「句读级微推」）。
+    ///
+    /// 它不是给人选的第五档，而是 **process 侧逐句读生成**的极轻推拉用的那一档：
+    /// 1.06 在 1080p 上是 ~57px —— 肉眼能看出"画面在呼吸"，但不会像 `中`(1.3) 那样变成"推镜头"。
+    /// ⚠️ 1.00~1.06 之间**没有别的表达方式**：`zoom` 是标签字符串，写数值会被当成认不出的档
+    ///    回落 `中`(1.3)（历史行为）—— 这正是必须新增这一档的原因。
+    #[serde(default = "default_zoom_micro")]
+    pub zoom_micro: f64,
     /// 画中画缩放 (camera zoom="远")。小于 1 = 画面缩小、四周留黑边
     #[serde(default = "default_zoom_wide")]
     pub zoom_wide: f64,
@@ -898,6 +906,7 @@ impl CameraStyle {
         match label.trim() {
             "特写" => self.zoom_closeup,
             "近" => self.zoom_close,
+            "微" => self.zoom_micro,
             "远" => self.zoom_wide,
             "全" => self.zoom_full,
             _ => self.zoom_mid,
@@ -909,6 +918,7 @@ impl Default for CameraStyle {
     fn default() -> Self {
         Self {
             zoom_full: default_zoom_full(),
+            zoom_micro: default_zoom_micro(),
             zoom_mid: default_zoom_mid(),
             zoom_closeup: default_zoom_closeup(),
             zoom_close: default_zoom_close(),
@@ -1007,6 +1017,10 @@ pub fn handheld_sway(t: f64, amp: f64) -> HandheldSway {
 /// 全（原画不缩放）：**缺省档位**（2026-10-20 用户口径「增加一个默认 1.0 作为默认景别」）。
 fn default_zoom_full() -> f64 {
     1.0
+}
+/// **微**：句读级微推用的极轻一档（1.06 = 1080p 上 ~57px）。
+fn default_zoom_micro() -> f64 {
+    1.06
 }
 fn default_zoom_mid() -> f64 {
     1.3

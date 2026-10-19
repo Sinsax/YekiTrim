@@ -608,6 +608,8 @@ function camFactor(label){
   // ⚠️ 四个档位的默认值必须与 Rust `CameraStyle` 逐值一致（门禁 check-camera-zoom-parity 钉住）。
   if(label==='特写'){v=c.zoom_closeup;d=2.0;}
   else if(label==='近'){v=c.zoom_close;d=1.5;}
+  // ⚠️ 「微」= 1.06：process 侧句读级微推用的极轻一档（2026-10-20）。
+  else if(label==='微'){v=c.zoom_micro;d=1.06;}
   else if(label==='远'){v=c.zoom_wide;d=0.55;}
   else if(label==='全'){v=c.zoom_full;d=1.0;}
   else{v=c.zoom_mid;d=1.3;}

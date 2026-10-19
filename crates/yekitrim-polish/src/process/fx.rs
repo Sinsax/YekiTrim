@@ -201,6 +201,268 @@ pub fn demote_cut_without_change(segments: &mut [Segment]) -> usize {
     demoted
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// 运镜导演化（2026-10-20 §一）—— **全部只在 [camera] direct = true 时调用**
+//
+// ⚠️ 为什么整批放在一个开关后面：这些函数都会**新增或改写事件**，无条件跑一次
+//    就会让每个存量工程变样（R4）。门在 `project::CameraDirectingConfig`。
+// ⚠️ 五条共同纪律：**幂等**（第二趟 0 条）、**确定性**（纯函数、无随机）、
+//    **`manual` 事件一律不碰**、**不改事件的 `time`**（只增/改 zoom·cut·sfx）。
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// 某段里覆盖 `t` 的那条运镜的 zoom（时间上最后一条 `time <= t`）——**只读**。
+fn zoom_state_at(seg: &Segment, t: f64) -> Option<String> {
+    let mut cur: Option<(f64, String)> = None;
+    for ev in &seg.events {
+        if let Event::Camera { time, zoom, .. } = ev {
+            if *time <= t + 1e-9 && cur.as_ref().map(|(bt, _)| time >= bt).unwrap_or(true) {
+                cur = Some((*time, zoom.trim().to_string()));
+            }
+        }
+    }
+    cur.map(|(_, z)| z)
+}
+
+/// **① 爆点驱动景别**（§一①）：按段内爆点分数分配景别，**不用 LLM、无随机**。
+///
+/// 只改每段**最早那条非 manual 运镜**。分档口径（相对全片均值，不设绝对阈值）：
+/// `score >= 1.6 × mean` ⇒ **近**；`>= 0.9 × mean` ⇒ **中**；其余 ⇒ **全**。
+///
+/// ⚠️ **输入打平 ⇒ 全部回落「全」**：这条就是验收里的变异自证。
+/// ⚠️ 幂等：目标值只由 `punches` 决定，与当前 zoom 无关 ⇒ 第二趟 0 条变更。
+pub fn assign_punch_zooms(segments: &mut [Segment], punches: &[(f64, f64)]) -> usize {
+    if segments.is_empty() {
+        return 0;
+    }
+    let scores: Vec<f64> = segments
+        .iter()
+        .map(|seg| {
+            punches
+                .iter()
+                .filter(|(at, _)| *at >= seg.start - 1e-9 && *at < seg.end + 1e-9)
+                .map(|(_, s)| *s)
+                .fold(0.0_f64, f64::max)
+        })
+        .collect();
+    let mean = scores.iter().sum::<f64>() / scores.len() as f64;
+    let flat = mean <= 1e-9 || scores.iter().all(|s| (s - scores[0]).abs() < 1e-9);
+    let mut changed = 0usize;
+    for (i, seg) in segments.iter_mut().enumerate() {
+        let target = if flat {
+            "全".to_string()
+        } else if scores[i] >= mean * 1.6 {
+            "近".to_string()
+        } else if scores[i] >= mean * 0.9 {
+            "中".to_string()
+        } else {
+            "全".to_string()
+        };
+        let mut best: Option<(usize, f64)> = None;
+        for (ei, ev) in seg.events.iter().enumerate() {
+            if let Event::Camera { time, manual, .. } = ev {
+                if *manual {
+                    continue;
+                }
+                if best.as_ref().map(|(_, t)| time < t).unwrap_or(true) {
+                    best = Some((ei, *time));
+                }
+            }
+        }
+        let Some((ei, t)) = best else { continue };
+        let done = match &mut seg.events[ei] {
+            Event::Camera { zoom, .. } if zoom.trim() != target => {
+                *zoom = target.clone();
+                true
+            }
+            _ => false,
+        };
+        if done {
+            changed += 1;
+            tracing::info!("  🎥 爆点驱动景别：段{i} @{t:.1}s -> {target}");
+        }
+    }
+    changed
+}
+
+/// **② 句读级微推**（§一②）：段内每 3–6s 一次极轻推拉（`微`=1.06 ↔ 段基准档），方向交替。
+///
+/// 切点优先取「距上一拍 ≥3s 的最近一条字幕开始」，没有就 4.5s 一拍；距段尾 <1s 不补。
+/// ⚠️ 只加新事件；同 ±0.05s 已有运镜 ⇒ 跳过（幂等）。
+pub fn add_micro_push(segments: &mut [Segment], subtitles: &[Subtitle]) -> usize {
+    let mut added = 0usize;
+    for seg in segments.iter_mut() {
+        if seg.end - seg.start < 3.0 {
+            continue;
+        }
+        let base = zoom_state_at(seg, seg.start).unwrap_or_else(|| "全".to_string());
+        let other = if base == "微" { "全".to_string() } else { base.clone() };
+        let mut cursor = seg.start + 3.0;
+        let mut flip = false;
+        while cursor < seg.end - 1.0 {
+            let zoom = if flip { other.clone() } else { "微".to_string() };
+            flip = !flip;
+            let exists = seg.events.iter().any(|ev| {
+                matches!(ev, Event::Camera { time, .. } if (time - cursor).abs() < 0.05)
+            });
+            if !exists {
+                let end = (cursor + 2.0).min(seg.end);
+                seg.events.push(Event::Camera {
+                    time: cursor,
+                    end: Some(end),
+                    zoom,
+                    origin: "50% 50%".into(),
+                    anchor: None,
+                    anchor_to: None,
+                    to_origin: None,
+                    cut: false,
+                    handheld: false,
+                    manual: false,
+                    speed: None,
+                    tilt: None,
+                });
+                added += 1;
+            }
+            let sub_next = subtitles
+                .iter()
+                .map(|s| s.start)
+                .filter(|t| *t >= cursor + 3.0 - 1e-9 && *t < seg.end)
+                .fold(None::<f64>, |acc, t| match acc {
+                    None => Some(t),
+                    Some(a) => Some(a.min(t)),
+                });
+            cursor = match sub_next {
+                Some(t) => t.min(cursor + 6.0),
+                None => cursor + 4.5,
+            };
+        }
+    }
+    added
+}
+
+/// **⑤ 段首尾呼吸**（§一⑤）：段首接得平滑（不吃 cut）、段尾 0.3s 微拉远收束。
+///
+/// 幂等：段首已 `cut=false` 不计数；段尾在 [end−0.35, end−0.05] 已有事件就跳过。
+pub fn segment_breathing(segments: &mut [Segment]) -> usize {
+    let weaker = |z: &str| -> String {
+        match z.trim() {
+            "特写" => "近",
+            "近" => "中",
+            "中" => "全",
+            _ => "全",
+        }
+        .to_string()
+    };
+    let mut changed = 0usize;
+    for seg in segments.iter_mut() {
+        if seg.end - seg.start < 2.0 {
+            continue;
+        }
+        for ev in seg.events.iter_mut() {
+            if let Event::Camera { time, cut, manual, .. } = ev {
+                if (*time - seg.start).abs() < 0.05 && *cut && !*manual {
+                    *cut = false;
+                    changed += 1;
+                }
+            }
+        }
+        let tail = seg.end - 0.3;
+        let exists = seg.events.iter().any(|ev| {
+            matches!(ev, Event::Camera { time, .. } if (time - tail).abs() < 0.3 && *time < seg.end - 0.04)
+        });
+        if !exists {
+            let cur = zoom_state_at(seg, tail).unwrap_or_else(|| "全".to_string());
+            let target = weaker(&cur);
+            if target != cur {
+                seg.events.push(Event::Camera {
+                    time: tail,
+                    end: Some(seg.end),
+                    zoom: target,
+                    origin: "50% 50%".into(),
+                    anchor: None,
+                    anchor_to: None,
+                    to_origin: None,
+                    cut: false,
+                    handheld: false,
+                    manual: false,
+                    speed: None,
+                    tilt: None,
+                });
+                changed += 1;
+            }
+        }
+    }
+    changed
+}
+
+/// **④ 运镜与音效同步**（§一④）：每个 cut / snap 起点 0.3s 内保证一条 sfx。
+///
+/// ⚠️ **必须排在 Step 3（音效规则引擎）之后**：规则引擎会删掉"字幕里找不到依据"的独立 sfx，
+///    而这条是运镜驱动的、没有台词依据 —— 排前面会被它当场删掉。
+/// ⚠️ 幂等：0.3s 内已有任意 Sfx 就跳过。
+pub fn sync_camera_sfx(segments: &mut [Segment]) -> usize {
+    let mut wanted: Vec<(usize, f64)> = Vec::new();
+    for (si, seg) in segments.iter().enumerate() {
+        for ev in &seg.events {
+            if let Event::Camera { time, cut, speed, .. } = ev {
+                let is_snap = *cut
+                    || speed.as_deref().map(|s| s.trim().eq_ignore_ascii_case("snap")).unwrap_or(false);
+                if !is_snap {
+                    continue;
+                }
+                let has = seg.events.iter().any(|x| {
+                    matches!(x, Event::Sfx { time: st, .. } if (st - time).abs() <= 0.3)
+                });
+                if !has {
+                    wanted.push((si, *time));
+                }
+            }
+        }
+    }
+    let n = wanted.len();
+    for (si, time) in wanted {
+        segments[si].events.push(Event::Sfx {
+            time,
+            name: "whoosh".into(),
+            volume: None,
+            end: None,
+        });
+    }
+    n
+}
+
+/// **⑨ 竖素材纵向运镜**（§一⑨）：竖屏**只做纵向**推拉/位移，不做横向（横摇必露边）。
+///
+/// 判据只读**工程里已有的字段**（`canvas.orientation` / `stage`），**不在 process 里开子进程探源**。
+/// 做法：每段那条运镜的 `origin` 只动 **y**（42% ↔ 58% 交替）、zoom 在 `全`/`微` 之间交替。
+/// ⚠️ 幂等：目标值由段序号决定，第二趟算出同一组值。
+pub fn direct_vertical_portrait(segments: &mut [Segment]) -> usize {
+    let mut changed = 0usize;
+    for (i, seg) in segments.iter_mut().enumerate() {
+        let y = if i % 2 == 0 { 42.0 } else { 58.0 };
+        let zoom = if i % 2 == 0 { "全" } else { "微" };
+        for ev in seg.events.iter_mut() {
+            if let Event::Camera { time, zoom: z, origin, manual, .. } = ev {
+                if *manual || (*time - seg.start).abs() >= 1.0 {
+                    continue;
+                }
+                let want = format!("50% {y}%");
+                let mut here = 0;
+                if origin.trim() != want {
+                    *origin = want.clone();
+                    here += 1;
+                }
+                if z.trim() != zoom {
+                    *z = zoom.to_string();
+                    here += 1;
+                }
+                if here > 0 {
+                    changed += 1;
+                }
+            }
+        }
+    }
+    changed
+}
 /// 画中画切镜的**最短时长**（秒）：对齐后短于这个就往后借下一条字幕，借不满就保持原样。
 pub const MIN_PIP_SECS: f64 = 1.5;
 
@@ -2166,6 +2428,111 @@ mod tests {
         assert_eq!(cap_pip_shots(&mut segs), 1, "同段两条：留一条、降一条");
         assert!(matches!(&segs[0].events[1], Event::Camera { zoom, .. } if zoom == "中"));
     }
+    // ── 运镜导演化（① ② ④ ⑤ ⑨，2026-10-20）──────────────────────
+    fn seg_ev(start: f64, end: f64, events: Vec<Event>) -> Segment {
+        Segment {
+            start,
+            end,
+            events,
+            fx: "low".into(),
+            note: String::new(),
+            role: String::new(),
+            extra: Default::default(),
+        }
+    }
+
+    /// ① 爆点段升档；**输入打平 ⇒ 全部回落「全」**（这就是变异自证的形态）。
+    #[test]
+    fn punch_zooms_follow_heat_and_flat_input_falls_back() {
+        let mut segs = vec![
+            seg_ev(0.0, 10.0, vec![cam(0.0, "全")]),
+            seg_ev(10.0, 20.0, vec![cam(10.0, "全")]),
+            seg_ev(20.0, 30.0, vec![cam(20.0, "全")]),
+        ];
+        // 中间那段的爆点分数明显最高 ⇒ 它必须是「近」，其余「全」。
+        let punches = vec![(1.0, 0.2), (12.0, 0.9), (21.0, 0.2)];
+        assert_eq!(assign_punch_zooms(&mut segs, &punches), 1);
+        let zooms: Vec<&str> = segs.iter().map(|s| match &s.events[0] {
+            Event::Camera { zoom, .. } => zoom.as_str(), _ => unreachable!() }).collect();
+        assert_eq!(zooms, vec!["全", "近", "全"]);
+        assert_eq!(assign_punch_zooms(&mut segs, &punches), 0, "幂等");
+        // 打平（**全 0.5**，不是全 0 —— 全 0 会被 mean<=1e-9 那条顺带兜住，测不到这条契约）⇒ 退回默认档。
+        let flat = vec![(1.0, 0.5), (12.0, 0.5), (21.0, 0.5)];
+        assign_punch_zooms(&mut segs, &flat);
+        for s in &segs {
+            assert!(matches!(&s.events[0], Event::Camera { zoom, .. } if zoom == "全"),
+                "热度打平 ⇒ 必须回落默认档「全」");
+        }
+    }
+
+    /// ② 长段必须被切分（>6s 无变化 = 0）；且幂等。
+    #[test]
+    fn micro_push_fills_static_windows_and_is_idempotent() {
+        let mut segs = vec![seg_ev(0.0, 20.0, vec![cam(0.0, "全")])];
+        let n = add_micro_push(&mut segs, &[]);
+        assert!(n >= 2, "20s 的段至少要补两拍（实得 {n}）");
+        let mut times: Vec<f64> = segs[0].events.iter()
+            .filter_map(|e| match e { Event::Camera { time, .. } => Some(*time), _ => None }).collect();
+        times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let max_gap = times.windows(2).map(|w| w[1] - w[0]).fold(0.0_f64, f64::max);
+        assert!(max_gap <= 6.0 + 1e-9, "切分后最长静止窗口 {max_gap}s 应 ≤6s");
+        assert_eq!(add_micro_push(&mut segs, &[]), 0, "幂等：第二趟一条都不加");
+    }
+
+    /// ⑤ 段首吃掉 cut、段尾补一条收束；只动边界，段中不加。
+    #[test]
+    fn breathing_touches_boundaries_only_and_is_idempotent() {
+        let mut segs = vec![seg_ev(0.0, 10.0, vec![
+            Event::Camera { time: 0.0, end: Some(10.0), zoom: "中".into(),
+                origin: "50% 50%".into(), anchor: None, anchor_to: None, to_origin: None,
+                cut: true, handheld: false, manual: false, speed: None, tilt: None },
+        ])];
+        let n = segment_breathing(&mut segs);
+        assert!(n >= 2, "段首去 cut + 段尾收束（实得 {n}）");
+        assert!(matches!(&segs[0].events[0], Event::Camera { cut: false, .. }), "段首不再硬切");
+        let tail = segs[0].events.iter().filter_map(|e| match e {
+            Event::Camera { time, .. } if *time > 9.0 => Some(*time), _ => None }).count();
+        assert_eq!(tail, 1, "段尾恰好一条收束");
+        assert_eq!(segment_breathing(&mut segs), 0, "幂等");
+    }
+
+    /// ④ 每个 cut/snap 起点 0.3s 内恰好一条 sfx，且不会重复补。
+    #[test]
+    fn camera_sfx_is_synced_once() {
+        let mut segs = vec![seg_ev(0.0, 10.0, vec![
+            Event::Camera { time: 2.0, end: Some(4.0), zoom: "近".into(),
+                origin: "50% 50%".into(), anchor: None, anchor_to: None, to_origin: None,
+                cut: true, handheld: false, manual: false, speed: None, tilt: None },
+        ])];
+        assert_eq!(sync_camera_sfx(&mut segs), 1);
+        let sfx: Vec<f64> = segs[0].events.iter().filter_map(|e| match e {
+            Event::Sfx { time, .. } => Some(*time), _ => None }).collect();
+        assert_eq!(sfx, vec![2.0], "音效必须落在运镜起点上");
+        assert_eq!(sync_camera_sfx(&mut segs), 0, "幂等");
+    }
+
+    /// ⑨ 竖屏只动 y（x 恒 50%），且幂等。
+    #[test]
+    fn vertical_portrait_only_moves_the_vertical_axis() {
+        let mut segs = vec![
+            seg_ev(0.0, 10.0, vec![cam(0.0, "中")]),
+            seg_ev(10.0, 20.0, vec![cam(10.0, "中")]),
+        ];
+        assert_eq!(direct_vertical_portrait(&mut segs), 2);
+        for (i, s) in segs.iter().enumerate() {
+            match &s.events[0] {
+                Event::Camera { origin, zoom, .. } => {
+                    assert!(origin.starts_with("50% "), "x 必须恒为 50%（竖屏横摇必露边）：{origin}");
+                    let want_y = if i % 2 == 0 { "50% 42%" } else { "50% 58%" };
+                    assert_eq!(origin, want_y);
+                    assert!(zoom == "全" || zoom == "微", "竖屏只用全/微两档：{zoom}");
+                }
+                _ => unreachable!(),
+            }
+        }
+        assert_eq!(direct_vertical_portrait(&mut segs), 0, "幂等");
+    }
+
     /// 带 `anchor`（可空）的运镜 —— 验特写焦点守卫用。
     fn cam_a(time: f64, zoom: &str, anchor: Option<&str>, anchor_to: Option<&str>) -> Event {
         let Event::Camera {

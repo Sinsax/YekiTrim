@@ -456,6 +456,28 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
         punch_list = punches;
     }
 
+    // Step 1f2: **运镜导演化**（2026-10-20 §一，`[camera] direct = true` 才跑）。
+    //
+    // 顺序有意：① 先定景别（最粗的一层）→ ⑨ 竖屏纵向约束 → ⑤ 段首尾呼吸
+    // → ② 句读微推（最后加，因为它读上面定好的基准档）。
+    // ⚠️ 全批在**一个门**后面：缺省 false ⇒ 老工程一个字节不变（R4）。
+    // ⚠️ 三条都幂等：目标值由输入（punches / 段序号 / 字幕）决定，不看当前状态。
+    if config.camera.direct {
+        let scores: Vec<(f64, f64)> = punch_list.iter().map(|p| (p.at, p.score)).collect();
+        let n_zoom = assign_punch_zooms(&mut config.segments, &scores);
+        // ⑨：竖屏只做纵向。判据用**工程里已有的字段**，不在 process 里开子进程探源。
+        // ⚠️ 只读 ~canvas.orientation~：process 侧**不开子进程探源**（边界门禁会红），
+        //    而"竖素材进横画布"这件事的源尺寸在 process 里拿不到 —— 见报告里的残余。
+        let portrait = config.canvas.is_portrait();
+        let n_portrait = if portrait { direct_vertical_portrait(&mut config.segments) } else { 0 };
+        let n_breath = segment_breathing(&mut config.segments);
+        let n_micro = add_micro_push(&mut config.segments, &subtitles);
+        if n_zoom + n_portrait + n_breath + n_micro > 0 {
+            tracing::info!(
+                "  🎬 运镜导演化：景别 {n_zoom} 条 · 竖屏纵向 {n_portrait} 条 · 段首尾呼吸 {n_breath} 条 · 句读微推 {n_micro} 条"
+            );
+        }
+    }
     // Step 1g: 叙事形状守卫（§8）—— `role` 只是**给 LLM 的提示**，它不一定听话。
     // 与 `cap_pip_shots` / `cap_handheld_sway` 完全同一条理由：**LLM 会写错、用户也会改，
     // 守卫是唯一兜底**。两条规则：`hook` 至多一段（留最早的）、`punch` 至少一段（没有就从
@@ -1052,7 +1074,17 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
             tracing::info!("  ✂ 清空 {} 个特效的未匹配音效", cleared_fx);
         }
 
-        // Step 3b: 自动补位 — 字幕命中规则但 LLM 未放事件的时刻, 自动创建 sfx 事件 (预算内)
+        // Step 3c2: **运镜与音效同步**（§一④，`[camera] direct = true` 才跑）。
+    // ⚠️ **必须排在 Step 3/3b 之后**：规则引擎会删掉「字幕里找不到依据」的独立 sfx，
+    //    而这条是运镜驱动的、没有台词依据 —— 排前面会被它当场删掉。
+    if config.camera.direct {
+        let n = sync_camera_sfx(&mut config.segments);
+        if n > 0 {
+            tracing::info!("  🔊 运镜音效同步：cut/snap 起点补 {n} 条 sfx");
+        }
+    }
+
+    // Step 3b: 自动补位 — 字幕命中规则但 LLM 未放事件的时刻, 自动创建 sfx 事件 (预算内)
         let total_duration = config.segments.last().map(|s| s.end).unwrap_or(0.0);
         let existing_sfx_count: usize = config.segments.iter()
             .flat_map(|seg| seg.events.iter())
