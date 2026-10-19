@@ -127,24 +127,34 @@ fn find_provider(base_url: &str) -> Option<&'static ProviderEntry> {
     })
 }
 
+/// 在表里找这对 (host, model)。**匹配是严格的**（2026-10-20 用户质疑后收紧）：
+///
+/// 1. **整串精确**（大小写不敏感）—— 绝不按后缀 / 裸名模糊命中：
+///    `cn:deepseek-v4.1-flash` 与 `deepseek-v4-flash` 是**两支不同的模型**，
+///    把公开版的上限（8192/384k）安到自建网关的模型上，就是"用户被告知上限只有 8192"那类事故；
+/// 2. **host 命中某一家 ⇒ 只在那一家里找**（找不到就是"未收录"，不跨家猜 ——
+///    `moonshot` 的 kimi 与 `openrouter` 的同名模型能力不同，跨家猜等于用别家的数字）；
+/// 3. host 认不出 ⇒ 允许全表找，但**必须唯一**（同一个 id 出现在多家 ⇒ 说不清是哪家 ⇒ 不猜）。
 fn find_model(base_url: &str, model: &str) -> Option<(&'static ProviderEntry, &'static ModelEntry)> {
-    if model.trim().is_empty() {
+    let model = model.trim();
+    if model.is_empty() {
         return None;
     }
     let cat = catalog();
-    let prov = find_provider(base_url);
-    // 先在**这家**里找（同名模型在不同家的能力可能不同），再全局找一次。
-    if let Some(p) = prov {
-        if let Some(m) = p.models.iter().find(|m| m.id.eq_ignore_ascii_case(model)) {
-            return Some((p, m));
-        }
+    let matches = |p: &'static ProviderEntry| -> Option<&'static ModelEntry> {
+        p.models.iter().find(|m| m.id.eq_ignore_ascii_case(model))
+    };
+    if let Some(p) = find_provider(base_url) {
+        // ② 认识的 host：**只认这一家**
+        return matches(p).map(|m| (p, m));
     }
-    cat.providers.iter().find_map(|p| {
-        p.models
-            .iter()
-            .find(|m| m.id.eq_ignore_ascii_case(model))
-            .map(|m| (p, m))
-    })
+    // ③ 认不出的 host：全表找，但只有**唯一命中**才认
+    let mut hits = cat.providers.iter().filter_map(|p| matches(p).map(|m| (p, m)));
+    let first = hits.next()?;
+    if hits.next().is_some() {
+        return None; // 有歧义 ⇒ 不猜
+    }
+    Some(first)
 }
 
 fn parse_support(s: &str) -> Support {
@@ -238,8 +248,17 @@ pub fn caps_json(base_url: &str, model: &str) -> serde_json::Value {
     caps_json_of(&caps_for(base_url, model), find_model(base_url, model).is_some())
 }
 
-/// 同上，但**先把探测结果补进来**（只补不抹，见 `caps::apply_partial`）——
-/// `GET /api/llm/models` 的 probe 那条路用它，这样两条路给前端的是**同一形状**。
+/// 同上，但**先把探测结果补进来**。
+///
+/// # 能力来源的**优先级**（只在这里实现，别再各写一份）
+///
+/// **探针自描述（probe） > 内置表（catalog） > 保守默认** —— 2026-10-20 用户质疑后钉死：
+/// 服务器自己说了 `max_output_tokens = 393216`，就不许被表里的 8192 挡住。
+/// 实现顺序 = 先 `caps_for`（表 + 默认）再 `apply_partial`（探针**覆盖**它说了的字段）；
+/// `apply_partial` 对"reader 没说"的字段保持不动，所以表/默认该保留的仍保留。
+///
+/// ⚠️ 表里**没有**的 id（例如自建网关的 `cn:deepseek-v4.1-flash`）走的是"保守默认"，
+/// 不是"照公开版猜一个数"—— 见 [`find_model`] 的严格匹配口径。
 pub fn caps_json_merged(
     base_url: &str,
     model: &str,
@@ -331,6 +350,72 @@ mod tests {
         assert_ne!(a.dialect.id, b.dialect.id, "两家不同方言必须能分辨");
         assert_eq!(a.dialect.max_output_field, "max_tokens", "这家用的是老字段名");
     }
+
+
+/// **能力来源优先级 = 探针 > 内置表 > 保守默认**（2026-10-20 用户质疑后钉死）。
+///
+/// 服务器自述 `max_output_tokens = 393216`，表里同一支模型是 384000 —— **必须给 393216**。
+#[test]
+fn probe_wins_over_catalog_for_the_same_model() {
+    // 表里认识的一支（Control：只查表 = 表的值）
+    let base = "https://api.deepseek.com/v1";
+    let by_table = caps_json(base, "deepseek-v4-pro");
+    assert_eq!(by_table["hit"], serde_json::json!(true), "{by_table}");
+    assert_eq!(by_table["max_output_ceiling"].as_u64(), Some(384_000), "{by_table}");
+
+    // 探针说 393216 ⇒ 最终必须是探针的
+    let partial = crate::caps::read_all(&serde_json::json!({
+        "id": "deepseek-v4-pro",
+        "max_output_tokens": 393216
+    }))
+    .expect("max_output_tokens 是一条信息");
+    let merged = caps_json_merged(base, "deepseek-v4-pro", Some(&partial));
+    assert_eq!(
+        merged["max_output_ceiling"].as_u64(),
+        Some(393_216),
+        "**探针压过表**（服务器自己说的才算）：{merged}"
+    );
+    // 探针没说的字段仍取表的（不是整体让某一方赢）
+    assert_eq!(merged["context_window"], by_table["context_window"], "{merged}");
+    assert_eq!(merged["hit"], serde_json::json!(true), "{merged}");
+}
+
+/// 表里**没有**这个 id ⇒ 给"未收录"，**不许猜一个数**（尤其别照同后缀的公开版猜）。
+#[test]
+fn unknown_id_gets_no_guessed_limits() {
+    for base in ["http://192.168.0.107:7863/v1", "https://api.deepseek.com/v1"] {
+        let v = caps_json(base, "cn:deepseek-v4.1-flash");
+        assert_eq!(v["hit"], serde_json::json!(false), "{base}: {v}");
+        assert!(v["max_output_ceiling"].is_null(), "不许猜上限：{base}: {v}");
+        assert!(v["context_window"].is_null(), "不许猜上下文：{base}: {v}");
+    }
+}
+
+/// **`cn:` 前缀的 id 不会命中表里任何无前缀同名模型**（严格整串匹配）。
+#[test]
+fn prefixed_custom_ids_never_match_bare_table_names() {
+    let base = "https://api.deepseek.com/v1";
+    let custom = caps_for(base, "cn:deepseek-v4-pro");
+    assert!(custom.max_output_ceiling.is_none(), "自建网关的模型拿不到公开版的数字");
+    assert!(custom.levels.is_empty(), "也不该拿到公开版的档位");
+    assert_eq!(custom.dialect.id, "none", "方言也不许借过来");
+    // 对照组：裸名**在认识的那家**里照样命中（不是把匹配整体关掉）
+    let native = caps_for(base, "deepseek-v4-pro");
+    assert_eq!(native.max_output_ceiling, Some(384_000));
+    assert!(!native.levels.is_empty());
+}
+
+/// host 认不出 + 同一个 id 在**多家**都有 ⇒ 说不清是哪家 ⇒ **不猜**（宁可"未收录"）。
+#[test]
+fn ambiguous_bare_id_on_an_unknown_host_is_not_guessed() {
+    // deepseek-v4-pro 在 deepseek / qwen-token-plan(-cn) 三家都有
+    let unknown_host = "https://my-gateway.example/v1";
+    let v = caps_json(unknown_host, "deepseek-v4-pro");
+    assert_eq!(v["hit"], serde_json::json!(false), "有歧义就别猜：{v}");
+    // 但**认识的 host** 只在那一家里找 ⇒ 照样命中
+    let v = caps_json("https://api.deepseek.com/v1", "deepseek-v4-pro");
+    assert_eq!(v["hit"], serde_json::json!(true), "{v}");
+}
 
     /// 界面契约：`caps_json` 给的是**档位与温度**，不是方言。
     ///
