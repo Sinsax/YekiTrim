@@ -882,10 +882,18 @@ pub struct LlmParamsToml {
     /// 输出上限；**省略 = 不发**（字段名由该模型的能力决定：`max_tokens` / `max_completion_tokens`）。
     #[serde(default)]
     pub max_tokens: Option<u32>,
-    /// 推理档位：`off|minimal|low|medium|high|xhigh`（v1 的 `enabled`/`disabled` 也认）；
+    /// 推理档位：`off|minimal|low|medium|high|xhigh|max`（v1 的 `enabled`/`disabled` 也认）；
     /// **省略 = 不表态**（此时 `extra_params.thinking` 说了算，各链路的代码默认也照旧生效）。
     #[serde(default)]
     pub reasoning: Option<String>,
+    /// **预算型方言的 token 数**（`thinking_budget` / `reasoning_max_tokens` /
+    /// `thinking_token_budget` 这三种"要一个数"的方言用）。
+    ///
+    /// **省略 = 按档位映射表给默认**（minimal 1024 / low 4096 / medium 8192 /
+    /// high 16384 / xhigh 32768 / max 65536；那张表只在 `yekitrim_llm::dialect::budget_for`）。
+    /// 用户显式写 0 = 没配（同 `max_tokens` 的口径，不把 0 发给 provider）。
+    #[serde(default)]
+    pub thinking_budget: Option<u32>,
     #[serde(default)]
     pub top_p: Option<f64>,
     /// 要求 JSON 输出（wire 上写 `response_format`）；省略 = 不主动打开
@@ -927,6 +935,12 @@ impl LlmParamsToml {
             }
             None => self.temperature,
         };
+        // 0 = 没配（手改坏文件的现场，与 max_tokens 同一条）
+        let thinking_budget = match ov.thinking_budget {
+            Some(0) => self.thinking_budget,
+            Some(n) => Some(n),
+            None => self.thinking_budget,
+        };
         Self {
             temperature,
             max_tokens,
@@ -936,6 +950,7 @@ impl LlmParamsToml {
                 .clone()
                 .or_else(|| self.reasoning.clone())
                 .or_else(|| link.default_thinking().map(str::to_string)),
+            thinking_budget,
             top_p: ov.top_p.or(self.top_p),
             json_mode: ov.json_mode.or(self.json_mode),
         }
@@ -1190,6 +1205,33 @@ mod llm_link_tests {
         assert_eq!(c.for_link(LlmLink::Detect).params.reasoning.as_deref(), Some("high"));
         c.overrides.polish.reasoning = Some("off".into());
         assert_eq!(c.for_link(LlmLink::Polish).params.reasoning.as_deref(), Some("off"));
+    }
+
+    /// **预算型方言的 N**（P2）：`[llm.params] thinking_budget` → `LlmParams.thinking_budget`；
+    /// 链路覆盖优先；0 = 没配（与 max_tokens 同一口径）；不配就是 None（老工程零回归）。
+    #[test]
+    fn thinking_budget_reaches_llm_params() {
+        let mut c = base();
+        let p: yekitrim_llm::LlmParams = (&c).into();
+        assert_eq!(p.thinking_budget, None, "不配 ⇒ None：按档位映射表给默认，请求体与从前逐字节一致");
+
+        c.params.thinking_budget = Some(16384);
+        let p: yekitrim_llm::LlmParams = (&c).into();
+        assert_eq!(p.thinking_budget, Some(16384));
+
+        // 链路覆盖 > 全局
+        c.overrides.polish.thinking_budget = Some(4096);
+        let polish = c.for_link(LlmLink::Polish);
+        assert_eq!(polish.params.thinking_budget, Some(4096));
+        let detect = c.for_link(LlmLink::Detect);
+        assert_eq!(detect.params.thinking_budget, Some(16384), "别的链路照旧跟随全局");
+
+        // 0 = 没配（手改坏文件的现场）：不把 0 传下去，跟随全局；全局也是 0 ⇒ None
+        c.overrides.polish.thinking_budget = Some(0);
+        assert_eq!(c.for_link(LlmLink::Polish).params.thinking_budget, Some(16384));
+        c.params.thinking_budget = Some(0);
+        let p: yekitrim_llm::LlmParams = (&c).into();
+        assert_eq!(p.thinking_budget, None, "0 不发（同 max_tokens 的口径）");
     }
 
     /// 手改坏的值不能让整条链路炸：0 = 未设置，非有限 temperature 忽略，超范围夹回来。
@@ -1496,6 +1538,8 @@ impl From<&LlmConfig> for yekitrim_llm::LlmParams {
             // 省略 = 不发（v1 那个"永远会发出去的默认值"由迁移落成显式键，见 version.rs）
             max_tokens: p.max_tokens,
             reasoning: reasoning.unwrap_or_default(),
+            // 预算：省略 = None ⇒ 传输层按档位映射表给默认（见 dialect::budget_for）
+            thinking_budget: p.thinking_budget.filter(|n| *n > 0),
             reasoning_explicit: reasoning.is_some(),
             top_p: p.top_p.filter(|v| v.is_finite()),
             // extra_params.response_format 仍是老工程的表达（原样保留）；这里是新界面的一等公民键。

@@ -15,7 +15,6 @@
 //!   改顺序会让存量 `llm.toml`（里面写死了 `response_format`）的请求体悄悄变样。
 //! * `reasoning` 再排最后：旧实现里 `[llm] thinking` 也是最后一个盖 `extra_params.thinking` 的。
 
-use crate::dialect::Dialect;
 use crate::params::{LlmParams, ReasoningLevel, Support};
 use serde_json::{json, Value};
 
@@ -64,7 +63,7 @@ fn apply_reasoning(body: &mut Value, p: &LlmParams) {
     match slot {
         // 支持但"不发送"（多数 provider 的"不思考"就是参数缺席）
         None => {}
-        Some(value) => emit(body, p.caps.dialect, p.reasoning, value),
+        Some(value) => emit(body, p, value),
     }
 }
 
@@ -72,9 +71,13 @@ fn apply_reasoning(body: &mut Value, p: &LlmParams) {
 ///
 /// ⚠️ 这里**不认识任何一家 API**：怎么写全由 `dialect.apply` 决定（注册表在 [`crate::dialect`]）。
 /// 未知方言（`dialect::none()`）的 apply 是空函数 ⇒ 什么都不发。
-fn emit(body: &mut Value, dialect: &'static Dialect, level: ReasoningLevel, value: &str) {
+fn emit(body: &mut Value, p: &LlmParams, value: &str) {
     if let Some(map) = body.as_object_mut() {
-        (dialect.apply)(map, level, value);
+        // 预算：用户配了就用它，没配按**档位映射表**（那张表只在 dialect::budget_for 一处）
+        let budget = p
+            .thinking_budget
+            .or_else(|| crate::dialect::budget_for(p.reasoning));
+        (p.caps.dialect.apply)(map, p.reasoning, value, budget);
     }
 }
 
@@ -154,6 +157,7 @@ mod tests {
         body: &mut serde_json::Map<String, serde_json::Value>,
         _level: ReasoningLevel,
         value: &str,
+        _budget: Option<u32>,
     ) {
         body.insert("test_reasoning".into(), serde_json::json!(value));
     }
@@ -177,6 +181,22 @@ mod tests {
         assert_eq!(body["test_max_out"], 4096, "新方言的输出字段名直接生效");
         assert!(body.get("reasoning_effort").is_none(), "别串到别家方言上：{body}");
         assert!(body.get("max_tokens").is_none(), "{body}");
+    }
+
+    /// 预算：**用户配了就用它**，没配按档位映射表（表只在 `dialect::budget_for` 一处）。
+    #[test]
+    fn configured_budget_wins_over_the_level_map() {
+        let p = params(&[(ReasoningLevel::High, Some("high"))], dlg("thinking_budget", "max_tokens"));
+        let mut body = json!({});
+        apply(
+            &mut body,
+            &LlmParams { reasoning: ReasoningLevel::High, thinking_budget: Some(2048), ..p.clone() },
+        );
+        assert_eq!(body["thinking"]["budget_tokens"], 2048, "配了就用配的那个数：{body}");
+
+        let mut body2 = json!({});
+        apply(&mut body2, &LlmParams { reasoning: ReasoningLevel::High, ..p });
+        assert_eq!(body2["thinking"]["budget_tokens"], 16384, "没配 ⇒ 按 high 的映射值：{body2}");
     }
 
     #[test]

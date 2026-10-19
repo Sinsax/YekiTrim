@@ -36,6 +36,70 @@ pub struct Discovered {
     pub caps: Option<crate::caps::PartialCaps>,
 }
 
+/// 这一趟探测的**全部结果**：模型清单 + 试过哪些路径。
+///
+/// 为什么要带上"试过哪些路径"：路径级探测（LiteLLM / Ollama）**失败一律静默跳过**
+/// （不阻断主流程），可这样一来"为什么这支模型没有能力"就没人说得清了 ——
+/// `tried` 让界面/日志能说"我试过 `/model/info` 和 `/api/tags`，都没通"。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Discovery {
+    pub models: Vec<Discovered>,
+    /// 试过的路径（`/models` + 各路径级探测），**顺序即尝试顺序**。⚠️ "试过"≠"成功"。
+    pub tried: Vec<String>,
+    /// 真正补进过能力的路径级探测 id（`litellm` / `ollama`）。
+    /// 空 = 能力只来自 `/v1/models` 的自描述（或压根没探到）。
+    pub caps_from: Vec<&'static str>,
+}
+
+/// 路径级探测**怎么打**。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fetch {
+    /// GET `paths[0]`，一次拿全（LiteLLM `/model/info`）。
+    Get,
+    /// 先 GET `paths[0]` 拿候选模型名，再**逐支** POST `paths[1]`（Ollama：`/api/tags` → `/api/show`）。
+    PostPerModel,
+}
+
+/// 一条**路径级**探测：有些服务器不从 `/v1/models` 说能力，得换一条路径去问。
+///
+/// ⚠️ 与 [`crate::caps::CapsReader`]（**字段级**：读 `/v1/models` 的单个条目）不是一回事，
+/// 但产物同构：都是一片 [`crate::caps::PartialCaps`]，合并同样走"只补不抹"。
+/// **加一家标准 = 写一个 read 函数 + 加一行表项。**
+pub struct PathProbe {
+    /// 稳定 id（写日志 / `caps_from` 用）。
+    pub id: &'static str,
+    /// 给界面看的中文名。
+    pub label: &'static str,
+    /// 要打的路径（`{root}` 之后、`/` 开头）。
+    pub paths: &'static [&'static str],
+    pub fetch: Fetch,
+    /// (整份载荷, model id) → 能力片段；认不出 / 不是这支 ⇒ None。
+    pub read: fn(&serde_json::Value, &str) -> Option<crate::caps::PartialCaps>,
+}
+
+/// 逐模型那条路最多问多少支（`PostPerModel` 每条路径一次请求）。
+/// 276 支的网关逐个 POST 是**我们自己**在打人家，不是一个"探测"该有的量。
+const MAX_PER_MODEL_PROBES: usize = 64;
+
+/// **路径级探测注册表**（与 [`crate::caps::READERS`] 同构）。
+///
+/// 只在 `/v1/models` **已经答了**之后跑（模型清单的权威始终是它），失败一律静默跳过。
+pub const PATH_PROBES: &[PathProbe] = &[
+    PathProbe {
+        id: "litellm",
+        label: "LiteLLM /model/info",
+        paths: &["/model/info"],
+        fetch: Fetch::Get,
+        read: crate::caps::read_litellm_info,
+    },
+    PathProbe {
+        id: "ollama",
+        label: "Ollama /api/tags → /api/show",
+        paths: &["/api/tags", "/api/show"],
+        fetch: Fetch::PostPerModel,
+        read: crate::caps::read_ollama_show,
+    },
+];
 /// 把用户填的 `base_url` 归一成**根**。
 ///
 /// * 去掉首尾空白与尾部 `/`；
@@ -56,17 +120,20 @@ pub fn empty_hint(base_url: &str) -> String {
     )
 }
 
-/// 探一个 `base_url` 上的模型清单：`GET {root}/models` + `Authorization: Bearer`。
+/// 探一个 `base_url`：主路径 `GET {root}/models` + **路径级探测**（[`PATH_PROBES`]）。
 ///
-/// 返回按 `id` 升序、去重（同 id 出现两次时留下**有名字**的那条）。
-pub async fn discover(api_key: &str, base_url: &str) -> Result<Vec<Discovered>, String> {
+/// * 模型清单的**权威只有 `/v1/models`**：路径级探测**不新增条目**，只给已有条目不的能力；
+/// * 路径探测**失败一律静默跳过**（404 / 超时 / 非 JSON / 形状不认识），但会记进 `tried`；
+/// * `/v1/models` 自己的失败仍然按四条分类文案报错（那是主路径，不能含糊）。
+pub async fn discover(api_key: &str, base_url: &str) -> Result<Discovery, String> {
     let root = api_root(base_url);
     if root.is_empty() {
         return Err("没填 API 基础地址（base_url）".to_string());
     }
     let url = format!("{root}/models");
     // 客户端构造走 client 那一份（UA / connect_timeout / keepalive 只在那里设）
-    let resp = crate::client::build_http_client(DISCOVERY_TIMEOUT)
+    let client = crate::client::build_http_client(DISCOVERY_TIMEOUT);
+    let resp = client
         .get(&url)
         .header("Authorization", format!("Bearer {api_key}"))
         .send()
@@ -77,7 +144,156 @@ pub async fn discover(api_key: &str, base_url: &str) -> Result<Vec<Discovered>, 
     if !status.is_success() {
         return Err(status_error(status.as_u16(), &url, &body));
     }
-    parse_models(&body, &url)
+    let mut models = parse_models(&body, &url)?;
+
+    // ── 路径级探测（P3）────────────────────────────────────────────────────
+    // 失败不阻断：它只是"再问一条路"，不是主流程。
+    let mut tried = vec!["/models".to_string()];
+    let mut caps_from: Vec<&'static str> = Vec::new();
+    for probe in PATH_PROBES {
+        apply_probe(&client, &root, api_key, probe, &mut models, &mut tried, &mut caps_from).await;
+    }
+    Ok(Discovery { models, tried, caps_from })
+}
+
+/// 打一条路径级探测，把读到的能力**只补不抹**地并进已有条目。
+///
+/// ⚠️ 全程**不返回错误**：这条路本来就是"能问到就问、问不到就拉倒"。
+async fn apply_probe(
+    client: &reqwest::Client,
+    root: &str,
+    api_key: &str,
+    probe: &PathProbe,
+    models: &mut [Discovered],
+    tried: &mut Vec<String>,
+    caps_from: &mut Vec<&'static str>,
+) {
+    match probe.fetch {
+        Fetch::Get => {
+            let Some(path) = probe.paths.first() else { return };
+            tried.push((*path).to_string());
+            let Some(payload) = fetch_json(client, root, path, api_key, None).await else {
+                return; // 404 / 超时 / 不是 JSON ⇒ 静默跳过（`tried` 已经留痕）
+            };
+            let mut hit = false;
+            for m in models.iter_mut() {
+                if let Some(part) = (probe.read)(&payload, &m.id) {
+                    hit |= merge_caps_into(&mut m.caps, part);
+                }
+            }
+            if hit && !caps_from.contains(&probe.id) {
+                caps_from.push(probe.id);
+            }
+        }
+        Fetch::PostPerModel => {
+            let (list_path, ask_path) = match (probe.paths.first(), probe.paths.get(1)) {
+                (Some(a), Some(b)) => (*a, *b),
+                // 注册表写错了（缺一条路径）⇒ 跳过，不猜
+                _ => return,
+            };
+            // ① 先问"你有哪些模型"：拿候选名，**顺带**确认这家就是它（问不到就不逐支打）
+            tried.push(list_path.to_string());
+            let Some(list) = fetch_json(client, root, list_path, api_key, None).await else {
+                return;
+            };
+            let mut candidates = probe_ids(&list);
+            // ② 只给**清单里已经有**的那些补能力（模型清单的权威是 /v1/models）
+            candidates.retain(|id| models.iter().any(|m| &m.id == id));
+            if candidates.is_empty() {
+                return;
+            }
+            candidates.truncate(MAX_PER_MODEL_PROBES);
+            tried.push(ask_path.to_string());
+            let mut hit = false;
+            for id in candidates {
+                let body = serde_json::json!({ "model": id });
+                let Some(payload) = fetch_json(client, root, ask_path, api_key, Some(body)).await else {
+                    continue; // 这一支问不到就换下一支
+                };
+                let Some(part) = (probe.read)(&payload, &id) else { continue };
+                if let Some(m) = models.iter_mut().find(|m| m.id == id) {
+                    hit |= merge_caps_into(&mut m.caps, part);
+                }
+            }
+            if hit && !caps_from.contains(&probe.id) {
+                caps_from.push(probe.id);
+            }
+        }
+    }
+}
+
+/// GET / POST 一个小 JSON 路径。**任何失败都返回 `None`**（探测这条路的口径）。
+async fn fetch_json(
+    client: &reqwest::Client,
+    root: &str,
+    path: &str,
+    api_key: &str,
+    body: Option<serde_json::Value>,
+) -> Option<serde_json::Value> {
+    let url = format!("{root}{path}");
+    let req = match body {
+        // ⚠️ Ollama 的 `/api/show` 只认 POST（GET 会 405）
+        Some(v) => client.post(&url).json(&v),
+        None => client.get(&url),
+    };
+    let resp = req
+        .header("Authorization", format!("Bearer {api_key}"))
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let text = resp.text().await.ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// **只补不抹**：把路径级探测读到的能力并进已有的片段。
+///
+/// 返回"是不是真的补进去了"（拿它决定 `caps_from` 要不要记这一笔）。
+/// ⚠️ 与 [`crate::caps::merge_into`] 同一条口径：**已有值一律保留** ——
+/// 那条路只说了 `supports_vision` 时，表里/`/v1/models` 给的档位与上下文必须照留。
+fn merge_caps_into(slot: &mut Option<crate::caps::PartialCaps>, part: crate::caps::PartialCaps) -> bool {
+    if part.is_empty() {
+        return false;
+    }
+    match slot {
+        Some(acc) => {
+            let before = acc.clone();
+            crate::caps::merge_into(acc, part);
+            *acc != before
+        }
+        None => {
+            *slot = Some(part);
+            true
+        }
+    }
+}
+
+/// 从"列模型"那条路的载荷里取候选模型名（Ollama `/api/tags`：`models[].name`，也认裸字符串）。
+fn probe_ids(payload: &serde_json::Value) -> Vec<String> {
+    let arr = payload
+        .get("models")
+        .and_then(|m| m.as_array())
+        .or_else(|| payload.as_array());
+    let Some(arr) = arr else { return Vec::new() };
+    let mut out: Vec<String> = Vec::new();
+    for item in arr {
+        let name = match item {
+            serde_json::Value::String(s) => Some(s.as_str()),
+            other => other
+                .get("name")
+                .and_then(|n| n.as_str())
+                .or_else(|| other.get("model").and_then(|n| n.as_str())),
+        };
+        if let Some(n) = name {
+            let n = n.trim();
+            if !n.is_empty() && !out.iter().any(|x| x == n) {
+                out.push(n.to_string());
+            }
+        }
+    }
+    out
 }
 
 /// 传输层失败：**连不上**与"对方答了但状态码不对"是两回事，文案不能混。
@@ -260,7 +476,7 @@ mod tests {
             {"id":""}
         ]}"#;
         let (_s, base, _) = fake(vec![(200, openai.to_string())]).await;
-        let got = discover("k", &base).await.unwrap();
+        let got = discover("k", &base).await.unwrap().models;
         assert_eq!(
             got,
             vec![
@@ -273,13 +489,13 @@ mod tests {
         // ② 部分中转：{"models":[…]}，元素是裸字符串
         let relay = r#"{"models":["z-model","a-model"]}"#;
         let (_s2, base2, _) = fake(vec![(200, relay.to_string())]).await;
-        let got = discover("k", &base2).await.unwrap();
+        let got = discover("k", &base2).await.unwrap().models;
         assert_eq!(got.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), vec!["a-model", "z-model"]);
 
         // ③ 裸数组
         let bare = r#"[{"id":"only-one","name":"唯一"}]"#;
         let (_s3, base3, _) = fake(vec![(200, bare.to_string())]).await;
-        let got = discover("k", &base3).await.unwrap();
+        let got = discover("k", &base3).await.unwrap().models;
         assert_eq!(got, vec![Discovered { id: "only-one".into(), name: Some("唯一".into()), caps: None }]);
     }
 
@@ -291,7 +507,7 @@ mod tests {
         assert_eq!(api_root(""), "");
 
         let (_s, base, seen) = fake(vec![(200, r#"{"data":[{"id":"m"}]}"#.to_string())]).await;
-        discover("k", &format!("{base}/chat/completions")).await.unwrap();
+        discover("k", &format!("{base}/chat/completions")).await.unwrap().models;
         let line = seen.lock().unwrap().clone();
         assert!(line.starts_with("GET /v1/models "), "请求行应为 GET /v1/models，实际：{line}");
     }
@@ -309,7 +525,7 @@ mod tests {
 
         // 200 + 空数组：**连上了、地址也对**，只是没有模型 ⇒ Ok(空)，不是 Err
         let (_s2, base2, _) = fake(vec![(200, r#"{"data":[]}"#.to_string())]).await;
-        let got = discover("k", &base2).await.expect("200 空数组是合法答案");
+        let got = discover("k", &base2).await.expect("200 空数组是合法答案").models;
         assert!(got.is_empty());
         let hint = empty_hint(&base2);
         assert_ne!(hint, err, "空列表与 key 不对必须是两句不同的话");
@@ -365,7 +581,7 @@ mod tests {
             {"id":"plain-b","name":"B"}
         ]}"#;
         let (_s, base, _) = fake(vec![(200, body.to_string())]).await;
-        let got = discover("k", &base).await.unwrap();
+        let got = discover("k", &base).await.unwrap().models;
         let a = got.iter().find(|m| m.id == "router-a").unwrap();
         let caps = a.caps.as_ref().expect("这支回包给了能力，必须读出来");
         assert!(caps.input.unwrap().image, "input_modalities 里的 image");
@@ -387,7 +603,7 @@ mod tests {
             {"id":"m-inc","supported_parameters":["include_reasoning"]}
         ]}"#;
         let (_s, base, _) = fake(vec![(200, body.to_string())]).await;
-        let got = discover("k", &base).await.unwrap();
+        let got = discover("k", &base).await.unwrap().models;
         let caps = got[0].caps.as_ref().expect("reasoning ⇒ 有结论");
         assert_eq!(caps.dialect, Some("thinking_type"));
         assert_eq!(
@@ -407,7 +623,7 @@ mod tests {
             {"id":"nested","capabilities":{"modalities":["text"]}}
         ]}"#;
         let (_s, base, _) = fake(vec![(200, body.to_string())]).await;
-        let got = discover("k", &base).await.unwrap();
+        let got = discover("k", &base).await.unwrap().models;
         // ⚠️ discover 按 id 升序返回（"nested" < "top-level"）—— 按 id 取，别按下标
         let top = got.iter().find(|m| m.id == "top-level").unwrap();
         assert!(top.caps.as_ref().unwrap().input.unwrap().image, "顶层 input_modalities");
@@ -445,5 +661,180 @@ mod tests {
         let (_s, base, _) = fake(vec![(200, r#"{"object":"list"}"#.to_string())]).await;
         let err = discover("k", &base).await.unwrap_err();
         assert!(err.contains("形状不认识"), "{err}");
+    }
+    // ── P3：路径级探测（LiteLLM / Ollama）───────────────────────────────────
+
+    /// LiteLLM `/model/info` 的**载荷形状**（离线，不连网）：三种形状都认，且 `mode` 非 chat 不下结论。
+    #[test]
+    fn litellm_载荷三种形状与模式门() {
+        let item = r#"{"model_name":"gpt-4o","model_info":{
+            "key":"openai/gpt-4o","mode":"chat","supports_reasoning":true,
+            "supports_vision":true,"supports_function_calling":true,
+            "max_input_tokens":128000,"max_output_tokens":16384}}"#;
+        let one: serde_json::Value = serde_json::from_str(item).unwrap();
+        // ① 裸对象
+        let c = crate::caps::read_litellm_info(&one, "gpt-4o").expect("裸对象也认");
+        assert_eq!(c.context_window, Some(128000));
+        assert_eq!(c.max_output_ceiling, Some(16384));
+        assert!(c.input.unwrap().image, "supports_vision");
+        assert_eq!(c.tool_call, Some(true), "supports_function_calling");
+        assert_eq!(c.dialect, Some("openai_effort"), "支持推理 ⇒ 落 OpenAI 方言");
+        assert!(c.levels.is_none(), "**说不出档位就别编**");
+
+        // ② `{"data":[…]}`（LiteLLM 的常规回包）——按 model_name 对上 id
+        let wrapped = serde_json::json!({ "data": [ one.clone() ] });
+        assert!(crate::caps::read_litellm_info(&wrapped, "gpt-4o").is_some());
+        assert!(
+            crate::caps::read_litellm_info(&wrapped, "别的模型").is_none(),
+            "对不上 id ⇒ None（**别把别人的能力安到这支头上**）"
+        );
+
+        // ③ 裸数组
+        let arr = serde_json::Value::Array(vec![one.clone()]);
+        assert!(crate::caps::read_litellm_info(&arr, "gpt-4o").is_some());
+
+        // ④ 非聊天模型（mode=embedding）⇒ None：那不是聊天模型，推理/视觉都谈不上
+        let emb = serde_json::json!({"model_name":"m","model_info":{"mode":"embedding","supports_reasoning":true}});
+        assert!(crate::caps::read_litellm_info(&emb, "m").is_none(), "embedding 不下结论");
+
+        // ⑤ 明确说不支持推理 ⇒ **空清单**（"知道没有"，与服务端清单同一条语义）
+        let no = serde_json::json!({"model_name":"m","model_info":{"mode":"chat","supports_reasoning":false}});
+        let c = crate::caps::read_litellm_info(&no, "m").unwrap();
+        assert_eq!(c.levels, Some(Vec::new()));
+        assert!(c.dialect.is_none(), "说不支持就不该给方言");
+    }
+
+    /// Ollama `/api/show` 的**载荷形状**（离线）：`thinking` ⇒ 支持推理；`vision`/`modalities` ⇒ image。
+    #[test]
+    fn ollama_载荷读出thinking与vision() {
+        let v: serde_json::Value = serde_json::from_str(
+            r#"{"capabilities":["completion","tools","thinking","vision"],
+               "model_info":{"llama.context_length":131072,"llama.vision.block_count":32}}"#,
+        )
+        .unwrap();
+        let c = crate::caps::read_ollama_show(&v, "llava:latest").expect("这是聊天模型");
+        assert_eq!(c.dialect, Some("openai_effort"), "capabilities 里的 thinking ⇒ 支持推理");
+        assert!(c.levels.is_none(), "它不说档位 ⇒ 不编");
+        assert_eq!(c.tool_call, Some(true));
+        assert!(c.input.unwrap().image, "capabilities 里的 vision ⇒ 收图");
+        assert_eq!(c.context_window, Some(131072), "model_info.*.context_length");
+
+        // 只有 text 的模型：能力清单在、但既不 thinking 也不 vision
+        let plain: serde_json::Value =
+            serde_json::from_str(r#"{"capabilities":["completion"],"model_info":{"x.context_length":8192}}"#).unwrap();
+        let c = crate::caps::read_ollama_show(&plain, "llama3.2:latest").unwrap();
+        assert_eq!(c.tool_call, Some(false), "清单在、没 tools ⇒ 明确不支持");
+        assert!(!c.input.unwrap().image);
+        assert!(c.dialect.is_none(), "没 thinking ⇒ 不给方言");
+
+        // `modalities: ["text","image"]` 也算视觉信号（有的版本这么写）
+        let mods: serde_json::Value =
+            serde_json::from_str(r#"{"capabilities":["completion"],"modalities":["text","image"]}"#).unwrap();
+        assert!(crate::caps::read_ollama_show(&mods, "m").unwrap().input.unwrap().image);
+
+        // 不是聊天模型（没有 completion）⇒ None
+        let emb: serde_json::Value = serde_json::from_str(r#"{"capabilities":["embedding"]}"#).unwrap();
+        assert!(crate::caps::read_ollama_show(&emb, "nomic-embed").is_none());
+    }
+
+    /// **端到端：能力来自另一条路径**（LiteLLM）—— 且**只补不抹**。
+    ///
+    /// 这一条就是"变异自证"要打红的那条：把 `merge_caps_into` 改成覆盖式赋值，
+    /// `/v1/models` 读到的档位会被 `/model/info` 只说了 `supports_vision` 的那份**抹掉** ⇒ 这里红。
+    #[tokio::test]
+    async fn litellm_路径探测补能力且只补不抹() {
+        let models = r#"{"data":[{"id":"gpt-4o","supported_parameters":["temperature","reasoning_effort"]}]}"#;
+        let info = r#"{"data":[{"model_name":"gpt-4o","model_info":{
+            "mode":"chat","supports_vision":true,"max_input_tokens":128000,"max_output_tokens":16384}}]}"#;
+        // 第三笔给 Ollama 的 `/api/tags`（这条测试里它必然 404 —— 网关不是 Ollama）
+        let (_s, base, _) = fake(vec![
+            (200, models.to_string()),
+            (200, info.to_string()),
+            (404, "not found".to_string()),
+        ])
+        .await;
+        let d = discover("k", &base).await.unwrap();
+        assert_eq!(d.models.len(), 1);
+        let caps = d.models[0].caps.as_ref().expect("两条路都给了能力");
+        // 来自 `/v1/models` 的（reader 注册表）
+        let levels = caps.levels.as_ref().expect("档位清单必须**还在**（只补不抹）");
+        assert!(levels.iter().any(|(lv, _)| *lv == ReasoningLevel::High), "{levels:?}");
+        assert_eq!(caps.temperature, Some(Support::Supported));
+        // 来自 `/model/info` 的
+        assert!(caps.input.unwrap().image, "supports_vision 补进来了");
+        assert_eq!(caps.context_window, Some(128000));
+        assert_eq!(caps.max_output_ceiling, Some(16384));
+        assert_eq!(d.caps_from, vec!["litellm"], "能力来自哪条路径要说得出");
+        assert_eq!(d.tried, vec!["/models", "/model/info", "/api/tags"]);
+    }
+
+    /// **端到端：Ollama** —— 先 `/api/tags` 拿候选名，再逐支 POST `/api/show`；认不出的跳过。
+    #[tokio::test]
+    async fn ollama_路径探测逐支问且认不出就跳过() {
+        let models = r#"{"data":[{"id":"llama3.2:latest"},{"id":"nomic-embed-text:latest"}]}"#;
+        // LiteLLM 那条先打（会 404）
+        let tags = r#"{"models":[{"name":"llama3.2:latest"},{"name":"nomic-embed-text:latest"}]}"#;
+        let show_llama = r#"{"capabilities":["completion","tools","thinking"],
+            "model_info":{"llama.context_length":131072}}"#;
+        let show_embed = r#"{"capabilities":["embedding"],"model_info":{"bert.context_length":512}}"#;
+        let (_s, base, _) = fake(vec![
+            (200, models.to_string()),
+            (404, "not found".to_string()),
+            (200, tags.to_string()),
+            (200, show_llama.to_string()),
+            (200, show_embed.to_string()),
+        ])
+        .await;
+        let d = discover("k", &base).await.unwrap();
+        let llama = d.models.iter().find(|m| m.id == "llama3.2:latest").unwrap();
+        let c = llama.caps.as_ref().expect("Ollama 那条路给了能力");
+        assert_eq!(c.dialect, Some("openai_effort"), "thinking ⇒ 支持推理");
+        assert_eq!(c.context_window, Some(131072));
+        assert_eq!(c.tool_call, Some(true));
+        // embedding 那支：read 返回 None ⇒ **一个结论都不下**（不是"不支持推理"）
+        let emb = d.models.iter().find(|m| m.id == "nomic-embed-text:latest").unwrap();
+        assert!(emb.caps.is_none(), "非聊天模型不下结论：{:?}", emb.caps);
+        assert_eq!(d.caps_from, vec!["ollama"]);
+        // `/api/show` **只打了一次**（embedding 那支按名字也问了，但它返回 None ⇒ 不算命中）
+        assert!(d.tried.contains(&"/api/tags".to_string()));
+        assert!(d.tried.contains(&"/api/show".to_string()));
+    }
+
+    /// **路径不通不阻断**：404 / 垃圾 JSON 都不许影响主流程，但要在 `tried` 里留痕。
+    #[tokio::test]
+    async fn 路径探测失败不阻断主流程但留痕() {
+        let models = r#"{"data":[{"id":"a-model"}]}"#;
+        let (_s, base, _) = fake(vec![
+            (200, models.to_string()),
+            (404, "no such path".to_string()),
+            (200, "<html>不是 JSON</html>".to_string()),
+        ])
+        .await;
+        let d = discover("k", &base).await.expect("路径探测失败不该让整趟探测失败");
+        assert_eq!(d.models.len(), 1, "模型清单照常返回");
+        assert!(d.models[0].caps.is_none(), "两条路都没读到 ⇒ 不下结论");
+        assert!(d.caps_from.is_empty());
+        assert_eq!(d.tried, vec!["/models", "/model/info", "/api/tags"], "试过哪些路径要说得清");
+    }
+
+    /// 注册表本身：每条 probe 的 read 都必须能对着**垃圾载荷**返回 None（不 panic）。
+    #[test]
+    fn 路径探测注册表对垃圾载荷返回none() {
+        for probe in PATH_PROBES {
+            for junk in [serde_json::json!(null), serde_json::json!([]), serde_json::json!({"nope":1}), serde_json::json!("字符串")] {
+                assert!(
+                    (probe.read)(&junk, "any-id").is_none(),
+                    "{} 对垃圾载荷必须返回 None",
+                    probe.id
+                );
+            }
+            assert!(!probe.id.is_empty() && !probe.label.is_empty());
+            assert!(!probe.paths.is_empty(), "每条 probe 至少要声明一条路径");
+            assert!(probe.paths.iter().all(|p| p.starts_with('/')), "路径要 / 开头");
+        }
+        // PostPerModel 要求**两条**路径（先列模型、再逐支问）
+        for probe in PATH_PROBES.iter().filter(|p| p.fetch == Fetch::PostPerModel) {
+            assert_eq!(probe.paths.len(), 2, "{}：PostPerModel 需要 两条路径", probe.id);
+        }
     }
 }

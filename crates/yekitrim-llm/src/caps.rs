@@ -298,6 +298,170 @@ fn read_generic(item: &Value) -> Option<PartialCaps> {
     any.then_some(c)
 }
 
+// ── 路径级读取器（**不进 READERS**：那条表是给 /v1/models 的单个条目用的） ──────────
+
+/// **LiteLLM `/model/info`**：整份载荷 + 要匹配的 model id → 能力片段。
+///
+/// 载荷三种形状都认：`{"data":[…]}`（LiteLLM 的常规回包）、裸数组、**裸对象**（单条）。
+/// 单条的形状是 `{"model_name": "<对外 id>", "model_info": {…}}`；`model_name` 用来对上
+/// `/v1/models` 给的 id（LiteLLM 的 `model_info.key` 是内部名，也认）。
+///
+/// 认 `model_info` 里这几样：`supports_reasoning` / `supports_vision` /
+/// `supports_function_calling` / `max_input_tokens` / `max_output_tokens` / `mode`。
+/// ⚠️ `mode` 不是 `chat`（embedding / rerank / image_generation …）⇒ **返回 None**：
+/// 那不是聊天模型，给它下"支持推理"的结论没有意义（宁可不说）。
+pub fn read_litellm_info(payload: &Value, id: &str) -> Option<PartialCaps> {
+    litellm_item_for(payload, id).and_then(litellm_caps)
+}
+
+/// 从载荷里挑出**属于 `id` 的那一条**。挑不出来 ⇒ None（**不猜**）。
+fn litellm_item_for<'a>(payload: &'a Value, id: &str) -> Option<&'a Value> {
+    let items = litellm_items(payload);
+    items
+        .iter()
+        .copied()
+        .find(|it| litellm_name(it) == Some(id))
+        // 有的网关会把名字改大小写
+        .or_else(|| items.iter().copied().find(|it| litellm_name(it).is_some_and(|n| n.eq_ignore_ascii_case(id))))
+        // 只有一条、又没写名字 ⇒ 就当它是这一支（单模型部署会这么回）
+        .or_else(|| match items.as_slice() {
+            [only] if litellm_name(only).is_none() => Some(*only),
+            _ => None,
+        })
+}
+
+/// 这条 LiteLLM 条目的对外名字（对得上 `/v1/models` 的 id 的就是它）。
+fn litellm_name(it: &Value) -> Option<&str> {
+    it.get("model_name")
+        .and_then(Value::as_str)
+        .or_else(|| it.get("model_info").and_then(|m| m.get("key")).and_then(Value::as_str))
+        .or_else(|| it.get("id").and_then(Value::as_str))
+}
+
+/// `/model/info` 的三种载荷形状 → 条目列表。
+fn litellm_items(payload: &Value) -> Vec<&Value> {
+    if let Some(arr) = payload.as_array() {
+        return arr.iter().collect();
+    }
+    if let Some(arr) = payload.get("data").and_then(Value::as_array) {
+        return arr.iter().collect();
+    }
+    // 裸对象：只有**单条**这一种（`{"model_name":…,"model_info":{…}}`）
+    if payload.get("model_info").is_some() {
+        return vec![payload];
+    }
+    Vec::new()
+}
+
+fn litellm_caps(item: &Value) -> Option<PartialCaps> {
+    let info = item.get("model_info")?;
+    if let Some(mode) = info.get("mode").and_then(Value::as_str) {
+        if !mode.eq_ignore_ascii_case("chat") {
+            return None;
+        }
+    }
+    let mut c = PartialCaps::default();
+    let mut any = false;
+    if let Some(v) = info.get("supports_reasoning").and_then(Value::as_bool) {
+        any = true;
+        if v {
+            // 支持推理但**不说档位** ⇒ 只落方言（与 read_workbuddy 的 supports_reasoning 同一条口径）
+            c.dialect.get_or_insert("openai_effort");
+        } else {
+            c.levels = Some(Vec::new()); // 明确说不支持
+        }
+    }
+    if let Some(v) = info.get("supports_vision").and_then(Value::as_bool) {
+        c.input = Some(InputModalities { text: true, image: v });
+        any = true;
+    }
+    if let Some(v) = info.get("supports_function_calling").and_then(Value::as_bool) {
+        c.tool_call = Some(v);
+        any = true;
+    }
+    if let Some(n) = as_u32(info, "max_input_tokens") {
+        c.context_window = Some(n);
+        any = true;
+    }
+    if let Some(n) = as_u32(info, "max_output_tokens") {
+        c.max_output_ceiling = Some(n);
+        any = true;
+    }
+    any.then_some(c)
+}
+
+/// **Ollama `/api/show`**：整份载荷 + 那支模型的 id（载荷里通常没有 id，用不上）。
+///
+/// 认 `capabilities`（`completion` / `tools` / `thinking` / `vision` …）、`modalities`
+/// 与 `model_info.*.context_length`。
+///
+/// ⚠️ `capabilities` 在 Ollama 里是**穷举清单**：不列 `completion` ⇒ 这不是聊天模型
+/// （embedding 之类）⇒ **返回 None**。
+/// ⚠️ 有 `thinking` 只说"会推理"，**说不出档位** ⇒ 只落方言 `openai_effort`（Ollama 的
+/// OpenAI 兼容面认 `reasoning_effort`），档位留空让上层按"未知"处理。
+pub fn read_ollama_show(item: &Value, _id: &str) -> Option<PartialCaps> {
+    let listed = as_str_list(item, "capabilities");
+    if let Some(list) = &listed {
+        if !list.iter().any(|c| c.eq_ignore_ascii_case("completion")) {
+            return None;
+        }
+    }
+    let mut c = PartialCaps::default();
+    let mut any = false;
+    if let Some(list) = &listed {
+        any = true;
+        c.tool_call = Some(list.iter().any(|x| x.eq_ignore_ascii_case("tools")));
+        if list.iter().any(|x| x.eq_ignore_ascii_case("thinking")) {
+            c.dialect.get_or_insert("openai_effort");
+        }
+    }
+    // 视觉：capabilities 的 `vision` / `modalities` 里的 image|vision / model_info 里有视觉塔
+    let mut vision: Option<bool> = None;
+    if let Some(list) = &listed {
+        vision = Some(list.iter().any(|x| x.eq_ignore_ascii_case("vision")));
+    }
+    if let Some(words) = ollama_modalities(item) {
+        let seen = words.iter().any(|w| {
+            let w = w.to_ascii_lowercase();
+            w == "image" || w == "vision"
+        });
+        vision = Some(vision.unwrap_or(false) || seen);
+    }
+    if vision.is_none() {
+        let tower = item
+            .get("model_info")
+            .and_then(Value::as_object)
+            .is_some_and(|o| o.keys().any(|k| k.contains(".vision.")));
+        if tower {
+            vision = Some(true);
+        }
+    }
+    if let Some(v) = vision {
+        c.input = Some(InputModalities { text: true, image: v });
+        any = true;
+    }
+    if let Some(n) = ollama_context_length(item) {
+        c.context_window = Some(n);
+        any = true;
+    }
+    any.then_some(c)
+}
+
+fn ollama_modalities(item: &Value) -> Option<Vec<&str>> {
+    as_str_list(item, "modalities")
+        .or_else(|| item.get("model_info").and_then(|m| as_str_list(m, "modalities")))
+}
+
+/// `context_length`：顶层给了就用；否则从 `model_info` 里找 `*.<arch>.context_length`。
+fn ollama_context_length(item: &Value) -> Option<u32> {
+    as_u32(item, "context_length").or_else(|| {
+        item.get("model_info")
+            .and_then(Value::as_object)
+            .and_then(|o| o.iter().find(|(k, _)| k.ends_with(".context_length")))
+            .and_then(|(_, v)| v.as_u64())
+            .and_then(|n| u32::try_from(n).ok())
+    })
+}
 /// 全部读取器，**按优先级**（先说的算：后面的只补前面没说的字段）。
 pub const READERS: &[CapsReader] = &[
     CapsReader { id: "workbuddy", label: "workbuddy 自描述", read: read_workbuddy },

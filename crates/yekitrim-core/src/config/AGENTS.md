@@ -124,7 +124,8 @@ extra_params = { seed = 42, thinking = { type = "disabled" } }   # 逃逸口，�
 [llm.params]
 temperature = 0
 max_tokens = 65536
-# reasoning = "high"       # off|minimal|low|medium|high|xhigh；省略 = 不表态
+# reasoning = "high"       # off|minimal|low|medium|high|xhigh|max；省略 = 不表态
+# thinking_budget = 16384  # 预算型方言用（省略 = 按档位给默认：1024/4096/8192/16384/32768/65536）
 # top_p = 1.0
 # json_mode = true
 
@@ -137,8 +138,10 @@ reasoning = "off"          # 精修默认关思考（链路代码默认给的就
 
 # **能力面**：内置表没收录的模型在这里手填，只覆盖写了的字段
 # [llm.models."cn:vendor.model"]
-# thinking_wire = "thinking_type"      # openai_effort|thinking_type|qwen_enable_thinking|openrouter_effort
-# max_output_wire = "max_tokens"       # max_tokens|max_completion_tokens
+# thinking_wire = "thinking_type"      # 取值 = llm crate **方言注册表的 id**（llm/src/dialect.rs::DIALECTS）
+# 清单别在这儿抄（会腐坏）：设置页「模型能力覆盖」的下拉由后端现算；
+# 有一条**注册但不发送**（Gemini 走另一族 API，接它要先有协议适配）。
+# max_output_wire = "max_tokens"       # 取值见同一个注册表的 max_output_field
 # temperature = "unsupported"          # supported|unsupported
 # reasoning = { off = "", high = "high" }   # 空串 = 支持但不发送
 ```
