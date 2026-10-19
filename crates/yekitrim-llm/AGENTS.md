@@ -23,6 +23,19 @@
 
 ## 边界
 
+### 模型能力（2026-10-20：**探针 > 内置表 > 保守默认**）
+
+- **优先级只在一处实现**：`catalog::caps_json_merged` = 先 `caps_for`（内置表 + 保守默认）再
+  `caps::apply_partial`（探针自描述）。**reader 说了的字段覆盖表，没说的一字不动**。
+  实测起因：服务器自述 `max_output_tokens = 393216`，台面上却显示 8192/384000 ——
+  用户质疑「有思考的连正常输出都办不到」。
+- ⚠️ **匹配必须严格**（`catalog::find_model`）：整串精确（大小写不敏感）；host 命中某一家就
+  **只在那家里找**；host 认不出时只有"全表唯一"才认，**有歧义 ⇒ 未收录**（宁可空着也不猜）。
+  **别按后缀/裸名模糊命中**：自建网关的 `cn:deepseek-v4.1-flash` 与公开的 `deepseek-v4-flash`
+  是两支模型，借它的数字就是"上限只有 8192"这类事故。判据：
+  `probe_wins_over_catalog_for_the_same_model` / `prefixed_custom_ids_never_match_bare_table_names` /
+  `ambiguous_bare_id_on_an_unknown_host_is_not_guessed` / `unknown_id_gets_no_guessed_limits`。
+
 ### 并发与加速（2026-09）
 
 - **一个旋钮**：`.yekitrim/llm.toml` 的 `[llm] max_concurrent`（默认 3），**事件检测 / 精修事件生成 /

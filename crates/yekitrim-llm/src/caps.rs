@@ -502,9 +502,14 @@ pub fn merge_into(into: &mut PartialCaps, from: PartialCaps) {
     );
 }
 
-/// 把读到的能力**补**进一份已有 caps（表里的值优先；只有 reader 说了的字段才动）。
+/// 把读到的能力合并进一份已有 caps。**两个方向都是刻意的**（2026-10-20 明确）：
 ///
-/// ⚠️ 这是"只回 `supports_images` 时表里的档位/上下文照留"那条判据的实现。
+/// * **reader 说了的字段 ⇒ 覆盖**（探针自描述 > 内置表）：服务器自己说 `max_output_tokens = 393216`，
+///   就不能被表里的 8192 挡住 —— 这是用户质疑「有思考的连正常输出都办不到」的那条；
+/// * **reader 没说 ⇒ 一个字都不动**（表里的档位/上下文/输出上限照留）：
+///   "只回了 `supports_images`"不能把表里其余全抹掉（`merge_never_lets_none_wipe_existing_values` 钉着）。
+///
+/// 一句话：**每个字段各自取"知道得更多的那一方"**，而不是整体让某一方赢。
 pub fn apply_partial(caps: &mut ModelCaps, p: &PartialCaps) {
     if let Some(list) = &p.levels {
         // 服务端给的清单是**权威**（它说有哪些档就是哪些）—— 这一条会替换、不是合并
