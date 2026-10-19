@@ -15,12 +15,18 @@ export const MODEL_SOURCE_ZH = {
   probe: '联网探测（真发一次 /models）'
 }
 
-/** 内置能力表里的模型清单。返回 { source, models: [{id,name}], note }。 */
-export async function fetchModels(baseUrl, apiKey) {
+/**
+ * 内置能力表里的模型清单。返回 { source, models: [{id,name}], note }。
+ * @param {string} [providerId] 多配置模式下的 provider id —— **必须带**：没带时后端会去顶层的
+ *   `[llm] api_key` 找钥匙（多配置下那里是空的 ⇒ 报"还没配置 API key"）。带了就按这份配置走。
+ */
+export async function fetchModels(baseUrl, apiKey, providerId) {
   let q = 'base_url=' + encodeURIComponent(String(baseUrl || '').trim())
   // 草稿 key：刚填还没保存时探针要用它，否则会拿旧 key 换一个 401
   const k = String(apiKey || '').trim()
   if (k) q += '&api_key=' + encodeURIComponent(k)
+  const pid = String(providerId || '').trim()
+  if (pid) q += '&provider=' + encodeURIComponent(pid)
   const r = await api('/api/llm/models?' + q, { label: '获取 LLM 模型列表' })
   const models = Array.isArray(r && r.models) ? r.models.filter((m) => m && m.id) : []
   return {
@@ -67,7 +73,12 @@ export async function saveLlmRaw(raw) {
   return api('/api/config/llm', { method: 'PUT', body: JSON.stringify({ raw }), label: '保存 llm.toml 源文件' })
 }
 
-/** 连通测试：服务端拿当前 [llm] 配置发一次最小请求。 */
-export async function testConnection() {
-  return api('/api/llm/test', { method: 'POST', label: 'LLM 连通测试' })
+/**
+ * 连通测试：服务端发一次最小请求。
+ * @param {string} [providerId] 只测**这一份**配置；同样**必须带**（不带时后端回到顶层 `[llm]` 那套）。
+ */
+export async function testConnection(providerId) {
+  const pid = String(providerId || '').trim()
+  const path = pid ? '/api/llm/test?provider=' + encodeURIComponent(pid) : '/api/llm/test'
+  return api(path, { method: 'POST', label: 'LLM 连通测试' })
 }
