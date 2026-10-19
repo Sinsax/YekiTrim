@@ -906,6 +906,16 @@ pub struct LlmParamsToml {
 pub type LlmOverride = LlmParamsToml;
 
 impl LlmParamsToml {
+    /// 一个键都没写（`[llm.providers.params]` 用它决定要不要落这个表）。
+    pub fn is_empty(&self) -> bool {
+        self.temperature.is_none()
+            && self.max_tokens.is_none()
+            && self.reasoning.is_none()
+            && self.thinking_budget.is_none()
+            && self.top_p.is_none()
+            && self.json_mode.is_none()
+    }
+
     /// 链路覆盖合并：**覆盖里写了的字段优先**，其余继承全局。
     ///
     /// 三个 v1 就有的兜底原样搬过来（**别删**，都是手改坏文件的现场）：
@@ -1038,6 +1048,15 @@ pub struct LlmConfig {
     /// 按链路的**请求参数**覆盖（见 [`LlmConfig::for_link`]）。
     #[serde(default)]
     pub overrides: LlmOverrides,
+    /// **哪一份 provider 在用**（`[[llm.providers]]` 的 id）。
+    ///
+    /// ⚠️ **空 = 走 legacy 顶层字段**（`api_key/base_url/model` + `[llm.params]`）——
+    /// 那是 R4：老文件一个字节都不用改、行为逐字节不变。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active: Option<String>,
+    /// 多份 provider（`[[llm.providers]]`）。空 = 没有这一套（legacy）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub providers: Vec<LlmProvider>,
 }
 
 impl Default for LlmConfig {
@@ -1051,6 +1070,8 @@ impl Default for LlmConfig {
             models: std::collections::BTreeMap::new(),
             extra_params: None,
             overrides: LlmOverrides::default(),
+            active: None,
+            providers: Vec::new(),
         }
     }
 }
@@ -1074,8 +1095,152 @@ impl LlmConfig {
     /// （能力跟模型走，不跟链路走）。逐字段优先级见 [`LlmParamsToml::merged_over`]。
     pub fn for_link(&self, link: LlmLink) -> LlmConfig {
         let ov = self.overrides.of(link);
-        LlmConfig { params: self.params.merged_over(ov, link), ..self.clone() }
+        let merged = self.effective_params().merged_over(ov, link);
+        let mut out = LlmConfig { params: merged.clone(), ..self.clone() };
+        // **active 那一份的 params 也要跟着换**：`From<&LlmConfig>` 在 active 分支读的是
+        // provider 自己的 params（不是顶层那份），只改 `out.params` 等于没改。
+        if let Some(id) = self.active_provider().map(|p| p.id.clone()) {
+            if let Some(p) = out.providers.iter_mut().find(|p| p.id == id) {
+                p.params = merged;
+            }
+        }
+        out
     }
+
+    /// 当前生效的那份 provider。`active` 空 / 指向不存在的 id ⇒ `None`（= 走 legacy 顶层字段）。
+    ///
+    /// ⚠️ 指向不存在的 id 时**不是报错**：读配置要能活下来（写接口那边才拦，见 [`Self::provider_problems`]）。
+    pub fn active_provider(&self) -> Option<&LlmProvider> {
+        let id = self.active.as_deref()?.trim();
+        if id.is_empty() {
+            return None;
+        }
+        self.providers.iter().find(|p| p.id == id)
+    }
+
+    /// 当前生效的**请求参数面**：active 那份写了就用它，否则顶层 `[llm.params]`。
+    ///
+    /// 「写了没有」= [`LlmParamsToml::is_empty`]。为什么允许回落：迁移（v3）**只搬三个标量**
+    /// （`api_key`/`base_url`/`model`），`[llm.params]` 留在顶层当**所有 provider 的缺省参数面**
+    /// —— 这样老文件的注释/形状一个字不动（R4），而手写的多 provider 配置里每份仍可自带 params。
+    pub fn effective_params(&self) -> &LlmParamsToml {
+        match self.active_provider() {
+            Some(p) if !p.params.is_empty() => &p.params,
+            _ => &self.params,
+        }
+    }
+
+    /// **写配置时要拦下来的问题**（空 = 没问题）。
+    ///
+    /// 三条都会让"配了但没生效"，而且**不报错**（最难查）：
+    /// 1. `api` 认不出 —— **别静默回退成 openai-chat**（用户以为在走别的协议）；
+    /// 2. `active` 指向一个不存在的 id —— 会静默落回 legacy 顶层字段（读到的是另一份配置）；
+    /// 3. 同一份文件里 `id` 重复 —— 改了一份、另一份覆盖，行为取决于顺序。
+    pub fn provider_problems(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut seen: Vec<&str> = Vec::new();
+        for p in &self.providers {
+            if p.id.trim().is_empty() {
+                out.push(format!("有一份 provider 没有 id（name = {:?}）", p.name));
+            } else if seen.contains(&p.id.as_str()) {
+                out.push(format!("provider id 重复：{}", p.id));
+            } else {
+                seen.push(&p.id);
+            }
+            let api = p.api.trim();
+            if !api.is_empty() && yekitrim_llm::protocol::protocol(api).is_none() {
+                out.push(format!(
+                    "provider {} 的 api 认不出：{api}（可选：{}）",
+                    if p.id.is_empty() { "?" } else { p.id.as_str() },
+                    yekitrim_llm::protocol::PROTOCOLS
+                        .iter()
+                        .map(|x| x.id)
+                        .collect::<Vec<_>>()
+                        .join(" / ")
+                ));
+            }
+        }
+        if let Some(active) = self.active.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            if !self.providers.iter().any(|p| p.id == active) {
+                out.push(format!("active 指向不存在的 provider：{active}"));
+            }
+        }
+        out
+    }
+}
+
+
+/// **一份 provider**（`[[llm.providers]]`）：一家 LLM 服务的完整配置（地址 / key / 模型目录 / 请求参数）。
+///
+/// 为什么要多份：用户要"能配置多个、可折叠"（参考 DSH）。**并发仍是全局**的
+/// （`[llm] max_concurrent`：那是进程级旋钮，不分 provider）。
+///
+/// ⚠️ **R4**：`[llm] active` 为空、或整份文件没有 `[[llm.providers]]` ⇒ 走**老顶层字段**
+/// （`[llm] api_key/base_url/model` + `[llm.params]` + `[llm.models.*"]`），行为逐字节不变。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct LlmProvider {
+    /// **稳定 ASCII id**（引用/目录名/删除时认人用；大小写敏感）。
+    #[serde(default)]
+    pub id: String,
+    /// 显示名（可中文）。
+    #[serde(default)]
+    pub name: String,
+    /// **协议 id**（`yekitrim_llm::protocol::PROTOCOLS` 的 id，如 `openai-chat`）。
+    /// 空 = 用默认那条；**写错要报错**（见 `LlmConfig::provider_problems`），不静默回退。
+    #[serde(default)]
+    pub api: String,
+    #[serde(default)]
+    pub base_url: String,
+    /// 明文 key。⚠️ **永不出接口**（`GET /api/config` 逐条抹值 + 给 `api_key_set`）。
+    #[serde(default)]
+    pub api_key: String,
+    /// 从环境变量取 key（`api_key` 为空时才用它；名字本身不是秘密）。
+    #[serde(default)]
+    pub api_key_env: String,
+    /// 当前选中的模型 id。
+    #[serde(default)]
+    pub model: String,
+    /// 这一份的**请求参数面**（与 `[llm.params]` 同形状）。
+    #[serde(default, skip_serializing_if = "LlmParamsToml::is_empty")]
+    pub params: LlmParamsToml,
+    /// 这一份的**模型目录**（表里没收录的模型也能在这里手填能力；见 [LlmModel]）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<LlmModel>,
+}
+
+/// 模型目录里的一条：这个模型**能怎样**（能力面，不是"这一趟发什么"）。
+///
+/// 与 `[llm.models."<id>"]`（[ModelOverrideToml]）的分工：那份是**表外手填覆盖**（老形状、键值对），
+/// 这里是**provider 自带的目录**（跟随 provider 走 —— 换一份 provider 就换一套模型）。
+/// 两者同时命中时**后者（老覆盖）优先**：那是用户明确的"我要覆盖这个模型"。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct LlmModel {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output: Option<u32>,
+    /// 输入模态（`["text","image"]`）；空 = 按表/保守默认（只吃文字）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub input: Vec<String>,
+    /// 这个模型支持推理吗（DSH 那个"推理等级"的开关）。
+    #[serde(default)]
+    pub reasoning: bool,
+    /// 档位目录（`[[llm.providers.models.levels]]`）：档位 → API 参数值。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub levels: Vec<LlmLevel>,
+}
+
+/// 一个档位：内部档位名（`off|minimal|…|max`）+ wire 上要写的值。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct LlmLevel {
+    #[serde(default)]
+    pub level: String,
+    #[serde(default)]
+    pub wire_value: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1232,6 +1397,114 @@ mod llm_link_tests {
         c.params.thinking_budget = Some(0);
         let p: yekitrim_llm::LlmParams = (&c).into();
         assert_eq!(p.thinking_budget, None, "0 不发（同 max_tokens 的口径）");
+    }
+
+    /// **多 provider**：`active` 切过去，请求体真的跟着变；**没写 active ⇒ 仍走 legacy**（R4）。
+    #[test]
+    fn active_provider_switches_the_request_body() {
+        fn body(c: &LlmConfig) -> serde_json::Value {
+            let p: yekitrim_llm::LlmParams = c.into();
+            let mut b = serde_json::json!({ "messages": [{ "role": "user", "content": "hi" }] });
+            yekitrim_llm::wire::apply(&mut b, &p);
+            b
+        }
+        let mut c = LlmConfig::default();
+        c.api_key = "legacy-key".into();
+        c.base_url = "https://unknown.example.com/v1".into();
+        c.model = "m".into();
+        assert!(c.active_provider().is_none(), "没有 providers ⇒ active_provider 是 None");
+        let legacy = body(&c);
+
+        c.providers = vec![
+            LlmProvider {
+                id: "a".into(),
+                name: "A".into(),
+                api: "openai-chat".into(),
+                base_url: "https://api.deepseek.com/v1".into(),
+                api_key: "ka".into(),
+                model: "deepseek-v4-pro".into(),
+                params: LlmParamsToml { reasoning: Some("high".into()), ..Default::default() },
+                models: vec![LlmModel {
+                    id: "deepseek-v4-pro".into(),
+                    context_window: Some(12345),
+                    max_output: Some(999),
+                    input: vec!["text".into(), "image".into()],
+                    reasoning: true,
+                    levels: vec![LlmLevel { level: "high".into(), wire_value: "high".into() }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            LlmProvider {
+                id: "b".into(),
+                name: "B".into(),
+                api: "openai-chat".into(),
+                base_url: "https://unknown.example.com/v1".into(),
+                api_key: "kb".into(),
+                model: "m".into(),
+                params: LlmParamsToml { temperature: Some(0.9), max_tokens: Some(42), ..Default::default() },
+                ..Default::default()
+            },
+        ];
+        // ① **没写 active ⇒ 仍走 legacy**（老文件零回归的那半边）
+        assert!(c.active_provider().is_none());
+        assert_eq!(body(&c), legacy, "没写 active 就不许走 provider");
+
+        // ② active = a ⇒ 请求体跟着换（key / 模型 / 参数 / provider 模型目录里的能力）
+        c.active = Some("a".into());
+        let pa: yekitrim_llm::LlmParams = (&c).into();
+        assert_eq!(pa.api_key, "ka", "key 用 active 那份的");
+        assert_eq!(pa.model, "deepseek-v4-pro");
+        assert_eq!(pa.reasoning, yekitrim_llm::ReasoningLevel::High);
+        assert_eq!(pa.caps.context_window, Some(12345), "provider 模型目录的上下文要生效");
+        assert_eq!(pa.caps.max_output_ceiling, Some(999));
+        assert!(pa.caps.input.image, "provider 模型目录的 input 要生效");
+        assert_ne!(body(&c), legacy, "切了 provider 请求体必须变");
+
+        // ③ active = b ⇒ 换到另一份（参数面完全不同）
+        c.active = Some("b".into());
+        let pb: yekitrim_llm::LlmParams = (&c).into();
+        assert_eq!(pb.api_key, "kb");
+        assert_eq!(pb.max_tokens, Some(42));
+        assert!((pb.temperature - 0.9).abs() < 1e-9);
+        assert_eq!(pb.reasoning, yekitrim_llm::ReasoningLevel::Off, "b 没配 reasoning");
+
+        // ④ active 指向不存在的 id ⇒ **读配置要活着**（落回 legacy），写接口那边才拦
+        c.active = Some("nope".into());
+        assert!(c.active_provider().is_none());
+        assert_eq!(body(&c), legacy);
+        assert!(!c.provider_problems().is_empty(), "写接口要能拦下它");
+    }
+
+    /// 写配置时的三条拦截：`api` 认不出 / `id` 重复 / `active` 指向不存在的那份。
+    #[test]
+    fn provider_problems_catch_the_silent_breakage() {
+        let mut c = LlmConfig::default();
+        assert!(c.provider_problems().is_empty(), "空配置没问题");
+        c.providers = vec![
+            LlmProvider { id: "a".into(), api: "openai-chat".into(), ..Default::default() },
+            LlmProvider { id: "a".into(), api: "".into(), ..Default::default() },
+            LlmProvider { id: "b".into(), api: "gemini-native".into(), ..Default::default() },
+        ];
+        let problems = c.provider_problems();
+        assert!(problems.iter().any(|p| p.contains("重复")), "{problems:?}");
+        assert!(problems.iter().any(|p| p.contains("gemini-native")), "认不出的 api 要报：{problems:?}");
+        assert_eq!(problems.len(), 2, "空 api 用默认那条、不算错（只有重复 + 认不出的两条）：{problems:?}");
+        c.active = Some("missing".into());
+        assert!(c.provider_problems().iter().any(|p| p.contains("active")), "{problems:?}");
+    }
+
+    /// `api_key_env`：显式 key 优先；只有 env 时读环境变量；都没有 ⇒ 空串（不报错）。
+    #[test]
+    fn provider_key_prefers_explicit_then_env() {
+        let mut p = LlmProvider { api_key: "direct".into(), api_key_env: "SHOULD_NOT_READ".into(), ..Default::default() };
+        assert_eq!(provider_key(&p), "direct");
+        p.api_key.clear();
+        std::env::set_var("VT_TEST_LLM_KEY_ENV", "from-env");
+        p.api_key_env = "VT_TEST_LLM_KEY_ENV".into();
+        assert_eq!(provider_key(&p), "from-env");
+        p.api_key_env = "VT_TEST_LLM_KEY_MISSING".into();
+        assert_eq!(provider_key(&p), "", "变量没设 ⇒ 空串（别 panic）");
     }
 
     /// 手改坏的值不能让整条链路炸：0 = 未设置，非有限 temperature 忽略，超范围夹回来。
@@ -1464,8 +1737,8 @@ impl From<LlmConfig> for yekitrim_llm::LlmParams {
 
 /// `[llm.models."<id>"]` 里那条覆盖（**大小写不敏感**：模型 id 各家拼法不一，
 /// 手写一个大小写不同的键就静默不生效，是最难查的那种坑）。
-fn model_override_for<'a>(c: &'a LlmConfig) -> Option<&'a ModelOverrideToml> {
-    let id = c.model.trim();
+fn model_override_by<'a>(c: &'a LlmConfig, model: &str) -> Option<&'a ModelOverrideToml> {
+    let id = model.trim();
     if id.is_empty() {
         return None;
     }
@@ -1507,10 +1780,68 @@ fn apply_model_override(caps: &mut yekitrim_llm::ModelCaps, ov: &ModelOverrideTo
     }
 }
 
+/// 一个 provider 的明文 key：显式 api_key 优先，其次 api_key_env 指的环境变量。
+///
+/// ⚠️ 两条都空 ⇒ 空串（**别报错**：测试连接 / 探针要能自己给一句人话）。
+fn provider_key(p: &LlmProvider) -> String {
+    if !p.api_key.trim().is_empty() {
+        return p.api_key.clone();
+    }
+    let var = p.api_key_env.trim();
+    if var.is_empty() {
+        return String::new();
+    }
+    std::env::var(var).unwrap_or_default()
+}
+
+/// 把 provider **模型目录**里那一条盖到 caps 上（只覆盖它说了的字段）。
+///
+/// 顺序：内置表 → **provider 的模型目录**（这里）→ [llm.models."<id>"] 老覆盖（最后、优先级最高）。
+/// 后者留着的理由：它是用户明确的"我要覆盖这个模型"，而且与 provider 无关（换 provider 也照用）。
+fn apply_provider_model(caps: &mut yekitrim_llm::ModelCaps, m: &LlmModel) {
+    if let Some(n) = m.context_window {
+        caps.context_window = Some(n);
+    }
+    if let Some(n) = m.max_output {
+        caps.max_output_ceiling = Some(n);
+    }
+    if !m.input.is_empty() {
+        caps.input = yekitrim_llm::InputModalities::parse(m.input.iter().map(String::as_str));
+    }
+    if !m.reasoning {
+        // 明确说"这个模型不推理" ⇒ 档位表清空（**不是留 None**：那是"没说"）
+        caps.levels.clear();
+    } else if !m.levels.is_empty() {
+        caps.levels.clear();
+        for l in &m.levels {
+            match yekitrim_llm::ReasoningLevel::parse(&l.level) {
+                Some(lv) => {
+                    let wire = l.wire_value.trim();
+                    // 空串 = 支持但不发送（与表里 null 同义）
+                    caps.levels.insert(lv, (!wire.is_empty()).then(|| wire.to_string()));
+                }
+                None => tracing::warn!(
+                    "provider 模型 {} 的档位名认不出：{:?}（已丢掉，不影响其余档位）",
+                    m.id,
+                    l.level
+                ),
+            }
+        }
+    }
+}
+
 impl From<&LlmConfig> for yekitrim_llm::LlmParams {
     fn from(c: &LlmConfig) -> Self {
         use yekitrim_llm::params::Support;
-        let p = &c.params;
+        // ── 选源头（R4 的唯一分叉）──────────────────────────────────────────
+        // active 命中 ⇒ 那一份 provider；否则**完全走原来的路径**（顶层字段，语义一个都不改）。
+        let provider = c.active_provider();
+        let (api_key, base_url, model) = match provider {
+            Some(p) => (provider_key(p), p.base_url.clone(), p.model.clone()),
+            None => (c.api_key.clone(), c.base_url.clone(), c.model.clone()),
+        };
+        // 请求参数面：provider 自己写了就用它，否则顶层 [llm.params]（见 effective_params）
+        let p = c.effective_params();
         // 档位：老拼写（enabled / disabled）与档位名都认 —— 手改的文件不该因此静默失效。
         // ⚠️ reasoning_explicit 必须跟着置位：链路自己的老开关（如 [correct] thinking）
         //    只在 LLM 层**没表态**时才生效（2026-09 修过的一个真 bug）。
@@ -1518,9 +1849,18 @@ impl From<&LlmConfig> for yekitrim_llm::LlmParams {
             .reasoning
             .as_deref()
             .and_then(yekitrim_llm::ReasoningLevel::from_thinking_flag);
-        // 能力：**内置表打底 → 手填覆盖**（表里没收录的模型靠 [llm.models]）。
-        let mut caps = yekitrim_llm::catalog::caps_for(&c.base_url, &c.model);
-        if let Some(ov) = model_override_for(c) {
+        // 能力：**内置表打底 → provider 模型目录 → 手填覆盖**（表里没收录的模型靠后两层）。
+        let mut caps = yekitrim_llm::catalog::caps_for(&base_url, &model);
+        if let Some(prov) = provider {
+            if let Some(m) = prov
+                .models
+                .iter()
+                .find(|m| m.id.trim().eq_ignore_ascii_case(model.trim()))
+            {
+                apply_provider_model(&mut caps, m);
+            }
+        }
+        if let Some(ov) = model_override_by(c, &model) {
             apply_model_override(&mut caps, ov);
         }
         // ⚠️ 「省略 temperature = 不发」只能借 caps 这一个出口表达：LlmParams.temperature 不是
@@ -1531,9 +1871,9 @@ impl From<&LlmConfig> for yekitrim_llm::LlmParams {
             caps.temperature = Support::Unsupported;
         }
         Self {
-            api_key: c.api_key.clone(),
-            base_url: c.base_url.clone(),
-            model: c.model.clone(),
+            api_key,
+            base_url,
+            model,
             temperature: p.temperature.filter(|t| t.is_finite()).unwrap_or_default(),
             // 省略 = 不发（v1 那个"永远会发出去的默认值"由迁移落成显式键，见 version.rs）
             max_tokens: p.max_tokens,

@@ -47,6 +47,16 @@ export async function fetchDialects() {
   return Array.isArray(r && r.dialects) ? r.dialects.filter((d) => d && d.id) : []
 }
 
+/**
+ * 协议清单（`GET /api/config/llm/protocols` → `{ protocols: [{id,label}] }`）。
+ * 「API 协议」就是 provider 的 `api` 字段（请求怎么发）；**失败抛出** —— 调用方退回内置只读清单并标注。
+ * ⚠️ 这条路由后端还在并行实现；接线门禁会红到它落地为止（见本文件的 /api 字面量约定）。
+ */
+export async function fetchProtocols() {
+  const r = await api('/api/config/llm/protocols', { label: '读取 API 协议清单' })
+  return Array.isArray(r && r.protocols) ? r.protocols.filter((p) => p && p.id) : []
+}
+
 /** 保存 LLM 配置（patch 语义）。api_key 在**没填**时由调用方整个省略 —— 合并语义下等于不修改。 */
 export async function saveLlm(patch) {
   return api('/api/config/llm', { method: 'PUT', body: JSON.stringify({ patch }), label: '保存 LLM 配置' })

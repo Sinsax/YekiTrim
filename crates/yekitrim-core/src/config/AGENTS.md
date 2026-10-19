@@ -44,7 +44,7 @@
 
 **`yekitrim.toml`** — 项目配置:
 ```toml
-config_version = 2           # 配置结构版本，别手改（见「版本号与读时迁移」）
+config_version = 3           # 配置结构版本，别手改（见「版本号与读时迁移」）
 input_file = ""
 danmaku_file = ""            # 唯一生效值（清单里「使用中」那条）
 transcript_file = ""
@@ -67,7 +67,7 @@ overwrite = false
 
 **`.yekitrim/config.toml`** — 全局程序配置:
 ```toml
-config_version = 2           # 配置结构版本，别手改
+config_version = 3           # 配置结构版本，别手改
 
 [asr]
 mode = "hybrid"              # 默认 hybrid（预处理页有下拉；也能改这里/项目 yekitrim.toml）
@@ -111,7 +111,7 @@ blacklist = []
 
 **`.yekitrim/llm.toml`** — LLM 配置（独立文件）:
 ```toml
-config_version = 2
+config_version = 3
 
 [llm]
 base_url = ""              # OpenAI 兼容 API 地址
@@ -136,6 +136,9 @@ max_tokens = 8192
 max_tokens = 32768
 reasoning = "off"          # 精修默认关思考（链路代码默认给的就是这个）
 
+# **多份 provider**（v3，2026-10-19）：`[[llm.providers]]`（id/name/api/base_url/api_key/model + 自己的
+# params/models）配多份，`active = "<id>"` 指哪份在用；**active 空 = 走上面这些老键**（R4：老文件零改动）。
+# `api` = 协议注册表的 id（`yekitrim_llm::protocol`，本轮只有 openai-chat）；写错由 `PUT /config/llm` 回 400。
 # **能力面**：内置表没收录的模型在这里手填，只覆盖写了的字段
 # [llm.models."cn:vendor.model"]
 # thinking_wire = "thinking_type"      # 取值 = llm crate **方言注册表的 id**（llm/src/dialect.rs::DIALECTS）
@@ -186,6 +189,11 @@ reasoning = "off"          # 精修默认关思考（链路代码默认给的就
 
 迁移是**纯函数 + 保注释**：用 `toml_edit`（`toml::to_string` 重序列化会**把注释全丢掉**，
 而模板里大段说明都写在注释里）。`v0 → v1` 清掉的就是上一节那 4 个从来没读取方的键。
+
+**`v2 → v3`（2026-10-19，llm.toml）**：顶层 `api_key/base_url/model` + `[llm.params]` 搬成**一份 provider**
+（`[[llm.providers]]`，`id = "default"` / `name = "默认"` / `api = "openai-chat"`）+ `active = "default"`。
+⚠️ `[llm.models."<id>"]` **留在原地**（能力覆盖与 provider 无关，换 provider 也照用；搬走会把一份拆成 N 份），
+`overrides` / `max_concurrent` / `extra_params` 也都不搬。判据仍是那 12 条金色请求体。
 
 **`v1 → v2`（2026-10-19，llm.toml）**：`[llm] temperature/max_tokens/thinking` 搬进 `[llm.params]`
 （`thinking` 改名 `reasoning`，`enabled`→`high`、`disabled`→`off`），链路覆盖里的 `thinking` 同理；

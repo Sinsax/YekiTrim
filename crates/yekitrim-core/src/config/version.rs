@@ -41,10 +41,15 @@ use toml_edit::{DocumentMut, Item};
 
 /// 当前配置结构版本。**改配置键形状时 +1**，并在 [`ConfigKind::retired_in`] 里补登记。
 ///
+/// v3（2026-10-19）：llm.toml 支持**多份 provider** —— 老的顶层
+/// `api_key/base_url/model` + `[llm.params]` 搬成**一份 provider**（`id = "default"`）+ `active = "default"`。
+/// ⚠️ **`[llm.models."<id>"]` 留在原地**：它是"与 provider 无关的能力覆盖"（换 provider 也照用），
+/// 搬进 provider 只会把一份覆盖拆成 N 份。搬家在 [`migrate_llm_v3`]（两处都不删键 ⇒ `retired_in` 不用登记）。
+///
 /// v2（2026-10-19）：`llm.toml` 把「请求参数面」与「能力」分开 ——
 /// `[llm] temperature/max_tokens/thinking` → `[llm.params]`（`thinking` 改名 `reasoning`），
 /// 能力覆盖进 `[llm.models."<id>"]`。**搬家**那一步在 [`migrate_llm_v2`]（`retired_in` 只会删）。
-pub const CONFIG_VERSION: u32 = 2;
+pub const CONFIG_VERSION: u32 = 3;
 
 /// 版本键名（顶层）。**缺键 = 0**。
 pub const VERSION_KEY: &str = "config_version";
@@ -148,6 +153,81 @@ pub struct Prepared {
 fn migrate_step(doc: &mut DocumentMut, kind: ConfigKind, step: u32) {
     if kind == ConfigKind::Llm && step == 1 {
         migrate_llm_v2(doc);
+    }
+    if kind == ConfigKind::Llm && step == 2 {
+        migrate_llm_v3(doc);
+    }
+}
+
+/// **v2 → v3**：把老的单份 `[llm]` 搬成 `[[llm.providers]]` 里的一份（`id = "default"`）+ `active = "default"`。
+///
+/// 搬**三样标量**：`api_key` / `base_url` / `model`。
+/// **四样不搬**（都有明确的"为什么"）：
+/// * `[llm.params]` —— 留在顶层当**所有 provider 的缺省参数面**（`effective_params` 回落；
+///   provider 自己写了就用它的）。搬进 provider 还有个硬问题：toml_edit 会把子表排到
+///   `[[llm.providers]]` **前面** ⇒ 生成非法 TOML；
+/// * `[llm.models."<id>"]` —— 能力覆盖与 provider 无关（换一份 provider 也照用），搬走只会把
+///   一份覆盖拆成 N 份；`From<&LlmConfig>` 里它仍然是**最后、优先级最高**的那层；
+/// * `[llm.overrides.*]` / `max_concurrent` —— 本轮口径：覆盖仍指向**当前 active 那一份**，
+///   并发是进程级旋钮；
+/// * `extra_params` —— 老逃逸口，两条路径共用一份。
+///
+/// **幂等**：已经有 `providers` ⇒ 什么都不做（只让版本号前进）。
+/// **空文件不造 provider**：四样全空（老文件从没配过）⇒ 放回去、只升版本 —— 那才是"老文件零改动"。
+fn migrate_llm_v3(doc: &mut DocumentMut) {
+    let Some(llm) = doc.get_mut("llm").and_then(Item::as_table_like_mut) else {
+        return;
+    };
+    // 已经搬过（或者用户手写了 providers）⇒ 只让版本号前进
+    if llm.get("providers").is_some() {
+        return;
+    }
+    // ⚠️ **只搬三个标量**：`[llm.params]` 故意留在顶层当"所有 provider 的缺省参数面"
+    // （`LlmConfig::effective_params`）。两个理由：① 老文件的注释/形状一个字不动（R4）；
+    // ② toml_edit 会把 provider 的子表**排到 `[[llm.providers]]` 前面** —— 那样生成的是**非法 TOML**
+    //    （先 [llm.providers.params] 建表、再 [[llm.providers]] 建数组，同路径冲突）。
+    let mut moved: Vec<(&'static str, Item)> = Vec::new();
+    for key in ["api_key", "base_url", "model"] {
+        if let Some(item) = llm.remove(key) {
+            moved.push((key, item));
+        }
+    }
+    let any_value = moved.iter().any(|(_, item)| !item_is_empty(item));
+    if !any_value {
+        // 什么都没配过 ⇒ 原样放回去（**别给老文件凭空造一个 provider**）
+        for (key, item) in moved {
+            llm.insert(key, item);
+        }
+        return;
+    }
+    let mut prov = toml_edit::Table::new();
+    prov.insert("id", toml_edit::value("default"));
+    prov.insert("name", toml_edit::value("默认"));
+    // 协议 id：本轮只有它；写进来是为了让配置文件**自解释**（改错会被写入接口 400 拦下）
+    prov.insert("api", toml_edit::value("openai-chat"));
+    for (key, item) in moved {
+        prov.insert(key, item);
+    }
+    let mut arr = toml_edit::ArrayOfTables::new();
+    arr.push(prov);
+    // active 先插（toml_edit 会把标量排在子表/数组前面）
+    llm.insert("active", toml_edit::value("default"));
+    llm.insert("providers", Item::ArrayOfTables(arr));
+}
+
+/// 这个 item 算不算"没值"（空串 / 空表 / 空数组）—— 决定要不要给老文件造 provider。
+fn item_is_empty(item: &Item) -> bool {
+    if let Some(t) = item.as_table_like() {
+        return t.is_empty();
+    }
+    match item.as_value() {
+        Some(v) => match v {
+            toml_edit::Value::String(s) => s.value().trim().is_empty(),
+            toml_edit::Value::Array(a) => a.is_empty(),
+            toml_edit::Value::InlineTable(t) => t.is_empty(),
+            _ => false,
+        },
+        None => true,
     }
 }
 
@@ -768,6 +848,9 @@ max_tokens = 8192
         let text = &p.text;
         assert!(text.starts_with(&format!("config_version = {CONFIG_VERSION}\n")), "{text}");
         assert!(text.contains("[llm.params]"), "没有搬出参数表：\n{text}");
+        // v3 只是把三个标量搬成一份 provider；**参数面留在顶层**
+        assert!(text.contains("[[llm.providers]]"), "没有造出 provider：\n{text}");
+        assert!(text.contains("active = \"default\""), "active 没指向那份 provider：\n{text}");
         assert!(text.contains("温度参数（这句注释必须活着）"), "键上方注释被吃掉了：\n{text}");
         assert!(text.contains("reasoning = \"high\""), "enabled 该变成 high：\n{text}");
         assert!(text.contains("reasoning = \"off\""), "链路覆盖的 disabled 该变成 off：\n{text}");
@@ -780,9 +863,14 @@ max_tokens = 8192
             llm: super::super::types::LlmConfig,
         }
         let f: File = toml::from_str(text).expect("迁移后必须能解析成新结构");
-        assert_eq!(f.llm.params.temperature, Some(0.0));
-        assert_eq!(f.llm.params.max_tokens, Some(16384));
-        assert_eq!(f.llm.params.reasoning.as_deref(), Some("high"));
+        assert_eq!(f.llm.active.as_deref(), Some("default"), "迁移后 active 指向 default");
+        let prov = f.llm.active_provider().expect("active 必须命中一份 provider");
+        assert_eq!(prov.api, "openai-chat", "协议要写进来（自解释）");
+        assert!(prov.params.is_empty(), "provider 自己没写参数面（回落顶层）");
+        let eff = f.llm.effective_params();
+        assert_eq!(eff.temperature, Some(0.0));
+        assert_eq!(eff.max_tokens, Some(16384));
+        assert_eq!(eff.reasoning.as_deref(), Some("high"));
         assert_eq!(f.llm.overrides.detect.reasoning.as_deref(), Some("off"));
         assert_eq!(f.llm.overrides.detect.max_tokens, Some(8192));
 
@@ -790,11 +878,33 @@ max_tokens = 8192
         let bare = migrate_text(ConfigKind::Llm, "[llm]\nmodel = \"m\"\n").unwrap().text;
         assert!(bare.contains("temperature = 0.1"), "缺温度要补 v1 默认值：\n{bare}");
         assert!(bare.contains("max_tokens = 65536"), "缺上限要补 v1 默认值：\n{bare}");
+        let bare_file: File = toml::from_str(&bare).expect("能解析");
+        let bare_prov = bare_file.llm.active_provider().expect("能有 provider");
+        assert_eq!(bare_prov.model, "m", "模型搬进 provider 了");
+        assert_eq!(bare_file.llm.effective_params().temperature, Some(0.1));
+        assert_eq!(bare_file.llm.effective_params().max_tokens, Some(65536));
 
         // 幂等：已经是 v2 的文本再迁一次，一个字节都不动
         let again = migrate_text(ConfigKind::Llm, text).unwrap();
         assert!(!again.changed);
         assert_eq!(&again.text, text);
+    }
+
+    /// **v2 → v3**：老的单份 `[llm]` 搬成**一份 provider**，`[llm.models.*]` 留在原地；
+    /// 再迁一次一个字节都不动（幂等）。`--nocapture` 能看到迁移后的真样子（key 是夹具里的假值）。
+    #[test]
+    fn migrate_llm_v3_moves_top_level_into_one_provider() {
+        const OLD: &str = "[llm]\napi_key = \"k\"\nbase_url = \"http://h/v1\"\nmodel = \"m\"\n\n[llm.params]\ntemperature = 0\n\n[llm.models.\"m\"]\nthinking_wire = \"thinking_type\"\n";
+        let text = migrate_text(ConfigKind::Llm, OLD).unwrap().text;
+        println!("MIGRATED_V3=\n{text}");
+        assert!(text.contains("active = \"default\""), "{text}");
+        assert!(text.contains("[[llm.providers]]"), "{text}");
+        assert!(text.contains("[llm.params]"), "参数面**留在顶层**（所有 provider 的缺省）：\n{text}");
+        assert!(!text.contains("[llm.providers.params]"), "别把参数面塞进 provider（那会生成非法 TOML）：\n{text}");
+        assert!(text.contains("[llm.models.\"m\"]"), "[llm.models.*] 必须留在原地（与 provider 无关）：\n{text}");
+        let again = migrate_text(ConfigKind::Llm, &text).unwrap();
+        assert!(!again.changed, "已经是 v3 了，不该再改：\n{}", again.text);
+        assert_eq!(again.text, text, "幂等");
     }
 
     /// ⚠️ **验收项：v1 的 llm.toml 迁移到 v2 之后，请求体逐字节不变。**

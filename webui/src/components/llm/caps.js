@@ -20,6 +20,10 @@ export const LEVEL_ZH = { off: '关思考', minimal: '最小', low: '低', mediu
 /** 规格里的显示顺序（**只排序**：不补齐、不裁剪）。`max` 是那家自描述网关在用的档（2026-10-19 实测）。 */
 const LEVEL_ORDER = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
 
+/** 档位**词表**（内部枚举的固定顺序）：给"模型目录里那条档位行"的《档位》下拉用。
+ *  ⚠️ 它**不是**某个模型的能力清单 —— 那个只来自能力面的 `levels`（`visibleLevels`）。 */
+export const LEVEL_VOCAB = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+
 /** 输入模态的显示名。 */
 export const INPUT_ZH = { text: '文字', image: '图片' }
 

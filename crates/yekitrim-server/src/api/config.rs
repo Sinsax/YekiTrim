@@ -64,21 +64,60 @@ fn models_impl() -> ApiResult {
 /// 为什么连**注释掉的老 key** 也抹：`# api_key = "sk-…"` 同样是明文。
 /// 行尾注释一并抹掉（注释里也可能写着 key）—— 宁可多抹一个注解，不可漏一个字。
 fn redact_api_key(raw: &str) -> String {
-    raw.split('\n')
-        .map(|line| {
-            // 逐层剥：缩进 → 注释符 → 缩进；剥不动就原样返回（注释行、别的键都走这条）
-            let body = line.trim_start().trim_start_matches('#').trim_start();
-            let Some(rest) = body.strip_prefix("api_key") else { return line.to_string() };
-            let rest = rest.trim_start();
-            let Some(rest) = rest.strip_prefix('=') else { return line.to_string() };
-            // 等号后面那段空白**跟着等号一起留**（写成 api_key = 双引号，读起来才像原样）；
-            // rest 始终是 line 的连续后缀 ⇒ 长度差就是切点，不用自己数列
-            let rest = rest.trim_start();
-            let head = &line[..line.len() - rest.len()];
-            format!("{head}\"\"")
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    raw.split('\n').map(redact_api_key_line).collect::<Vec<_>>().join("\n")
+}
+
+/// 抹掉**一行里所有** `api_key = "…"` 的值（行首的、inline table 里的、注释里的都算）。
+///
+/// ⚠️ **不能只看行首**（2026-10-19 修的洞）：多 provider 的 patch 会把 `providers` 写成
+/// `providers = [{ id = "a", api_key = "sk-…" }]` 这种**一行里带键值**的形态 —— 老实现只认
+/// 行首的 `api_key`，于是明文 key 从 `llm_raw` 原样漏出去（而且看起来一切正常）。
+fn redact_api_key_line(line: &str) -> String {
+    const TOKEN: &str = "api_key";
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(pos) = rest.find(TOKEN) {
+        let before = &rest[..pos];
+        out.push_str(before);
+        out.push_str(TOKEN);
+        let mut tail = &rest[pos + TOKEN.len()..];
+        // 键名边界：`api_key_extra` 这种前缀相同的不许误伤
+        let boundary = !before
+            .chars()
+            .last()
+            .map(|c| c.is_alphanumeric() || c == '_')
+            .unwrap_or(false);
+        let trimmed = tail.trim_start_matches([' ', '\t']);
+        let ws = tail.len() - trimmed.len();
+        if !boundary || !trimmed.starts_with('=') {
+            rest = tail;
+            continue;
+        }
+        out.push_str(&tail[..ws]);
+        out.push('=');
+        tail = &trimmed[1..];
+        let trimmed = tail.trim_start_matches([' ', '\t']);
+        out.push_str(&tail[..tail.len() - trimmed.len()]);
+        // 值：带引号 ⇒ 只抹引号里的内容（引号与键名/缩进原样留，源文件编辑器读起来才像原样）
+        if let Some(q) = trimmed.chars().next().filter(|c| *c == '"' || *c == '\'') {
+            if let Some(rel) = trimmed[1..].find(q) {
+                out.push(q);
+                out.push(q);
+                let after = &trimmed[1 + rel + 1..];
+                // 行尾注释里也可能写着 key ⇒ 一并抹掉（老行为）；inline table 的后续键继续扫
+                let after_trimmed = after.trim_start();
+                if after_trimmed.starts_with('#') || after_trimmed.is_empty() {
+                    return out;
+                }
+                rest = after;
+                continue;
+            }
+        }
+        // 裸值 / 说不清 ⇒ 抹到行尾（宁可多抹一个注解，不可漏一个字）
+        return out;
+    }
+    out.push_str(rest);
+    out
 }
 
 pub(super) fn config_get_impl(owner: yekitrim_core::owner::Owner) -> ApiResult {
@@ -94,9 +133,49 @@ pub(super) fn config_get_impl(owner: yekitrim_core::owner::Owner) -> ApiResult {
     let global_cfg = yekitrim_core::config::load_config_for(owner);
     let mut llm_cfg = yekitrim_core::config::load_llm_config_for(owner);
     // 「有没有配 key」以后只由这个布尔回答（界面不再回显 key 本身）：真值 = llm.toml 里非空
-    let api_key_set = !llm_cfg.api_key.trim().is_empty();
+    // 「有没有配 key」：顶层那把 **或任何一份 provider** 有都算有。
+    // ⚠️ 迁移（v3）会把顶层 key 搬进 provider —— 只看顶层的话，老界面会突然显示"未设置"。
+    let api_key_set = !llm_cfg.api_key.trim().is_empty()
+        || llm_cfg.providers.iter().any(|p| !p.api_key.trim().is_empty());
     // 解析出来的那份结构里也有一份明文（JSON 字段 `llm_config.api_key`），同样出接口 —— 一起清掉
     llm_cfg.api_key.clear();
+    // ⚠️ **每一条 provider 都有一份自己的 key** —— 逐条抹，并各给一个 `api_key_set`
+    //    （多条时最容易漏的就是这里：只抹顶层那把 = 其余 provider 的明文照出接口）
+    let provider_key_sets: Vec<bool> = llm_cfg
+        .providers
+        .iter_mut()
+        .map(|p| {
+            let set = !p.api_key.trim().is_empty();
+            p.api_key.clear();
+            set
+        })
+        .collect();
+    // **老形状兼容（读侧）**：v3 之后"当前生效的"在 `providers[active]` 里 ⇒ 老字段（model / base_url /
+    // params）回显**那一份**的。老界面/老脚本读到的仍然是"当前在用的那份配置"（key 仍旧是空）。
+    // ⚠️ 只填空值，不覆盖顶层已有值（老文件 = 顶层就是生效值）。
+    let active_view = llm_cfg.active_provider().cloned();
+    if let Some(p) = active_view {
+        if llm_cfg.model.trim().is_empty() {
+            llm_cfg.model = p.model.clone();
+        }
+        if llm_cfg.base_url.trim().is_empty() {
+            llm_cfg.base_url = p.base_url.clone();
+        }
+        if llm_cfg.params.is_empty() {
+            llm_cfg.params = p.params.clone();
+        }
+    }
+    let mut llm_json = serde_json::to_value(&llm_cfg).unwrap_or_default();
+    if let Some(arr) = llm_json.get_mut("providers").and_then(|v| v.as_array_mut()) {
+        for (i, item) in arr.iter_mut().enumerate() {
+            if let Some(o) = item.as_object_mut() {
+                o.insert(
+                    "api_key_set".into(),
+                    serde_json::json!(provider_key_sets.get(i).copied().unwrap_or(false)),
+                );
+            }
+        }
+    }
     // ⚠️ **`config_error` 必须留着**：设置页表单的写入门闸就是它
     // （`SettingsView.vue::loadConfig` 把它存进 `configError`）—— 程序配置解析失败时那份配置会被
     // **整体忽略**、表单只剩内建默认值，用户不改也不知道；这时若还允许保存，
@@ -116,7 +195,7 @@ pub(super) fn config_get_impl(owner: yekitrim_core::owner::Owner) -> ApiResult {
         "global_raw": global_raw,
         "llm_raw": llm_raw,
         "global_config": serde_json::to_value(global_cfg).unwrap_or_default(),
-        "llm_config": serde_json::to_value(llm_cfg).unwrap_or_default(),
+        "llm_config": llm_json,
         // ⚠️ 表单面**只回「有没有」、不回明文**（与采集配置的 `api_pass_set` 同一条规矩）：
         // 界面靠它显示"已设置/未设置"，值本身永远不会回给前端
         "api_key_set": api_key_set,
@@ -371,12 +450,168 @@ fn drop_blank_api_key(patch: &serde_json::Value) -> serde_json::Value {
             llm.remove("api_key");
         }
     }
+    // **每一条 provider** 各判一次：空串 = 那条不修改（与顶层同一条口径）
+    if let Some(arr) = out
+        .get_mut("llm")
+        .and_then(|l| l.as_object_mut())
+        .and_then(|l| l.get_mut("providers"))
+        .and_then(|p| p.as_array_mut())
+    {
+        for p in arr.iter_mut() {
+            let Some(o) = p.as_object_mut() else { continue };
+            let blank = o
+                .get("api_key")
+                .and_then(|k| k.as_str())
+                .map(|s| s.trim().is_empty())
+                .unwrap_or(false);
+            if blank {
+                o.remove("api_key");
+            }
+        }
+    }
     out
+}
+
+/// 数组是**整体替换**的（`patch_config_file` 的深合并只对对象递归）——
+/// 所以「空 key = 不修改」不能靠"没写这个键"来表达：provider 的 `api_key` 缺了，
+/// 整份数组一换，那条的真 key 就**跟着丢了**。这里按 `id` 把已存的 key 填回去。
+///
+/// ⚠️ `api_key: null` = **明确删键**（不填）；只是"没带这个键"才填。
+
+/// **老形状兼容（写侧）**：v3 之后 `model` / `base_url` / `api_key` 的生效值在 active provider 里。
+///
+/// 老界面仍然发 `llm.model` 这类键（P3 之前的所有客户端）—— 只写顶层会**静默不生效**
+/// （读侧又回显 provider 的值，用户看到"改了又变回去"）。所以这里把这三把键**同时镜像进
+/// 那一份 active provider**，其余 provider 原样带着（数组是整体替换，不能只发一份）。
+///
+/// 不镜像的情况：这次 patch 自己带了 `providers`（那是新客户端，它说了算）、文件里没有 active
+/// provider（老文件，顶层就是生效值）、值是 `null`（"删键"只对顶层有意义）。
+fn mirror_legacy_into_active_provider(patch: &serde_json::Value, stored_text: &str) -> serde_json::Value {
+    let mut out = patch.clone();
+    let Some(llm) = out.get_mut("llm").and_then(|l| l.as_object_mut()) else {
+        return out;
+    };
+    if llm.contains_key("providers") {
+        return out;
+    }
+    let Ok(v) = toml::from_str::<toml::Value>(stored_text) else { return out };
+    let Some(stored) = v.get("llm") else { return out };
+    let Some(arr) = stored.get("providers").and_then(|p| p.as_array()) else { return out };
+    let active = stored.get("active").and_then(|a| a.as_str()).unwrap_or("").trim();
+    if active.is_empty() {
+        return out;
+    }
+    // providers 转成可写的 JSON（保持顺序），找到 active 那一份
+    let mut providers: Vec<serde_json::Value> = arr
+        .iter()
+        .filter_map(|p| serde_json::to_value(p).ok())
+        .collect();
+    let Some(target) = providers
+        .iter_mut()
+        .find(|p| p.get("id").and_then(|i| i.as_str()).map(|i| i.trim()) == Some(active))
+        .and_then(|p| p.as_object_mut())
+    else {
+        return out;
+    };
+    for key in ["model", "base_url", "api_key"] {
+        match llm.get(key) {
+            Some(v) if v.is_null() => {}          // 删键只有顶层语义
+            Some(v) => {
+                target.insert(key.to_string(), v.clone());
+            }
+            None => {}
+        }
+    }
+    llm.insert("providers".into(), serde_json::json!(providers));
+    out
+}
+
+fn fill_blank_provider_keys(patch: &serde_json::Value, stored_text: &str) -> serde_json::Value {
+    let mut out = patch.clone();
+    // 已存文件里 id → key
+    let mut keys: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    if let Ok(v) = toml::from_str::<toml::Value>(stored_text) {
+        if let Some(arr) = v.get("llm").and_then(|l| l.get("providers")).and_then(|p| p.as_array()) {
+            for p in arr {
+                let id = p.get("id").and_then(|i| i.as_str()).unwrap_or("").trim();
+                let key = p.get("api_key").and_then(|k| k.as_str()).unwrap_or("");
+                if !id.is_empty() && !key.trim().is_empty() {
+                    keys.insert(id.to_string(), key.to_string());
+                }
+            }
+        }
+    }
+    if keys.is_empty() {
+        return out;
+    }
+    if let Some(arr) = out
+        .get_mut("llm")
+        .and_then(|l| l.as_object_mut())
+        .and_then(|l| l.get_mut("providers"))
+        .and_then(|p| p.as_array_mut())
+    {
+        for p in arr.iter_mut() {
+            let Some(o) = p.as_object_mut() else { continue };
+            match o.get("api_key") {
+                Some(v) if v.is_null() => continue, // 明确删键
+                Some(_) => continue,                // 有值（空串已在 drop_blank_api_key 里剔掉）
+                None => {}
+            }
+            let id = o.get("id").and_then(|i| i.as_str()).unwrap_or("").trim().to_string();
+            if let Some(k) = keys.get(&id) {
+                o.insert("api_key".into(), serde_json::json!(k));
+            }
+        }
+    }
+    out
+}
+
+/// 写配置前拦下三种**静默失效**（api 认不出 / id 重复 / active 指向不存在的那份）。
+///
+/// ⚠️ 只在 patch **真的碰了 `providers`** 时校验 —— 老文件（没有 providers）零回归。
+fn check_provider_patch(patch: &serde_json::Value) -> Result<(), AppError> {
+    let Some(llm) = patch.get("llm") else { return Ok(()) };
+    let Some(arr) = llm.get("providers") else { return Ok(()) };
+    let providers: Vec<yekitrim_core::config::LlmProvider> = serde_json::from_value(arr.clone())
+        .map_err(|e| err(StatusCode::BAD_REQUEST, format!("providers 形状不对：{e}")))?;
+    let mut probe = yekitrim_core::config::LlmConfig::default();
+    probe.providers = providers;
+    probe.active = llm.get("active").and_then(|a| a.as_str()).map(str::to_string);
+    let problems = probe.provider_problems();
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(err(StatusCode::BAD_REQUEST, problems.join("；")))
+    }
+}
+
+/// 同上，但校验**整份原文**（源文件模式）。
+fn check_provider_raw(raw: &str) -> Result<(), AppError> {
+    #[derive(serde::Deserialize)]
+    struct File {
+        #[serde(default)]
+        llm: yekitrim_core::config::LlmConfig,
+    }
+    let Ok(f) = toml::from_str::<File>(raw) else {
+        return Ok(()); // 语法错误由上面那条 validate_toml 报，这里只管语义
+    };
+    let problems = f.llm.provider_problems();
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(err(StatusCode::BAD_REQUEST, problems.join("；")))
+    }
 }
 
 pub(super) fn config_llm_put_locked(path: &Path, body: &serde_json::Value) -> ApiResult {
     if let Some(patch) = body.get("patch") {
         let patch = drop_blank_api_key(patch);
+        // **数组是整体替换** ⇒ 缺了 api_key 的那条要按 id 把已存的 key 填回去（否则静默丢 key）
+        let stored = std::fs::read_to_string(path).unwrap_or_default();
+        let patch = fill_blank_provider_keys(&patch, &stored);
+        // 老客户端发 llm.model/base_url/api_key ⇒ 镜像进 active provider（否则"改了没生效"）
+        let patch = mirror_legacy_into_active_provider(&patch, &stored);
+        check_provider_patch(&patch)?;
         yekitrim_core::config::patch_config_file(path, &patch)
             .map_err(|e| err(StatusCode::BAD_REQUEST, format!("LLM 配置保存失败: {e:#}")))?;
         return ok(serde_json::json!({ "ok": true }));
@@ -389,7 +624,13 @@ pub(super) fn config_llm_put_locked(path: &Path, body: &serde_json::Value) -> Ap
     // 用户只想改别的键、原样存一次，不能顺手把真 key 抹掉（那是静默毁配置）。
     // 用户要改 key：在源文件里写真值即可（下面的分支就不会触发）。
     let incoming_key = llm_api_key_in(raw);
-    let stored_key = std::fs::read_to_string(path).map(|t| llm_api_key_in(&t)).unwrap_or_default();
+    let stored_text = std::fs::read_to_string(path).unwrap_or_default();
+    let stored_key = llm_api_key_in(&stored_text);
+    // ⚠️ provider 的那些 key 同样是抹过值的（GET /api/config 的 llm_raw）⇒ 按 id 填回去，
+    //    否则"打开源文件、改个别的键、保存"就会把**所有** provider 的 key 抹掉。
+    let restored = yekitrim_core::config::restore_llm_provider_keys(raw, &stored_text);
+    let raw = restored.as_deref().unwrap_or(raw);
+    check_provider_raw(raw)?;
     if let Some(parent) = path.parent() { std::fs::create_dir_all(parent).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("创建目录失败: {e}")))?; }
     std::fs::write(path, raw).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("保存失败: {e}")))?;
     if incoming_key.trim().is_empty() && !stored_key.trim().is_empty() {
@@ -497,6 +738,20 @@ fn probe_request(asked: &str, llm: &yekitrim_core::config::LlmConfig) -> Result<
     Ok(base.to_string())
 }
 
+
+
+/// `GET /api/config/llm/protocols`：**协议注册表的清单**（前端「API 协议」下拉的数据源）。
+///
+/// 与 `/config/llm/dialects` 同一条口径：**从注册表现算**（`yekitrim_llm::protocol::PROTOCOLS`）、
+/// 只读、不联网、不读盘 ⇒ 挂用户层（每个账号都要靠它画下拉）。
+/// ⚠️ **前端别硬编码协议清单**：以后加一家协议只会加一条表项，这里自动跟着变。
+pub(super) async fn llm_protocols() -> ApiResult {
+    let list: Vec<serde_json::Value> = yekitrim_llm::protocol::PROTOCOLS
+        .iter()
+        .map(|p| serde_json::json!({ "id": p.id, "label": p.label }))
+        .collect();
+    ok(serde_json::json!({ "protocols": list }))
+}
 
 /// `GET /api/config/llm/dialects`：**方言注册表的清单**（设置页「模型能力覆盖」的下拉数据源）。
 ///
@@ -785,6 +1040,181 @@ mod tests {
 
 
 
+    /// **数组是整体替换**（深合并只对对象递归）+ **空 key 按 id 填回**：文件级判据（不经 HTTP）。
+    #[test]
+    fn patch_replaces_provider_array_and_restores_keys_by_id() {
+        let dir = std::env::temp_dir().join(format!(
+            "vt-llm-patch-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("llm.toml");
+        std::fs::write(
+            &path,
+            "[llm]\nactive = \"a\"\n\n[[llm.providers]]\nid = \"a\"\napi_key = \"ka\"\nmodel = \"m\"\n\n[[llm.providers]]\nid = \"b\"\napi_key = \"kb\"\nmodel = \"n\"\n",
+        )
+        .unwrap();
+        // 只发一份（a），**不带 api_key** —— 数组整体替换后 a 的 key 必须还在
+        let incoming = serde_json::json!({ "llm": { "active": "a", "providers": [
+            { "id": "a", "name": "甲", "api": "openai-chat", "model": "m" }
+        ] } });
+        let stored = std::fs::read_to_string(&path).unwrap();
+        let patch = fill_blank_provider_keys(&drop_blank_api_key(&incoming), &stored);
+        assert_eq!(patch["llm"]["providers"][0]["api_key"], "ka", "已存的 key 要按 id 填回去：{patch}");
+        let res = config_llm_put_locked(&path, &serde_json::json!({ "patch": patch }));
+        assert!(res.is_ok(), "patch 应当成功");
+        let text = std::fs::read_to_string(&path).unwrap();
+        println!("PATCHED=\n{text}");
+        assert!(text.contains("ka"), "已存的 key 要留在文件里：\n{text}");
+        assert!(!text.contains("kb"), "被替换掉的 provider b 不该还在：\n{text}");
+        let f: toml::Value = toml::from_str(&text).unwrap();
+        let arr = f.get("llm").and_then(|l| l.get("providers")).and_then(|p| p.as_array()).unwrap();
+        assert_eq!(arr.len(), 1, "数组是整体替换：\n{text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **协议清单从注册表现算**（server 里不许抄一份）：条数 == `PROTOCOLS`、每条有 id + 中文名。
+    #[tokio::test]
+    async fn llm_protocols_are_computed_from_the_registry() {
+        let Json(v) = llm_protocols().await.expect("纯静态数据，不该失败");
+        let list = v["protocols"].as_array().expect("protocols 是数组");
+        assert_eq!(list.len(), yekitrim_llm::protocol::PROTOCOLS.len(), "{list:?}");
+        for (item, want) in list.iter().zip(yekitrim_llm::protocol::PROTOCOLS) {
+            assert_eq!(item["id"], want.id, "{item}");
+            assert_eq!(item["label"], want.label, "{item}");
+        }
+        assert!(list.iter().any(|p| p["id"] == "openai-chat"), "本轮唯一的一条：{list:?}");
+    }
+
+    /// **多条 provider 的 api_key 一条都不许出接口**（顶层抹了、provider 里忘了，是最容易漏的那种）。
+    #[tokio::test]
+    async fn every_provider_key_is_redacted_and_blank_key_keeps_the_stored_one() {
+        let t = test_app().await;
+        let hash = yekitrim_service::auth::hash_password("pass-12345678").unwrap();
+        t.auth.db().create_user("cfg_p", &hash, "user", false, 0).unwrap();
+        let a = t.auth.login("cfg_p", "pass-12345678", None, None).unwrap();
+
+        async fn put(t: &TestApp, sid: &str, csrf: &str, body: serde_json::Value) -> axum::response::Response {
+            t.call(
+                t.req_as(sid, csrf, "PUT", "/config/llm")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+        }
+        async fn cfg(t: &TestApp, sid: &str, csrf: &str) -> serde_json::Value {
+            let res = t.call(t.req_as(sid, csrf, "GET", "/config").body(Body::empty()).unwrap()).await;
+            body_json(res).await
+        }
+
+        // 先把遗留的顶层 key 清掉（测试数据目录按 uid 复用，上一轮/别的用例可能留着它）——
+        // 否则"空 key = 不修改"那条会把旧 key 补回顶层，多出一行 api_key，断言条数就对不上了。
+        let res = put(
+            &t,
+            &a.session_id,
+            &a.csrf,
+            serde_json::json!({ "patch": { "llm": {
+                "api_key": null, "active": null, "providers": []
+            } } }),
+        )
+        .await;
+        assert_eq!(res.status(), 200, "清掉遗留 key / provider");
+
+        let two = r#"[llm]
+active = "a"
+
+[[llm.providers]]
+id = "a"
+name = "甲"
+api = "openai-chat"
+base_url = "https://api.deepseek.com/v1"
+api_key = "key-provider-a"
+model = "deepseek-v4-pro"
+
+[[llm.providers]]
+id = "b"
+name = "乙"
+api = "openai-chat"
+base_url = "https://api.moonshot.ai/v1"
+api_key = "key-provider-b"
+model = "kimi-k3"
+"#;
+        let res = put(&t, &a.session_id, &a.csrf, serde_json::json!({ "raw": two })).await;
+        assert_eq!(res.status(), 200, "两份 provider 要能存");
+
+        let j = cfg(&t, &a.session_id, &a.csrf).await;
+        let dumped = j.to_string();
+        assert!(!dumped.contains("key-provider-a"), "provider a 的明文不许出接口：{dumped}");
+        assert!(!dumped.contains("key-provider-b"), "provider b 的明文不许出接口：{dumped}");
+        let raw = j["llm_raw"].as_str().unwrap_or("");
+        assert!(!raw.contains("key-provider-a") && !raw.contains("key-provider-b"), "llm_raw 也要逐行抹：{raw}");
+        assert_eq!(raw.matches("api_key = \"\"").count(), 2, "两条 provider 的值都要抹（按行扫）：{raw}");
+        let provs = j["llm_config"]["providers"].as_array().expect("providers");
+        assert_eq!(provs.len(), 2, "{j}");
+        assert_eq!(j["llm_config"]["active"], "a", "active 要回给前端：{j}");
+        for p in provs {
+            assert_eq!(p["api_key"], "", "每条 provider 的 key 都要抹：{p}");
+            assert_eq!(p["api_key_set"], serde_json::json!(true), "每条各自给一个 api_key_set：{p}");
+        }
+
+        // **数组是整体替换**：只发一份 ⇒ 列表变成一份（不是合并成两份）
+        let res = put(
+            &t,
+            &a.session_id,
+            &a.csrf,
+            serde_json::json!({ "patch": { "llm": {
+                "active": "a",
+                "providers": [{ "id": "a", "name": "甲", "api": "openai-chat",
+                                "base_url": "https://api.deepseek.com/v1", "model": "deepseek-v4-pro" }]
+            } } }),
+        )
+        .await;
+        assert_eq!(res.status(), 200, "patch 要能存");
+        let j = cfg(&t, &a.session_id, &a.csrf).await;
+        let provs = j["llm_config"]["providers"].as_array().expect("providers");
+        assert_eq!(provs.len(), 1, "数组是**整体替换**（不是按 id 合并）：{j}");
+        assert_eq!(provs[0]["id"], "a");
+        assert_eq!(
+            provs[0]["api_key_set"], serde_json::json!(true),
+            "⚠️ 没带 api_key = 不修改：那条已存的 key 要按 id 填回去（否则保存一次就抹了）：{j}"
+        );
+        assert!(!j.to_string().contains("key-provider-a"), "填回去的 key 也不许回显：{j}");
+    }
+
+    /// 协议写错要**报错**（不静默回退成 openai-chat —— 那会让人以为在走别的协议）。
+    #[tokio::test]
+    async fn unknown_api_is_rejected_on_write() {
+        let t = test_app().await;
+        let hash = yekitrim_service::auth::hash_password("pass-12345678").unwrap();
+        t.auth.db().create_user("cfg_q", &hash, "user", false, 0).unwrap();
+        let a = t.auth.login("cfg_q", "pass-12345678", None, None).unwrap();
+        let res = t
+            .call(
+                t.req_as(&a.session_id, &a.csrf, "PUT", "/config/llm")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "patch": { "llm": {
+                            "active": "x",
+                            "providers": [{ "id": "x", "api": "gemini-native", "model": "m" }]
+                        } } })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(res.status(), 400, "认不出的 api 要 400");
+        let j = body_json(res).await;
+        assert!(
+            j["error"].as_str().unwrap_or("").contains("gemini-native"),
+            "要点名那个认不出的协议（并给可选值）：{j}"
+        );
+    }
+
 /// **程序配置按账号分开 + 明文 key 一个字都不出接口 + 空值不覆盖真 key**。
 ///
 /// 三件事一起钉（它们是同一个契约的三面）：
@@ -821,6 +1251,24 @@ async fn config_is_per_account_and_llm_key_does_not_leak() {
         )
         .await
     }
+    /// 当前生效的模型 id（**两代形状都认**）：v3 之后它在 `providers[active].model`，
+    /// 老文件（没有 providers）在 `llm_config.model`。
+    fn model_of(j: &serde_json::Value) -> String {
+        let active = j["llm_config"]["active"].as_str().unwrap_or("");
+        let from_provider = j["llm_config"]["providers"]
+            .as_array()
+            .and_then(|arr| {
+                arr.iter()
+                    .find(|p| active.is_empty() || p["id"] == active)
+                    .or_else(|| arr.first())
+            })
+            .and_then(|p| p["model"].as_str())
+            .unwrap_or("");
+        if !from_provider.is_empty() {
+            return from_provider.to_string();
+        }
+        j["llm_config"]["model"].as_str().unwrap_or("").to_string()
+    }
     async fn get_cfg(t: &TestApp, sid: &str, csrf: &str) -> serde_json::Value {
         let res = t
             .call(t.req_as(sid, csrf, "GET", "/config").body(Body::empty()).unwrap())
@@ -843,7 +1291,7 @@ model = \"m-a\"
 
     // 甲看得见**自己的配置**（model 是归属的判据 —— 明文 key 已经不回接口了）。
     let ja = get_cfg(&t, &a.session_id, &a.csrf).await;
-    assert_eq!(ja["llm_config"]["model"], "m-a", "甲应读到自己那份配置：{ja}");
+    assert_eq!(model_of(&ja), "m-a", "甲应读到自己那份配置：{ja}");
     assert_eq!(ja["api_key_set"], serde_json::json!(true), "甲配了 key：{ja}");
     // ② 整份响应里**一个字**明文都不许有（llm_raw 与 llm_config 两处都要清）
     let dumped_a = ja.to_string();
@@ -861,12 +1309,17 @@ model = \"m-a\"
     // **又从 1 数起** ⇒ 同一个 uid 的 llm.toml 会在**多次跑测试之间留着**。
     // 不清就断言"乙还没配 key"，第二次跑必然红（实测：left: true, right: false）。
     // 顺手也就把 null = 删键 这条路钉住了（它是唯一能表达"清掉 key"的写法）。
+    // ⚠️ v3 之后 key 可能躺在 `[[llm.providers]]` 里（迁移搬过去）⇒ 一并清：
+    //    `providers = []`（数组整体替换）+ `active = null`（否则 active 指向不存在的 provider 会被 400 拦下）。
     let res = t
         .call(
             t.req_as(&b.session_id, &b.csrf, "PUT", "/config/llm")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    serde_json::json!({ "patch": { "llm": { "api_key": null } } }).to_string(),
+                    serde_json::json!({ "patch": { "llm": {
+                        "api_key": null, "active": null, "providers": []
+                    } } })
+                    .to_string(),
                 ))
                 .unwrap(),
         )
@@ -876,7 +1329,7 @@ model = \"m-a\"
     // 乙**看不见**甲的配置。
     let jb = get_cfg(&t, &b.session_id, &b.csrf).await;
     assert_eq!(jb["api_key_set"], serde_json::json!(false), "乙还没配 key：{jb}");
-    assert_ne!(jb["llm_config"]["model"], "m-a", "乙不该读到甲的配置：{jb}");
+    assert_ne!(model_of(&jb), "m-a", "乙不该读到甲的配置：{jb}");
     assert!(
         !jb.to_string().contains("key-of-alice"),
         "乙的响应里更不该有甲的 key：{jb}"
@@ -889,11 +1342,11 @@ model = \"m-b\"
 ").await;
     assert_eq!(res.status(), 200);
     let ja2 = get_cfg(&t, &a.session_id, &a.csrf).await;
-    assert_eq!(ja2["llm_config"]["model"], "m-a", "乙写自己的配置**不该**动到甲的：{ja2}");
+    assert_eq!(model_of(&ja2), "m-a", "乙写自己的配置**不该**动到甲的：{ja2}");
     assert_eq!(ja2["api_key_set"], serde_json::json!(true));
     assert!(!ja2.to_string().contains("key-of-bob"), "也不该串到甲的响应里：{ja2}");
     let jb2 = get_cfg(&t, &b.session_id, &b.csrf).await;
-    assert_eq!(jb2["llm_config"]["model"], "m-b", "{jb2}");
+    assert_eq!(model_of(&jb2), "m-b", "{jb2}");
     assert_eq!(jb2["api_key_set"], serde_json::json!(true));
 
     // ③ **空 api_key = 不修改**，两条路都成立：
@@ -911,7 +1364,7 @@ model = \"m-b\"
         .await;
     assert_eq!(res.status(), 200);
     let ja3 = get_cfg(&t, &a.session_id, &a.csrf).await;
-    assert_eq!(ja3["llm_config"]["model"], "m-a2", "别的键照常改：{ja3}");
+    assert_eq!(model_of(&ja3), "m-a2", "别的键照常改：{ja3}");
     assert_eq!(ja3["api_key_set"], serde_json::json!(true), "空串不该把 key 清掉：{ja3}");
 
     //   raw 路 —— "编辑源文件"读到的是**抹过值**的原文，原样存回去同样不许动 key
@@ -921,7 +1374,7 @@ model = \"m-b\"
     assert_eq!(res.status(), 200, "抹过的原文必须能原样存回去");
     let ja4 = get_cfg(&t, &a.session_id, &a.csrf).await;
     assert_eq!(ja4["api_key_set"], serde_json::json!(true), "原样保存不许把真 key 抹掉：{ja4}");
-    assert_eq!(ja4["llm_config"]["model"], "m-a2");
+    assert_eq!(model_of(&ja4), "m-a2");
 }
 
 /// 单人形态（`Owner::Local`）读的就是**现状那两个文件**，零迁移。
@@ -1110,6 +1563,37 @@ fn redact_api_key_只抹值() {
     assert!(out.contains("# 顶注"), "注释整行保留：\n{out}");
     // 行数不变（源文件编辑器靠行号对齐）
     assert_eq!(out.lines().count(), raw.lines().count());
+}
+
+/// **inline table 里的 key 也要抹**（多 provider 的 patch 会把 providers 写成一行一个 inline table）：
+/// 老实现只认行首的 api_key，明文会从 llm_raw 原样漏出去 —— 而且看起来一切正常。
+#[test]
+fn redact_api_key_covers_inline_tables_and_every_provider() {
+    let raw = "[llm]\nactive = \"a\"\nproviders = [{ id = \"a\", api_key = \"sk-a\" }, { id = \"b\", api_key = \"sk-b\" }]\n";
+    let out = redact_api_key(raw);
+    assert!(!out.contains("sk-a") && !out.contains("sk-b"), "inline 里的两条都要抹：\n{out}");
+    assert!(out.contains("id = \"a\"") && out.contains("id = \"b\""), "别的键留着：\n{out}");
+    assert_eq!(out.lines().count(), raw.lines().count(), "行数不变（编辑器靠行号对齐）");
+
+    // 经典形态：每条 provider 一行 api_key（逐条抹，不是只抹第一条）
+    let block = "[llm]\n\n[[llm.providers]]\nid = \"a\"\napi_key = \"sk-a\"\n\n[[llm.providers]]\nid = \"b\"\napi_key = \"sk-b\"\n";
+    let out2 = redact_api_key(block);
+    assert!(!out2.contains("sk-a") && !out2.contains("sk-b"), "{out2}");
+    assert_eq!(out2.matches("api_key = \"\"").count(), 2, "{out2}");
+}
+
+/// `drop_blank_api_key` 的 provider 版：空串 = **那条**不修改（逐条判，不是只看顶层）。
+#[test]
+fn blank_api_key_is_dropped_for_every_provider() {
+    let patch = serde_json::json!({ "llm": { "providers": [
+        { "id": "a", "api_key": "  " },
+        { "id": "b", "api_key": "sk-b" },
+        { "id": "c" }
+    ] } });
+    let out = drop_blank_api_key(&patch);
+    assert!(out["llm"]["providers"][0].get("api_key").is_none(), "空串要剔掉（= 不修改）：{out}");
+    assert_eq!(out["llm"]["providers"][1]["api_key"], "sk-b", "真值照写：{out}");
+    assert!(out["llm"]["providers"][2].get("api_key").is_none(), "本来就没有就保持没有：{out}");
 }
 
 /// `drop_blank_api_key`：**空串 = 剔掉这个键（不修改）**；`null` 与非空值都不动语义。

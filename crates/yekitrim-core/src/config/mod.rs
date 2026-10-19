@@ -76,7 +76,7 @@ pub const GLOBAL_CONFIG_TOML: &str = r#"# YekiTrim 全局默认配置 — 所有
 # 相同参数会被 yekitrim.toml 覆盖
 # ⚠️ config_version 是**配置结构版本**：程序读它决定要不要跑迁移。
 #    手工改配置时**别动这一行**（改了会让迁移跑错；见 config/version.rs）。
-config_version = 2
+config_version = 3
 
 [asr]
 # ASR 模式: "single"（SenseVoice 单模型）| "hybrid"（SenseVoice 打轴 + qwen3 填词）
@@ -268,12 +268,12 @@ registration_enabled = false
 ///
 /// ⚠️ 形状是 **v2**：**请求参数面**（`[llm.params]` + `[llm.overrides.<link>]`）与
 /// **能力面**（`[llm.models."<id>"]`）分开。老文件由 `version.rs` 的 v1→v2 搬过来，不用手改。
-/// 这里的 `config_version = 2` 必须与 [`super::version::CONFIG_VERSION`] 一致 ——
+/// 这里的 `config_version = 3` 必须与 [`super::version::CONFIG_VERSION`] 一致 ——
 /// 写小了的话新装的文件会被"升级"一次（多一个 .bak-v1），写大了则是本程序读不懂自己的模板。
 pub const LLM_CONFIG_TOML: &str = r#"# YekiTrim LLM 配置 — 独立于工程配置
 # 基于 OpenAI 兼容接口
 # ⚠️ 配置结构版本，别手改（见 config/version.rs）
-config_version = 2
+config_version = 3
 
 [llm]
 # API 基础地址
@@ -1061,6 +1061,71 @@ fn edit_toml_at(project_file: &Path, f: impl FnOnce(&mut toml_edit::DocumentMut)
 ///
 /// **支持两层以上**（`{"ingest": {"recorder": {"api_base": …}}}`）：值是对象时递归进子表合并，
 /// 不会把 `[ingest.recorder]` 里本次没提到的键丢掉。见 [`merge_into_table`] 的说明。
+/// **源文件模式**的「空 key = 不修改」：按 provider 的 `id` 把已存的 key 填回**抹过值**的文本里。
+///
+/// 为什么需要它：`GET /api/config` 回的 `llm_raw` 把**每一条** provider 的 `api_key` 都抹成
+/// `""`（见 server 的 `redact_api_key`）。用户只想改别的键、把这份原文原样存回来时，
+/// 不填回去就是**一次保存把所有 provider 的真 key 全抹了**（静默毁配置）。
+///
+/// 口径与顶层那条一致：**空串 = 不修改**；要真删 key 就写 `null`（或把整份 provider 删掉）。
+/// 找不到同 id 的已存 provider ⇒ 不动（那是新加的一份，空 key 就是空）。
+///
+/// 返回 `None` = 没有要填的（一个空都没匹配上 / 这份文本没有 `providers`）。
+pub fn restore_llm_provider_keys(incoming: &str, stored: &str) -> Option<String> {
+    use toml_edit::{DocumentMut, Item};
+
+    // 已存文件里 id → 明文 key（只收非空的）
+    let mut keys: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    if let Ok(v) = toml::from_str::<toml::Value>(stored) {
+        if let Some(arr) = v.get("llm").and_then(|l| l.get("providers")).and_then(|p| p.as_array()) {
+            for p in arr {
+                let id = p.get("id").and_then(|i| i.as_str()).unwrap_or("").trim();
+                let key = p.get("api_key").and_then(|k| k.as_str()).unwrap_or("");
+                if !id.is_empty() && !key.trim().is_empty() {
+                    keys.insert(id.to_string(), key.to_string());
+                }
+            }
+        }
+    }
+    if keys.is_empty() {
+        return None;
+    }
+    let mut doc = incoming.parse::<DocumentMut>().ok()?;
+    let arr = doc.get_mut("llm").and_then(Item::as_table_like_mut)?.get_mut("providers")?;
+    let mut changed = false;
+    // ⚠️ **两种形态都要认**：`[[llm.providers]]`（数组表，人写的）与
+    // `providers = [{ … }]`（inline 数组，服务端 patch 写出来的）。只认前者的话，
+    // 保存一次表单之后"空 key 不修改"就失效了（key 被静默抹掉）。
+    let blank_key = |id: &str, existing: Option<&str>| {
+        keys.get(id).filter(|_| existing.map(|s| s.trim().is_empty()).unwrap_or(true)).cloned()
+    };
+    match arr {
+        Item::ArrayOfTables(tables) => {
+            for t in tables.iter_mut() {
+                let id = t.get("id").and_then(Item::as_str).unwrap_or("").trim().to_string();
+                let existing = t.get("api_key").and_then(Item::as_str);
+                if let Some(k) = blank_key(&id, existing) {
+                    t.insert("api_key", toml_edit::value(k));
+                    changed = true;
+                }
+            }
+        }
+        Item::Value(toml_edit::Value::Array(a)) => {
+            for v in a.iter_mut() {
+                let toml_edit::Value::InlineTable(t) = v else { continue };
+                let id = t.get("id").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
+                let existing = t.get("api_key").and_then(|x| x.as_str());
+                if let Some(k) = blank_key(&id, existing) {
+                    t.insert("api_key", toml_edit::Value::from(k));
+                    changed = true;
+                }
+            }
+        }
+        _ => return None,
+    }
+    changed.then(|| doc.to_string())
+}
+
 pub fn patch_config_file(path: &Path, patch: &serde_json::Value) -> Result<()> {
     let sections = patch
         .as_object()

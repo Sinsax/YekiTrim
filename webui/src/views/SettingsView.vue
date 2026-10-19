@@ -166,8 +166,14 @@
       <template v-if="!editLlmSource">
         <!-- ① 接口：填好 key → 取模型 → 选中（模型选择器见 components/llm/LlmModelPicker.vue） -->
         <div class="form-section">
-          <div class="form-section-title">接口<span class="t-sub">填好 key → 获取模型 → 选中</span></div>
-          <div class="form-grid">
+          <div class="form-section-title">接口<span class="t-sub">{{ llmProviderMode
+            ? '多份配置 · 同一时间只展开一份' : '填好 key → 获取模型 → 选中' }}</span></div>
+          <!-- 多 provider（P3，照 DSH：列表 → 只展开一份 → 模型行 → 档位行）。
+               ⚠️ **R4**：后端没回 providers ⇒ llmProviderMode=false ⇒ 走下面这个老的单配置表单 -->
+          <LlmProviders v-if="llmProviderMode" :providers="form.llm.providers"
+                        v-model:active-id="form.llm.active"
+                        :protocols="protocols" :protocols-source="protocolsSource" />
+          <div v-else class="form-grid">
             <div class="span-2">
               <label>base_url</label>
               <input v-model="form.llm.base_url" type="text" placeholder="https://api.deepseek.com/v1">
@@ -190,7 +196,7 @@
           <div class="form-section-title">生成<span class="t-sub caps-src" :title="capsTitle">{{ capsText }}</span></div>
           <div class="form-grid">
             <div class="span-all">
-              <LlmParamFields :caps="caps" :target="form.llm.params" id-prefix="llm-g"
+              <LlmParamFields :caps="caps" :target="llmParamsTarget" id-prefix="llm-g"
                               :json-mode="jsonModeOn" @update:jsonMode="setJsonMode"
                               :input-text="inputText" :input-image="inputImage" :input-declared="inputDeclared"
                               @update:inputText="setInputKind('text', $event)"
@@ -404,7 +410,8 @@
 <script setup>
 import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { api } from '../api/client'
-import { fetchCatalog, fetchDialects, saveLlm as putLlm, saveLlmRaw as putLlmRaw, testConnection } from '../api/llm'
+import { fetchCatalog, fetchDialects, fetchProtocols, saveLlm as putLlm, saveLlmRaw as putLlmRaw, testConnection } from '../api/llm'
+import { BUILTIN_PROTOCOLS } from '../components/llm/protocols.js'
 import { BUILTIN_DIALECTS, CUSTOM, dialectChoices, maxOutputChoices } from '../components/llm/dialects.js'
 import { CAPS_SOURCE_ZH, DEFAULT_INPUT, inputToArray, inputZh, mergeCaps, normalizeCaps, normalizeLevel } from '../components/llm/caps.js'
 import { toast } from '../stores/toast'
@@ -412,6 +419,7 @@ import Icon from '../components/Icon.vue'
 import SliderField from '../components/SliderField.vue'
 import LlmModelPicker from '../components/llm/LlmModelPicker.vue'
 import LlmParamFields from '../components/llm/LlmParamFields.vue'
+import LlmProviders from '../components/llm/LlmProviders.vue'
 import InviteManager from '../components/InviteManager.vue'
 import UserQuotaManager from '../components/UserQuotaManager.vue'
 import RecorderConfig from '../components/RecorderConfig.vue'
@@ -513,7 +521,11 @@ const form = reactive({
     // `on` 决定保存时写值还是发 null（服务端 patch 的 null = 删键 = 回到跟随全局，见 buildLlmPatch）
     overrides: {},
     // **能力面**（v2 的 [llm.models."<id>"]）：内置表没收录这个模型时，由「高级」那一小块编辑
-    models: {}
+    models: {},
+    // **多 provider**（P3）：`active` = 当前在用的那份；`providers === null` = 后端还没回这个字段
+    // ⇒ 走老的单配置界面（R4：不许白屏、不许报错、行为逐字节不变）
+    active: '',
+    providers: null
   }
 })
 
@@ -553,10 +565,49 @@ function inheritTitle(key) {
     + '输出上限 / 温度跟随上面「生成」（[llm.params]）；推理档位用 ' + defaultThinking(key)
 }
 
+// ---- 多 provider（P3）：列表 + 同一时间只展开一份（照 DSH）----
+// ⚠️ **R4**：后端还没回 `providers` 字段 ⇒ `form.llm.providers` 保持 **null** ⇒ 模板走老的单配置。
+//    判据是 `Array.isArray` —— 一个空数组也算"后端回了"（那就是"一份配置都没有"的正常空列表）。
+const llmProviderMode = computed(() => Array.isArray(form.llm.providers))
+const activeProvider = computed(() => {
+  if (!llmProviderMode.value) return null
+  const list = form.llm.providers
+  return list.find((p) => p.id === form.llm.active) || list[0] || null
+})
+/** 「生成」组改的是**当前 provider 的参数面**；legacy 模式改 `[llm.params]` */
+const llmParamsTarget = computed(() => (llmProviderMode.value && activeProvider.value && activeProvider.value.params)
+  ? activeProvider.value.params
+  : form.llm.params)
+/** 能力（内置目录 / 探针）按**当前生效的** (base_url, model) 取 */
+const effBaseUrl = computed(() => String((llmProviderMode.value && activeProvider.value
+  ? activeProvider.value.base_url : form.llm.base_url) || ''))
+const effModel = computed(() => String((llmProviderMode.value && activeProvider.value
+  ? activeProvider.value.model : form.llm.model) || ''))
+
+// API **协议**清单（请求怎么发）：后端 `/config/llm/protocols`；没有就内置只读清单并标注「内置」。
+const protocols = ref([])
+const protocolsSource = ref('')
+const protocolsError = ref('')
+async function loadProtocols() {
+  try {
+    const list = await fetchProtocols()
+    if (Array.isArray(list) && list.length) {
+      protocols.value = list; protocolsSource.value = 'server'; protocolsError.value = ''
+      return
+    }
+    protocols.value = BUILTIN_PROTOCOLS.slice(); protocolsSource.value = 'builtin'
+    protocolsError.value = '后端协议清单为空 ⇒ 用了内置只读清单'
+  } catch (e) {
+    protocols.value = BUILTIN_PROTOCOLS.slice(); protocolsSource.value = 'builtin'
+    protocolsError.value = '协议接口不可用（' + ((e && e.message) || e) + '）⇒ 用了内置只读清单'
+  }
+}
+
 /** 取这个模型的能力。失败**照实说**（404 = 服务端还没接这条接口），界面退化成「只画通用控件」。 */
 async function loadCaps() {
-  const base = String(form.llm.base_url || '').trim()
-  const model = String(form.llm.model || '').trim()
+  // ⚠️ 用**当前生效的** (base_url, model)：多 provider 模式下它们是 active 那份的
+  const base = effBaseUrl.value.trim()
+  const model = effModel.value.trim()
   if (!base || !model) { caps.value = null; capsSource.value = ''; capsError.value = ''; return }
   capsError.value = ''
   // 探针真拿到的能力**覆盖**内置目录那份（只覆盖它声明过的字段，见 caps.js::mergeCaps）
@@ -587,7 +638,7 @@ function onModelsFetched(r) {
 
 // base_url / model 一变就重取能力（等 400ms 再发，别边打字边打接口）
 let capsTimer = null
-watch(() => [form.llm.base_url, form.llm.model], () => {
+watch(() => [effBaseUrl.value, effModel.value], () => {
   if (capsTimer) clearTimeout(capsTimer)
   capsTimer = setTimeout(loadCaps, 400)
 })
@@ -780,7 +831,8 @@ function buildGlobalPatch() {
  *  老工程把同一件事写在 `extra_params.response_format` 里 —— 那边也算"开"（否则界面会显示没开、
  *  实际却在发）。 */
 const jsonModeOn = computed(() => {
-  if (form.llm.params && form.llm.params.json_mode === true) return true
+  // 多 provider 模式下看**当前生效那份**的参数面（legacy 就是 [llm.params]）
+  if (llmParamsTarget.value && llmParamsTarget.value.json_mode === true) return true
   const t = String(form.llm.extra_params || '').trim()
   if (!t) return false
   try {
@@ -803,15 +855,82 @@ function setJsonMode(on) {
       toast('extra_params 必须是 JSON 对象，先修好再改「要求 JSON 输出」', 'err'); return
     }
   }
-  form.llm.params.json_mode = !!on
+  // 多 provider 模式下写的是 active 那份的 params（legacy 模式就是 [llm.params]）
+  llmParamsTarget.value.json_mode = !!on
   if (on) obj.response_format = { type: 'json_object' }
   else delete obj.response_format
   form.llm.extra_params = Object.keys(obj).length ? JSON.stringify(obj, null, 2) : ''
 }
 
+/** provider 的参数面（与 `[llm.params]` 同一套字段） */
+function buildProviderParams(v) {
+  const x = v || {}
+  return {
+    temperature: clampNum(x.temperature, 0, 2, 0.3),
+    max_tokens: Math.round(clampNum(x.max_tokens, 256, 65536, 65536)),
+    reasoning: x.reasoning ? x.reasoning : null,
+    json_mode: x.json_mode === true ? true : null
+  }
+}
+
+/**
+ * **多 provider 模式**的 patch：`active` + 整份 `providers`（数组 = **整份替换**）+ 全局的
+ * `extra_params` / `overrides` / `max_concurrent`。
+ * ⚠️ **不写** legacy 的 `base_url` / `model` / `params` / `models` —— 那会把文件里原来那套盖掉。
+ * ⚠️ 每条 provider 的 `api_key`：**没填就整个不发**（数组项里"空串 = 不修改"不成立，省略最稳）。
+ */
+function buildProviderPatch(f) {
+  const llm = {
+    active: f.active || '',
+    max_concurrent: Math.max(1, Math.round(Number(f.max_concurrent) || 3)),
+    providers: (f.providers || []).map((p) => {
+      const row = {
+        id: String(p.id || '').trim(),
+        name: p.name || '',
+        api: p.api || 'openai-chat',
+        base_url: p.base_url || '',
+        model: p.model || '',
+        params: buildProviderParams(p.params),
+        models: (p.models || [])
+          .map((m) => ({
+            id: String(m.id || '').trim(),
+            name: m.name || '',
+            context_window: m.context_window == null ? null : Math.max(0, Math.round(Number(m.context_window) || 0)),
+            max_output: m.max_output == null ? null : Math.max(0, Math.round(Number(m.max_output) || 0)),
+            input: Array.isArray(m.input) ? m.input : null,
+            reasoning: m.reasoning === true ? true : (m.reasoning === false ? false : null),
+            levels: (m.levels || []).filter((l) => l && l.level)
+              .map((l) => ({ level: String(l.level), wire_value: String(l.wire_value || '') }))
+          }))
+          .filter((m) => m.id)
+      }
+      if (String(p.api_key || '').trim()) row.api_key = String(p.api_key).trim()
+      return row
+    }),
+    extra_params: null,
+    overrides: {}
+  }
+  if (f.extra_params && f.extra_params.trim()) {
+    try { llm.extra_params = JSON.parse(f.extra_params) } catch (e) { throw new Error('extra_params 不是合法 JSON，请检查格式') }
+  }
+  const activeParams = ((llm.providers.find((x) => x.id === f.active) || {}).params) || {}
+  for (const [key, row] of Object.entries(f.overrides || {})) {
+    llm.overrides[key] = row.on
+      ? {
+          max_tokens: Math.round(clampNum(row.max_tokens, 256, 65536, activeParams.max_tokens ?? 65536)),
+          temperature: clampNum(row.temperature, 0, 2, activeParams.temperature ?? 0),
+          reasoning: row.reasoning ? row.reasoning : null
+        }
+      : { max_tokens: null, temperature: null, reasoning: null }
+  }
+  return llm
+}
+
 function buildLlmPatch() {
   const f = form.llm
   const p = f.params || {}
+  // **多 provider 模式**（P3）：数组 = 整份替换；legacy 字段一个都不写（见 buildProviderPatch）
+  if (Array.isArray(f.providers)) return { llm: buildProviderPatch(f) }
   const llm = {
     base_url: f.base_url || '',
     model: f.model || '',
@@ -964,6 +1083,36 @@ async function loadConfig() {
           }
         ])
       ),
+      // **多 provider**（P3）：只有后端真回了这个字段才进新界面；没有 ⇒ null（R4：老的单配置）
+      active: typeof l.active === 'string' ? l.active : '',
+      providers: Array.isArray(l.providers)
+        ? l.providers.map((pr) => ({
+            id: String(pr.id || ''),
+            name: pr.name || String(pr.id || ''),
+            api: pr.api || 'openai-chat',
+            base_url: pr.base_url || '',
+            // api_key 只写不读：服务端只回 api_key_set 布尔
+            api_key: '',
+            api_key_set: pr.api_key_set === true,
+            builtin: pr.builtin === true,
+            model: pr.model || '',
+            params: {
+              temperature: pr.params?.temperature ?? 0.3,
+              max_tokens: pr.params?.max_tokens ?? 65536,
+              reasoning: normalizeLevel(pr.params?.reasoning),
+              json_mode: pr.params?.json_mode === true
+            },
+            models: (pr.models || []).map((m) => ({
+              id: m.id || '',
+              name: m.name || '',
+              context_window: m.context_window ?? null,
+              max_output: m.max_output ?? null,
+              input: Array.isArray(m.input) ? [...m.input] : null,
+              reasoning: typeof m.reasoning === 'boolean' ? m.reasoning : null,
+              levels: (m.levels || []).map((lv) => ({ level: lv.level || '', wire_value: lv.wire_value || '' }))
+            }))
+          }))
+        : null,
       extra_params: l.extra_params ? JSON.stringify(l.extra_params, null, 2) : '',
       // 后端把四张覆盖表都序列化出来（缺席的项是 null）→ 行按它的键走。
       // on = 这条链路在 llm.toml 里已经有一项覆盖；控件显示值取"覆盖值，否则当前全局值"。
@@ -1064,6 +1213,8 @@ onMounted(async () => {
   if (props.section === 'config' || props.section === 'llm') loadConfig()
   // 方言清单只服务 LLM 页「模型能力覆盖」那两个下拉（失败退内置清单，界面上标注）
   if (props.section === 'llm') loadDialects()
+  // API 协议清单只服务多 provider 的「API 协议」下拉（失败退内置清单，界面上标注）
+  if (props.section === 'llm') loadProtocols()
   // 每个子页都要：标签条靠它过滤掉本地模式下不显示的项（store 有缓存，只有首次真发请求）。
   // ⚠️ 别挪回 `account` 分支里 —— 那样只有进账号页时标签才收缩，别处照旧显示 5 个。
   localNoAuth.value = await localNoAuthFromServer()
