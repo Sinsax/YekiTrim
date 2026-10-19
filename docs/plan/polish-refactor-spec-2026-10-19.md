@@ -256,16 +256,16 @@ pub struct ArrangeOutput {
 ## 10. 任务清单（按依赖排序，可直接勾选）
 
 - [x] A1 节奏冻结（默认 calm）+ 判据
-- [ ] A2 `diagnose_process_idempotent` + 三跑收敛
-- [ ] A3 `__dhampirDiag` 埋点 + HUD
-- [ ] A4 canvasGen 断言（脚本）
-- [ ] B1 `process::audit` + `data/process-report.json`
-- [ ] B2 像素探针 5 场景
-- [ ] B3 debug ownership 断言
-- [ ] B4 LLM prompt↔parser 契约补全
+- [x] A2 `diagnose_process_idempotent` + 三跑收敛 —— `7aa2f1d`（5 矩阵×两趟，字段级比较；真数据 3 跑 polish.toml SHA 相同）
+- [x] A3 `__dhampirDiag` 埋点 + HUD —— `3df3a0e`（8 个键；单例必须放模块级，否则 canvasGen 随实例归零就抓不到重挂）
+- [x] A4 canvasGen 断言（脚本）—— `3df3a0e`（切片段/暂停/拖时间轴；任务完成那步没测，跑任务要写工程数据）
+- [x] B1 `process::audit` + `data/process-report.json` —— `7aa2f1d`（六项纯函数 + 13 条单测；只在有 findings 时写）
+- [x] B2 像素探针 5 场景 —— `3df3a0e`（黑帧 0/28·0/29·0/42·0/26·0/30，最长 0ms；跳屏蔽如实 SKIP：本机片段无 mute_ranges）
+- [x] B3 debug ownership 断言 —— `7aa2f1d`（收 time/end/origin/manual_pos；刻意不含 x/y，见 §2.2）
+- [x] B4 LLM prompt↔parser 契约补全 —— `7aa2f1d`（49 Case + 9 test，走生产路径；顺带抓到两个静默丢 bug）
 - [ ] C1 `cap_*` 改校验/降级（按表）
 - [ ] C2 Step 顺序整理（clamp 前置）
-- [ ] C3 manual 字段不被覆盖（5 项）
+- [x] C3 manual 字段不被覆盖（5 项）—— `7aa2f1d`（manual 运镜整条跳过；文字是函数级契约，端到端由 Step 2b2 保）
 - [ ] C4 稳定抽样（若保留）
 - [ ] C5 删 `rhythm::plan/apply`，留词表
 - [ ] D1 `llm/arrange.rs` 接口 + schema
@@ -277,6 +277,29 @@ pub struct ArrangeOutput {
 
 ---
 
+### 勾选现状（2026-10-19 晚 · lead 复核）
+
+**A 批全完成（A1 是用户自己做的）、B 批全完成、C 只完成 C3**；C1/C2/C4/C5 与整个 D/E **未做**。
+
+| 项 | 为什么停在这 |
+|---|---|
+| **C1** `cap_*` 改校验/降级 | **按本规格 §11 自己的缓解办的**：「先只报告，攒一轮真实片段数据再删」。尺子已造好（`diagnose_audit`，`89ffb8d`），但真数据读数不支持：只有 4 个带 polish.toml 的片段，**能读的 2 个体检都是 0 项** ⇒ 没有证据支撑「可以删」 |
+| **C2** Step 顺序整理 | 依赖 C1（顺序是为 C1 服务的） |
+| **C4** 稳定抽样 | 只在「留着 cap_events」时才需要 —— C1 未定 |
+| **C5** 删 `rhythm::plan/apply` | 与 C1 同批（都是去创作化），一起做才不用改两遍 |
+| **D1~D5** LLM 编排轮 | 依赖 C 完成（本规格 §0 的 A→B→C→D 依赖链） |
+| **E** 删 `[rhythm]` 配置段 | 依赖 D |
+
+**两个结需要拍板**：
+
+1. **样本太薄**：那 4 个片段在 3d首播 的 output/clips 下（2 个干净、2 个读不进来）。
+   还有别的精修工程吗？给目录我就接着扫；样本够了 C1 才能动。
+2. **那两个读不进来的工程**：polish.toml 里各有一条**已退役**类型 zoom_bounce（project/validate.rs 的 RETIRED），
+   load_project **按设计拒绝**并给出删法（不是静默删掉用户的事件）。
+   要**我帮你清掉**（先留 .bak）还是**把变体加回来**？
+
+> 期间插进来一整条 LLM 线（docs/plan/llm-isolation-2026-10-19.md、reasoning-levels-plan-2026-10-19.md），
+> 那是用户中途要的，不影响本规格的依赖链。
 ## 11. 风险
 
 | 风险 | 缓解 |
