@@ -34,6 +34,12 @@ const OUT_FILE = path.join(SCRIPT_DIR, '..', 'crates', 'yekitrim-llm', 'data', '
 /** 默认源：仓库内 vendor 的那份（离线可跑）。`--pi-ai` 是可选的覆盖，指向外部 npm 包目录。 */
 const DEFAULT_PI_AI_DIR = path.join(SCRIPT_DIR, '..', 'vendor', 'pi-ai-models');
 
+/**
+ * 产物里允许出现的**输入模态**，顺序即写出顺序（`text` 在前 `image` 在后 ⇒ 逐字节稳定）。
+ * 源侧目前只有这两种；上游哪天加 audio/video，这里不认、会被丢掉（宁少不多）。
+ */
+const ALLOWED_INPUTS = ['text', 'image'];
+
 /** 产物里允许出现的档位（源里 pi-ai 还有 max，本表不收；理由见 data/NOTICE.md）。 */
 const ALLOWED_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'];
 
@@ -165,6 +171,17 @@ function maxTokensFieldToWire(field) {
   return null;
 }
 
+/**
+ * 源侧 `input` → 本表的 `input`：只留词表内的、按词表顺序（= 去重 + text 在前）。
+ *
+ * ⚠️ **宁少不多**：源里没有 `input`、或它全是本表不认的值 ⇒ 只写 `["text"]`，
+ * **绝不凭空给 image**（多给一个图片模态 = 上层会允许给纯文本模型传图，报错在用户那里）。
+ */
+function normalizeInput(raw) {
+  const kept = ALLOWED_INPUTS.filter((k) => Array.isArray(raw) && raw.includes(k));
+  return kept.length ? kept : ['text'];
+}
+
 /** 模型级 temperature：源里只有显式信号才算，没有信号就保守保留 supported。 */
 function detectTemperatureSignal(compat) {
   for (const key of ['supportsTemperature', 'temperature']) {
@@ -284,6 +301,13 @@ function extract(piAiDir, analysis) {
       temperatures.add(tempSignal === null ? 'supported' : (tempSignal ? 'supported' : 'unsupported'));
       if (tempSignal === false) notes.push(spec.id + '/' + id + ' 的 compat 显式声明「不支持温度」');
 
+      const input = normalizeInput(m.input);
+      const droppedInputs = (Array.isArray(m.input) ? m.input : []).filter((k) => !ALLOWED_INPUTS.includes(k));
+      if (droppedInputs.length) {
+        notes.push(spec.id + '/' + id + ' 的 input 里有本表不认的模态：' + droppedInputs.join(', ') + '（已丢弃）');
+      }
+      if (!m.input) notes.push(spec.id + '/' + id + ' 源里没有 input ⇒ 按 [text] 兜底');
+
       let levels = null;
       if (m.reasoning === true && m.thinkingLevelMap && typeof m.thinkingLevelMap === 'object') {
         levels = {};
@@ -303,6 +327,8 @@ function extract(piAiDir, analysis) {
         name: m.name || id,
         context_window: m.contextWindow === undefined ? null : m.contextWindow,
         max_output: m.maxTokens === undefined ? null : m.maxTokens,
+        // 输入模态（文字 / 图片）：源侧原样搬，见 normalizeInput 的「宁少不多」。
+        input,
         reasoning: m.reasoning === true,
         thinking_levels: levels,
         // 模型级 wire：pi-ai 的 compat 本来就是模型级字段（同一家里 kimi-k3 与其余 9 个 Kimi 不同）。
@@ -389,6 +415,8 @@ function extract(piAiDir, analysis) {
   const modelTotal = providers.reduce((n, x) => n + x.models.length, 0);
   const reasoningTotal = providers.reduce((n, x) => n + x.models.filter((m) => m.reasoning).length, 0);
   const levelTotal = providers.reduce((n, x) => n + x.models.filter((m) => m.thinking_levels).length, 0);
+  const withImage = providers.reduce((n, x) => n + x.models.filter((m) => m.input.includes('image')).length, 0);
+  analysis.push('输入模态：带 image ' + withImage + ' 个 / 只带 text ' + (modelTotal - withImage) + ' 个');
   analysis.push('provider 数：' + providers.length + '，模型总数：' + modelTotal +
     '，reasoning=true：' + reasoningTotal + '，带 thinking_levels：' + levelTotal);
   analysis.push('模型级 wire 分布（provider -> thinking_wire / max_output_wire）：');

@@ -106,6 +106,11 @@ node scripts/gen-llm-models.mjs --pi-ai <外部包目录>   # 可选覆盖（本
   `google-generative-ai` 协议根本不读 `thinkingLevelMap`，它的档位是代码里硬编码的 `LOW/MINIMAL/HIGH`）。
   档位只保留 `off|minimal|low|medium|high|xhigh` —— **上游还有 `max`，本表把它裁掉了**（我们的 UI 只有六档；
   源里 `max` 常与 `xhigh` 同时存在，裁掉不会让任何模型失去"能调档"）。
+- `models[].input`：**输入模态**（该模型能不能收图片）。**模态来自源侧 `input`** —— 原样搬，只做两件事：
+  去重、固定顺序（`text` 在前 `image` 在后 ⇒ 产物逐字节稳定）。源侧目前只有 `["text"]` / `["text","image"]`
+  两种取值；**源里没有 `input`（或全是不认识的值）⇒ 只写 `["text"]`（宁少不多，绝不凭空给 `image`）**，
+  生成器会在 `--print-analysis` 里留痕。上游哪天加 audio/video，本表不认、直接丢。
+  实测：181 个模型里 **114 个带 image / 67 个只带 text**。
 - `hosts`：该家任一模型的 `baseUrl` 的 host，去重升序；`base_url` 取该家首个模型的值
   （同家内 `baseUrl` 不一致会在 `--print-analysis` 里暴露成多个 host）。
 

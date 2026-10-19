@@ -31,6 +31,8 @@ const ARTIFACT = path.join(REPO, 'crates', 'yekitrim-llm', 'data', 'llm-models.j
 const PACKAGE_NAME = '@earendil-works/pi-ai';
 const ALLOWED_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'];
 const TEMPERATURES = ['supported', 'unsupported'];
+/** 输入模态词表（顺序即产物里的顺序：text 在前 image 在后）。 */
+const INPUTS = ['text', 'image'];
 
 function readJson(file) {
   try {
@@ -99,6 +101,17 @@ function validateArtifact(doc, sourceVersion) {
       else if (!prov.thinking_wire.includes(m.thinking_wire)) say(mtag + '：thinking_wire 不在 provider 级并集里');
       if (typeof m.max_output_wire !== 'string' || !maxWires.includes(m.max_output_wire)) say(mtag + '：max_output_wire 缺失或不在词表里');
       else if (!prov.max_output_wire.includes(m.max_output_wire)) say(mtag + '：max_output_wire 不在 provider 级并集里');
+      if (!Array.isArray(m.input) || m.input.length === 0) {
+        say(mtag + '：input 必须是非空数组（输入模态；宁少不多 = 至少要有 text）');
+      } else {
+        for (const k of m.input) {
+          if (!INPUTS.includes(k)) say(mtag + '：input 里的 ' + JSON.stringify(k) + ' 不是 ' + INPUTS.join('|') + ' —— 上层会拿它当"能传这种输入"用');
+        }
+        if (new Set(m.input).size !== m.input.length) say(mtag + '：input 有重复：' + JSON.stringify(m.input));
+        const ti = m.input.indexOf('text');
+        const ii = m.input.indexOf('image');
+        if (ti !== -1 && ii !== -1 && ti > ii) say(mtag + '：input 里 text 必须排在 image 前面（顺序固定产物才逐字节稳定）：' + JSON.stringify(m.input));
+      }
       if (m.reasoning === false && m.thinking_levels !== null) say(mtag + '：不推理的模型 thinking_levels 必须是 null');
       if (m.thinking_levels === null) continue;
       if (typeof m.thinking_levels !== 'object') { say(mtag + '：thinking_levels 必须是对象或 null'); continue; }
@@ -169,6 +182,12 @@ function selfTest() {
   ok('不推理却有档位必须报', hits(withMut((d) => { const m = d.providers.flatMap((x) => x.models).find((x) => x.reasoning === false); if (m) m.thinking_levels = { off: null }; }), 'thinking_levels') || !clone().providers.flatMap((x) => x.models).some((x) => x.reasoning === false));
   ok('未知档位必须报', hits(withMut((d) => { const m = d.providers.flatMap((x) => x.models).find((x) => x.thinking_levels); if (m) m.thinking_levels.max = 'max'; }), '档位'));
   ok('source_sha256 形状必须报', hits(withMut((d) => { d.source_sha256 = 'XYZ'; }), 'source_sha256'));
+  // 输入模态（2026-10-19 新增）：这条是任务点名的反例 —— `["audio"]` 必须红
+  ok('input 含未知模态必须报（["audio"]）', hits(withMut((d) => { d.providers[0].models[0].input = ['audio']; }), 'input'));
+  ok('input 空必须报', hits(withMut((d) => { d.providers[0].models[0].input = []; }), 'input'));
+  ok('缺 input 必须报', hits(withMut((d) => { delete d.providers[0].models[0].input; }), 'input'));
+  ok('input 有重复必须报', hits(withMut((d) => { d.providers[0].models[0].input = ['text', 'text']; }), 'input'));
+  ok('input 顺序反了必须报', hits(withMut((d) => { d.providers[0].models[0].input = ['image', 'text']; }), 'input'));
 
   // 缺源 ⇒ SKIP（exit 0 + 明说）
   const gone = path.join(os.tmpdir(), 'yekitrim-llm-models-definitely-missing');

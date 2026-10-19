@@ -45,6 +45,8 @@ MIT 允许再分发与派生，条件是保留版权与许可声明 —— 完�
 
 合计 **193143 B**。这 18 个文件的 sha256 **与上游自带的 `dist/providers/data/.manifest.json` 逐条一致**
 （上游 `schemaVersion: 3`，`generatedAt: 2026-07-25T12:44:19.521Z`）—— 也就是说这些文件是**原样**搬进来的，
+模型条目里的**输入模态 `input`**（`["text"]` / `["text","image"]`）同样**来自这些源文件** —— 产物
+`crates/yekitrim-llm/data/llm-models.json` 的 `models[].input` 就是从这里原样搬的（只去重 + 固定顺序）。
 没有重新格式化、没有裁剪字段。任何人可以用一行命令复核：
 
 ```bash
