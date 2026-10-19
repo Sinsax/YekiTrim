@@ -13,6 +13,8 @@
 
     <!-- 程序配置：ASR / 检测 / 剪切 / Chrome（写入 .yekitrim/config.toml） -->
     <template v-if="section === 'config'">
+    <!-- 内容列：所有分页共用 .settings-block（min(760px,100%)、左对齐）—— 别在每页各写一份 max-width -->
+    <div class="settings-block">
     <div class="section-title row spread">
       <span>程序配置 config.toml</span>
       <span class="row">
@@ -104,7 +106,7 @@
                prompt 都是喂给 LLM 的文本，摆在"程序配置"里要跨页找。**别在这里加回来。** -->
 
           <div class="form-section">
-            <div class="form-section-title">断句与分块<span class="muted small">默认值已按实测调好</span></div>
+            <div class="form-section-title">断句与分块<span class="t-sub">默认值已按实测调好</span></div>
             <div class="form-grid">
               <SliderField v-model="form.asr.chunk_duration" class="span-2" label="分块时长" unit="s"
                            :min="20" :max="300" :step="10" />
@@ -126,7 +128,7 @@
           </div>
 
           <div class="form-section">
-            <div class="form-section-title">VAD 与解码<span class="muted small">默认值已按实测调好</span></div>
+            <div class="form-section-title">VAD 与解码<span class="t-sub">默认值已按实测调好</span></div>
             <div class="form-grid">
               <SliderField v-model="form.asr.vad_threshold" class="span-2" label="VAD 阈值"
                            :min="0" :max="1" :step="0.05" hint="调高 = 多解码、少省时间" />
@@ -148,10 +150,27 @@
         <textarea v-model="globalRaw" rows="24" class="mono source-editor"></textarea>
       </template>
     </div>
+    </div>
     </template>
 
     <!-- LLM 配置：写入 .yekitrim/llm.toml -->
     <template v-else-if="section === 'llm'">
+    <div class="settings-block">
+    <!-- ⚠️ 保存失败**常驻**显示（P0：后端 400 曾被 toast 一闪吞掉，用户以为存上了）；回读不一致也在这里 -->
+    <div v-if="llmSaveError" class="error-banner" data-llm-save-error>
+      <Icon name="alert" :size="15" />
+      <div>
+        <b>保存失败</b>
+        <div class="muted small mt-4" data-llm-save-error-text>{{ llmSaveError }}</div>
+      </div>
+    </div>
+    <div v-if="llmSaveWarn" class="error-banner" data-llm-save-warn>
+      <Icon name="alert" :size="15" />
+      <div>
+        <b>已提交，但回读不一致</b>
+        <div class="muted small mt-4">{{ llmSaveWarn }}</div>
+      </div>
+    </div>
     <div class="section-title row spread">
       <span>LLM 配置 llm.toml</span>
       <span class="row">
@@ -161,8 +180,7 @@
         </button>
       </span>
     </div>
-    <!-- ⚠️ 内容列宽度上限（用户：整体宽度压缩到一半）——左对齐、右边留白，别居中 -->
-    <div class="card llm-block">
+    <div class="card">
         <!-- ① 接口：填好 key → 取模型 → 选中（模型选择器见 components/llm/LlmModelPicker.vue） -->
         <div class="form-section">
           <div class="form-section-title">接口<span class="t-sub">{{ llmProviderMode
@@ -294,10 +312,12 @@
         </div>
 
     </div>
+    </div>
     </template>
 
     <!-- 账号与模型：邀请码/注册 与 ASR 模型清单 -->
     <template v-else-if="section === 'account'">
+    <div class="settings-block">
     <div class="two-up" :class="{ 'one-up': localNoAuth }">
       <!-- 本地模式（`--local-no-auth`）下**没有登录这回事**：邀请码与注册开关都是给
            多用户部署用的，摆在这里只会让人以为需要它。 -->
@@ -315,10 +335,12 @@
         </div>
       </div>
     </div>
+    </div>
     </template>
 
     <!-- 系统集成：录播姬采集（webhook / 导入规则）与 B 站链接下载 -->
     <template v-else-if="section === 'integrations'">
+    <div class="settings-block">
     <div class="section-title">录播姬（采集）</div>
     <div class="card">
       <RecorderConfig />
@@ -328,10 +350,12 @@
     <div class="card">
       <DownloaderConfig />
     </div>
+    </div>
     </template>
 
     <!-- 用量与日志：LLM 账本与运行日志 -->
     <template v-else-if="section === 'monitor'">
+    <div class="settings-block">
     <div class="section-title">LLM 用量</div>
     <div class="card">
       <LlmUsage />
@@ -340,6 +364,7 @@
     <div class="section-title">运行日志</div>
     <div class="card">
       <LogConsole />
+    </div>
     </div>
     </template>
   </div>
@@ -814,16 +839,21 @@ function buildProviderPatch(f) {
         model: p.model || '',
         params: buildProviderParams(p.params),
         models: (p.models || [])
-          .map((m) => ({
-            id: String(m.id || '').trim(),
-            name: m.name || '',
-            context_window: m.context_window == null ? null : Math.max(0, Math.round(Number(m.context_window) || 0)),
-            max_output: m.max_output == null ? null : Math.max(0, Math.round(Number(m.max_output) || 0)),
-            input: Array.isArray(m.input) ? m.input : null,
-            reasoning: m.reasoning === true ? true : (m.reasoning === false ? false : null),
-            levels: (m.levels || []).filter((l) => l && l.level)
+          .map((m) => {
+            // ⚠️ **只发知道的字段**：后端 `LlmModel` 里 `reasoning` 是 `bool`（不是 Option）、
+            //    `context_window/max_output` 是 Option ⇒ 发 `null` 会被 400
+            //    「providers 形状不对：invalid type: null, expected a boolean」，**整份保存失败**（P0 事故）。
+            const row = { id: String(m.id || '').trim() }
+            if (m.name) row.name = m.name
+            if (m.context_window != null) row.context_window = Math.max(0, Math.round(Number(m.context_window) || 0))
+            if (m.max_output != null) row.max_output = Math.max(0, Math.round(Number(m.max_output) || 0))
+            if (Array.isArray(m.input)) row.input = m.input
+            if (typeof m.reasoning === 'boolean') row.reasoning = m.reasoning
+            const levels = (m.levels || []).filter((l) => l && l.level)
               .map((l) => ({ level: String(l.level), wire_value: String(l.wire_value || '') }))
-          }))
+            if (levels.length) row.levels = levels
+            return row
+          })
           .filter((m) => m.id)
       }
       if (String(p.api_key || '').trim()) row.api_key = String(p.api_key).trim()
@@ -1082,18 +1112,50 @@ async function saveGlobal() {
   } catch (e) { toast(e.message, 'err') }
 }
 
+/** 保存失败的原因（**常驻**显示在页面顶部，不是一闪就没的 toast —— P0：400 被吞过，用户以为存上了） */
+const llmSaveError = ref('')
+/** 保存后回读的**落盘校验**结果（不一致时把差异写出来） */
+const llmSaveWarn = ref('')
+
+/** 保存后回读一次：界面上每份配置的模型数与服务端回读的条数必须一致（"刷新还是 0"的通用护栏） */
+async function verifyLlmSaved(expect) {
+  try {
+    const d = await api('/api/config')
+    const got = (d && d.llm_config && d.llm_config.providers) || []
+    const diffs = []
+    for (const want of expect) {
+      const row = got.find((p) => p && p.id === want.id)
+      const n = (row && Array.isArray(row.models)) ? row.models.length : 0
+      if (n !== want.n) diffs.push(want.id + '：界面 ' + want.n + ' 条 / 落盘 ' + n + ' 条')
+    }
+    llmSaveWarn.value = diffs.length ? '保存后回读不一致：' + diffs.join('；') : ''
+  } catch (e) {
+    llmSaveWarn.value = '保存后回读失败：' + ((e && e.message) || e)
+  }
+}
+
 async function saveLlm() {
   if (!loaded.value) { toast('配置未加载成功，已禁止保存', 'err'); return }
+  llmSaveError.value = ''
+  llmSaveWarn.value = ''
   try {
-    await putLlm(buildLlmPatch())
+    const patch = buildLlmPatch()
+    // 期望落盘的模型数（多配置时逐份比；legacy 模式没有 providers 就不比）
+    const expect = ((patch.llm && patch.llm.providers) || []).map((p) => ({ id: p.id, n: (p.models || []).length }))
+    await putLlm(patch)
     // ⚠️ **提示词那一组写的是 config.toml 的 [detection]**，不是 llm.toml ——
     //    它只是**摆在**这一页（用户要求），归属没变。所以这一页的保存必须**两个文件都存**，
     //    否则用户在这里改了参考标题、点「保存」看着成功、实际一个字节都没落盘。
     syncReferenceTitlesFromText()
     await api('/api/config/global', { method: 'PUT', body: JSON.stringify({ patch: buildGlobalPatch() }) })
-    toast('LLM 配置已保存')
+    await verifyLlmSaved(expect)
+    toast(llmSaveWarn.value ? 'LLM 配置已保存（但回读不一致，见顶部提示）' : 'LLM 配置已保存')
     await loadConfig()
-  } catch (e) { toast(e.message, 'err') }
+  } catch (e) {
+    // **不许静默失败**：把服务端的 error 原文留在页面上
+    llmSaveError.value = '保存失败：' + ((e && e.message) || e)
+    toast(e.message, 'err')
+  }
 }
 
 onMounted(async () => {
@@ -1119,10 +1181,12 @@ onMounted(async () => {
 textarea.llm-extra { min-height:230px; resize:vertical; font-size:12px; line-height:1.6; }
 .llm-cols { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:10px 20px; align-items:start; }
 /* LLM 块：内容列压到 ~760px（min() 兜住窄屏），**左对齐**；容器查询量的是内容列而不是视口 */
-.llm-block { max-width:min(760px, 100%); container-type:inline-size; }
+/* **所有分页共用的内容列**（程序配置 / LLM / 账号 / 系统集成 / 用量与日志）：
+   min(760px,100%) + 左对齐 ⇒ 切标签时左边缘不跳；container-type 让下面的 @container 量的是**内容列**而不是视口。 */
+.settings-block { max-width:min(760px, 100%); container-type:inline-size; }
 /* 内容列 ≤820px 时：链路覆盖四条改成**单列四行**（两栏各 ~370 太挤，硬塞会腰斩滑条） */
 @container (max-width: 820px) {
-  .llm-block .llm-cols { grid-template-columns:minmax(0,1fr); gap:8px 0; }
+  .settings-block .llm-cols { grid-template-columns:minmax(0,1fr); gap:8px 0; }
 }
 @media (max-width:1200px) { .llm-cols { grid-template-columns:minmax(0,1fr); gap:14px 0; } }
 /* 按链路覆盖：一条链路一格（两栏 = 2×2）—— [勾选框 + 链路名] + 该链路的参数控件（LlmParamFields）。
@@ -1160,7 +1224,11 @@ textarea.llm-extra { min-height:230px; resize:vertical; font-size:12px; line-hei
 /* 标题后面的**副标题**：与标题拉开距离、字更淡、不加粗 —— 以前是 .muted small 紧贴着标题，
    读起来像"生成能力：内置目录（未收录）"这样一个长名字（用户找不到主次）。 */
 .t-sub { margin-left:8px; font-weight:400; font-size:11.5px; color:var(--ink-faint); }
-.form-grid { display:grid; grid-template-columns:repeat(6, 1fr); gap:8px 12px; align-items:start; }
+/* ⚠️ 用**容器查询**按内容列宽自动降列（以前是 6 列 + 视口媒体查询：内容列压到 760 后 6 列只剩 120px/格，
+   SliderField 的滑条（格子 1/3）会被压到 40px 以下）。列数：内容列 ≥1100 才 6 列；≥700 两列；更窄一列。 */
+.form-grid { display:grid; grid-template-columns:minmax(0,1fr); gap:8px 12px; align-items:start; }
+@container (min-width: 700px) { .settings-block .form-grid { grid-template-columns:repeat(2, minmax(0,1fr)); } }
+@container (min-width: 1100px) { .settings-block .form-grid { grid-template-columns:repeat(6, minmax(0,1fr)); } }
 /* 注册与邀请码 / 模型管理：两张卡都短，并排省一屏竖高（窄屏回落成上下） */
 .two-up { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:0 16px; align-items:start; }
 /* 本地模式只留一张卡（注册与邀请码被收起）—— 让它占满整行，别半宽留白 */
@@ -1203,14 +1271,12 @@ textarea.llm-extra { min-height:230px; resize:vertical; font-size:12px; line-hei
 button:disabled { opacity:.45; cursor:not-allowed; }
 @media (max-width: 1200px) {
   .two-up { grid-template-columns:1fr; }
-  .form-grid { grid-template-columns:repeat(3, 1fr); }
 }
 @media (max-width: 900px) {
   textarea.llm-extra { min-height:160px; }
   /* 链路覆盖格：窄屏让链路名独占一行（控件本来就跨满整行） */
   .llm-cols .llm-link-row { grid-template-columns:minmax(0,1fr); }
   .llm-cols .llm-link-row .ln-name { grid-column:1 / -1; }
-  .form-grid { grid-template-columns:repeat(2, 1fr); }
   .span-2 { grid-column:1 / -1; }
   .prompt-pair, .prompt-with-side { grid-template-columns:1fr; }
 }

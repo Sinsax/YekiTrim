@@ -229,8 +229,10 @@ function setLevel(l, v) {
         <span class="pv-spacer"></span>
         <!-- 两条入口分开（用户口径）：「模型」= 这份接口的模型目录；「编辑」= 接口字段（名称/地址/密钥/协议）。
              「测试连接」也在这行上（只测这一份接口，结果是行内一行字，不是一闪而过的 toast）。 -->
-        <button class="pv-models" :title="'设置这份接口的模型目录（' + (p.models || []).length + ' 个）'"
-                @click="focusSection(p.id, 'models')">模型 {{ (p.models || []).length }}</button>
+        <button class="pv-models" :title="'为这份配置选择模型（点开已选 / API 侧两个列表）'"
+                :aria-label="'为这份配置选择模型（' + (p.models || []).length + ' 个已选）'"
+                @click="focusSection(p.id, 'models')">模型 {{ (p.models || []).length }}
+          <span class="pv-caret-down">▾</span></button>
         <button class="pv-mini pv-test" :disabled="testing[p.id]"
                 :title="'只测这一份接口（POST /api/llm/test?provider=' + p.id + '）'"
                 @click="testOne(p)">{{ testing[p.id] ? '测试中…' : '测试连接' }}</button>
@@ -437,7 +439,8 @@ select.pv-input { height:26px; padding:1px 4px; }
 .pv-block.is-focus { background:var(--bg-soft); }
 .pv-models { flex:none; height:22px; padding:0 6px; font-size:11px; border-radius:var(--r-sm);
   border:1px solid var(--line); background:var(--card); color:var(--ink-dim); cursor:pointer; }
-.pv-models:hover { border-color:var(--main); color:var(--main); }
+.pv-models:hover { border-color:var(--main); color:var(--main); background:var(--main-soft); }
+.pv-caret-down { font-size:9px; opacity:.7; margin-left:2px; }
 .pv-get { max-width:96px; }
 .pv-test { flex:none; }
 /* 模型块：两个列表。窄（默认）上下两段，≥1100px 视口才并排（760px 内容列下两栏各 ~376px） */
