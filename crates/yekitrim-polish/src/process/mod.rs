@@ -3264,6 +3264,51 @@ y = "10%"
     /// ⚠️ 比的是**反序列化后的值**（`toml::Value` 树），不是文本 —— 文本会因为排版抖动
     /// （`to_toml_commented` 的注释/空行/键序）假红，而那跟"两趟结果不一样"是两件事。
     /// 不等时打印**第一处差异的字段路径**（只打印整份工程等于没判据）。
+    /// **只读诊断**：对**真实工程**跑体检（规格 §4 B1），逐条打 findings + 末尾按 kind 汇总。
+    ///
+    /// 为什么需要它：规格 §11 的风险缓解写着「C 批次先只报告，攒一轮真实片段数据再删」——
+    /// 没有这层口径，删 `cap_*` 降级就是盲删。它**绝不写盘**（不落 process-report.json）。
+    ///
+    /// 用法（`;` 分隔多个片段目录）：
+    /// `VT_POLISH_DIR=<dir1>;<dir2> cargo test -p yekitrim-polish --lib diagnose_audit -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn diagnose_audit() {
+        let raw = std::env::var("VT_POLISH_DIR")
+            .expect("要给 VT_POLISH_DIR=<片段目录>[;<目录>…]");
+        let mut totals: std::collections::BTreeMap<&'static str, usize> = Default::default();
+        let mut projects = 0usize;
+        let mut clean = 0usize;
+        for dir in raw.split(';').map(str::trim).filter(|s| !s.is_empty()) {
+            let path = Path::new(dir);
+            match project::load_project(path) {
+                Ok(cfg) => {
+                    projects += 1;
+                    let findings = audit::audit(&cfg);
+                    let segs = cfg.segments.len();
+                    println!("\n=== {} ===", path.display());
+                    println!("  段数 {segs}｜findings {}", findings.len());
+                    if findings.is_empty() {
+                        clean += 1;
+                        println!("  ✓ 0 项");
+                    }
+                    for f in &findings {
+                        *totals.entry(f.kind).or_default() += 1;
+                        println!("  [{}] @{:.2}s {}", f.kind, f.at, f.detail);
+                    }
+                }
+                Err(e) => println!("\n=== {} ===\n  ⚠ 读不了：{e}", path.display()),
+            }
+        }
+        println!("\n=== 汇总（{projects} 个工程，其中 {clean} 个干净）===");
+        if totals.is_empty() {
+            println!("  六项全 0 —— 真数据上一个都没踩到（那 C1 的降级就可以放心删）");
+        }
+        for (k, n) in &totals {
+            println!("  {k}: {n}");
+        }
+    }
+
     #[tokio::test]
     async fn diagnose_process_idempotent() {
         for tag in ["default", "mute", "edl", "manual", "rhythm"] {
