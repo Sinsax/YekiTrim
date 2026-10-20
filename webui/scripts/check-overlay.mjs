@@ -206,6 +206,68 @@ for (const c of FADE_CASES) {
   check(`[engine  ] ${c.name}`, engAt(c.evs, c.t, c.dur), c.want)
 }
 
+
+// ── hue（2026-10-20 由退役的 `hue_shift` 并入覆盖层）────────────────────────
+//
+// 曲线必须与老 `getHueShiftFlash` **逐点相同**：峰位 R = 0.15/0.95、峰值 0.25。
+// 期望值由**老公式**算（legacyHue），不用实现里的表达式 —— 否则等于自己证明自己。
+const HUE_DUR = 0.95
+const legacyHue = (dt) => (dt < 0.15 ? (0.25 * dt) / 0.15 : 0.25 * (1 - (dt - 0.15) / 0.8))
+
+const hueIdxTemplate = (evs) => ({ overlay: evs.map((ev) => ({ time: 0, duration: HUE_DUR, ev })) }).overlay
+const hueState = (which, evs, t) =>
+  which === 'template' ? tpl.getOverlayState(t, hueIdxTemplate(evs)) : engine.getOverlayState({ overlay: hueIdxTemplate(evs) }, t)
+
+const HUE_CASES = [0.0, 0.05, 0.15, 0.30, 0.60, 0.90].map((dt) => ({
+  name: `hue t=${dt}`,
+  evs: [{ overlay_type: 'hue', color: '#ff0040', end: HUE_DUR }],
+  t: dt,
+  want: { type: 'color', color: '#ff0040', opacity: legacyHue(dt) },
+}))
+HUE_CASES.push({
+  name: 'hue t=0.95 右边界（开区间）→ 不画',
+  evs: [{ overlay_type: 'hue', color: '#ff0040', end: HUE_DUR }],
+  t: HUE_DUR,
+  want: null,
+})
+HUE_CASES.push({
+  name: 'hue 同窗两条覆盖层 ⇒ 只画第一条（overlay 的既有语义）',
+  // 第一条是 color 档：t=0.2 落在 0.4s 淡入内 ⇒ opacity = 1 * 0.2/0.4 = 0.5
+  evs: [
+    { overlay_type: 'color', color: '#111111', end: HUE_DUR },
+    { overlay_type: 'hue', color: '#ff0040', end: HUE_DUR },
+  ],
+  t: 0.2,
+  want: { type: 'color', color: '#111111', opacity: 0.5 },
+})
+
+/** 带数值容差的比较：hue 的期望值由老公式算，浮点末位可能差 1 ulp。 */
+function checkNear(label, actual, expected, eps = 1e-9) {
+  const close = (a, b) => {
+    if (typeof a === 'number' && typeof b === 'number') return Math.abs(a - b) <= eps
+    if (a && b && typeof a === 'object' && typeof b === 'object') {
+      const ka = Object.keys(a).sort(), kb = Object.keys(b).sort()
+      if (ka.join() !== kb.join()) return false
+      return ka.every((k) => close(a[k], b[k]))
+    }
+    return a === b
+  }
+  if (close(actual, expected)) {
+    console.log(`  ok   ${label}`)
+  } else {
+    failed++
+    console.log(`  FAIL ${label}`)
+    console.log(`         实得: ${JSON.stringify(actual)}`)
+    console.log(`         期望: ${JSON.stringify(expected)}`)
+  }
+}
+
+console.log('\nhue（并入覆盖层；与老 hue_shift 逐点相等）')
+for (const c of HUE_CASES) {
+  checkNear(`[template] ${c.name}`, hueState('template', c.evs, c.t), c.want)
+  checkNear(`[engine  ] ${c.name}`, hueState('engine', c.evs, c.t), c.want)
+}
+
 console.log('\n色档 CSS（DOM 预览路径）')
 // 收尾 ')' 曾经漏掉，整条 background 非法被浏览器丢弃——这是"设了色档却什么都看不见"的直接原因
 const LIN = 'linear-gradient(to bottom right, #ff0000 0.0%,rgba(255,0,0,0) 100.0%)'
@@ -247,6 +309,73 @@ console.log('\n内建片头黑场已退役（改成了 overlay 的 fade_in / fad
 check('[template] index.html 无 intro-black（CSS/DOM/GSAP/求值器全算）', /intro[-_]?black/i.test(html), false)
 check('[engine  ] engine.js 无 introBlack', /introBlack/i.test(engineSrc), false)
 check('[preview ] PolishPreview.vue 无 introBlack', /introBlack/i.test(previewSrc), false)
+
+
+// ── hue 变异自证（--self-test）：**真改源码 → 重抠函数 → 跑同一份 HUE_CASES** ──────────
+//
+// 口径与 `check-yekitrim-translator --mutate` 同源：① `replace` 前先断言**命中恰好 1 处**
+// （没命中 = 变异没生效，不许静默）；② 变异体加载后**先跑一遍未变异对照**，确认对照仍绿
+// （否则"翻面"可能只是加载坏了）；③ 变异体必须**至少一条翻面**。
+if (process.argv.includes('--self-test')) {
+  console.log('\nhue 变异自证（真改源码）')
+  const near = (a, b, eps = 1e-9) => {
+    if (typeof a === 'number' && typeof b === 'number') return Math.abs(a - b) <= eps
+    if (a && b && typeof a === 'object' && typeof b === 'object') {
+      const ka = Object.keys(a).sort(), kb = Object.keys(b).sort()
+      if (ka.join() !== kb.join()) return false
+      return ka.every((k) => near(a[k], b[k], eps))
+    }
+    return a === b
+  }
+  const makeTpl = (src) =>
+    new Function(`${extractFunction(src, 'overlayFadeStop')}
+${extractFunction(src, 'overlayStops')}
+${extractFunction(src, 'overlayGradientCss')}
+${extractFunction(src, 'getOverlayState')}
+return { getOverlayState }`)()
+  const makeEng = (src) =>
+    new Function(`${extractFunction(src, 'overlayFadeStop')}
+${extractFunction(src, 'overlayStops')}
+${extractFunction(src, 'gradientCss')}
+${extractFunction(src, 'getOverlayState')}
+return { getOverlayState }`)()
+  const mismatchCount = (api, kind) => {
+    let bad = 0
+    for (const c of HUE_CASES) {
+      const items = hueIdxTemplate(c.evs)
+      const got = kind === 'template' ? api.getOverlayState(c.t, items) : api.getOverlayState({ overlay: items }, c.t)
+      if (!near(got, c.want)) bad++
+    }
+    return bad
+  }
+  const replaceOnce = (src, from, to, label) => {
+    const parts = src.split(from)
+    if (parts.length !== 2) {
+      failed++
+      console.log(`  FAIL [变异] ${label} → 替换命中 ${parts.length - 1} 处（必须恰好 1 处）`)
+      return null
+    }
+    console.log(`  ok   [变异] ${label} → 替换命中 1 处`)
+    return parts.join(to)
+  }
+  const controlTpl = makeTpl(html)
+  const controlEng = makeEng(engineSrc)
+  const baseTplBad = mismatchCount(controlTpl, 'template')
+  const baseEngBad = mismatchCount(controlEng, 'engine')
+  check('自证 · 未变异对照（模板）仍全绿', baseTplBad, 0)
+  check('自证 · 未变异对照（engine）仍全绿', baseEngBad, 0)
+
+  const mutTplSrc = replaceOnce(html, 'var HR = 0.15 / 0.95;', 'var HR = 0.20 / 0.95;', '模板峰位 0.15 → 0.20')
+  if (mutTplSrc) {
+    const bad = mismatchCount(makeTpl(mutTplSrc), 'template')
+    check('自证 · 模板变异体必须翻面（≥1 条不等）', bad > 0, true)
+  }
+  const mutEngSrc = replaceOnce(engineSrc, 'const R = 0.15 / 0.95', 'const R = 0.20 / 0.95', 'engine 峰位 0.15 → 0.20')
+  if (mutEngSrc) {
+    const bad = mismatchCount(makeEng(mutEngSrc), 'engine')
+    check('自证 · engine 变异体必须翻面（≥1 条不等）', bad > 0, true)
+  }
+}
 
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过')
 process.exit(failed ? 1 : 0)

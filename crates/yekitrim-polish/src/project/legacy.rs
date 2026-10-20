@@ -28,6 +28,12 @@ pub fn upgrade_toml_value(value: &toml::Value) -> anyhow::Result<Value> {
             retired.zoom_bounce
         );
     }
+    if retired.hue_shift > 0 {
+        tracing::info!(
+            "已退役 hue_shift：{} 条迁移成 overlay(overlay_type=\"hue\")（end 归一化为 time+0.95；下一次保存才落盘，本次不动磁盘）",
+            retired.hue_shift
+        );
+    }
     if retired.text_layer > 0 {
         tracing::info!(
             "已退役文字层：丢弃 {} 条（读时丢弃；下一次保存才落盘，本次不动磁盘）",
@@ -36,6 +42,10 @@ pub fn upgrade_toml_value(value: &toml::Value) -> anyhow::Result<Value> {
     }
     Ok(json)
 }
+
+/// `hue_shift` 的**固有窗口**（秒）。老实现（三端 `getHueShiftFlash`）里它是写死的，
+/// 迁移时用它把 `end` 归一化成 `time + 0.95`（新档按 `[time, end]` 归一化 ⇒ 曲线逐点相同）。
+pub use yekitrim_render_core::timeline::HUE_WINDOW_SECS;
 
 // ---------------------------------------------------------------------------
 // 已退役事件类型的读时迁移
@@ -51,6 +61,8 @@ pub fn upgrade_toml_value(value: &toml::Value) -> anyhow::Result<Value> {
 pub struct RetiredCounts {
     pub pulse: usize,
     pub zoom_bounce: usize,
+    /// **`hue_shift` → `overlay{overlay_type:"hue"}`** 的**改写**条数（不是丢弃）。
+    pub hue_shift: usize,
     /// **文字层**（`type="element"` + `kind="text"`，2026-10-20 退役）。
     /// ⚠️ 只数 `kind=text` 的 —— `kind=sticker` 的元素是**活的**，一个都不许动。
     pub text_layer: usize,
@@ -58,10 +70,13 @@ pub struct RetiredCounts {
 
 impl RetiredCounts {
     pub fn is_empty(&self) -> bool {
-        self.pulse == 0 && self.zoom_bounce == 0 && self.text_layer == 0
+        self.pulse == 0
+            && self.zoom_bounce == 0
+            && self.hue_shift == 0
+            && self.text_layer == 0
     }
     pub fn total(&self) -> usize {
-        self.pulse + self.zoom_bounce + self.text_layer
+        self.pulse + self.zoom_bounce + self.hue_shift + self.text_layer
     }
 }
 
@@ -96,6 +111,32 @@ fn migrate_retired_effects(value: &mut Value) -> RetiredCounts {
                                 counts.zoom_bounce += 1;
                             }
                             return false;
+                        }
+                        // **`hue_shift` 并入覆盖层**（2026-10-20 用户口径：「hue_shift 并入覆盖层」）。
+                        //
+                        // ⚠️ 这里**不是丢弃、是改写**：`Overlay` 的字段是 `HueShift` 的**超集**
+                        //    （time/end/color/anchor/sfx/sfx_volume 一一对应），所以六个字段**逐值搬**；
+                        //    `end` 归一化成 `time + 0.95` —— 老实现（`getHueShiftFlash`）**只认 time、
+                        //    窗口写死 0.95s，从来没读过 end** ⇒ 改它不丢任何观感，而新档是靠
+                        //    `[time, end]` 归一化的（overlay 只有一套窗口契约）。
+                        if kind == "hue_shift" {
+                            let time = item.get("time").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                            if let Some(map) = item.as_object_mut() {
+                                map.insert(
+                                    "type".to_string(),
+                                    Value::String("overlay".to_string()),
+                                );
+                                map.insert(
+                                    "overlay_type".to_string(),
+                                    Value::String("hue".to_string()),
+                                );
+                                map.insert(
+                                    "end".to_string(),
+                                    serde_json::json!(time + HUE_WINDOW_SECS),
+                                );
+                            }
+                            counts.hue_shift += 1;
+                            return true; // 留着（已改写成 overlay）
                         }
                         // **文字层退役**（2026-10-20 用户口径：「算了，删除文字层吧」）。
                         //
@@ -293,6 +334,55 @@ color = "#ffffff"
         assert_eq!(a.as_array().unwrap().len(), 2, "只少了退役的两条");
     }
 
+
+    /// **`hue_shift` → `overlay{overlay_type:"hue"}`**：六个字段**逐值搬** + `end` 归一化成 `time+0.95`。
+    ///
+    /// 变异自证：把 `ends` 归一化那行删掉 ⇒ end 断言红；把六个字段里任一个不搬（如不写 overlay_type）⇒ 红。
+    #[test]
+    fn hue_shift_migrates_into_overlay_hue() {
+        let raw = r##"
+[[segments]]
+start = 0.0
+end = 20.0
+
+[[segments.events]]
+type = "hue_shift"
+time = 3.0
+end = 3.4
+color = "#12ab34"
+anchor = "liver"
+sfx = "poka"
+sfx_volume = 0.6
+"##;
+        let toml_value: toml::Value = toml::from_str(raw).unwrap();
+        let json = upgrade_toml_value(&toml_value).unwrap();
+        let ev = &json["segments"][0]["events"][0];
+        assert_eq!(ev["type"], serde_json::json!("overlay"));
+        assert_eq!(ev["overlay_type"], serde_json::json!("hue"));
+        assert_eq!(ev["time"], serde_json::json!(3.0));
+        assert_eq!(
+            ev["end"],
+            serde_json::json!(3.0 + HUE_WINDOW_SECS),
+            "end 必须归一化成 time + 0.95（老实现从不读 end）"
+        );
+        assert_eq!(ev["color"], serde_json::json!("#12ab34"), "color 逐值搬");
+        assert_eq!(ev["anchor"], serde_json::json!("liver"), "anchor 逐值搬");
+        assert_eq!(ev["sfx"], serde_json::json!("poka"), "sfx 逐值搬");
+        assert_eq!(ev["sfx_volume"], serde_json::json!(0.6), "sfx_volume 逐值搬");
+        // 能真的反序列化成 Overlay（老文件必须打得开）
+        let segs: Vec<crate::project::Segment> =
+            serde_json::from_value(json["segments"].clone()).expect("迁移后必须读得出来");
+        assert!(matches!(segs[0].events[0], crate::project::Event::Overlay { .. }));
+        // 幂等：再跑一次不产生第二个 hue_shift 计数
+        let mut again = json.clone();
+        let c2 = migrate_retired_effects(&mut again);
+        assert_eq!(c2.hue_shift, 0, "迁移幂等");
+        assert_eq!(
+            serde_json::to_string(&again).unwrap(),
+            serde_json::to_string(&json).unwrap(),
+            "再跑一次一个字节都不许变"
+        );
+    }
     /// ★ R4：**不含**退役类型的工程 ⇒ 与「什么都不做」逐字节相同。
     ///
     /// 比较的是升级后 JSON 的**序列化文本**（比 Value 相等更严：键集合/值/嵌套一个都不许动）。

@@ -5204,6 +5204,29 @@ export function translate(config, clipDir, outPath, options = {}) {
             break;
           }
 
+          if (ot === 'hue') {
+            const raw =
+              (typeof event.color === 'string' && event.color.trim()) || '#ff0040';
+            const col = hexColor(raw);
+            if (!col) {
+              drop(where, `overlay_type="hue"：颜色解析不了（${raw}）`);
+              break;
+            }
+            // 与三端求值器**逐点同曲线**：峰位 R = 0.15/0.95、峰值 0.25；
+            // 窗口 = 事件跨度（读时迁移已把它归一化成 0.95s）。
+            const R = 0.15 / 0.95;
+            const hueEnv = (dt) => {
+              const frac = durSec <= 0 ? 0 : dt / durSec;
+              const env = frac < R ? 0.25 * frac / R : 0.25 * (1 - (frac - R) / (1 - R));
+              return Math.max(0, Math.min(1, baseOpacity * env));
+            };
+            if (placeEnvelope(startFrame, durSec, solidEffect(col), hueEnv, where)) {
+              overlayEventCount += 1;
+            }
+            note(where, `hue 覆盖层 ${raw}（峰值 0.25，窗口 ${durSec.toFixed(2)}s）`);
+            break;
+          }
+
           if (ot === 'color') {
             const raw =
               (typeof event.color === 'string' && event.color.trim()) || String(colors[0] ?? '');

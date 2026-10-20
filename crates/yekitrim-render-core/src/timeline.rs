@@ -753,6 +753,13 @@ pub fn overlay_stops(color: &Option<String>, colors: &Option<Vec<String>>) -> Op
 /// 2026-09-22 提出要能自己改）。现在由 `process` 在首段补一条 `fade_in` 事件表达：它出现在
 /// 时间轴上，可拖、可改时长、可换色、可删。内建那套**已整条退役**（本文件、出片模板、
 /// `engine.js`、`PolishPreview.vue`、wgpu effects 同步删），别再往回加。
+/// `overlay{overlay_type:"hue"}` 的**缺省窗口**（秒）。
+///
+/// 老 `hue_shift`（三端 `getHueShiftFlash`）的窗口是**写死 0.95s**、只认 `time`；
+/// 2026-10-20 并入 overlay 之后窗口改由 `[time, end]` 决定，而读时迁移会把 `end` 归一化成
+/// `time + 0.95` ⇒ 曲线与老实现**逐点相同**。手写 `overlay{hue}` 不写 `end` 时用这个缺省。
+pub const HUE_WINDOW_SECS: f64 = 0.95;
+
 pub fn get_overlay_state(t: f64, items: &[IndexedEvent]) -> Option<OverlayState> {
     for o in items {
         let et = o.time;
@@ -778,6 +785,38 @@ pub fn get_overlay_state(t: f64, items: &[IndexedEvent]) -> Option<OverlayState>
         else {
             continue;
         };
+        // **hue 档**（2026-10-20 由退役的 `hue_shift` 并入）：整帧纯色 + **归一化包络**。
+        //
+        // ⚠️ 曲线必须与老 `get_hue_shift_flash` **逐点相同**：峰位 `R = 0.15/0.95`、
+        //    峰值 0.25；`frac < R` 线性升、之后线性落到 0；`frac ∉ [0,1)` 由上面的窗口判断挡掉。
+        //    ⇒ 迁移把 `end` 归一化成 `time+0.95` 之后，两者在任意时刻都相等（有单测钉住 5 点 + 边界）。
+        // ⚠️ 它与 `color` 档**共用同一套落点**（返回 `OverlayState::Color`）——"一档覆盖层"的语义：
+        //    同一时刻有多条覆盖层时**只画第一条**（与其它档一致，别在这里新造一条例外）。
+        if overlay_type == "hue" {
+            let hdur = match &o.ev {
+                Event::Overlay { end, .. } => end
+                    .map(|e| e - o.time)
+                    .filter(|d| *d > 0.0)
+                    .unwrap_or(HUE_WINDOW_SECS),
+                _ => HUE_WINDOW_SECS,
+            };
+            let frac = (t - o.time) / hdur;
+            let r = 0.15 / HUE_WINDOW_SECS;
+            let env = if frac < r {
+                0.25 * frac / r
+            } else {
+                0.25 * (1.0 - (frac - r) / (1.0 - r))
+            };
+            let col = color
+                .as_ref()
+                .map(|c| c.trim().to_string())
+                .filter(|c| !c.is_empty())
+                .unwrap_or_else(|| "#ff0040".to_string());
+            return Some(OverlayState::Color {
+                color: col,
+                opacity: (opacity * env).clamp(0.0, 1.0),
+            });
+        }
         let stops = overlay_stops(color, colors);
         if overlay_type == "fade_in" || overlay_type == "fade_out" {
             // 整窗线性斜坡：窗口就是过渡，不叠 0.4s 包络（叠了会变成"两头各一段缓入缓出"）
@@ -1224,6 +1263,98 @@ mod tests {
             &color.map(|c| c.to_string()),
             &colors.map(|v| v.into_iter().map(|c| c.to_string()).collect()),
         )
+    }
+
+    // ── hue 并入覆盖层（2026-10-20）：与老 getHueShiftFlash 逐点相等 ────────────────
+
+    fn legacy_hue(t: f64) -> Option<(f64, String)> {
+        let items = vec![IndexedEvent {
+            time: 0.0,
+            duration: 0.95,
+            ev: Event::HueShift {
+                time: 0.0,
+                color: Some("#ff0040".into()),
+                end: Some(0.95),
+                anchor: None,
+                sfx: None,
+                sfx_volume: None,
+            },
+        }];
+        get_hue_shift_flash(t, &items).map(|f| (f.opacity, f.color))
+    }
+
+    fn hue_at(items: &[IndexedEvent], t: f64) -> Option<(f64, String)> {
+        match get_overlay_state(t, items) {
+            Some(OverlayState::Color { color, opacity }) => Some((opacity, color)),
+            other => panic!("t={t}: hue 档必须返回 Color，实得 {other:?}"),
+        }
+    }
+
+    /// **曲线逐点相等**（5 点 + 两个边界）：迁移后的 `overlay{hue}` 与老 `hue_shift` 必须同值。
+    ///
+    /// 变异自证：把峰位 `0.15/0.95` 改成 `0.20/0.95` ⇒ 0.05/0.15 两点当场不等 ⇒ 红。
+    #[test]
+    fn hue_overlay_matches_legacy_hue_shift_at_sample_points() {
+        let items = vec![IndexedEvent {
+            time: 0.0,
+            duration: 0.95,
+            ev: overlay_ev(0.0, 0.95, "hue", Some("#ff0040"), None),
+        }];
+        for t in [0.0, 0.05, 0.15, 0.30, 0.60, 0.90] {
+            let old = legacy_hue(t).expect("老实现窗口内应当有值");
+            let new = hue_at(&items, t).expect("新档窗口内应当有值");
+            assert!(
+                (old.0 - new.0).abs() < 1e-9,
+                "t={t}: 老 {} vs 新 {}（曲线漂了）",
+                old.0,
+                new.0
+            );
+            assert_eq!(old.1, new.1, "t={t}: 颜色必须一致");
+        }
+        // 边界 ①：t == time 恰为 0（老实现与新的都得是 0，不是 None）
+        assert_eq!(hue_at(&items, 0.0).unwrap().0, 0.0);
+        // 边界 ②：t == time + 0.95 恰为 null（窗口右开，与老三端同口径）
+        assert!(get_overlay_state(0.95, &items).is_none(), "窗口右边界必须是开区间");
+        assert!(legacy_hue(0.95).is_none());
+    }
+
+    /// **`end` 缺失 ⇒ 缺省 0.95s**（手写 `overlay{hue}` 不写 end 也要能用）。
+    #[test]
+    fn hue_overlay_defaults_to_0_95_when_end_missing() {
+        let mut ev = overlay_ev(0.0, 0.95, "hue", Some("#ff0040"), None);
+        if let Event::Overlay { end, .. } = &mut ev {
+            *end = None;
+        }
+        let items = vec![IndexedEvent { time: 0.0, duration: 0.95, ev }];
+        for t in [0.05, 0.15, 0.30, 0.60, 0.90] {
+            let old = legacy_hue(t).expect("老值");
+            let new = hue_at(&items, t).expect("缺 end 也要落到缺省 0.95");
+            assert!((old.0 - new.0).abs() < 1e-9, "t={t}: 缺省窗口下曲线必须同值");
+        }
+    }
+
+    /// **同窗多条覆盖层 ⇒ 只画第一条**（overlay 的既有语义；hue 并入后自然也这样）。
+    ///
+    /// 这不是回归：迁移前 `hue_shift` 在**独立桶**里画，所以「同一时刻既有 hue 又有 overlay」
+    /// 是两条都画；`hue` 并入 overlay 之后二者同桶 ⇒ 只画第一条（一档覆盖层）。
+    /// ⚠️ 第二段断言「第一条在窗外 ⇒ 画第二条」是**防止顺序巧合**：只断言"画第一条"时，
+    ///    "永远取列表第一条"也能满足它。
+    #[test]
+    fn overlay_takes_only_the_first_in_window_event() {
+        let both = vec![
+            IndexedEvent { time: 0.0, duration: 1.0, ev: overlay_ev(0.0, 1.0, "color", Some("#111111"), None) },
+            IndexedEvent { time: 0.0, duration: 1.0, ev: overlay_ev(0.0, 1.0, "hue", Some("#ff0040"), None) },
+        ];
+        let (_, first_color) = hue_at(&both, 0.2).expect("第一条应当画出来");
+        assert_eq!(first_color, "#111111", "同窗只画第一条");
+        // 第一条在窗外（t=2.0 时它的窗口 0..1 已过）⇒ 必须画第二条 hue
+        let late = vec![
+            IndexedEvent { time: 0.0, duration: 1.0, ev: overlay_ev(0.0, 1.0, "color", Some("#111111"), None) },
+            IndexedEvent { time: 1.5, duration: 1.0, ev: overlay_ev(1.5, 1.0, "hue", Some("#ff0040"), None) },
+        ];
+        let (op, second_color) = hue_at(&late, 2.0).expect("第二条应当画出来");
+        assert_eq!(second_color, "#ff0040");
+        assert!(op > 0.0);
     }
 
     #[test]

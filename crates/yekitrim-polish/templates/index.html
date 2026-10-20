@@ -1468,7 +1468,9 @@ function init(){
       camera: [], sticker: [], shake: [],
       flash: [], blur: [], overlay: [], sfx: [],
       vignette: [],
-      hue_shift: [], noise: [], pulse: [],
+      // `hue_shift` 已退役（2026-10-20，并入覆盖层）：事件读时迁移成 `overlay{hue}`，
+      // 这里不再建桶（与 engine.js 的 `INDEXED_TYPES` 同集合）。
+      noise: [], pulse: [],
       element: [],
     };
     var eLayer = document.getElementById('emoji-layer');
@@ -1496,7 +1498,9 @@ function init(){
       });
     });
     // sort by time (sticker keep DOM creation order)
-    ['camera','shake','flash','blur','overlay','vignette','hue_shift','noise','pulse','sfx','element'].forEach(function(k) {
+    // `hue_shift` 已退役（2026-10-20，并入覆盖层）：事件读时迁移成 `overlay{hue}`，
+    // 索引不再单独建桶（与 webui/src/polish/engine.js 的 `INDEXED_TYPES` 同步删）。
+    ['camera','shake','flash','blur','overlay','vignette','noise','pulse','sfx','element'].forEach(function(k) {
       idx[k].sort(function(a,b) { return a.time - b.time; });
     });
     // 字幕/弹幕轨的眼睛：关掉就是"这一帧没有它"，素材一个字都没动
@@ -1765,6 +1769,17 @@ function init(){
         var opacity = typeof ev.opacity === 'number' ? ev.opacity : 1;
         var ot = ev.overlay_type || '';
         var stops = overlayStops(ev);
+        // hue 档（2026-10-20 由退役的 hue_shift 并入）：整帧纯色 + 归一化包络。
+        // ⚠️ 与老 getHueShiftFlash 逐点相同：峰位 R = 0.15/0.95、峰值 0.25；frac<R 线性升、之后线性落到 0。
+        // ⚠️ 与 color 档共用同一套落点（返回 type:'color'）—— 一档覆盖层语义：同一时刻多条只画第一条。
+        if (ot === 'hue') {
+          var hd = (typeof ev.end === 'number' && ev.end > et) ? (ev.end - et) : 0.95;
+          var hf = (t - et) / hd;
+          var HR = 0.15 / 0.95;
+          var henv = hf < HR ? 0.25 * hf / HR : 0.25 * (1 - (hf - HR) / (1 - HR));
+          var hcol = (ev.color != null && String(ev.color).trim()) || '#ff0040';
+          return { type: 'color', color: hcol, opacity: Math.max(0, Math.min(1, opacity * henv)) };
+        }
         // fade_in/fade_out：**整窗就是过渡本身**（fade_in 起点全遮 → 末端全透，fade_out 反过来），
         // 是线性斜坡，**不叠**下面那 0.4s 进出包络 —— 叠了起点会乘成 0，黑场压根打不开
         // （用户看到的症状就是「开头渐入没生效」）。与 Rust `get_overlay_state` / engine.js 同口径。
@@ -2105,15 +2120,9 @@ function init(){
       ctx.restore();
     }
 
-    // ---- hue_shift flash ----
-    var hueFl = getHueShiftFlash(t, idx.hue_shift);
-    if (hueFl) {
-      ctx.save();
-      ctx.globalAlpha = hueFl.opacity;
-      ctx.fillStyle = hueFl.color;
-      ctx.fillRect(0, 0, CW, CH);
-      ctx.restore();
-    }
+    // ---- hue_shift：已退役（2026-10-20，并入覆盖层）----
+    // 老事件在读时迁移成 `overlay{overlay_type:"hue"}`，由下面那段 overlay 绘制（同一条通道、
+    // 同一套归一化包络）⇒ 这里不再单画一次（画两遍就是双倍色罩）。
 
     // ---- overlay ----
     var ov = getOverlayState(t, idx.overlay);
