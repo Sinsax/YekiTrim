@@ -13,11 +13,19 @@ pub fn upgrade_toml_value(value: &toml::Value) -> anyhow::Result<Value> {
     let mut json = serde_json::to_value(value)?;
     upgrade_event_times(&mut json);
     strip_retired_keys(&mut json);
-    let migrated = migrate_retired_effects(&mut json);
-    if migrated > 0 {
+    let retired = migrate_retired_effects(&mut json);
+    // 日志要**点名、给数**（用户口径：不许静默丢）。只改内存里的值 —— 下一次保存才落盘，
+    // 本次不动磁盘上的 polish.toml（与 `upgrade_event_times` 同一条规矩）。
+    if retired.pulse > 0 {
         tracing::info!(
-            "已把 {migrated} 条已退役的 `zoom_bounce` 事件读时迁移成 `pulse`\
-             （只改内存里的值；下一次保存才落盘，本次不动磁盘上的 polish.toml）"
+            "已退役 pulse：丢弃 {} 条（读时丢弃；下一次保存才落盘，本次不动磁盘）",
+            retired.pulse
+        );
+    }
+    if retired.zoom_bounce > 0 {
+        tracing::info!(
+            "已退役 zoom_bounce：丢弃 {} 条（同上）",
+            retired.zoom_bounce
         );
     }
     Ok(json)
@@ -27,88 +35,78 @@ pub fn upgrade_toml_value(value: &toml::Value) -> anyhow::Result<Value> {
 // 已退役事件类型的读时迁移
 // ---------------------------------------------------------------------------
 
-/// 退役的瞬时运镜类型 `zoom_bounce`。
+/// **已退役事件类型的读时丢弃**计数（分类，便于日志点名与用例断言）。
 ///
-/// 它曾与 `pulse` **并存**，而两者在出片模板里是**同一个槽**：
-/// `finalZoom = Math.max(getZoomBounce(...), getPulse(...))`，都乘在 `curZoom` 上
-/// （见 2026-10-01 之前 `templates/index.html` 的 `getZoomBounce`）。
-const RETIRED_ZOOM_BOUNCE: &str = "zoom_bounce";
+/// 2026-10-20 用户口径：「pulse 这个效果删除」。它原本与 `zoom_bounce` 共用同一个缩放槽
+/// （`Math.max(zbZoom, plZoom)` 都乘在 `curZoom` 上），所以**两条一起退役**、都不给迁移目标：
+/// 1.06 的脉冲本来就看不太出来（这正是用户要删它的原因），而 `Camera` 没有 `sfx`/`sfx_volume`、
+/// 又是**持续状态**，迁成运镜得成对生成推/回位事件 + 补音效事件 ⇒ 事件翻倍还会改镜头节奏。
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct RetiredCounts {
+    pub pulse: usize,
+    pub zoom_bounce: usize,
+}
 
-/// 迁移目标：现役里语义**最近**的那一个（同为「瞬时运镜放大」，乘在运镜 zoom 上）。
-const MIGRATED_ZOOM_BOUNCE_TO: &str = "pulse";
+impl RetiredCounts {
+    pub fn is_empty(&self) -> bool {
+        self.pulse == 0 && self.zoom_bounce == 0
+    }
+    pub fn total(&self) -> usize {
+        self.pulse + self.zoom_bounce
+    }
+}
 
-/// **已退役事件类型 `zoom_bounce` → `pulse` 的读时迁移**（返回迁移条数）。
+/// 已退役的事件类型名（读时**丢弃**，不是改写）。
+const RETIRED_EVENT_TYPES: [&str; 2] = ["pulse", "zoom_bounce"];
+
+/// **已退役事件类型的读时丢弃**：老工程里的 `pulse` / `zoom_bounce` 事件在读的时候就摘掉，
+/// 并**按类型计数**（调用方据此打日志，见 `upgrade_toml_value`）。
 ///
-/// # 为什么是 `pulse`（而不是继续拒载）
+/// # 为什么是"丢弃"而不是迁移
 ///
-/// 两者是**同一条通道**上的同一件事，只是曲线不同：
+/// - `pulse`：×1.06 / ×0.97 / 0.48s 的整帧缩放脉冲。迁成运镜 `zoom="微"` 的话：
+///   ① `Camera` **没有** `sfx` / `sfx_volume`（要保音效得再生成一条 sfx 事件）；
+///   ② camera 是**持续状态**、pulse 是**瞬时包络** ⇒ 还得成对生成"推 + 回位"。
+///   两条加起来 = 事件数翻倍 + 改掉镜头节奏，而 1.06 本来就看不太出来 ⇒ **退役、不给目标**。
+/// - `zoom_bounce`：它原本就是"同槽的更弱版本"，目标没了，跟着一起丢。
 ///
-/// | | `zoom_bounce`（已退役） | `pulse`（现役） |
-/// |---|---|---|
-/// | 乘在哪 | `curZoom`（运镜 zoom） | `curZoom`（运镜 zoom） |
-/// | 窗口 | 0.30s | 0.48s |
-/// | 曲线 | `dt < 0.08 → ×1.10`，之后回 1.0 | `dt < 0.12 → ×1.06`；`dt < 0.28 → ×0.97`；之后 1.0 |
-/// | `time` / `end` / `sfx` | 同一组字段 | 同一组字段（另有 `anchor` / `sfx_volume`） |
+/// ⚠️ **枚举变体留着**（`Event::Pulse` / 老类型名不进 serde 的 `deny_unknown_fields` 面）——
+/// 删变体会让老文件**直接打不开**，而这是 R4 的红线。读时丢掉是唯一安全形态。
 ///
-/// 退役前那一版模板里两者是 `Math.max(zbZoom, plZoom)` —— **同一个缩放槽的两个来源**，
-/// 所以把 `zoom_bounce` 折进 `pulse` 不换通道、不挪层级。
-///
-/// # 映射时**丢了什么**（如实写，别以为是无损迁移）
-///
-/// 1. **峰值 1.10 → 1.06**：迁移后那一下「弹」会**弱一点**（1.10 / 1.06 ≈ 1.04 倍差距）。
-/// 2. **波形不同**：老的是一段 80ms 平顶再直接回 1.0；新的是 120ms ×1.06 → 160ms **×0.97（下沉）**
-///    → 1.0。**这个下沉是老的没有的**，总窗口也从 0.30s 拉到 0.48s。
-/// 3. `end` 两条曲线都**不读**（都按 `time` + 固定窗口算），所以用户写的 `end`
-///    （实测 `end - time` = 0.4s / 0.6s）在迁移前后同样只起「时长登记」作用 —— 这一项没损失。
-///
-/// # 为什么只改 `type`、其余键原样带过去
-///
-/// `Pulse` 的字段是 `zoom_bounce` 的**超集**（`time` / `end` / `sfx` 一一对应，
-/// 另有 `anchor` / `sfx_volume`），而 `Event` 是 `#[serde(tag = "type")]` 且**没有**
-/// `deny_unknown_fields` ⇒ 老工程里若还留着别的键，反序列化会**忽略**而不是报错。
-/// 所以**不删键**：删了就成了「迁移时替用户丢数据」，而这是读时迁移最不该做的事。
-///
-/// # 范围
-///
-/// 只迁移 `zoom_bounce` 一条。`split` / `stutter` / `color_shift` **没有现役等价物**
-/// （它们不在缩放通道上），仍由 `validate.rs::retired_effect_message` 拒载并给人话 ——
-/// 别把这条迁移扩成「什么都往最近邻塞」。
-fn migrate_retired_effects(value: &mut Value) -> usize {
-    fn walk(value: &mut Value, migrated: &mut usize) {
+/// ⚠️ 只认 `type`（事件的 tag），**别顺带改 `kind`**：`[[edl.clips]]` 与封面特效用的也是 kind。
+fn migrate_retired_effects(value: &mut Value) -> RetiredCounts {
+    fn walk(value: &mut Value, counts: &mut RetiredCounts) {
         match value {
+            Value::Array(items) => {
+                items.retain_mut(|item| {
+                    if let Some(kind) = item.get("type").and_then(|t| t.as_str()) {
+                        if RETIRED_EVENT_TYPES.contains(&kind) {
+                            if kind == "pulse" {
+                                counts.pulse += 1;
+                            } else {
+                                counts.zoom_bounce += 1;
+                            }
+                            return false;
+                        }
+                    }
+                    walk(item, counts);
+                    true
+                });
+            }
             Value::Object(map) => {
-                // 判据与 `upgrade_event_times` 同源：**有 `type` 且是字符串**才算事件。
-                // 只认 `type`，别顺带改 `kind`（`[[edl.clips]]` 与封面特效用的也是 kind）。
-                let hit = matches!(
-                    map.get("type"),
-                    Some(Value::String(kind)) if kind == RETIRED_ZOOM_BOUNCE
-                );
-                if hit {
-                    map.insert(
-                        "type".to_string(),
-                        Value::String(MIGRATED_ZOOM_BOUNCE_TO.to_string()),
-                    );
-                    *migrated += 1;
-                }
                 for (_, v) in map.iter_mut() {
                     if v.is_array() || v.is_object() {
-                        walk(v, migrated);
+                        walk(v, counts);
                     }
-                }
-            }
-            Value::Array(items) => {
-                for item in items.iter_mut() {
-                    walk(item, migrated);
                 }
             }
             _ => {}
         }
     }
-    let mut migrated = 0usize;
-    walk(value, &mut migrated);
-    migrated
+    let mut counts = RetiredCounts::default();
+    walk(value, &mut counts);
+    counts
 }
-
 /// 把**已经下线的配置键**在读的时候吞掉（2026-10-01，Phase ③）。
 ///
 /// ⚠️ **为什么不能直接删字段**：`SubtitleStyle` 上有 `#[serde(deny_unknown_fields)]`
@@ -194,12 +192,11 @@ entrance = "cycle-5"
     }
 
     // -----------------------------------------------------------------------
-    // `zoom_bounce` → `pulse` 的读时迁移（2026-10-19）
+    // 已退役事件类型的读时丢弃：`pulse` / `zoom_bounce`（2026-10-20）
     // -----------------------------------------------------------------------
 
-    /// 一份**含 `zoom_bounce`** 的工程 TOML：老工程里实际长这样（取自用户工程的实测形状：
-    /// 只有 `type` / `time` / `end` / `sfx` 四个键）。
-    const LEGACY_ZOOM_BOUNCE_TOML: &str = r##"
+    /// 一份**含两种退役类型**的老工程 TOML（真实工程的形状：只有 type/time/end/sfx）。
+    const LEGACY_RETIRED_TOML: &str = r##"
 [[segments]]
 start = 0.0
 end = 30.0
@@ -217,65 +214,65 @@ end = 10.5
 sfx = "poka"
 
 [[segments.events]]
+type = "pulse"
+time = 12.0
+end = 12.4
+
+[[segments.events]]
 type = "flash"
 time = 20.0
 end = 20.4
 color = "#ffffff"
 "##;
 
-    /// ★ 核心判据：含 `zoom_bounce` 的工程 ⇒ 解析出来是 `Pulse`，且**时间与音效都在**。
+    /// ★ 核心判据：**含 `pulse` / `zoom_bounce` 的老文件能打开**，那两条被**丢弃**、并**分类计数**。
+    ///
+    /// 变异自证：把 `migrate_retired_effects` 里的丢弃分支去掉 ⇒ 这里会解析失败/条数不对 ⇒ 红。
     #[test]
-    fn zoom_bounce_migrates_to_pulse() {
-        let toml_value: toml::Value = toml::from_str(LEGACY_ZOOM_BOUNCE_TOML).unwrap();
+    fn retired_events_are_dropped_and_counted() {
+        let toml_value: toml::Value = toml::from_str(LEGACY_RETIRED_TOML).unwrap();
         let json = upgrade_toml_value(&toml_value).unwrap();
         let segs: Vec<crate::project::Segment> =
-            serde_json::from_value(json["segments"].clone()).expect("迁移之后必须读得出来");
+            serde_json::from_value(json["segments"].clone()).expect("丢弃之后必须读得出来");
         let events = &segs[0].events;
-        assert_eq!(events.len(), 3, "迁移不许增删事件");
-        assert!(
-            matches!(
-                &events[1],
-                crate::project::Event::Pulse { .. }
-            ),
-            "zoom_bounce 必须变成 Pulse，实际：{:?}",
-            events[1]
-        );
-        // 事件级字段逐个对上（这是「内容不丢」的判据，不只是类型名对不对）
-        let (time, end, sfx) = match &events[1] {
-            crate::project::Event::Pulse { time, end, sfx, .. } => (*time, *end, sfx.clone()),
-            other => panic!("应当是 Pulse：{other:?}"),
-        };
-        assert_eq!(time, 9.9);
-        assert_eq!(end, Some(10.5));
-        assert_eq!(sfx.as_deref(), Some("poka"));
-        // 落盘形态也必须是 `pulse`（不能只在内存里对）
-        let serialized = serde_json::to_string(&events[1]).unwrap();
-        assert!(serialized.contains("\"type\":\"pulse\""), "序列化必须是 pulse：{serialized}");
-        assert!(!serialized.contains("zoom_bounce"), "序列化不许残留退役类型：{serialized}");
+        assert_eq!(events.len(), 2, "两条退役的都要丢掉，其余保留");
+        assert!(matches!(events[0], crate::project::Event::Camera { .. }));
+        assert!(matches!(events[1], crate::project::Event::Flash { .. }));
+        // 落盘形态也不许残留退役类型名
+        let serialized = serde_json::to_string(events).unwrap();
+        assert!(!serialized.contains("pulse"), "序列化不许残留 pulse：{serialized}");
+        assert!(!serialized.contains("zoom_bounce"), "序列化不许残留 zoom_bounce：{serialized}");
     }
 
-    /// 同一份工程里**别的事件一个字段都没动**（迁移不是整份重写）。
+    /// **计数**要对：调用方靠它打「已退役 pulse：丢弃 N 条」（用户口径：不许静默丢）。
     #[test]
-    fn migration_leaves_other_events_untouched() {
-        let toml_value: toml::Value = toml::from_str(LEGACY_ZOOM_BOUNCE_TOML).unwrap();
-        // 升级前的原样（`upgrade_toml_value` 之前的形状）
+    fn retired_counts_are_classified() {
+        let toml_value: toml::Value = toml::from_str(LEGACY_RETIRED_TOML).unwrap();
+        let mut json = serde_json::to_value(&toml_value).unwrap();
+        upgrade_event_times(&mut json);
+        let counts = migrate_retired_effects(&mut json);
+        assert_eq!(counts.pulse, 1);
+        assert_eq!(counts.zoom_bounce, 1);
+        assert_eq!(counts.total(), 2);
+        assert!(!counts.is_empty());
+        // 幂等：再跑一次什么都不剩
+        let again = migrate_retired_effects(&mut json);
+        assert!(again.is_empty(), "第二次必须 0（迁移幂等）");
+    }
+
+    /// 别的事件**一个字段都没动**（丢弃不是整份重写）。
+    #[test]
+    fn dropping_retired_events_leaves_others_untouched() {
+        let toml_value: toml::Value = toml::from_str(LEGACY_RETIRED_TOML).unwrap();
         let before = serde_json::to_value(&toml_value).unwrap();
         let after = upgrade_toml_value(&toml_value).unwrap();
-        let events_of = |v: &Value| v["segments"][0]["events"].clone();
-        let (b, a) = (events_of(&before), events_of(&after));
-        for i in [0usize, 2] {
-            assert_eq!(
-                b[i], a[i],
-                "第 {i} 条事件（非 zoom_bounce）必须逐字段不变"
-            );
-        }
-        // 反向：中间那条**必须**变了（否则上面两条断言可能空转）
-        assert_ne!(b[1], a[1], "zoom_bounce 那一条必须被改写");
-        assert_eq!(a[1]["type"], Value::String("pulse".into()));
-        assert_eq!(b[1]["type"], Value::String("zoom_bounce".into()));
+        let (b, a) = (before["segments"][0]["events"].clone(), after["segments"][0]["events"].clone());
+        assert_eq!(b[0], a[0], "camera 那条逐字段不变");
+        assert_eq!(b[3], a[1], "flash 那条逐字段不变（丢掉两条之后它挪到 index 1）");
+        assert_eq!(a.as_array().unwrap().len(), 2, "只少了退役的两条");
     }
 
-    /// ★ R4：**不含** `zoom_bounce` 的工程 ⇒ 与「什么都不做」逐字节相同。
+    /// ★ R4：**不含**退役类型的工程 ⇒ 与「什么都不做」逐字节相同。
     ///
     /// 比较的是升级后 JSON 的**序列化文本**（比 Value 相等更严：键集合/值/嵌套一个都不许动）。
     #[test]
@@ -292,7 +289,7 @@ end = 5.0
 zoom = "中"
 
 [[segments.events]]
-type = "pulse"
+type = "blur"
 time = 9.9
 end = 10.5
 sfx = "poka"
@@ -307,13 +304,18 @@ font = "LXGW WenKai"
         assert_eq!(plain, upgraded, "不含退役类型的工程必须逐字节不变（R4）");
     }
 
-    /// 老工程**同时**写 `duration` 与 `zoom_bounce`：两处升级必须叠加（先算 end、再改 type）。
+    /// 老工程**同时**写 `duration` 与退役类型：先算 end、再丢事件，别把别的字段搞坏。
     #[test]
-    fn zoom_bounce_with_legacy_duration_gets_both_upgrades() {
+    fn retired_event_with_legacy_duration_is_still_dropped() {
         let raw = r#"
 [[segments]]
 start = 0.0
 end = 30.0
+
+[[segments.events]]
+type = "camera"
+time = 1.0
+duration = 4.0
 
 [[segments.events]]
 type = "zoom_bounce"
@@ -324,12 +326,14 @@ duration = 0.6
         let json = upgrade_toml_value(&toml_value).unwrap();
         let segs: Vec<crate::project::Segment> =
             serde_json::from_value(json["segments"].clone()).unwrap();
+        assert_eq!(segs[0].events.len(), 1, "退役那条要丢掉");
         match &segs[0].events[0] {
-            crate::project::Event::Pulse { time, end, .. } => {
-                assert_eq!(*time, 9.9);
-                assert_eq!(*end, Some(10.5), "duration 要先换算成 end 再迁移类型");
+            crate::project::Event::Camera { time, end, .. } => {
+                assert_eq!(*time, 1.0);
+                assert_eq!(*end, Some(5.0), "duration 要先换算成 end（这半边照旧生效）");
             }
-            other => panic!("应当是 Pulse：{other:?}"),
+            other => panic!("应当是 Camera：{other:?}"),
         }
     }
 }
+

@@ -78,11 +78,11 @@
       "sfx": "handlers.sfx",
       "shake": "handlers.shake",
       "flash": "handlers.flash",
+      "pulse": "handlers.pulse",
       "blur": "handlers.blur",
       "vignette": "handlers.vignette",
       "hue_shift": "handlers.hue_shift",
       "noise": "handlers.noise",
-      "pulse": "handlers.pulse",
       "element": "handlers.element"
     },
     "dom_preview": {
@@ -92,11 +92,11 @@
       "sfx": "sfxVolume",
       "shake": "getShake",
       "flash": "getFlash",
+      "pulse": "getPulse",
       "blur": "getBlur",
       "vignette": "getVignette",
       "hue_shift": "getHueShiftFlash",
       "noise": "getNoiseOpacity",
-      "pulse": "getPulse",
       "element": "getElements"
     },
     "dhampir_case": {
@@ -106,11 +106,11 @@
       "sfx": "sfx",
       "shake": "shake",
       "flash": "flash",
+      "pulse": "pulse",
       "blur": "blur",
       "vignette": "vignette",
       "hue_shift": "hue_shift",
       "noise": "noise",
-      "pulse": "pulse",
       "element": "element"
     },
     "post_span": {
@@ -120,11 +120,11 @@
       "sfx": null,
       "shake": "shake",
       "flash": "flash",
+      "pulse": "pulse",
       "blur": "blur",
       "vignette": "vignette",
       "hue_shift": "hue_shift",
       "noise": "noise",
-      "pulse": "pulse",
       "element": null
     }
   },
@@ -204,7 +204,8 @@
         { "name": "name", "type": "Option<String>", "default": null, "ui": "text", "_note": "素材文件名（去扩展名）" },
         { "name": "source", "type": "Option<String>", "default": null, "ui": "text", "_note": "素材来源口径" },
         { "name": "x", "type": "String", "default": "50%", "ui": "text", "_note": "**字符串**百分比/关键字；落点规则见引擎" },
-        { "name": "y", "type": "String", "default": "50%", "ui": "text" }
+        { "name": "y", "type": "String", "default": "50%", "ui": "text" },
+        { "name": "manual_pos", "type": "Option<String>", "default": null, "ui": "text", "_note": "逐块手动落点（盒子中心百分比，2026-10-16）；有它则自动落点不参与" }
       ],
       "dhampir": "AssetKind::ImageSequence + Transform（逐帧采样）",
       "canvas": true,
@@ -454,15 +455,15 @@
         "sfx"
       ],
       "fields": [],
-      "_gap": "⚠️ 同 `blur`：Rust `Event::Pulse` 无 `intensity`，档位写死在转译器（×1.06 / ×0.97 两档，窗口写死 0.48s）。",
+      "_gap": "⚠️ 2026-10-20 退役（用户口径「pulse 这个效果删除」）：枚举变体保留（老文件要能打开），读时丢弃并计数（legacy.rs::migrate_retired_effects）；不生成、不进提示词、不进前端可选集合。",
       "dhampir": "视频层关键帧（逐帧采样）",
       "canvas": true,
       "dom_preview": true,
-      "llm": true,
+      "llm": false,
       "duration_cap": 0.5,
       "default_span": 0.4,
       "sfx_capable": true,
-      "status": "active",
+      "status": "retiring",
       "lane": "fx"
     },
     {
@@ -495,6 +496,7 @@
         { "name": "sticker_tag", "type": "Option<String>", "default": null, "ui": "text" },
         { "name": "x", "type": "Option<String>", "default": null, "ui": "text" },
         { "name": "y", "type": "Option<String>", "default": null, "ui": "text" },
+        { "name": "manual_pos", "type": "Option<String>", "default": null, "ui": "text", "_note": "逐块手动落点（盒子中心百分比，2026-10-16）" },
         { "name": "name", "type": "Option<String>", "default": null, "ui": "text" },
         { "name": "source", "type": "Option<String>", "default": null, "ui": "text" }
       ],

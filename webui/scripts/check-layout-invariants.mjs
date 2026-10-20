@@ -1856,7 +1856,10 @@ console.log('\n㉚ 切片总览搜索（按需拉取 + 弹幕正文可读化）'
 
   const dedMatch = timelineEditor.match(/const DEDICATED_FIELDS = new Set\(\[([\s\S]*?)\]\)/)
   const ded = dedMatch ? [...dedMatch[1].matchAll(/'([a-z_0-9]+)'/g)].map((m) => m[1]) : []
-  const STRUCTURAL = new Set(['kind', 'text', 'sticker_tag', 'keyword', 'name', 'source', 'x', 'y', 'color', 'sfx', 'sfx_volume', 'intensity', 'manual', 'end', 'volume'])
+  // 「结构位」字段：它们**本来就该由专用块画**（不是被排除清单顺手吃掉的普通标量）。
+  // ⚠️ 新增这类字段时**只加这一处**（同时加 `TimelineEditor` 的 DEDICATED_FIELDS）——
+  //    `manual_pos`（2026-10-20 起在 spec 里声明）与 `x`/`y` 同一族：逐块落点，面板有专门那个「落点」块。
+  const STRUCTURAL = new Set(['kind', 'text', 'sticker_tag', 'keyword', 'name', 'source', 'x', 'y', 'manual_pos', 'color', 'sfx', 'sfx_volume', 'intensity', 'manual', 'end', 'volume'])
   const overreach = ded.filter((f) => vocabFields.has(f) && !STRUCTURAL.has(f))
   check('㉛ DEDICATED_FIELDS 没有吃掉词汇表里的标量字段', overreach, [])
 

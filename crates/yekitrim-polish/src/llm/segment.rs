@@ -265,6 +265,9 @@ fn effect_ids(pick: impl Fn(&serde_json::Value) -> bool) -> String {
         .and_then(|v| v.as_array())
         .map(|list| {
             list.iter()
+                // ⚠️ `status: "retiring"` 的类型（2026-10-20：`pulse`）**不再进提示词** ——
+                //    它们还留在词汇表里是为了"老文件能读、代码里还有求值分支"，不是给模型用的。
+                .filter(|e| e.get("status").and_then(|v| v.as_str()) != Some("retiring"))
                 .filter(|e| pick(e))
                 .filter_map(|e| e.get("id").and_then(|v| v.as_str()))
                 .collect::<Vec<_>>()

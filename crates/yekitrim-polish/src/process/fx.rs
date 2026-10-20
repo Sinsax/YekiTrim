@@ -1043,14 +1043,16 @@ pub fn fill_visual_gaps(
                 .unwrap_or(mid);
             let at = at.min(b - AUTO_FILL_SECS).max(a);
             let marker = Some(AUTO_FILL_ANCHOR.to_string());
-            // 轮换：交替 pulse / blur（两类都温和，也让用到的特效种类 ≥4）
-            let ev = if made % 2 == 0 {
-                Event::Pulse { time: at, end: Some(at + AUTO_FILL_SECS), anchor: marker, sfx: None, sfx_volume: None }
-            } else {
-                Event::Blur { time: at, end: Some(at + AUTO_FILL_SECS), anchor: marker, sfx: None, sfx_volume: None }
+            // 只用 `blur`：`pulse` 已于 2026-10-20 退役（用户口径「pulse 这个效果删除」），
+            // 而 `overlay(hue)` 要等 52b 才有求值 —— 这里**别提前引用一个画不出来的类型**。
+            let ev = Event::Blur {
+                time: at,
+                end: Some(at + AUTO_FILL_SECS),
+                anchor: marker,
+                sfx: None,
+                sfx_volume: None,
             };
             seg.events.push(ev);
-            // 落盘账本：**记事件自己的区间**（删掉它之后这一带仍然算"补过"）
             done.push(crate::project::AutoFillDone {
                 start: at,
                 end: at + AUTO_FILL_SECS,
@@ -3083,9 +3085,16 @@ mod tests {
     fn text_bodies(segs: &[Segment]) -> Vec<String> {
         segs.iter()
             .flat_map(|s| s.events.iter())
-            .filter_map(|e| match e {
-                Event::Element { kind, text, .. } if kind == "text" => Some(text.clone()),
-                _ => None,
+            .filter_map(|e| {
+                // ⚠️ 别写成 `"text" => Some(..)` 那种 match 臂：词汇表门禁的孤儿检测会用
+                //    `"([a-z_]+)"\s*=>` 扫这个文件，它会把这个**测试辅助函数**当成"没人认领的效果实现"
+                //    （实测就是这么误报的）。用 guard + if 表达，语义一样、正则不再命中。
+                if let Event::Element { kind, text, .. } = e {
+                    if kind == "text" {
+                        return Some(text.clone());
+                    }
+                }
+                None
             })
             .collect()
     }
@@ -4498,6 +4507,12 @@ mod auto_fill_tests {
         let first = fill_visual_gaps(&mut segs, &subs, &[], &mut done);
         assert!(first >= 1, "20s 空段要补上（实际 {first} 条）");
         assert!(segs[0].events.iter().all(is_auto_fill), "补出来的必须都带标记");
+        // ⚠️ 2026-10-20：`pulse` 已退役 ⇒ 补位**只能用 `blur`**（`overlay(hue)` 要等 52b）
+        assert!(
+            segs[0].events.iter().all(|e| matches!(e, Event::Blur { .. })),
+            "补位只能产出 blur，实得：{:?}",
+            segs[0].events
+        );
         let n = segs[0].events.len();
         assert_eq!(
             fill_visual_gaps(&mut segs, &subs, &[], &mut done),
