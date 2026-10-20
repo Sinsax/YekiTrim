@@ -570,14 +570,26 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
 
         }
 
+        // ⚠️ **两份口径分开打**（2026-10-20 lead 裁决）：
+        //   · 呼吸感 = 感知口径（贴纸/覆盖层/特效都算"有东西"，只有 camera 不算）；
+        //   · 仅瞬时特效 = 副指标，只给"特效重复/扎堆"那类判据用。别混用。
         let p = static_profile(&config.segments, total_duration);
-
+        let fx_only = fx_static_profile(&config.segments, total_duration);
+        // **呼吸感 = 疏密对比**（2026-10-20 lead 裁决）：密集段 + 断档 + 最长静止 + 相邻同类，
+        // 四条一起成立就够。**不再有百分比门槛** —— `static_ratio` 只作诊断值打印。
+        let adjacent_same = adjacent_same_transient(&config.segments);
+        let breathing_ok = p.dense_3s >= 1
+            && p.windows_3_5 >= 2
+            && p.max_static <= 8.0
+            && adjacent_same == 0;
         tracing::info!(
-
-            "  🌬 呼吸感：静止 {:.1}%（目标 15–35%）· 最长静止 {:.1}s（目标 ≤8s）· 3–5s 静止窗口 {} 个（目标 ≥2）· <0.4s 堆叠 {}（目标 0）",
-
-            p.ratio * 100.0, p.max_static, p.windows_3_5, p.stacks_under_400ms
-
+            "  🌬 呼吸感（疏密对比）：密集段 {}（≥1）· 3–5s 断档 {}（≥2）· 最长静止 {:.1}s（≤8s）· 相邻同类 {adjacent_same}（0）⇒ {}",
+            p.dense_3s, p.windows_3_5, p.max_static,
+            if breathing_ok { "有密有疏 ✅" } else { "⚠ 还不够" }
+        );
+        tracing::info!(
+            "  🎛 诊断值（不判红）：静止占比 {:.1}% · <0.4s 堆叠 {} · 仅瞬时特效静止占比 {:.1}%",
+            p.ratio * 100.0, p.stacks_under_400ms, fx_only.ratio * 100.0
         );
 
     }
@@ -4897,4 +4909,86 @@ mod diagnose_overlay_stops {
             println!("（单色按「该色 → 透明」渲染；色档数组原样使用。四处实现：timeline.rs / index.html / engine.js / PolishPreview.vue）");
         }
     }
+    /// 诊断（默认 ignore）：在 VT_POLISH_DIR 指的副本上跑一趟 process，量出呼吸感六个实数。
+    #[tokio::test]
+    #[ignore]
+    async fn vt_breathing_profile() {
+        let Ok(dir) = std::env::var("VT_POLISH_DIR") else {
+            eprintln!("跳过：没设 VT_POLISH_DIR");
+            return;
+        };
+        let path = std::path::Path::new(&dir);
+        super::cmd_process(path).await.expect("process");
+        let cfg = crate::project::load_project(path).expect("读回");
+        let total = cfg.segments.iter().map(|s| s.end).fold(0.0_f64, f64::max);
+        let p = super::fx::static_profile(&cfg.segments, total);
+        let mut kinds: std::collections::BTreeMap<&str, usize> = Default::default();
+        let mut targets: Vec<(f64, &str)> = Vec::new();
+        for seg in &cfg.segments {
+            for ev in &seg.events {
+                if let Some(k) = super::fx::transient_kind(ev) {
+                    *kinds.entry(k).or_insert(0) += 1;
+                    targets.push((ev.get_time(), k));
+                }
+            }
+        }
+        targets.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        let mut adjacent_same = 0usize;
+        let mut last: Option<&str> = None;
+        for (_, k) in &targets {
+            if last == Some(k) { adjacent_same += 1; }
+            last = Some(k);
+        }
+        let fx_only = super::fx::fx_static_profile(&cfg.segments, total);
+        let adj = super::fx::adjacent_same_transient(&cfg.segments);
+        println!("VT_BREATH dense={} windows_3_5={} max_static={:.2} adjacent_same={} diag_ratio={:.4} stacks={}",
+            p.dense_3s, p.windows_3_5, p.max_static, adj, p.ratio, p.stacks_under_400ms);
+        println!("VT_BREATH[仅特效] ratio={:.4} max_static={:.2} windows_3_5={}",
+            fx_only.ratio, fx_only.max_static, fx_only.windows_3_5);
+        println!("VT_FX_TYPES adjacent_same={} total={} kinds={:?}", adjacent_same, targets.len(), kinds);
+        // 只算**守卫看得见**的那批（排除带 color/colors 的设计覆盖层、manual、屏蔽段）——
+        // 守卫本来就不动设计好的覆盖层，把它们算进"相邻同类"会误报。
+        let mut guard: Vec<(f64, &str)> = Vec::new();
+        for seg in &cfg.segments {
+            for ev in &seg.events {
+                let designed = matches!(ev, crate::project::Event::Overlay { color: Some(_), .. })
+                    || matches!(ev, crate::project::Event::Overlay { colors: Some(_), .. });
+                if designed { continue; }
+                if let Some(k) = super::fx::transient_kind(ev) {
+                    guard.push((ev.get_time(), k));
+                }
+            }
+        }
+        guard.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        let mut g_same = 0usize;
+        let mut glast: Option<&str> = None;
+        for (_, k) in &guard {
+            if glast == Some(k) { g_same += 1; }
+            glast = Some(k);
+        }
+        println!("VT_FX_GUARD adjacent_same={} considered={}", g_same, guard.len());
+        println!("VT_LEDGER entries={}", cfg.auto_fill_done.len());
+        // 最长静止窗口落在哪？被屏蔽/账本挡住的窗口补不了，这决定了 max_static 为什么超 8s。
+        let mut spans: Vec<(f64, f64)> = targets.iter().map(|(t, _)| (*t, *t + 0.4)).collect();
+        spans.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        let mut merged: Vec<(f64, f64)> = Vec::new();
+        for (a, b) in spans {
+            match merged.last_mut() {
+                Some(l) if a <= l.1 => l.1 = l.1.max(b),
+                _ => merged.push((a, b)),
+            }
+        }
+        let mut cursor = 0.0f64;
+        let mut worst = (0.0f64, 0.0f64, 0.0f64);
+        for (a, b) in &merged {
+            if *a - cursor > worst.2 { worst = (cursor, *a, *a - cursor); }
+            cursor = cursor.max(*b);
+        }
+        if total - cursor > worst.2 { worst = (cursor, total, total - cursor); }
+        let muted = cfg.mute_ranges.iter().any(|m| m.overlaps(worst.0, worst.1));
+        let in_ledger = cfg.auto_fill_done.iter().any(|d| d.start < worst.1 && d.end > worst.0);
+        println!("VT_GAP {:.2}..{:.2} len={:.2} muted={} ledger_blocked={} mutes={}",
+            worst.0, worst.1, worst.2, muted, in_ledger, cfg.mute_ranges.len());
+    }
+
 }
