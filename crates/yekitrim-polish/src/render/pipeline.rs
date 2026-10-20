@@ -1772,7 +1772,9 @@ mod tests {
     #[test]
     fn canvas_support_matrix_comes_from_the_vocabulary() {
         let supported = canvas_supported_effects().expect("内嵌的词汇表必须可解析");
-        for id in ["shake", "flash", "blur", "noise", "pulse", "overlay", "camera"] {
+        // ⚠️ `pulse` 2026-10-20 退役（status="retiring"）：仍留在词汇表里（老文件要能读），
+        //    但不再进 canvas 支持集合的**必需**清单。
+        for id in ["shake", "flash", "blur", "noise", "overlay", "camera"] {
             assert!(supported.contains(id), "词汇表里 {id} 应当在 canvas 支持集合里：{supported:?}");
         }
         // 每个条目都必须是词汇表里的类型（防止 `anchors.canvas` 写了拼错的键）

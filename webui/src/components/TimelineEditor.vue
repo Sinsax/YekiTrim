@@ -1295,7 +1295,9 @@ const panelTitle = computed(() => {
 // `scripts/check-effect-registry.mjs` 仍会检查"读没读"与"锚点在不在"。
 import EFFECT_SPEC from '../../../spec/effects.json'
 
-const EFFECTS = EFFECT_SPEC.effects
+// ⚠️ `status: "retiring"` 的类型（2026-10-20：`pulse`）**仍留在词汇表里**（老文件要能读、代码里还有求值分支），
+// 但**不给用户新建** —— 这里统一滤掉，四张派生表（FX_TYPES/TYPE_LABELS/DEFAULT_SPAN/SFX_CAPABLE）一起生效。
+const EFFECTS = EFFECT_SPEC.effects.filter((e) => e.status !== 'retiring')
 /** 视觉特效泳道的**细分类型**（顺序 = 面板下拉与 ＋ 菜单的顺序 = 词汇表里的顺序）。
  *  ⚠️ 按 `lane` 而不是 `kind` 派生：D3 之后「覆盖层」并进了这条泳道，而 `overlay` 的
  *  `kind` 仍是 `durable`（那是**语义**，用于时长上限与 LLM 提示词分组）。两者别混。 */
@@ -2000,7 +2002,10 @@ const TYPE_FIELDS = Object.fromEntries(
 /** 专用块自己渲染的字段名（不进自动派生）。 */
 const DEDICATED_FIELDS = new Set([
   'sfx', 'sfx_volume', 'color', 'intensity', 'manual', 'end',
-  'keyword', 'name', 'source', 'sticker_tag', 'x', 'y', 'text', 'kind', 'volume'
+  'keyword', 'name', 'source', 'sticker_tag', 'x', 'y', 'text', 'kind', 'volume',
+  // 逐块手动落点（贴纸/文字各一个「落点」块负责，见 ㉜/㉞）——2026-10-20 spec 补上
+  // `manual_pos` 的字段声明之后，这里不同步就会让兜底块给它再出一个裸控件。
+  'manual_pos',
 ])
 
 /** 字段该用哪种控件。显式 `ui` 优先，其次按类型串猜（`Option<f64>` → number）。 */
