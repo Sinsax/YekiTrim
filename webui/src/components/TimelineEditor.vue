@@ -321,7 +321,7 @@
               <label class="ck-row" :title="selItem.zoom === '近' ? '叠加在运镜上的持续摇摆' : '只在近景可用'">
                 <input type="checkbox" :checked="selItem.handheld === true" :disabled="selItem.zoom !== '近'"
                        @change="setHandheld(selItem, $event.target.checked)">
-                手持摇摆<span class="muted small">（仅近景）</span>
+                手持摇摆
               </label>
               <div class="row">
                 <div class="flex-1">
@@ -3873,6 +3873,9 @@ async function loadData() {
 .pos-row .mini-btn { flex:none; }
 /* 运镜「手持摇摆」开关行：紧跟景别下拉，禁用态表示当前景别不满足门槛 */
 .ck-row { display:flex; align-items:center; gap:5px; margin-top:8px; font-size:12px;
+  /* ⚠️ 必须 nowrap：属性栏窄时，flex 里的**文本节点**会逐字折行，看上去像"竖排"
+     （用户 2026-10-20 报「手持摇摆（仅近景）怎么变竖排了」）。条件说明放 title，行内只留"是什么"。 */
+  white-space:nowrap;
   color:var(--ink); cursor:pointer; }
 .ck-row input[type="checkbox"]:disabled { cursor:not-allowed; }
 .ck-row:has(input:disabled) { color:var(--ink-faint); cursor:not-allowed; }
