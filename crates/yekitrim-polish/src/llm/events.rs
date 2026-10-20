@@ -196,7 +196,13 @@ impl AgentTask<Vec<Event>> for EventGenTask {
         // 模型偶尔仍按老字段写 `duration` → 统一升级成 `end`（与老配置同一条路）
         let mut value: Value = serde_json::from_str(&json)?;
         crate::project::upgrade_event_times(&mut value);
-        let mut events: Vec<Event> = serde_json::from_value(value)?;
+        // ⚠️ **逐事件容错**（P0 2026-10-20）：from_value::<Vec<Event>> 一个坏元素就让**整窗**失败
+        // —— 实测「模型多写一条 sticker 但漏了 x」⇒ missing field x ⇒ 20.5s 窗口的全部产出归零。
+        // 现在坏一条只跳过一条，好的照收。
+        //
+        // ⚠️ **全部失败仍然 = 这一窗没产出**（不覆盖旧事件，见 apply_outputs）：
+        //    全部坏 ⇒ 返回 Err；模型真返回 [] ⇒ events 也是空（同样不覆盖）。
+        let mut events = parse_events_tolerant(&value)?;
         // **屏蔽段里不产出事件**（2026-10-19）：那一段在成片里不存在，写出去只会挤占预算、
         // 还会在编辑器里显示成「这里怎么有个看不见的贴纸」。只丢这一趟的生成物 ——
         // `polish.toml` 里已有的一个字节都不动（屏蔽只做标记，见 `project/AGENTS.md`）。
@@ -442,6 +448,44 @@ pub async fn choose_sticker_files_batch(
     Ok(out)
 }
 
+
+/// **逐事件容错解析**（P0 2026-10-20）：模型一个坏元素不许让**整窗**失败。
+///
+/// 事故：模型多写了一条 sticker 却漏了 `x` ⇒ `missing field x` ⇒ 20.5 秒窗口的全部产出归零
+/// （用户贴的 WARN 就是它）。现在坏一条跳过一条、好的照收。
+///
+/// **语义边界（别改）**：坏条数 > 0 但还有好的 ⇒ 返回好的；**全部坏** ⇒ `Err`
+///（= 本窗失败 ⇒ `apply_outputs` 那条「失败不覆盖」照旧生效）。模型真返回 `[]` ⇒ 返回空数组
+/// （同样是"这一窗没产出"）。
+///
+/// 为什么不设"跳过率上限"：LLM 的输出质量是**逐窗**的，设一个比例阈值只会让"8 条里坏 3 条"
+/// 这种可救的窗被整窗丢掉 —— 反过来全坏那条已经被 `Err` 兜住了。日志里报「N/M」足够定位。
+fn parse_events_tolerant(value: &Value) -> Result<Vec<Event>> {
+    let items = value
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("模型输出不是 JSON 数组"))?;
+    let total = items.len();
+    let mut events: Vec<Event> = Vec::with_capacity(total);
+    let mut failures: Vec<(usize, String)> = Vec::new();
+    for (idx, item) in items.iter().enumerate() {
+        match serde_json::from_value::<Event>(item.clone()) {
+            Ok(ev) => events.push(ev),
+            Err(e) => failures.push((idx, e.to_string())),
+        }
+    }
+    if !failures.is_empty() {
+        let (first_idx, first_why) = &failures[0];
+        tracing::warn!(
+            "  ⚠ 窗口事件解析：{total} 条中 {} 条失败（{first_why} @ index {first_idx}），已跳过",
+            failures.len()
+        );
+    }
+    if total > 0 && events.is_empty() {
+        anyhow::bail!("窗口事件全部解析失败（{total} 条）");
+    }
+    Ok(events)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -464,6 +508,61 @@ mod tests {
         }
     }
 
+
+    /// **P0 2026-10-20：一条坏事件不许让整窗归零**。
+    ///
+    /// 变异自证：把 `parse_events_tolerant` 换回 `from_value::<Vec<Event>>` ⇒ 本条红（整窗 Err）。
+    #[test]
+    fn parse_events_skips_only_the_bad_ones() {
+        let value: Value = serde_json::json!([
+            {"type": "sticker", "time": "oops"},                       // 坏：time 不是数字
+            {"type": "sticker", "time": 1.0, "keyword": "a", "x": "10%", "y": "20%"},
+            {"type": "camera", "time": 2.0, "zoom": "中", "origin": "50% 50%"},
+            {"type": "camera", "time": 3.0, "zoom": "近", "origin": "50% 50%"},
+        ]);
+        let events = super::parse_events_tolerant(&value).expect("坏一条不该整窗失败");
+        assert_eq!(events.len(), 3, "坏的跳过、好的三条都在");
+    }
+
+    /// **全部坏 ⇒ Err**（= 本窗失败 ⇒ `apply_outputs` 那条"失败不覆盖"照旧生效）。
+    #[test]
+    fn parse_events_all_bad_is_an_error() {
+        let value: Value = serde_json::json!([
+            {"type": "sticker", "time": "oops"},
+            {"type": "shake", "time": "also-bad"},
+        ]);
+        assert!(super::parse_events_tolerant(&value).is_err(), "全坏必须报错，不许当成空结果");
+    }
+
+    /// **sticker 缺 x/y 也能解析**（空串 = 还没落点，`process` Step 2b 会回填）。
+    ///
+    /// 变异自证：把 `Sticker` 里那两个 `#[serde(default)]` 去掉 ⇒ 本条红（missing field x）。
+    #[test]
+    fn sticker_without_xy_parses_as_unplaced() {
+        let value: Value = serde_json::json!([
+            {"type": "sticker", "time": 1.0, "keyword": "ずんだもん"},
+        ]);
+        let events = super::parse_events_tolerant(&value).expect("缺 x/y 不该失败");
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            Event::Sticker { x, y, .. } => {
+                assert_eq!((x.as_str(), y.as_str()), ("", ""), "空串 = 还没落点");
+            }
+            _ => panic!("应该是 sticker"),
+        }
+    }
+
+    /// **R4**：有 x/y 的老事件序列化**逐字节不变**（照写，不 skip、不加字段）。
+    #[test]
+    fn sticker_xy_roundtrip_is_byte_identical() {
+        let text = r#"{"type":"sticker","time":1.0,"keyword":"a","x":"12.5%","y":"70%","sfx":null,"sfx_volume":null}"#;
+        let ev: Event = serde_json::from_str(text).expect("解析");
+        let again = serde_json::to_string(&ev).expect("序列化");
+        assert!(again.contains(r#""x":"12.5%""#), "有值照写：{again}");
+        assert!(again.contains(r#""y":"70%""#), "有值照写：{again}");
+        let ev2: Event = serde_json::from_str(&again).expect("再解析");
+        assert_eq!(serde_json::to_string(&ev2).unwrap(), again, "往返稳定");
+    }
     fn seg(start: f64, end: f64, events: Vec<Event>) -> Segment {
         Segment { start, end, fx: "med".into(), note: String::new(), events, role: String::new(), extra: Default::default() }
     }

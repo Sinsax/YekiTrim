@@ -3768,6 +3768,54 @@ y = "10%"
             "显式中景仍是 1.3"
         );
     }
+    /// **空 x/y 在 Step 2b 之后必须被回填成真坐标**（P0 2026-10-20：模型漏写落点不该丢事件）。
+    ///
+    /// 变异自证：把 Step 2b 里写 x/y 那两行去掉 ⇒ 本条红（仍为空串）。
+    #[tokio::test]
+    async fn process_fills_empty_sticker_xy() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let path = dir.path();
+        std::fs::create_dir_all(path.join("data")).expect("建 data/");
+        std::fs::write(
+            path.join("data").join("subtitles.json"),
+            serde_json::json!([
+                {"index": 1, "start": 1.0, "end": 3.0, "text": "普通叙述", "html": ""},
+            ]).to_string(),
+        ).expect("写字幕");
+
+        let mut cfg = ProjectFile::example();
+        cfg.sticker_source = Vec::new();
+        cfg.segments = vec![Segment {
+            role: String::new(),
+            start: 0.0, end: 5.0, fx: "low".into(), note: String::new(),
+            events: vec![Event::Sticker {
+                time: 1.5, end: Some(3.0),
+                keyword: "ずんだもん".into(), sticker_tag: None, name: None, source: None,
+                x: String::new(), y: String::new(), // ← 模型漏写落点（空 = 还没落点）
+                sfx: None, sfx_volume: None, manual_pos: None, manual: false,
+            }],
+            extra: Default::default(),
+        }];
+        std::fs::write(path.join("polish.toml"), cfg.to_toml_commented().expect("序列化"))
+            .expect("写 polish.toml");
+
+        cmd_process(path).await.expect("后处理");
+        let after = crate::project::load_project(path).expect("重读");
+        let (x, y) = after.segments[0]
+            .events
+            .iter()
+            .find_map(|e| match e {
+                Event::Sticker { x, y, .. } => Some((x.clone(), y.clone())),
+                _ => None,
+            })
+            .expect("贴纸还在");
+        assert!(!x.is_empty() && !y.is_empty(), "Step 2b 必须回填落点，实得 ({x:?}, {y:?})");
+        assert!(
+            x.trim_end_matches('%').parse::<f64>().is_ok()
+                && y.trim_end_matches('%').parse::<f64>().is_ok(),
+            "回填的必须是可解析的百分比坐标：({x}, {y})"
+        );
+    }
     /// **§6 爆点报告只在真的判出爆点时落盘**（R4 判据）。
     ///
     /// `write_punch_report` 让"算出即弃"的爆点判据变成可被别的进程读的产物。
