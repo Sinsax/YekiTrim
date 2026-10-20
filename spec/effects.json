@@ -95,7 +95,6 @@
       "pulse": "getPulse",
       "blur": "getBlur",
       "vignette": "getVignette",
-      "hue_shift": "getHueShiftFlash",
       "noise": "getNoiseOpacity",
       "element": "getElements"
     },
@@ -408,11 +407,12 @@
       },
       "canvas": true,
       "dom_preview": true,
-      "llm": true,
+      "llm": false,
       "duration_cap": 0.5,
       "default_span": 0.35,
       "sfx_capable": true,
-      "status": "active",
+      "_retiring_note": "2026-10-20 并入覆盖层：读时迁移成 overlay{overlay_type:\"hue\"}（六个字段逐值搬、end 归一化成 time+0.95）；枚举变体保留（老文件要能打开）。不生成、不进提示词、不进前端可选集合。",
+      "status": "retiring",
       "lane": "fx"
     },
     {

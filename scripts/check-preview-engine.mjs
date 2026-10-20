@@ -31,7 +31,8 @@ const ENGINE_DEPS = ['canvas.js'];
 
 /** 预览真正会调的那一族（签名都是 `(idx, t)`）。 */
 const IDX_T_FAMILY = [
-  'videoFxAt', 'cameraAt', 'getFlash', 'getHueShiftFlash', 'getNoiseOpacity', 'getVignette',
+  // `getHueShiftFlash` 已删（2026-10-20，`hue_shift` 并入覆盖层后由 `getOverlayState` 的 hue 档画）
+  'videoFxAt', 'cameraAt', 'getFlash', 'getNoiseOpacity', 'getVignette',
   'getOverlayState', 'subsAt', 'danmakuAt', 'stickersAt',
 ];
 
@@ -81,8 +82,8 @@ function templateBuckets(text) {
 //    给错了会**假红**。三条踩过的：
 //      · `shake` 不给 `intensity` 时 `getShake` 回 `{0,0}`（与基线相同 ⇒ 误判成"没画"）；
 //      · `pulse` 的可视窗口只有 **0.48s**，`t` 取 1.0 时早已出窗（同样误判）；
-//      · `hue_shift` 在**空**索引上 `getHueShiftFlash` 会抛（`idx.hue_shift` 未按需创建）——
-//        所以基线那一侧要用 `buildIndex` 的正常产物，别拿 `{}`。
+//      · （历史）`hue_shift` 在**空**索引上会抛 ⇒ 基线那一侧要用 `buildIndex` 的正常产物，
+//        别拿 `{}`；该类型已于 2026-10-20 退役（并入覆盖层），探针不再单列。
 const DRAW_PROBES = {
   // 桶名 → { ev: 触发事件, at: 采样时刻, read: (mod, idx) => 该桶的可见输出 }
   camera: {
@@ -122,11 +123,8 @@ const DRAW_PROBES = {
     at: 0.55,
     read: (m, idx) => m.getVignette(idx, 0.55),
   },
-  hue_shift: {
-    ev: { type: 'hue_shift', time: 0.5, duration: 3, end: 3 },
-    at: 0.55,
-    read: (m, idx) => m.getHueShiftFlash(idx, 0.55).opacity,
-  },
+  // ⚠️ `hue_shift` 已退役（2026-10-20，并入覆盖层）：预览由 `getOverlayState` 的 `hue` 档画
+  // （探针见上面的 `overlay` 那条），独立求值器 `getHueShiftFlash` 已删 ⇒ 这里不再单列一条。
   noise: {
     ev: { type: 'noise', time: 0.5, duration: 3, end: 3 },
     at: 0.55,

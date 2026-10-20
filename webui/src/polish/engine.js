@@ -292,7 +292,9 @@ function stickerAnchor(idx, ev) {
 /// `scripts/check-preview-engine.mjs` 会逐项对拍；**加类型时两处一起加**。
 export const INDEXED_TYPES = [
   'camera', 'sticker', 'shake', 'flash', 'blur', 'overlay',
-  'vignette', 'hue_shift', 'noise', 'pulse', 'sfx', 'element',
+  // `hue_shift` 已退役（2026-10-20，并入覆盖层）：事件在读时迁移成 `overlay{hue}`，
+  // 预览由 `getOverlayState` 画 ⇒ 这个桶不再索引（与 templates/index.html 的清单同步删）。
+  'vignette', 'noise', 'pulse', 'sfx', 'element',
 ]
 
 /// **六条轨道的显示开关**（时间轴每条轨道前那枚眼睛，2026-10-06 用户口径）：
@@ -2119,6 +2121,17 @@ export function getOverlayState(idx, t) {
       let opacity = typeof ev.opacity === 'number' ? ev.opacity : 1
       const ot = ev.overlay_type || ''
       const stops = overlayStops(ev)
+      // hue 档（2026-10-20 由退役的 hue_shift 并入）：整帧纯色 + 归一化包络。
+      // ⚠️ 与老 getHueShiftFlash 逐点相同：峰位 R = 0.15/0.95、峰值 0.25；frac<R 线性升、之后线性落到 0。
+      // ⚠️ 与 color 档共用同一套落点（返回 type:'color'）—— 一档覆盖层语义：同一时刻多条只画第一条。
+      if (ot === 'hue') {
+        const hd = (typeof ev.end === 'number' && ev.end > et) ? (ev.end - et) : 0.95
+        const frac = (t - et) / hd
+        const R = 0.15 / 0.95
+        const env = frac < R ? 0.25 * frac / R : 0.25 * (1 - (frac - R) / (1 - R))
+        const hcol = (ev.color != null && String(ev.color).trim()) || '#ff0040'
+        return { type: 'color', color: hcol, opacity: Math.max(0, Math.min(1, opacity * env)) }
+      }
       // fade_in/fade_out：**整窗就是过渡本身**（fade_in 起点全遮 → 末端全透，fade_out 反过来），
       // 是线性斜坡，**不叠**下面那 0.4s 进出包络 —— 叠了起点会乘成 0，黑场压根打不开
       // （用户看到的症状就是「开头渐入没生效」）。与出片模板 / Rust `get_overlay_state` 同口径。
@@ -2159,17 +2172,9 @@ function getPulse(idx, t, curZoom) {
   return curZoom
 }
 
-export function getHueShiftFlash(idx, t) {
-  for (const h of idx.hue_shift) {
-    const et = h.time, color = h.ev.color || '#ff0040'
-    if (t >= et && t < et + 0.95) {
-      const dt = t - et
-      if (dt < 0.15) return { opacity: 0.25 * (dt / 0.15), color }
-      return { opacity: 0.25 * (1 - (dt - 0.15) / 0.8), color }
-    }
-  }
-  return null
-}
+// `getHueShiftFlash` 已删除（2026-10-20，52b）：`hue_shift` 并入覆盖层之后，
+// 预览走的是 `getOverlayState` 的 `hue` 档（同一个 `.fx-color` 层画）。
+// 留着一份没人调用的求值器只会让词汇表门禁的"孤儿实现"判据抓它，且它是第二份会漂的曲线。
 
 export function getNoiseOpacity(idx, t) {
   for (const n of idx.noise) {

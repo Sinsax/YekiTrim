@@ -36,7 +36,6 @@
       <div class="fx fx-vignette" :style="vignetteStyle"></div>
       <div class="fx fx-noise" :style="noiseStyle"></div>
       <div class="fx fx-flash" :style="flashStyle"></div>
-      <div class="fx fx-hue" :style="hueStyle"></div>
       <div class="fx fx-color" :style="colorOverlayStyle"></div>
 
       <div class="overlay-space" :style="{ transform: 'translate(-50%,-50%) scale(' + overlayScale + ')' }">
@@ -227,7 +226,7 @@ import { clipMediaUrl, mediaUrl } from '../utils'
 import { api } from '../api/client'
 // §4「转译报告可见」：DROP/CLAMP 的播报只有 `api/polish.js` 那一份实现，三处调用点共用。
 import { logTranslateReport } from '../api/polish'
-import { invertCameraPoint, buildIndex, videoFxAt, handheldSway, getFlash, getHueShiftFlash, getNoiseOpacity, getVignette, getOverlayState, gradientCss, subsAt, danmakuAt, stickersAt, getElements, wrapCaptionParts, capMeasure, noiseTile, textTiltTransform, perCharSpans, animPreset } from '../polish/engine'
+import { invertCameraPoint, buildIndex, videoFxAt, handheldSway, getFlash, getNoiseOpacity, getVignette, getOverlayState, gradientCss, subsAt, danmakuAt, stickersAt, getElements, wrapCaptionParts, capMeasure, noiseTile, textTiltTransform, perCharSpans, animPreset } from '../polish/engine'
 import { canvasOf, stickerScale } from '../polish/canvas.js'
 import { createSfxPlayer } from '../polish/audio'
 import { ensureFontFace, fontFamilyFor } from '../polish/fonts'
@@ -2436,7 +2435,6 @@ const dhampirBaseCamera = computed(() => {
   }
 })
 const flash = computed(() => getFlash(idx.value, current.value))
-const hueFlash = computed(() => getHueShiftFlash(idx.value, current.value))
 const noiseOp = computed(() => getNoiseOpacity(idx.value, current.value))
 /**
  * §20 真黑白噪点的样式（与成片**同源**，不是"白纱"）。
@@ -2886,7 +2884,6 @@ const videoStyle = computed(() => {
   }
 })
 const flashStyle = computed(() => ({ opacity: flash.value.opacity, background: flash.value.color }))
-const hueStyle = computed(() => hueFlash.value ? { opacity: hueFlash.value.opacity, background: hueFlash.value.color } : { opacity: 0 })
 const vignetteStyle = computed(() => ({
   opacity: vignette.value,
   background: 'radial-gradient(ellipse at center,transparent 55%,rgba(0,0,0,0.5) 100%)'
