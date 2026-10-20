@@ -262,9 +262,35 @@ pub struct ProjectFile {
     #[serde(default, skip_serializing_if = "is_false")]
     pub intro_fade_seeded: bool,
 
+    /// **自动补位的落盘账本**（2026-10-20 P0）：补过哪些区间、补的是什么种类。
+    ///
+    /// ⚠️ 判据必须**在这里**，不许读事件自身的标记：用户删掉那条补出来的事件之后，
+    /// 「事件里有没有标记」当场就变了 ⇒ 下一趟 process 又补回来。用户原话：
+    /// 「为什么我删除了一个效果，然后他后处理又给我加回来了」——
+    /// 这是 `intro_fade_seeded` 那条教训的**同型第二次**。
+    ///
+    /// 想让它重新补：删掉对应的 `[[auto_fill_done]]` 行再跑 process（与片头那条同口径）。
+    /// 空 ⇒ 不写（R4：从没补过的工程一个字节都不多）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub auto_fill_done: Vec<AutoFillDone>,
+
     /// 扩展兜底
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
+}
+
+
+/// 一次「自动补位」的入账（**区间 + 种类**）。
+///
+/// 判据用它、不用事件自身的标记：用户把补出来的那条删掉之后，账本仍然记着「这一带补过了」，
+/// 下一趟 process 就不会复活它（2026-10-20 P0）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AutoFillDone {
+    pub start: f64,
+    pub end: f64,
+    /// `"gap"` = 空窗补位（pulse/blur）；`"camera"` = 补默认运镜（「全」）。
+    #[serde(default)]
+    pub kind: String,
 }
 
 /// 一条**决策理由**（总方案 §1）：后处理在这件事上为什么这么做。
@@ -2209,6 +2235,7 @@ impl ProjectFile {
             // ⚠️ 同上：示例工程不许带片头片尾（空 = 老行为）。
             intro_outro: IntroOutroConfig::default(),
             intro_fade_seeded: false,
+            auto_fill_done: Vec::new(),
             extra: HashMap::new(),
         }
     }

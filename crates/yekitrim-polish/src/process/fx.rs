@@ -934,7 +934,28 @@ fn is_content_event(ev: &Event) -> bool {
     !matches!(ev, Event::Camera { .. })
 }
 
-/// 是不是「我们补的」那一条。两种温和特效都带同一个标记。
+/// 账本的比对容差（秒）—— 只吸收浮点/序列化误差，不是"宽松匹配"。
+pub const AUTO_FILL_EPS: f64 = 0.05;
+
+/// 这一带**已经补过**吗（判据 = 落盘账本 auto_fill_done 的**区间重叠**）。
+///
+/// ⚠️ 为什么是"重叠"而不是"相等"：补完一条之后，那一带的空窗会被**劈成两半**
+/// （下一次推导出的窗口与这次不再是同一对端点），相等判据永远命中不了 ⇒ 又会补。
+/// 反过来，删掉补出来的那条之后窗口会**并回**原来那一段，重叠判据仍然命中 ⇒ 不复活。
+///
+/// ⚠️ **别再退回"读事件自身的标记"**（is_auto_fill）—— 那样的判据会被用户的一次删除
+/// 直接抹掉，正是 2026-10-20 那次"删了又被加回来"的根因。
+pub fn auto_fill_overlaps(
+    done: &[crate::project::AutoFillDone],
+    a: f64,
+    b: f64,
+    kind: &str,
+) -> bool {
+    done.iter()
+        .any(|d| d.kind == kind && d.start < b + AUTO_FILL_EPS && d.end > a - AUTO_FILL_EPS)
+}
+
+/// 是不是「我们补的」那一条 —— **只用于诊断/展示**，判据在 auto_fill_overlaps。
 fn is_auto_fill(ev: &Event) -> bool {
     match ev {
         Event::Pulse { anchor, .. } | Event::Blur { anchor, .. } => {
@@ -955,14 +976,17 @@ fn is_auto_fill(ev: &Event) -> bool {
 /// 1. **不跨段边界**（按段扫）；
 /// 2. **屏蔽区间不补**（窗口里挑不到未屏蔽字幕就跳过这个窗口）；
 /// 3. **manual 事件不改写**（这里只新增，不动任何既有事件）；
-/// 4. **幂等**：窗口里已经有标记事件 ⇒ 不再补。判据用 [a, b] **闭区间** ——
-///    补的那条正好落在子窗口边界上，用开区间会让它看不见，第二趟又会补一条。
+/// 4. **幂等靠落盘账本**（ProjectFile.auto_fill_done）：这一带补过就不再补 ——
+///    **包括用户手动删掉补出来的那条之后**（那正是用户要的"我删了就别再给我加回来"）。
+///    判据是**区间重叠**（见 auto_fill_overlaps），不是"窗口里有没有事件"、
+///    也不是"事件上有没有标记"（两者都会被一次删除抹掉）。
 ///
 /// 返回补了几条。
 pub fn fill_visual_gaps(
     segments: &mut [Segment],
     subtitles: &[Subtitle],
     mute_ranges: &[MuteRange],
+    done: &mut Vec<crate::project::AutoFillDone>,
 ) -> usize {
     let mut added = 0usize;
     for seg in segments.iter_mut() {
@@ -984,7 +1008,7 @@ pub fn fill_visual_gaps(
             for (t, _) in marks.iter() {
                 let (a, b) = (cursor, *t);
                 if b - a >= VISUAL_GAP_SECS
-                    && !marks.iter().any(|(m, filled)| *filled && *m >= a && *m <= b)
+                    && !auto_fill_overlaps(done, a, b, "gap")
                     && best.is_none_or(|(ba, bb): (f64, f64)| (b - a) > (bb - ba))
                 {
                     best = Some((a, b));
@@ -994,7 +1018,7 @@ pub fn fill_visual_gaps(
             {
                 let (a, b) = (cursor, seg.end);
                 if b - a >= VISUAL_GAP_SECS
-                    && !marks.iter().any(|(m, filled)| *filled && *m >= a && *m <= b)
+                    && !auto_fill_overlaps(done, a, b, "gap")
                     && best.is_none_or(|(ba, bb): (f64, f64)| (b - a) > (bb - ba))
                 {
                     best = Some((a, b));
@@ -1026,6 +1050,12 @@ pub fn fill_visual_gaps(
                 Event::Blur { time: at, end: Some(at + AUTO_FILL_SECS), anchor: marker, sfx: None, sfx_volume: None }
             };
             seg.events.push(ev);
+            // 落盘账本：**记事件自己的区间**（删掉它之后这一带仍然算"补过"）
+            done.push(crate::project::AutoFillDone {
+                start: at,
+                end: at + AUTO_FILL_SECS,
+                kind: "gap".to_string(),
+            });
             made += 1;
             added += 1;
         }
@@ -4464,11 +4494,16 @@ mod auto_fill_tests {
     fn fill_visual_gaps_adds_one_per_empty_window_and_is_idempotent() {
         let mut segs = vec![seg(0.0, 20.0)];
         let subs = vec![sub(2.0, 3.0), sub(10.1, 11.1)];
-        let first = fill_visual_gaps(&mut segs, &subs, &[]);
+        let mut done = Vec::new();
+        let first = fill_visual_gaps(&mut segs, &subs, &[], &mut done);
         assert!(first >= 1, "20s 空段要补上（实际 {first} 条）");
         assert!(segs[0].events.iter().all(is_auto_fill), "补出来的必须都带标记");
         let n = segs[0].events.len();
-        assert_eq!(fill_visual_gaps(&mut segs, &subs, &[]), 0, "第二趟必须 0（process 会被隐式重跑）");
+        assert_eq!(
+            fill_visual_gaps(&mut segs, &subs, &[], &mut done),
+            0,
+            "第二趟必须 0（process 会被隐式重跑）"
+        );
         assert_eq!(segs[0].events.len(), n, "第二趟一条都不许加");
     }
 
@@ -4478,7 +4513,8 @@ mod auto_fill_tests {
         let mut segs = vec![seg(0.0, 20.0)];
         let subs = vec![sub(10.0, 11.0)];
         let mutes = vec![MuteRange { start: 9.0, end: 12.0 }];
-        assert_eq!(fill_visual_gaps(&mut segs, &subs, &mutes), 0, "唯一可选的字幕在屏蔽区里");
+        let mut done = Vec::new();
+        assert_eq!(fill_visual_gaps(&mut segs, &subs, &mutes, &mut done), 0, "唯一可选的字幕在屏蔽区里");
     }
 
     /// **camera 不算内容事件**（运镜全程开着）：只有 camera 的段照样要补。
@@ -4501,26 +4537,34 @@ mod auto_fill_tests {
         });
         let mut segs = vec![s];
         let subs = vec![sub(10.0, 11.0)];
-        assert_eq!(fill_visual_gaps(&mut segs, &subs, &[]), 1, "光有运镜不算有内容");
+        let mut done = Vec::new();
+        assert_eq!(fill_visual_gaps(&mut segs, &subs, &[], &mut done), 1, "光有运镜不算有内容");
     }
 
-    /// **幂等判据本身**：窗口里已经有带标记的补位事件 ⇒ **不再补**（哪怕窗口仍 > 门槛）。
+    /// **判据 = 落盘账本（区间重叠）**，不是事件上有没有标记（P0 2026-10-20）。
     ///
-    /// 这条才是"标记"的判据（另一条只证明收敛性）。变异自证：把 `is_auto_fill` 那个过滤
-    /// 从窗口判据里去掉 ⇒ 这里会补出 2 条，本条红。
+    /// 用户动作：补过 → **把补出来的那条删掉** → 重跑 ⇒ 不许再补。
+    /// 变异自证：把 `auto_fill_overlaps` 那道判断去掉 ⇒ 这里会补出好几条，本条红。
     #[test]
-    fn marked_window_is_never_refilled_even_if_wide() {
-        let mut s = seg(0.0, 20.0);
-        s.events.push(Event::Pulse {
-            time: 10.0,
-            end: Some(10.35),
-            anchor: Some(AUTO_FILL_ANCHOR.to_string()),
-            sfx: None,
-            sfx_volume: None,
-        });
-        let mut segs = vec![s];
+    fn recorded_window_is_never_refilled_even_after_the_event_is_deleted() {
+        // 第一次：20s 空段 ⇒ 补若干条，账本记下
+        let mut segs = vec![seg(0.0, 20.0)];
         let subs = vec![sub(4.0, 5.0), sub(10.0, 11.0)];
-        assert_eq!(fill_visual_gaps(&mut segs, &subs, &[]), 0, "带标记的窗口不许再补");
+        let mut done = Vec::new();
+        let first = fill_visual_gaps(&mut segs, &subs, &[], &mut done);
+        assert!(first >= 1, "空段要补（实际 {first}）");
+        assert_eq!(done.len(), first, "补几条就记几条账");
+        // 用户动作：把补出来的**全删掉**（事件表清空）
+        segs[0].events.clear();
+        let before = serde_json::to_string(&segs[0].events).unwrap();
+        // 重跑：账本还在 ⇒ 一条都不许再补
+        let again = fill_visual_gaps(&mut segs, &subs, &[], &mut done);
+        assert_eq!(again, 0, "删掉之后不许复活（这就是用户报的那条）");
+        assert_eq!(
+            serde_json::to_string(&segs[0].events).unwrap(),
+            before,
+            "事件表必须逐字段不变"
+        );
     }
 }
 

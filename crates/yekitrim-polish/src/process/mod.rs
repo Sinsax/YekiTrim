@@ -145,10 +145,27 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
     dedup_decisions(&mut decisions);
 
     // Step 1: 为每段生成 Camera event (如果还没有)
-    for seg in &mut config.segments {
+    //
+    // ⚠️ **补过就不再补**（2026-10-20 P0）：判据是落盘账本 auto_fill_done（kind="camera"），
+    // **不是**"这一段里现在有没有运镜" —— 用户把补出来的那条删掉之后，后者当场就变了 ⇒
+    // 下一趟 process 又把它加回来（用户原话："为什么我删除了一个效果，然后他后处理又给我加回来了"）。
+    let mut seed_cameras: Vec<(usize, f64, f64)> = Vec::new();
+    for (idx, seg) in config.segments.iter().enumerate() {
         let sd = seg.end - seg.start;
         if sd < 1.0 { continue; }
         if seg.events.iter().any(|e| matches!(e, crate::project::Event::Camera { .. })) { continue; }
+        if crate::process::fx::auto_fill_overlaps(&config.auto_fill_done, seg.start, seg.end, "camera") {
+            continue;
+        }
+        seed_cameras.push((idx, seg.start, seg.end));
+    }
+    for (idx, start, end) in seed_cameras {
+        config.auto_fill_done.push(crate::project::AutoFillDone {
+            start,
+            end,
+            kind: "camera".to_string(),
+        });
+        let seg = &mut config.segments[idx];
         seg.events.push(crate::project::Event::Camera {
             time: seg.start, end: Some(seg.end),
             // 2026-10-20 用户口径：缺省景别 = **「全」（原画 1.0）**；此前是「中」(1.3)。
@@ -556,6 +573,7 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
             &mut config.segments,
             &subtitles,
             &config.mute_ranges,
+            &mut config.auto_fill_done,
         );
         if filled > 0 {
             tracing::info!(
@@ -1272,6 +1290,9 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
     // 只写回 process 负责的字段：这中间用户存的选框 / 封面 / 屏蔽轨道不能被吞掉。
     let segments = config.segments;
     let intro_fade_seeded = config.intro_fade_seeded; // Step 3c 用掉的补种时机（只从 false 变 true）
+    // 自动补位账本（Step 1 的默认运镜 + Step 1i 的空窗补位）：**必须写回**，否则下一趟
+    // 又看不到"补过了" ⇒ 用户删掉的补位事件被复活（2026-10-20 P0）。
+    let auto_fill_done = config.auto_fill_done.clone();
     // §1 决策理由：**必须显式写回** —— `update_polish_toml` 只覆盖它闭包里点名的字段，
     // 漏掉这一行就是"算出来了但一个字节都没落盘"（§4 那次「PUT 说已保存、磁盘一字不动」
     // 是同一个形状的坑）。空 vec 会把旧理由清掉，这正是"每趟重算"的语义。
@@ -1282,6 +1303,7 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
     project::update_polish_toml(project_path, move |cfg| {
         cfg.segments = segments;
         cfg.intro_fade_seeded = intro_fade_seeded;
+        cfg.auto_fill_done = auto_fill_done;
         cfg.decisions = decisions;
         if let Some(clips) = edl_clips {
             cfg.edl.clips = clips;
@@ -3814,6 +3836,107 @@ y = "10%"
             x.trim_end_matches('%').parse::<f64>().is_ok()
                 && y.trim_end_matches('%').parse::<f64>().is_ok(),
             "回填的必须是可解析的百分比坐标：({x}, {y})"
+        );
+    }
+    /// **用户动作演练**（P0 2026-10-20）：补过 → **删掉** → 重跑 ⇒ 补位数 0，事件表逐字段不变。
+    ///
+    /// 变异自证：把 `fill_visual_gaps` 里的 `auto_fill_overlaps` 判断去掉 ⇒ 本条红（又补回来）。
+    #[tokio::test]
+    async fn user_deleted_auto_fill_is_not_resurrected() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let path = dir.path();
+        std::fs::create_dir_all(path.join("data")).expect("建 data/");
+        std::fs::write(
+            path.join("data").join("subtitles.json"),
+            serde_json::json!([
+                {"index": 1, "start": 1.0, "end": 3.0, "text": "一句话", "html": ""},
+            ]).to_string(),
+        ).expect("写字幕");
+        let mut cfg = ProjectFile::example();
+        cfg.sticker_source = Vec::new();
+        cfg.segments = vec![Segment {
+            role: String::new(),
+            start: 0.0, end: 20.0, fx: "low".into(), note: String::new(),
+            events: vec![],
+            extra: Default::default(),
+        }];
+        std::fs::write(path.join("polish.toml"), cfg.to_toml_commented().expect("序列化"))
+            .expect("写 polish.toml");
+
+        // ① 第一次 process：补位（+ 账本落盘）
+        cmd_process(path).await.expect("后处理 #1");
+        let after1 = crate::project::load_project(path).expect("重读");
+        let filled: Vec<f64> = after1.segments[0]
+            .events
+            .iter()
+            .filter(|e| matches!(e, Event::Pulse { anchor: Some(a), .. } | Event::Blur { anchor: Some(a), .. } if a == "auto_fill"))
+            .map(|e| e.get_time())
+            .collect();
+        assert!(!filled.is_empty(), "20s 空段应该被补过");
+        assert!(!after1.auto_fill_done.is_empty(), "账本要落盘");
+
+        // ② 用户动作：把补出来的那几条删掉（写回文件）
+        let mut cfg2 = crate::project::load_project(path).expect("读");
+        cfg2.segments[0].events.retain(|e| {
+            !matches!(e, Event::Pulse { anchor: Some(a), .. } | Event::Blur { anchor: Some(a), .. } if a == "auto_fill")
+        });
+        let after_delete = serde_json::to_string(&cfg2.segments[0].events).expect("序列化事件表");
+        std::fs::write(path.join("polish.toml"), cfg2.to_toml_commented().expect("序列化"))
+            .expect("写回");
+
+        // ③ 重跑：不许复活
+        cmd_process(path).await.expect("后处理 #2");
+        let after3 = crate::project::load_project(path).expect("重读");
+        let resurrected = after3.segments[0]
+            .events
+            .iter()
+            .filter(|e| matches!(e, Event::Pulse { anchor: Some(a), .. } | Event::Blur { anchor: Some(a), .. } if a == "auto_fill"))
+            .count();
+        assert_eq!(resurrected, 0, "用户删掉的补位事件不许被加回来");
+        assert_eq!(
+            serde_json::to_string(&after3.segments[0].events).expect("序列化"),
+            after_delete,
+            "事件表必须与删除后逐字段相同"
+        );
+    }
+
+    /// 同型 B：**默认运镜**删掉之后也不许补回（账本 kind="camera"）。
+    ///
+    /// 变异自证：把 Step 1 里 `auto_fill_overlaps(..., "camera")` 那道判断去掉 ⇒ 本条红。
+    #[tokio::test]
+    async fn user_deleted_default_camera_is_not_resurrected() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let path = dir.path();
+        std::fs::create_dir_all(path.join("data")).expect("建 data/");
+        std::fs::write(
+            path.join("data").join("subtitles.json"),
+            serde_json::json!([{"index": 1, "start": 1.0, "end": 3.0, "text": "一句话", "html": ""}]).to_string(),
+        ).expect("写字幕");
+        let mut cfg = ProjectFile::example();
+        cfg.sticker_source = Vec::new();
+        cfg.segments = vec![Segment {
+            role: String::new(),
+            start: 0.0, end: 8.0, fx: "low".into(), note: String::new(),
+            events: vec![],
+            extra: Default::default(),
+        }];
+        std::fs::write(path.join("polish.toml"), cfg.to_toml_commented().expect("序列化"))
+            .expect("写 polish.toml");
+
+        cmd_process(path).await.expect("后处理 #1");
+        let after1 = crate::project::load_project(path).expect("重读");
+        assert!(after1.segments[0].events.iter().any(|e| matches!(e, Event::Camera { .. })), "空段要补默认运镜");
+
+        // 用户动作：删掉那条运镜
+        let mut cfg2 = crate::project::load_project(path).expect("读");
+        cfg2.segments[0].events.retain(|e| !matches!(e, Event::Camera { .. }));
+        std::fs::write(path.join("polish.toml"), cfg2.to_toml_commented().expect("序列化")).expect("写回");
+
+        cmd_process(path).await.expect("后处理 #2");
+        let after3 = crate::project::load_project(path).expect("重读");
+        assert!(
+            !after3.segments[0].events.iter().any(|e| matches!(e, Event::Camera { .. })),
+            "用户删掉的默认运镜不许被补回来"
         );
     }
     /// **§6 爆点报告只在真的判出爆点时落盘**（R4 判据）。
