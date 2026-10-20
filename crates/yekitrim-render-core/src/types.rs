@@ -108,7 +108,17 @@ pub enum Event {
         /// process/Step2b 解析成功后实际使用的来源 (emoji/irasu/local/包名)
         #[serde(default)]
         source: Option<String>,
+        /// 落点（盒子**左上角**百分比）。**可省略**（serde default = 空串 = 还没落点）。
+        ///
+        /// ⚠️ 2026-10-20 P0：这两个字段曾经是**必填**，而落点是 process Step 2b 的活 ——
+        /// 模型漏写一个 x 就让**整个 20.5s 窗口**的全部事件作废（missing field x）。
+        /// 现在空串 = 还没落点：process Step 2b 会无条件回填真坐标（它不读旧值），
+        /// 渲染侧（模板 / engine.js 的 stickerAnchor）对空串/NaN 退到**画面中心**而不是 (0,0)。
+        /// 序列化**照写**（R4：有值的文件逐字节不变；空值那种文件以前根本读不进来）。
+        #[serde(default)]
         x: String,
+        /// 落点（见 x 的说明）：**可省略**，空串 = 还没落点。
+        #[serde(default)]
         y: String,
         #[serde(default, deserialize_with = "flex_sfx")]
         sfx: Option<String>,
