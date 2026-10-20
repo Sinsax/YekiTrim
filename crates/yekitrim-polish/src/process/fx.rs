@@ -853,51 +853,6 @@ pub fn cap_dutch_angle(segments: &mut [Segment]) -> usize {
 /// 那套合法性一律不动。
 pub const MAX_TEXT_ELEMENTS_PER_SEGMENT: usize = 2;
 
-pub fn cap_text_elements(segments: &mut [Segment], mute_ranges: &[MuteRange]) -> usize {
-    // 全片贴纸窗口（**两个载体都要收**：老 `Sticker` 与 `Element{kind:"sticker"}`）。
-    let mut sticker_spans: Vec<(f64, f64)> = Vec::new();
-    for seg in segments.iter() {
-        for ev in &seg.events {
-            // 屏蔽区间里的贴纸这一趟看不见 ⇒ 不该把可见区里的文字挤掉
-            if crate::project::event_starts_muted(mute_ranges, ev) {
-                continue;
-            }
-            if let Some((_, _, s, e)) = ev.sticker_span() {
-                sticker_spans.push((s, e));
-            }
-        }
-    }
-
-    let mut removed = 0usize;
-    for seg in segments.iter_mut() {
-        let mut kept_text = 0usize;
-        let old = std::mem::take(&mut seg.events);
-        let mut kept: Vec<Event> = Vec::with_capacity(old.len());
-        for ev in old {
-            if !ev.is_text_element() || ev.is_time_manual() {
-                kept.push(ev);
-                continue;
-            }
-            // 屏蔽区间里看不见 —— 不占名额、不改写（留在文件里，撤销屏蔽后原样还在）
-            if crate::project::event_starts_muted(mute_ranges, &ev) {
-                kept.push(ev);
-                continue;
-            }
-            let (s, e) = (ev.get_time(), ev.end().unwrap_or(ev.get_time() + 1.0));
-            let clashes_sticker = sticker_spans.iter().any(|(ss, se)| *ss < e && *se > s);
-            // 每段最多 MAX_TEXT_ELEMENTS_PER_SEGMENT 条（2026-10-20：1 → 2，配额放宽）
-            if clashes_sticker || kept_text >= MAX_TEXT_ELEMENTS_PER_SEGMENT {
-                removed += 1;
-                continue;
-            }
-            kept_text += 1;
-            kept.push(ev);
-        }
-        seg.events = kept;
-    }
-    removed
-}
-
 // ── 空窗补位（2026-10-20 用户口径「太平行、少内容」）──────────────────────
 //
 // 用户实测 clip-15：内容事件 0.13/s、段 1 有 **14 秒零内容事件**、camera 占 57%。
@@ -3053,109 +3008,21 @@ mod tests {
     // 用户对文字效果的定位：突出、指向性强 ⇒ 只当**候补**（没有更合适的贴纸/特效时才用），
     // 而且**不要和贴纸同时出现**。LLM 在段窗口里数不出这些，所以由 `cap_text_elements` 兜。
     /// 造一条文字元素 —— 走**真**反序列化（`type = "element"` 就是盘上的写法）。
-    fn text_el(time: f64, dur: f64, s: &str) -> Event {
-        toml::from_str(&format!(
-            "type = \"element\"\ntime = {time}\nend = {}\nkind = \"text\"\ntext = \"{s}\"\nstyle = \"comment\"\n",
-            time + dur
-        ))
-        .expect("text element")
-    }
+
 
     /// 编辑器「贴纸轨」新建的那一支（`Element{kind:"sticker"}`）—— 守卫也必须认它。
-    fn element_sticker_el(time: f64, dur: f64) -> Event {
-        toml::from_str(&format!(
-            "type = \"element\"\ntime = {time}\nend = {}\nkind = \"sticker\"\ntext = \"emoji\"\n",
-            time + dur
-        ))
-        .expect("element sticker")
-    }
 
-    fn text_seg(events: Vec<Event>) -> Vec<Segment> {
-        vec![Segment {
-            start: 0.0,
-            end: 60.0,
-            fx: "med".into(),
-            note: String::new(),
-            role: String::new(),
-            events,
-            extra: Default::default(),
-        }]
-    }
 
-    fn text_bodies(segs: &[Segment]) -> Vec<String> {
-        segs.iter()
-            .flat_map(|s| s.events.iter())
-            .filter_map(|e| {
-                // ⚠️ 别写成 `"text" => Some(..)` 那种 match 臂：词汇表门禁的孤儿检测会用
-                //    `"([a-z_]+)"\s*=>` 扫这个文件，它会把这个**测试辅助函数**当成"没人认领的效果实现"
-                //    （实测就是这么误报的）。用 guard + if 表达，语义一样、正则不再命中。
-                if let Event::Element { kind, text, .. } = e {
-                    if kind == "text" {
-                        return Some(text.clone());
-                    }
-                }
-                None
-            })
-            .collect()
-    }
 
-    #[test]
-    fn text_element_yields_to_sticker() {
-        // ① 老载体 `Event::Sticker`
-        let mut segs = text_seg(vec![text_el(2.0, 2.0, "名场面"), sticker(3.0, 1.5)]);
-        assert_eq!(cap_text_elements(&mut segs, &[]), 1, "与贴纸时间重叠 ⇒ 文字让位");
-        assert!(text_bodies(&segs).is_empty(), "文字被删掉，贴纸留下");
-        assert_eq!(segs[0].events.len(), 1, "贴纸一条都不许动");
-        // ② 编辑器新建的 `Element{kind:"sticker"}` —— 只认老载体的话这里会漏
-        let mut segs = text_seg(vec![text_el(2.0, 2.0, "名场面"), element_sticker_el(2.5, 1.0)]);
-        assert_eq!(cap_text_elements(&mut segs, &[]), 1, "两个载体都要认");
-        assert!(text_bodies(&segs).is_empty());
-    }
+
+
+
 
     /// 每段最多留 MAX_TEXT_ELEMENTS_PER_SEGMENT 条（2026-10-20：**1 → 2**）。
     ///
     /// 变异自证：把常量改回 1 ⇒ 本条红（会只剩"第一条"）。
-    #[test]
-    fn text_element_is_capped_per_segment() {
-        let mut segs = text_seg(vec![
-            text_el(2.0, 1.0, "第一条"),
-            text_el(10.0, 1.0, "第二条"),
-            text_el(20.0, 1.0, "第三条"),
-        ]);
-        assert_eq!(cap_text_elements(&mut segs, &[]), 1, "一段最多留两条");
-        assert_eq!(
-            text_bodies(&segs),
-            vec!["第一条".to_string(), "第二条".to_string()],
-            "留最早的两条"
-        );
-        assert_eq!(cap_text_elements(&mut segs, &[]), 0, "幂等（process 会被隐式重跑）");
-    }
 
-    #[test]
-    fn manual_text_element_is_never_touched() {
-        let mut manual = text_el(2.0, 2.0, "用户写的");
-        manual.set_time_manual(true);
-        let mut segs = text_seg(vec![manual, sticker(2.5, 1.0)]);
-        assert_eq!(cap_text_elements(&mut segs, &[]), 0, "manual 不参与守卫");
-        assert_eq!(text_bodies(&segs), vec!["用户写的".to_string()]);
-    }
 
-    #[test]
-    fn muted_text_element_does_not_take_the_slot() {
-        // 0~10s 被屏蔽：里面的文字看不见 —— 不该被删，也不该挤掉可见区里的名额
-        let mutes = [MuteRange { start: 0.0, end: 10.0 }];
-        let mut segs = text_seg(vec![text_el(2.0, 1.0, "看不见"), text_el(20.0, 1.0, "看得见")]);
-        assert_eq!(cap_text_elements(&mut segs, &mutes), 0);
-        assert_eq!(
-            text_bodies(&segs),
-            vec!["看不见".to_string(), "看得见".to_string()]
-        );
-
-        // 屏蔽区里的**贴纸**同样看不见 —— 不许把可见区里的文字挤掉
-        let mut segs = text_seg(vec![sticker(2.0, 1.0), text_el(20.0, 1.0, "看得见")]);
-        assert_eq!(cap_text_elements(&mut segs, &mutes), 0, "屏蔽段的贴纸不算障碍");
-        assert_eq!(text_bodies(&segs), vec!["看得见".to_string()]);
-    }
     /// 手工定过时间的贴纸**既不吸附也不延长**（用户报过"调整结束时间没成功"：
     /// 编辑器每次改动后自动跑一次 process，那时这里会把他的时间吸回字幕边界）。
     #[test]

@@ -404,166 +404,8 @@
                 <div class="muted small">⚠ 认不出的 kind：{{ selItem.kind || '(空)' }}（按原样保留）</div>
               </template>
 
-              <!-- 文字支：内容 + 样式。**和贴纸一样只有"是什么"，没有"摆哪"**——
-                   ⚠️ 别再退回"纵向位置"下拉：位置一律由后处理按安全落点算
-                   （与贴纸那句「位置 x/y 由后处理算」同一条口径），
-                   下同的那句 hint 就是给用户看的唯一说明。 -->
-              <template v-if="elementKindOf(selItem) === 'text'">
-                <label>文字内容</label>
-                <input :value="selItem.text || ''" placeholder="要显示的字"
-                       @input="selItem.text = $event.target.value">
-                <!-- ============ 颜色（命名预设，2026-10-13）============
-                     ⚠️ **这不是样式档位那套已否决的四档**（那个是 `selItem.style`，
-                        见下面那段注释）—— 这是**颜色**这一个维度，与 `style_anim`/
-                        `effect_anim` 正交，所以它有自己的槽位。
-
-                     ⚠️ **空 = 不设**（走 `style` 档位的默认色），必须排第一、且文案与
-                        动效栏的「不设」/样式栏的「清除」都不冲突 —— 这里用「默认色」，
-                        因为它表达的是"不指定颜色"而不是"清掉某种效果"。
-
-                     ⚠️ **选项从 `ELEMENT_COLORS` 来**（唯一一份前端清单），而那份清单
-                        的权威是 Rust `placement.rs::ElementColor`，由
-                        `scripts/check-element-color.mjs` 钉着四处同值。
-                        ⚠️ 写死在这里的话，加一档时要改五处、而漏掉哪一处都不报错。 -->
-                <label>颜色</label>
-                <select :value="selItem.color || ''" @change="selItem.color = $event.target.value || undefined">
-                  <option value="">默认色</option>
-                  <option v-for="c in ELEMENT_COLORS" :key="c.value" :value="c.value">{{ c.label }}</option>
-                </select>
-                <div v-if="selItem.color && !ELEMENT_COLOR_VALUES.includes(selItem.color)" class="hint">
-                  这个颜色名不认识，成片里会用默认色。
-                </div>
-                <!-- ============ 两个**独立可叠加**的设置 ============
-                     用户口径（2026-10-13）：「两个设置，有各自的细分，是可叠加的」。
-                     即「竖排 **+** 抖动」两个都要成立，不是二选一。
-
-                     ⚠️⚠️ **不是"三级互斥选择器"** —— 那一版（类型→种类→细分，写同一个
-                        `anim`）**做错过并回退过**：它选样式会把动效清掉。这里两条
-                        下拉**各写各的字段**（`style_anim` / `effect_anim`）。
-
-                     ⚠⚠ **没有 `both` 了**（2026-10-14 三轴收敛）—— 每一档**只属一条轴**，
-                        三条轴的档名集合**两两不相交**。下拉里只列**本轴自己**的档，
-                        不再有“同一个名字两栏都出现”。（旧名单 `scatter_shake` /
-                        `slam_squash` / `hop_*` / `pop_perchar` / `arc_*` 都已被删或合并。）
-                        ⚠ 旧句子里说“只放一边会让用户以为另一半不存在”——
-                        那句话的前提（一档真的给两边参数）已经没了，现在反过来：
-                        **一档出现在两栏里就是错的**。
-                     ⚠️ **认不出的档名必须仍然显示出来**（下面那两条 `v-if`）：
-                        它若被悄悄归成"不动效"，用户改一下别的字段就把那个错档名
-                        **永久抹掉**了 —— 而报告里的 CLAMP 已经告诉过他这一条不会动，
-                        得让他看得见是哪一条。
-
-                     ⚠️⚠️ **`selItem.style`（字幕样式，hook/chapter/comment/count）
-                        那个下拉已经删掉**，不是漏了。用户口径：那套四档**早已被否决**
-                        （2026-10-13），现在只有「样式（形态）× 动效」这一对槽位。
-                        **别把它加回来** —— 它被否决过一次，又被人看见挂在面板上，
-                        等于"把否定的方案留在上面"。底下 `TEXT_STYLES` 已一并删除；
-                        ⚠️ `Event.style` **这个字段还在**（字幕层仍用它），
-                        只是不再由这个面板提供入口。 -->
-                <label>排版</label>
-                <select :value="styleKind" @change="setKindOnAxis('style', $event.target.value)"
-                  title="管字**排成什么形状**（歪斜、竖排、逐字斜扫）。不随时间变。">
-                  <option v-for="k in kindsOnAxis('style')" :key="k.kind" :value="k.kind">{{ kindLabelOn('style', k) }}</option>
-                  <option v-if="styleKind === ''" value="">未知档（{{ selItem.style_anim }}）</option>
-                </select>
-                <!-- 细分：认不出档名时 `styleVariants` 是空数组 ⇒ 这个下拉整条不渲染 -->
-                <template v-if="styleVariants.length > 1">
-                  <select :value="selItem.style_anim || ''" @change="setVariantOnAxis('style', $event.target.value)">
-                    <option v-for="a in styleVariants" :key="a.value" :value="a.value">{{ a.label }}</option>
-                  </select>
-                </template>
-                <!-- ---- 排版角度（2026-10-14，用户口径：倾斜与斜扫要能调角度）----
-                     ⚠️ **只在 `tilt` / `arc` 两档出现**（`showAngle`）—— 别的排版档
-                        没有旋转语义，显示了用户会以为它能调（调了不生效）。
-                     ⚠️ 区间**必须与转译器的 `LAYOUT_ANGLE_MIN/MAX` 同值**，
-                        由 `scripts/check-anim-layout-angle.mjs` 逐值钉着。 -->
-                <template v-if="showAngle">
-                  <label>角度</label>
-                  <div class="angle-row">
-                    <input type="range" :min="LAYOUT_ANGLE_MIN" :max="LAYOUT_ANGLE_MAX" step="0.5"
-                      :value="layoutAngle" @input="setLayoutAngle($event.target.value)"
-                      title="倾斜/斜扫的角度（度）。负号 = 反方向。">
-                    <span class="angle-val">{{ layoutAngle }}°</span>
-                    <!-- ⚠️ 「默认」只在**显式设过**时才可点：没设过时它本来就是默认值，
-                         按钮看着能动却什么都不改变，用户会以为坏了。
-                         ⚠️ 它写的是 `null`（键不存在），**不是 0** —— 0 是一个合法的
-                         用户选择（"我要它正着"），与"没填"是两回事。 -->
-                    <button v-if="layoutAngleSet" type="button" class="angle-reset"
-                      @click="resetLayoutAngle()" title="去掉角度设置，回到该档的默认角度">默认</button>
-                  </div>
-                </template>
-                <div v-if="selItem.style_anim && !ANIM_KNOWN.includes(selItem.style_anim)" class="hint">
-                  这个档名不认识。
-                </div>
-
-                <!-- 过渡轴**只有一个下拉框**（2026-10-15 用户口径，报过不止一次）。
-
-                     用户原话：「过渡只留**弹出**和**淡入淡出**」「过渡：过渡：弹出，不觉得很蠢吗」。
-
-                     病根：这里原先照抄了**排版轴**那套「种类 + 细分」两级结构
-                     （种类框走 `kindsOnAxis('transition')`、细分框走 `transitionVariants`）。
-                     而两级是给排版轴设计的 —— 那里一个种类下辖多档（倾斜 → 标准 / 小角度…），
-                     种类栏说"这一类是什么"、细分栏说"哪一支"，**两级各有信息**。
-
-                     过渡轴只有 `pop` / `fade` **两档、没有细分维度** ⇒ 硬套两级之后：
-                       · 种类框：属于这条轴的只有 `transition` 这个**种类本身**与 `none`（不设）
-                         ⇒ 它只能把自己重复一遍，显示成「过渡」；
-                       · 细分框：`transitionVariants` 恰好 `length > 1` ⇒ 渲染出来显示「弹出」。
-                     于是面板上就是「过渡 / 弹出」—— **一个框什么都没选，另一个框才是真正的值**。
-
-                     ⇒ 过渡轴直接**一个下拉**，选项就是两档本身。
-                     ⚠️ 值仍然写 `transition_anim`，**取值一个字都不变**（`pop` / `fade` /
-                        空串 = 不设）—— 这是**纯界面重排**，老工程产物逐字节不变（R4）。
-                     ⚠️ 别再把 `kindsOnAxis('transition')` / `transitionVariants` 用回来 ——
-                        那两个计算属性还在（排版/动效支仍在用），但**过渡支不许再走两级**。 -->
-                <label>过渡</label>
-                <select :value="selItem.transition_anim || ''" @change="setVariantOnAxis('transition', $event.target.value)"
-                  title="管字**怎么进来、怎么出去**（入场/出场效果）。与动效可以同时设。">
-                  <option v-for="a in TRANSITION_OPTIONS" :key="a.value" :value="a.value">{{ a.label }}</option>
-                  <!-- ⚠️⚠️ 这一项**不是第三个选项**，是"磁盘上的值认不出/为空"时的**兜底显示**
-                       （2026-10-15 用户口径：过渡只留 `弹出` + `淡入淡出` 两项）。
-
-                       为什么必须有它：老工程与后处理生成的事件**大多没有 `transition_anim`**
-                       （空串），而 `<select>` 的 `:value` 匹配不上任何一项时**浏览器会显示第一项** ——
-                       表现就是"这条我从来没设过，面板却写着弹出"。那是撒谎，
-                       用户会以为自己设过（本仓对这类"静默伪装"零容忍）。
-                       ⇒ 兜底项照实说"没设过"：**只在磁盘值认不出/为空时出现**，
-                          用户一旦选任一项就固化成 `pop` / `fade`，它自己消失。
-
-                       ⚠️ 文案**不许写"未知档"**：空串是**正常状态**（没设过），不是坏数据 ——
-                          写成"未知档"会让用户以为工程坏了。真正的**认不出的档名**
-                          （既不是空、也不在 `ANIM_KNOWN` 里）由下面那行 `.hint` 单独报。 -->
-                  <option v-if="transitionKind === ''" value="">
-                    {{ selItem.transition_anim ? '未知档（' + selItem.transition_anim + '）' : '未设置' }}
-                  </option>
-                </select>
-                <div v-if="selItem.transition_anim && !ANIM_KNOWN.includes(selItem.transition_anim)" class="hint">
-                  这个档名不认识。
-                </div>
-
-                <label>动效</label>
-                <select :value="effectKind" @change="setKindOnAxis('effect', $event.target.value)"
-                  title="管字**在场的时候怎么动**（持续型）。与过渡可以同时设。">
-                  <option v-for="k in kindsOnAxis('effect')" :key="k.kind" :value="k.kind">{{ kindLabelOn('effect', k) }}</option>
-                  <option v-if="effectKind === ''" value="">未知档（{{ selItem.effect_anim }}）</option>
-                </select>
-                <template v-if="effectVariants.length > 1">
-                  <select :value="selItem.effect_anim || ''" @change="setVariantOnAxis('effect', $event.target.value)">
-                    <option v-for="a in effectVariants" :key="a.value" :value="a.value">{{ a.label }}</option>
-                  </select>
-                </template>
-                <div v-if="selItem.effect_anim && !ANIM_KNOWN.includes(selItem.effect_anim)" class="hint">
-                  这个档名不认识，成片里不会动。
-                </div>
-                <!-- ⚠️ 三轴里只剩「排版 / 过渡 / 动效」，**没有"两栏都有"这回事了** ——
-                     `kindLabelOn` 的后缀与 `setKindOnAxis` 的同步都随之删除。
-                     用户报的「样式和动效内容过于重复」就是那 11 档 `both` 造成的。 -->
-              </template>
-
-              <!-- 贴纸支：复用已有的贴纸选择器。
-                   ⚠️ 判据从"`kind === 'text'` 的 else"改成**显式认 `sticker`**
-                   —— 上面那个 `unknown` 支已经先把认不出的拦走了，
-                   这里再写 `v-else` 会把它当成贴纸（把坏数据伪装成正常元素）。 -->
+              <!-- ⚠️ **文字支已删除**（2026-10-20 用户口径「算了，删除文字层吧」）：文字层整条退役，
+                   编辑器不再提供创建/编辑入口（含排版轴下拉与角度滑杆）。贴纸支一动没动。 -->
               <template v-else-if="elementKindOf(selItem) === 'sticker'">
                 <StickerPicker :lib="stickerLib" :lib-error="stickerLibError" :pid="pid" :dir="dir"
                                :pack="selItem.text || ''" :tag="selItem.sticker_tag || ''"
@@ -1874,8 +1716,8 @@ const LANE_DEFS = [
   //    分开它们的只有 `kinds`。所以**别的按 `lane.type` 找轨道的代码会同时命中两条**
   //    （`lane.type` 不再唯一）。凡是"按 type 索引泳道"的地方都要用 `lane.id`：
   //    `id` 是**界面专用**的唯一键，与磁盘无关（见下面 `laneOpen` / `:key` 的用法）。
-  { id: 'text', type: 'sticker', kinds: ['text', ''],
-    label: '文字', lane: 'sticker', color: TIMELINE_COLORS.sticker, types: LANE_TYPES('sticker'), resizable: true },
+  // ⚠️ **文字泳道已删除**（2026-10-20 用户口径「算了，删除文字层吧」）：
+  // 文字层整条退役（读时丢弃），编辑器不再有创建/编辑入口；贴纸泳道一条没动。
   { id: 'sticker', type: 'sticker', kinds: ['sticker'],
     label: '贴纸', lane: 'sticker', color: TIMELINE_COLORS.sticker, types: LANE_TYPES('sticker'), resizable: true },
   { type: 'fx', label: '视觉特效', lane: 'effects', color: TIMELINE_COLORS.flash, types: LANE_TYPES('fx'), resizable: true },
@@ -3198,7 +3040,6 @@ function onLaneAdd(laneKeyOrType, evt) {
   //
   // ⚠️ 两种都建 `type: 'element'`（差别只在 `kind`）—— 与旧口径一致，
   //    别退回 `type:'sticker'` 那条老载体（见 `addElementAt` 的注释）。
-  if (laneType === 'text') { addElementAt('text'); return }
   if (laneType === 'sticker') { addElementAt('sticker'); return }
   addEventAt(laneType)
 }
