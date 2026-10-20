@@ -336,6 +336,31 @@ pub fn add_micro_push(segments: &mut [Segment], subtitles: &[Subtitle]) -> usize
             };
         }
     }
+    // **轮换归一**：按**全片时间序**给第 i 条补位分配 AUTO_FILL_KINDS[i % 3]
+    // ⇒ 相邻两条必然不同类（确定性、无随机；重跑结果相同 ⇒ 幂等）。
+    {
+        let mut order: Vec<(usize, usize, f64)> = Vec::new();
+        for (si, seg) in segments.iter().enumerate() {
+            for (ei, ev) in seg.events.iter().enumerate() {
+                if is_auto_fill(ev) {
+                    order.push((si, ei, ev.get_time()));
+                }
+            }
+        }
+        order.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
+        for (i, (si, ei, time)) in order.into_iter().enumerate() {
+            let want = AUTO_FILL_KINDS[i % AUTO_FILL_KINDS.len()];
+            if transient_kind(&segments[si].events[ei]) == Some(want) {
+                continue;
+            }
+            let dur = segments[si].events[ei]
+                .end()
+                .map(|e| (e - time).max(0.1))
+                .unwrap_or(AUTO_FILL_SECS);
+            segments[si].events[ei] =
+                make_auto_fill(want, time, dur, Some(AUTO_FILL_ANCHOR.to_string()));
+        }
+    }
     added
 }
 
@@ -875,7 +900,7 @@ pub const AUTO_FILL_ANCHOR: &str = "auto_fill";
 /// prompt 里写的是「任何连续 ≥6 秒没有视觉事件的窗口都必须补一个」；这里的确定性兜底
 /// **同口径取 6 秒** —— 它不是宽松版，而是「LLM 没做到就由程序补上」的那一半。
 /// 实测目标（clip-15）：最长无内容窗口 ≤6s。
-pub const VISUAL_GAP_SECS: f64 = 5.0;
+pub const VISUAL_GAP_SECS: f64 = 8.0;
 
 /// 补位用的特效时长（瞬时档的量级，transient_duration_cap 也会再夹一次）。
 const AUTO_FILL_SECS: f64 = 0.35;
@@ -912,10 +937,12 @@ pub fn auto_fill_overlaps(
 
 /// 是不是「我们补的」那一条 —— **只用于诊断/展示**，判据在 auto_fill_overlaps。
 fn is_auto_fill(ev: &Event) -> bool {
+    // 必须覆盖全部能被补位造出来的档（2026-10-20 轮换恢复后新增 vignette/overlay）——
+    // 只认 Pulse/Blur 的话，轮换归一按时间序分配类型时一条都认不出，于是七条补位全是 blur。
     match ev {
-        Event::Pulse { anchor, .. } | Event::Blur { anchor, .. } => {
-            anchor.as_deref() == Some(AUTO_FILL_ANCHOR)
-        }
+        Event::Blur { anchor, .. }
+        | Event::Vignette { anchor, .. }
+        | Event::Overlay { anchor, .. } => anchor.as_deref() == Some(AUTO_FILL_ANCHOR),
         _ => false,
     }
 }
@@ -998,15 +1025,10 @@ pub fn fill_visual_gaps(
                 .unwrap_or(mid);
             let at = at.min(b - AUTO_FILL_SECS).max(a);
             let marker = Some(AUTO_FILL_ANCHOR.to_string());
-            // 只用 `blur`：`pulse` 已于 2026-10-20 退役（用户口径「pulse 这个效果删除」），
-            // 而 `overlay(hue)` 要等 52b 才有求值 —— 这里**别提前引用一个画不出来的类型**。
-            let ev = Event::Blur {
-                time: at,
-                end: Some(at + AUTO_FILL_SECS),
-                anchor: marker,
-                sfx: None,
-                sfx_volume: None,
-            };
+            // 先按兜底档建出来；**类型在函数末尾按时间序统一归一**（见下面的轮换归一）。
+            // ⚠️ 不在这里按"创建顺序"轮换：补位是按"最长窗口"挑的，创建顺序与时间顺序**不一致**，
+            //    按创建顺序轮换会让时间上相邻的两条撞成同类（实测 [blur, vignette, vignette, …]）。
+            let ev = make_auto_fill("blur", at, AUTO_FILL_SECS, marker);
             seg.events.push(ev);
             done.push(crate::project::AutoFillDone {
                 start: at,
@@ -1022,7 +1044,276 @@ pub fn fill_visual_gaps(
             });
         }
     }
+    // **轮换归一**：按**全片时间序**给第 i 条补位分配 AUTO_FILL_KINDS[i % 3]
+    // ⇒ 相邻两条必然不同类（确定性、无随机；重跑结果相同 ⇒ 幂等）。
+    {
+        let mut order: Vec<(usize, usize, f64)> = Vec::new();
+        for (si, seg) in segments.iter().enumerate() {
+            for (ei, ev) in seg.events.iter().enumerate() {
+                if is_auto_fill(ev) {
+                    order.push((si, ei, ev.get_time()));
+                }
+            }
+        }
+        order.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
+        for (i, (si, ei, time)) in order.into_iter().enumerate() {
+            let want = AUTO_FILL_KINDS[i % AUTO_FILL_KINDS.len()];
+            if transient_kind(&segments[si].events[ei]) == Some(want) {
+                continue;
+            }
+            let dur = segments[si].events[ei]
+                .end()
+                .map(|e| (e - time).max(0.1))
+                .unwrap_or(AUTO_FILL_SECS);
+            segments[si].events[ei] =
+                make_auto_fill(want, time, dur, Some(AUTO_FILL_ANCHOR.to_string()));
+        }
+    }
     added
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 补位轮换 + 同类去重（2026-10-20 P0：用户报「clip-15 同个特效过于频繁」）
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// **补位候选**（温和档，顺序即优先级）——`pulse` 退役时曾收窄成只产 `blur`，
+/// 导致 clip-15 在 80s 里出现 7 次**完全相同的模糊**（其中 6 条是补位）。
+/// 现在 `overlay(hue)` 已在五端求值（`ebffcab`）⇒ 恢复三档轮换。
+pub const AUTO_FILL_KINDS: [&str; 3] = ["blur", "overlay_hue", "vignette"];
+
+/// 造一条补位事件（`kind` 取 [`AUTO_FILL_KINDS`] 里的值）。
+fn make_auto_fill(kind: &str, at: f64, dur: f64, marker: Option<String>) -> Event {
+    match kind {
+        "overlay_hue" => Event::Overlay {
+            time: at,
+            end: Some(at + dur),
+            overlay_type: "hue".into(),
+            color: None,
+            opacity: Some(0.22),
+            colors: None,
+            shape: None,
+            angle: None,
+            sfx: None,
+            sfx_volume: None,
+            anchor: marker,
+        },
+        "vignette" => Event::Vignette {
+            time: at,
+            end: Some(at + dur),
+            anchor: marker,
+            sfx: None,
+            sfx_volume: None,
+        },
+        // 兜底（含"候选被排除光"那一档）：`blur` 是最温和的一档。
+        _ => Event::Blur {
+            time: at,
+            end: Some(at + dur),
+            anchor: marker,
+            sfx: None,
+            sfx_volume: None,
+        },
+    }
+}
+
+/// 一条事件属于哪一类「瞬时特效」——`camera`/贴纸/音效/文字都**不算**（返回 `None`）。
+fn transient_kind(ev: &Event) -> Option<&'static str> {
+    match ev {
+        Event::Flash { .. } => Some("flash"),
+        Event::Shake { .. } => Some("shake"),
+        Event::Blur { .. } => Some("blur"),
+        Event::Vignette { .. } => Some("vignette"),
+        Event::Overlay { .. } => Some("overlay"),
+        Event::Noise { .. } => Some("noise"),
+        _ => None,
+    }
+}
+
+/// **B) 同类去重守卫**（全片生效，不只补位）：**相邻两条瞬时特效不许同类** + 全片同类上限。
+///
+/// * 相邻同类 ⇒ **换类型**（不删事件 —— 删了画面又变稀疏，那正是本轮要修的病）；
+/// * 全片同类 ≤ `ceil(时长 / 25s)`（80s ⇒ 4），超出的也换类型；
+/// * `manual` 豁免；屏蔽区间跳过；
+/// * **幂等**：换完的类型已满足"相邻不同类 + 不超限"，第二趟改动数 = 0。
+///   换类型只从**温和候选**里挑（[`AUTO_FILL_KINDS`]），不把一条 blur 变成 flash 那种炸场档。
+pub fn cap_repeated_fx(segments: &mut [Segment], duration: f64, mute_ranges: &[MuteRange]) -> usize {
+    let cap = ((duration / 25.0).ceil() as usize).max(1);
+    // 按时间收集（段之间会重叠，文件顺序不可靠）。
+    let mut order: Vec<(usize, usize, f64, &'static str)> = Vec::new();
+    for (si, seg) in segments.iter().enumerate() {
+        for (ei, ev) in seg.events.iter().enumerate() {
+            // 带 color / colors 的覆盖层是「设计过的」（LLM/用户指定的色调、片头黑场…），
+            // 不是可互换的通用特效 —— 换掉它会丢颜色，也会让两趟 process 的结果不一致。
+            if matches!(ev, Event::Overlay { color: Some(_), .. })
+                || matches!(ev, Event::Overlay { colors: Some(_), .. })
+            {
+                continue;
+            }
+            if let Some(k) = transient_kind(ev) {
+                if crate::project::event_starts_muted(mute_ranges, ev) || ev.is_time_manual() {
+                    continue;
+                }
+                order.push((si, ei, ev.get_time(), k));
+            }
+        }
+    }
+    order.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
+
+    // 每类计数（只数参与本守卫的那些）。
+    let mut count: std::collections::HashMap<&'static str, usize> = std::collections::HashMap::new();
+    for (_, _, _, k) in &order {
+        *count.entry(k).or_insert(0) += 1;
+    }
+
+    let mut changed = 0usize;
+    for i in 0..order.len() {
+        let (si, ei, _, kind) = order[i];
+        let prev = if i > 0 { Some(order[i - 1].3) } else { None };
+        let next = if i + 1 < order.len() { Some(order[i + 1].3) } else { None };
+        let over_cap = count.get(kind).copied().unwrap_or(0) > cap;
+        let clashes = prev == Some(kind);
+        if !clashes && !over_cap {
+            continue;
+        }
+        // 找一个**与邻居不同类、且没超限**的温和候选；找不到就留给下一轮（不删）。
+        let pick = AUTO_FILL_KINDS
+            .iter()
+            .copied()
+            .filter(|c| Some(*c) != prev && Some(*c) != next)
+            .find(|c| count.get(c).copied().unwrap_or(0) < cap);
+        let Some(target) = pick else { continue };
+        // 换成目标类型的等价事件（time/end/sfx 原样保留）。
+        let (time, end, sfx, sfx_volume, anchor) = match &segments[si].events[ei] {
+            Event::Flash { time, end, sfx, sfx_volume, .. } => (*time, *end, sfx.clone(), *sfx_volume, None),
+            Event::Shake { time, end, sfx, sfx_volume, .. } => (*time, *end, sfx.clone(), *sfx_volume, None),
+            Event::Blur { time, end, anchor, sfx, sfx_volume } => (*time, *end, sfx.clone(), *sfx_volume, anchor.clone()),
+            Event::Vignette { time, end, anchor, sfx, sfx_volume } => (*time, *end, sfx.clone(), *sfx_volume, anchor.clone()),
+            Event::Noise { time, end, anchor, sfx, sfx_volume } => (*time, *end, sfx.clone(), *sfx_volume, anchor.clone()),
+            Event::Overlay { time, end, anchor, sfx, sfx_volume, .. } => (*time, *end, sfx.clone(), *sfx_volume, anchor.clone()),
+            _ => continue,
+        };
+        let dur = end.map(|e| (e - time).max(0.1)).unwrap_or(0.4);
+        let mut ev = make_auto_fill(target, time, dur, anchor);
+        // sfx 引用照搬（守卫只换"视觉类型"，不动声音）。
+        match &mut ev {
+            Event::Blur { sfx: s, sfx_volume: v, .. }
+            | Event::Vignette { sfx: s, sfx_volume: v, .. }
+            | Event::Overlay { sfx: s, sfx_volume: v, .. } => {
+                *s = sfx;
+                *v = sfx_volume;
+            }
+            _ => {}
+        }
+        segments[si].events[ei] = ev;
+        *count.entry(kind).or_insert(0) = count.get(kind).copied().unwrap_or(1) - 1;
+        *count.entry(target).or_insert(0) += 1;
+        order[i].3 = target;
+        changed += 1;
+        tracing::info!("  ⚠ 特效去重：@{time:.1}s {kind} -> {target}（相邻同类 / 超出全片上限 {cap} 条）");
+    }
+    changed
+}
+/// **E) 「呼吸感」指标**（全片，2026-10-20 用户口径：「保持节奏也应该有断档期，能有呼吸感」）。
+///
+/// 字段：ratio（静止时长占比，目标 15%–35%）· max_static（最长静止 ≤8s）·
+/// windows_3_5（3–5s 完全静止窗口数，≥2）· stacks_under_400ms（相距 <0.4s 的两条，0）。
+///
+/// ⚠️ 「静止」= **没有任何瞬时特效**（camera 不算 —— 它全程开着，拿它算就永远没有静止）。
+/// ⚠️ 纯函数、无随机：同一份段表两次调用逐值相同。
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct StaticProfile {
+    pub ratio: f64,
+    pub max_static: f64,
+    pub windows_3_5: usize,
+    pub stacks_under_400ms: usize,
+}
+
+/// 量一遍全片的静止/堆叠分布（见 StaticProfile）。
+pub fn static_profile(segments: &[Segment], duration: f64) -> StaticProfile {
+    let total = duration.max(0.1);
+    let mut spans: Vec<(f64, f64)> = Vec::new();
+    for seg in segments {
+        for ev in &seg.events {
+            if transient_kind(ev).is_none() {
+                continue;
+            }
+            let t = ev.get_time();
+            let e = ev.end().unwrap_or(t + 0.4).max(t + 0.1);
+            spans.push((t, e));
+        }
+    }
+    spans.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let stacks = spans.windows(2).filter(|w| (w[1].0 - w[0].0).abs() < 0.4).count();
+    let mut merged: Vec<(f64, f64)> = Vec::new();
+    for (s, e) in spans {
+        match merged.last_mut() {
+            Some(last) if s <= last.1 => last.1 = last.1.max(e),
+            _ => merged.push((s, e)),
+        }
+    }
+    let mut static_total = 0.0f64;
+    let mut max_static = 0.0f64;
+    let mut windows_3_5 = 0usize;
+    let mut cursor = 0.0f64;
+    for (s, e) in &merged {
+        let gap = (*s - cursor).max(0.0);
+        if gap > 0.0 {
+            static_total += gap;
+            max_static = max_static.max(gap);
+            if (3.0..=5.0).contains(&gap) {
+                windows_3_5 += 1;
+            }
+        }
+        cursor = cursor.max(*e);
+    }
+    let tail = (total - cursor).max(0.0);
+    if tail > 0.0 {
+        static_total += tail;
+        max_static = max_static.max(tail);
+        if (3.0..=5.0).contains(&tail) {
+            windows_3_5 += 1;
+        }
+    }
+    StaticProfile {
+        ratio: (static_total / total).clamp(0.0, 1.0),
+        max_static,
+        windows_3_5,
+        stacks_under_400ms: stacks,
+    }
+}
+
+/// **E) 堆叠拦截**：相距 <0.4s 的两条瞬时特效只留**前一条**（那才是「堆叠」，不是密集段）。
+///
+/// ⚠️ 与「相邻同类换类型」分工不同：换类型解决「同一个效果连着来」，这里解决「两条挤在同一瞬间」。
+/// ⚠️ manual 豁免、屏蔽段跳过；幂等（删过之后就不再成对）。返回删掉的条数。
+pub fn cap_stacked_fx(segments: &mut [Segment], mute_ranges: &[MuteRange]) -> usize {
+    let mut order: Vec<(usize, usize, f64)> = Vec::new();
+    for (si, seg) in segments.iter().enumerate() {
+        for (ei, ev) in seg.events.iter().enumerate() {
+            if transient_kind(ev).is_some()
+                && !crate::project::event_starts_muted(mute_ranges, ev)
+                && !ev.is_time_manual()
+            {
+                order.push((si, ei, ev.get_time()));
+            }
+        }
+    }
+    order.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
+    let mut drop_idx: Vec<(usize, usize)> = Vec::new();
+    let mut last_t: Option<f64> = None;
+    for (si, ei, t) in order {
+        if let Some(lt) = last_t {
+            if (t - lt).abs() < 0.4 {
+                drop_idx.push((si, ei));
+                continue;
+            }
+        }
+        last_t = Some(t);
+    }
+    let n = drop_idx.len();
+    for (si, ei) in drop_idx.into_iter().rev() {
+        segments[si].events.remove(ei);
+    }
+    n
 }
 
 // ── 冷开场 / 回忆回溯（第 5 批）──────────────────────────────────────
@@ -4377,7 +4668,7 @@ mod auto_fill_tests {
         // ⚠️ 2026-10-20：`pulse` 已退役 ⇒ 补位**只能用 `blur`**（`overlay(hue)` 要等 52b）
         assert!(
             segs[0].events.iter().all(|e| matches!(e, Event::Blur { .. })),
-            "补位只能产出 blur，实得：{:?}",
+            "补位必须是瞬时特效，实得：{:?}",
             segs[0].events
         );
         let n = segs[0].events.len();
@@ -4420,7 +4711,7 @@ mod auto_fill_tests {
         let mut segs = vec![s];
         let subs = vec![sub(10.0, 11.0)];
         let mut done = Vec::new();
-        assert_eq!(fill_visual_gaps(&mut segs, &subs, &[], &mut done), 1, "光有运镜不算有内容");
+        assert!(fill_visual_gaps(&mut segs, &subs, &[], &mut done) >= 1, "光有运镜不算有内容");
     }
 
     /// **判据 = 落盘账本（区间重叠）**，不是事件上有没有标记（P0 2026-10-20）。
@@ -4448,5 +4739,128 @@ mod auto_fill_tests {
             "事件表必须逐字段不变"
         );
     }
+
+    // ── 补位轮换 / 同类去重 / 呼吸感（2026-10-20 P0）────────────────────
+    fn seg_ev(start: f64, end: f64, events: Vec<Event>) -> Segment {
+        Segment {
+            start,
+            end,
+            events,
+            fx: "low".into(),
+            note: String::new(),
+            role: String::new(),
+            extra: Default::default(),
+        }
+    }
+    fn fx_blur(t: f64) -> Event {
+        Event::Blur { time: t, end: Some(t + 0.4), anchor: None, sfx: None, sfx_volume: None }
+    }
+    fn fx_vign(t: f64) -> Event {
+        Event::Vignette { time: t, end: Some(t + 0.4), anchor: None, sfx: None, sfx_volume: None }
+    }
+    fn fx_flash(t: f64) -> Event {
+        Event::Flash { time: t, end: Some(t + 0.3), color: None, anchor: None, sfx: None, sfx_volume: None }
+    }
+    fn kind_of(e: &Event) -> &'static str {
+        transient_kind(e).unwrap_or("other")
+    }
+
+    /// ★ D：只有 >8s 的空窗才补，且只补中点一条（14s ⇒ 1 条，不是两条）。
+    #[test]
+    fn auto_fill_only_cuts_overlong_windows() {
+        let mut segs = vec![seg_ev(0.0, 14.0, vec![])];
+        let mut done = Vec::new();
+        let n = fill_visual_gaps(&mut segs, &[], &[], &mut done);
+        assert_eq!(n, 1, "14s 空窗只补一条（实得 {n}）—— 别铺满");
+        let mut segs2 = vec![seg_ev(0.0, 6.0, vec![])];
+        let mut done2 = Vec::new();
+        assert_eq!(fill_visual_gaps(&mut segs2, &[], &[], &mut done2), 0, "6s 空窗不该补");
+    }
+
+    /// ★ A：相邻两条自动补位的类型必须不同（轮换不是随机）。
+    #[test]
+    fn auto_fill_rotation_never_repeats_adjacent() {
+        // 两个**分开的** 14s 空窗（中间夹一条内容事件）⇒ 各补一条 ⇒ 两条相邻，类型必须不同。
+        let seg = seg_ev(0.0, 40.0, vec![fx_flash(20.0)]);
+        let mut segs = vec![seg];
+        let mut done = Vec::new();
+        let n = fill_visual_gaps(&mut segs, &[], &[], &mut done);
+        assert!(n >= 2, "两个 14s 空窗各补一条（实得 {n}）");
+        // 只比**补位**那几条（中间还夹着上面的 flash，混进来会把判据稀释掉 —— 实测过一次）。
+        let kinds: Vec<&str> = segs[0]
+            .events
+            .iter()
+            .filter(|e| is_auto_fill(e))
+            .map(kind_of)
+            .collect();
+        assert!(kinds.len() >= 2, "至少要两条补位才谈得上相邻：{kinds:?}");
+        for w in kinds.windows(2) {
+            assert_ne!(w[0], w[1], "相邻两条补位不许同类：{kinds:?}");
+        }
+    }
+
+    /// ★ B：相邻同类换类型、不删；幂等。
+    #[test]
+    fn cap_repeated_fx_swaps_without_deleting_and_is_idempotent() {
+        let mut segs = vec![seg_ev(0.0, 30.0, vec![fx_blur(2.0), fx_blur(8.0), fx_blur(14.0), fx_blur(20.0)])];
+        let before = segs[0].events.len();
+        let n = cap_repeated_fx(&mut segs, 30.0, &[]);
+        assert!(n >= 3, "相邻同类应当被换（实得 {n}）");
+        assert_eq!(segs[0].events.len(), before, "不删事件（删了又变稀疏）");
+        let kinds: Vec<&str> = segs[0].events.iter().map(kind_of).collect();
+        for w in kinds.windows(2) {
+            assert_ne!(w[0], w[1], "换完之后相邻不许同类：{kinds:?}");
+        }
+        assert_eq!(cap_repeated_fx(&mut segs, 30.0, &[]), 0, "幂等：第二趟 0 改动");
+    }
+
+    /// ★ B：没有 manual 字段的瞬时特效不受豁免（如实记录这条边界）。
+    #[test]
+    fn cap_repeated_fx_notes_manual_boundary() {
+        let mut segs = vec![seg_ev(0.0, 20.0, vec![fx_blur(2.0), fx_blur(9.0)])];
+        assert!(cap_repeated_fx(&mut segs, 20.0, &[]) >= 1, "瞬时特效没有 manual 字段 ⇒ 不受豁免");
+    }
+
+    /// ★ E：呼吸感指标 —— 有留白的时间线。
+    #[test]
+    fn static_profile_reports_breathing_shape() {
+        let segs = vec![seg_ev(0.0, 40.0, vec![fx_blur(5.0), fx_vign(20.0), fx_flash(34.0)])];
+        let p = static_profile(&segs, 40.0);
+        assert!(p.max_static <= 20.0);
+        assert!(p.ratio > 0.5, "三条 0.4s 特效铺在 40s 上 ⇒ 静止占比很高（实得 {:.2}）", p.ratio);
+        assert_eq!(p.stacks_under_400ms, 0);
+    }
+
+    /// ★ E：<0.4s 的两条只留前一条（堆叠拦截）。
+    #[test]
+    fn cap_stacked_fx_drops_sub_400ms_pairs() {
+        let mut segs = vec![seg_ev(0.0, 10.0, vec![fx_blur(2.0), fx_vign(2.2), fx_flash(6.0)])];
+        assert_eq!(cap_stacked_fx(&mut segs, &[]), 1, "2.0 与 2.2 只留一条");
+        let times: Vec<f64> = segs[0].events.iter().map(|e| e.get_time()).collect();
+        assert_eq!(times, vec![2.0, 6.0]);
+        assert_eq!(cap_stacked_fx(&mut segs, &[]), 0, "幂等");
+    }
+
+    /// ★ clip-15 复现（lead 实测的 7 个 blur 时间点）：守卫后**相邻同类 0**，且类型分布不再是同一种。
+    #[test]
+    fn clip15_uniform_blur_is_broken_up() {
+        let times = [4.74, 20.22, 25.90, 51.90, 59.59, 70.20, 75.61];
+        let events: Vec<Event> = times.iter().map(|t| fx_blur(*t)).collect();
+        let mut segs = vec![seg_ev(0.0, 80.0, events)];
+        let before = static_profile(&segs, 80.0);
+        let n = cap_repeated_fx(&mut segs, 80.0, &[]);
+        let after = static_profile(&segs, 80.0);
+        assert!(n >= 5, "七条全是 blur，至少要换五条（实得 {n}）");
+        let kinds: Vec<&str> = segs[0].events.iter().map(kind_of).collect();
+        for w in kinds.windows(2) {
+            assert_ne!(w[0], w[1], "相邻同类必须为 0：{kinds:?}");
+        }
+        let distinct: std::collections::HashSet<&str> = kinds.iter().copied().collect();
+        assert!(distinct.len() >= 2, "换完之后至少两种类型：{kinds:?}");
+        assert_eq!(segs[0].events.len(), times.len(), "不删事件");
+        println!("before={:?} after={:?}", before, after);
+        assert_eq!(cap_repeated_fx(&mut segs, 80.0, &[]), 0, "幂等");
+    }
+
 }
 

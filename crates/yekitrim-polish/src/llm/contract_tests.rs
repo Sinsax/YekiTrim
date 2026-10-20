@@ -509,6 +509,15 @@ fn every_documented_field_and_value_survives_the_parser() {
     let prompt = build_events_system_prompt(&[], &[], "");
     let mut checked = 0usize;
     for case in CAMERA.iter().chain(OTHERS).chain(FX_SFX_OVERLAY) {
+        // ⚠️ 文字层退役（2026-10-20）：提示词不再教 kind=text 及其 style/pos/color。
+        if case.json.contains("\"kind\":\"text\"") || case.quote.contains("element") {
+            continue;
+        }
+        // ⚠️ 已退役的瞬时特效（pulse / hue_shift，2026-10-20 并入 overlay）：提示词不再教，
+        // 老工程靠读时迁移/丢弃；解析器仍认得，只是不再有提示词契约。
+        if case.tag == "pulse" || case.tag == "hue_shift" {
+            continue;
+        }
         // ⚠️ **文字层已退役**（2026-10-20 用户口径：「算了，删除文字层吧」）：提示词不再教
         // `kind="text"`（及其 `style`/`pos`/`color` 三段），表里那几条随之跳过 ——
         // 它们断言的是"提示词里还教着这一档"，而那一档已经删了。
@@ -549,7 +558,8 @@ fn every_documented_field_and_value_survives_the_parser() {
     }
     // 45 → **34**：文字层退役时表里 `kind="text"` 那 11 条不再参与（2026-10-20）。
     // ⚠️ 下限仍然要有 —— 表被删空时这条会红（"判据空转"的兜底）。
-    assert!(checked >= 34, "契约条目只有 {checked} 条 —— 表被删空了？");
+    // 34 -> 32: pulse / hue_shift 也已退役并入 overlay（2026-10-20），那两条不再有提示词契约。
+    assert!(checked >= 32, "契约条目只有 {checked} 条 —— 表被删空了？");
 }
 
 /// 提示词里列出的**每一个效果 id** 都必须能解析成同名变体。

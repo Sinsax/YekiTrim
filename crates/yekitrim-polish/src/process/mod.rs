@@ -540,6 +540,50 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
         }
     }
 
+    // Step 1j: **同类去重 + 堆叠拦截 + 呼吸感指标**（2026-10-20 P0：用户报
+
+    // 「clip-15 同个特效使用的过于频繁」「保持节奏也应该有断档期，能有呼吸感」）。
+
+    //
+
+    // ⚠️ 顺序：先**堆叠拦截**（<0.4s 两条只留一条）→ 再**同类换类型**（不删）→ 最后量指标。
+
+    // 反过来的话，换出来的类型可能又和刚删掉的那条撞在一起。
+
+    {
+
+        let total_duration = config.segments.iter().map(|s| s.end).fold(0.0_f64, f64::max);
+
+        let stacked = cap_stacked_fx(&mut config.segments, &config.mute_ranges);
+
+        if stacked > 0 {
+
+            tracing::info!("  ⚠ 特效堆叠（<0.4s）拦下 {stacked} 条");
+
+        }
+
+        let swapped = cap_repeated_fx(&mut config.segments, total_duration, &config.mute_ranges);
+
+        if swapped > 0 {
+
+            tracing::info!("  ⚠ 同类特效换类型 {swapped} 条（相邻同类 / 全片同类上限 ceil(时长/25s)）");
+
+        }
+
+        let p = static_profile(&config.segments, total_duration);
+
+        tracing::info!(
+
+            "  🌬 呼吸感：静止 {:.1}%（目标 15–35%）· 最长静止 {:.1}s（目标 ≤8s）· 3–5s 静止窗口 {} 个（目标 ≥2）· <0.4s 堆叠 {}（目标 0）",
+
+            p.ratio * 100.0, p.max_static, p.windows_3_5, p.stacks_under_400ms
+
+        );
+
+    }
+
+
+
     // Step 2: 根据 sticker_source 分配来源 + 解析 keyword → name (轮询 + 逐源兜底)
     {
         let sources = config.sticker_source.clone();
