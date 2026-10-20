@@ -1116,7 +1116,7 @@ fn make_auto_fill(kind: &str, at: f64, dur: f64, marker: Option<String>) -> Even
 }
 
 /// 一条事件属于哪一类「瞬时特效」——`camera`/贴纸/音效/文字都**不算**（返回 `None`）。
-fn transient_kind(ev: &Event) -> Option<&'static str> {
+pub(crate) fn transient_kind(ev: &Event) -> Option<&'static str> {
     match ev {
         Event::Flash { .. } => Some("flash"),
         Event::Shake { .. } => Some("shake"),
@@ -1217,32 +1217,100 @@ pub fn cap_repeated_fx(segments: &mut [Segment], duration: f64, mute_ranges: &[M
 /// 字段：ratio（静止时长占比，目标 15%–35%）· max_static（最长静止 ≤8s）·
 /// windows_3_5（3–5s 完全静止窗口数，≥2）· stacks_under_400ms（相距 <0.4s 的两条，0）。
 ///
-/// ⚠️ 「静止」= **没有任何瞬时特效**（camera 不算 —— 它全程开着，拿它算就永远没有静止）。
+/// ⚠️⚠️ **口径（2026-10-20 lead 裁决）：「静止」= 画面里没有任何视觉事件**（贴纸 / 文字 /
+/// 覆盖层 / 瞬时特效都算「有东西」；**只有 camera 不算** —— 它全程开着）。
+/// 理由：观众看到一张贴纸时那一秒**不是**静止的。复用 `is_content_event`，别另写一份判定。
+/// 想看「仅特效」的口径走 `fx_static_profile`（副指标，勿混用）。
+/// ⚠️ `stacks_under_400ms` **恒按瞬时特效数**（贴纸/覆盖层贴在一起是正常的；
+/// 只有 <0.4s 的两条特效才算堆叠）—— 与 `cap_stacked_fx` 同一口径。
 /// ⚠️ 纯函数、无随机：同一份段表两次调用逐值相同。
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct StaticProfile {
+    /// **诊断值**（2026-10-20 lead 裁决：**不是门槛**）—— 静止时长占比取决于素材稀疏程度，
+    /// 不判红。想"有呼吸"看 `dense_3s` 与 `windows_3_5` 的组合，别拿这个百分比卡。
     pub ratio: f64,
     pub max_static: f64,
     pub windows_3_5: usize,
     pub stacks_under_400ms: usize,
+    /// **密集段数**：3 秒滑动窗里 ≥2 条**瞬时特效**的窗数（"有密"那一半）。
+    /// 与 `windows_3_5`（"有疏"那一半）一起构成"疏密对比"—— 这才是呼吸感的判据。
+    pub dense_3s: usize,
 }
 
-/// 量一遍全片的静止/堆叠分布（见 StaticProfile）。
+/// 量一遍全片的静止/堆叠分布（**感知口径**：除 camera 外的一切视觉事件都算有东西）。
 pub fn static_profile(segments: &[Segment], duration: f64) -> StaticProfile {
+    profile_with(segments, duration, is_content_event, |ev| ev.end().unwrap_or(ev.get_time() + 0.4))
+}
+
+/// 同一份指标的**副指标：只看瞬时特效**（blur / vignette / overlay / flash / shake / noise）。
+///
+/// 它不是观众眼里的静止 —— 只有「特效是否重复/扎堆」那类判据要用它。
+/// 两份口径各自标清名字，别混用（2026-10-20 lead 裁决）。
+pub fn fx_static_profile(segments: &[Segment], duration: f64) -> StaticProfile {
+    profile_with(segments, duration, |ev| transient_kind(ev).is_some(), |ev| ev.end().unwrap_or(ev.get_time() + 0.4))
+}
+
+/// 两个口径共用的量法：keep 决定哪些事件算有内容，span_of 决定它占多久。
+fn profile_with(
+    segments: &[Segment],
+    duration: f64,
+    keep: fn(&Event) -> bool,
+    span_of: fn(&Event) -> f64,
+) -> StaticProfile {
     let total = duration.max(0.1);
     let mut spans: Vec<(f64, f64)> = Vec::new();
     for seg in segments {
         for ev in &seg.events {
-            if transient_kind(ev).is_none() {
+            if !keep(ev) {
                 continue;
             }
             let t = ev.get_time();
-            let e = ev.end().unwrap_or(t + 0.4).max(t + 0.1);
+            let e = span_of(ev).max(t + 0.1);
             spans.push((t, e));
         }
     }
     spans.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-    let stacks = spans.windows(2).filter(|w| (w[1].0 - w[0].0).abs() < 0.4).count();
+    // ⚠️ **堆叠只管瞬时特效**（2026-10-20 lead 口径：「只有 <0.4s 的两条才算堆叠，那才是要拦的」）——
+    // 贴纸/覆盖层本来就允许互相靠近，按感知集合去数会得出"6 对堆叠"这种无意义的数。
+    let stacks = {
+        let mut fx_times: Vec<f64> = Vec::new();
+        for seg in segments {
+            for ev in &seg.events {
+                if transient_kind(ev).is_some() {
+                    fx_times.push(ev.get_time());
+                }
+            }
+        }
+        fx_times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        fx_times.windows(2).filter(|w| (w[1] - w[0]).abs() < 0.4).count()
+    };
+    // **密集段数**（"有密"那一半）：按 3s 窗切簇，一个簇里 ≥2 条瞬时特效就算 1 段。
+    // ⚠️ 用 FX 口径而不是感知集合 —— 贴纸本来就常连续出现，拿它算人人都是密集段。
+    let dense_3s = {
+        let mut fx_times: Vec<f64> = Vec::new();
+        for seg in segments {
+            for ev in &seg.events {
+                if transient_kind(ev).is_some() {
+                    fx_times.push(ev.get_time());
+                }
+            }
+        }
+        fx_times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let mut clusters = 0usize;
+        let mut i = 0usize;
+        while i < fx_times.len() {
+            let start = fx_times[i];
+            let mut j = i;
+            while j < fx_times.len() && fx_times[j] - start <= 3.0 {
+                j += 1;
+            }
+            if j - i >= 2 {
+                clusters += 1;
+            }
+            i = j.max(i + 1);
+        }
+        clusters
+    };
     let mut merged: Vec<(f64, f64)> = Vec::new();
     for (s, e) in spans {
         match merged.last_mut() {
@@ -1278,7 +1346,34 @@ pub fn static_profile(segments: &[Segment], duration: f64) -> StaticProfile {
         max_static,
         windows_3_5,
         stacks_under_400ms: stacks,
+        dense_3s,
     }
+}
+
+/// **相邻同类**（FX 口径）：按时间序有**多少对**相邻的瞬时特效同类。
+///
+/// ⚠️ 只算 `cap_repeated_fx` **看得见**的那批（手工/屏蔽段跳过；带 color/colors 的设计覆盖层跳过）——
+/// 那才是守卫能负责的范围，拿全量算会永远 >0。
+/// ⚠️ 与 `cap_repeated_fx` 的候选集合同口径，**别在别处再写一份判定**。
+pub fn adjacent_same_transient(segments: &[Segment]) -> usize {
+    let mut order: Vec<(f64, &'static str)> = Vec::new();
+    for seg in segments {
+        for ev in &seg.events {
+            if ev.is_time_manual() {
+                continue;
+            }
+            if matches!(ev, Event::Overlay { color: Some(_), .. })
+                || matches!(ev, Event::Overlay { colors: Some(_), .. })
+            {
+                continue;
+            }
+            if let Some(k) = transient_kind(ev) {
+                order.push((ev.get_time(), k));
+            }
+        }
+    }
+    order.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    order.windows(2).filter(|w| w[0].1 == w[1].1).count()
 }
 
 /// **E) 堆叠拦截**：相距 <0.4s 的两条瞬时特效只留**前一条**（那才是「堆叠」，不是密集段）。
@@ -4860,6 +4955,20 @@ mod auto_fill_tests {
         assert_eq!(segs[0].events.len(), times.len(), "不删事件");
         println!("before={:?} after={:?}", before, after);
         assert_eq!(cap_repeated_fx(&mut segs, 80.0, &[]), 0, "幂等");
+    }
+
+    /// 疏密对比的两半：密集段（3s 窗里 >=2 条特效）与相邻同类（守卫可见范围）。
+    #[test]
+    fn dense_and_adjacent_metrics_are_measured() {
+        // 1.0 / 2.0 / 2.5 三条挤在 3s 内 => 1 个密集簇；40s 那条是孤立的。
+        let segs = vec![seg_ev(0.0, 40.0, vec![fx_blur(1.0), fx_vign(2.0), fx_flash(2.5), fx_blur(40.0)])];
+        let p = static_profile(&segs, 40.0);
+        assert_eq!(p.dense_3s, 1, "3s 内三条特效应算一个密集段（实得 {}）", p.dense_3s);
+        // blur -> vignette -> flash -> blur：相邻都不同类。
+        assert_eq!(adjacent_same_transient(&segs), 0);
+        // 两条相邻的 blur 必须被数出来。
+        let dup = vec![seg_ev(0.0, 20.0, vec![fx_blur(1.0), fx_blur(9.0)])];
+        assert_eq!(adjacent_same_transient(&dup), 1);
     }
 
 }
