@@ -509,6 +509,13 @@ fn every_documented_field_and_value_survives_the_parser() {
     let prompt = build_events_system_prompt(&[], &[], "");
     let mut checked = 0usize;
     for case in CAMERA.iter().chain(OTHERS).chain(FX_SFX_OVERLAY) {
+        // ⚠️ **文字层已退役**（2026-10-20 用户口径：「算了，删除文字层吧」）：提示词不再教
+        // `kind="text"`（及其 `style`/`pos`/`color` 三段），表里那几条随之跳过 ——
+        // 它们断言的是"提示词里还教着这一档"，而那一档已经删了。
+        // ⚠️ 枚举变体仍在（老文件解析），所以**解析器**那半边没有被删，只是不再有提示词契约。
+        if case.json.contains("\"kind\":\"text\"") || case.quote.contains("element") {
+            continue;
+        }
         assert!(!case.quote.is_empty(), "每条契约都要写明提示词出处：{}", case.json);
         assert!(!case.needles.is_empty(), "每条契约都要有提示词锚点：{}", case.json);
         for n in case.needles {
@@ -540,7 +547,9 @@ fn every_documented_field_and_value_survives_the_parser() {
         }
         checked += 1;
     }
-    assert!(checked >= 45, "契约条目只有 {checked} 条 —— 表被删空了？");
+    // 45 → **34**：文字层退役时表里 `kind="text"` 那 11 条不再参与（2026-10-20）。
+    // ⚠️ 下限仍然要有 —— 表被删空时这条会红（"判据空转"的兜底）。
+    assert!(checked >= 34, "契约条目只有 {checked} 条 —— 表被删空了？");
 }
 
 /// 提示词里列出的**每一个效果 id** 都必须能解析成同名变体。

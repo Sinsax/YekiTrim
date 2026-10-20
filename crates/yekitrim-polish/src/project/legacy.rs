@@ -28,6 +28,12 @@ pub fn upgrade_toml_value(value: &toml::Value) -> anyhow::Result<Value> {
             retired.zoom_bounce
         );
     }
+    if retired.text_layer > 0 {
+        tracing::info!(
+            "已退役文字层：丢弃 {} 条（读时丢弃；下一次保存才落盘，本次不动磁盘）",
+            retired.text_layer
+        );
+    }
     Ok(json)
 }
 
@@ -45,14 +51,17 @@ pub fn upgrade_toml_value(value: &toml::Value) -> anyhow::Result<Value> {
 pub struct RetiredCounts {
     pub pulse: usize,
     pub zoom_bounce: usize,
+    /// **文字层**（`type="element"` + `kind="text"`，2026-10-20 退役）。
+    /// ⚠️ 只数 `kind=text` 的 —— `kind=sticker` 的元素是**活的**，一个都不许动。
+    pub text_layer: usize,
 }
 
 impl RetiredCounts {
     pub fn is_empty(&self) -> bool {
-        self.pulse == 0 && self.zoom_bounce == 0
+        self.pulse == 0 && self.zoom_bounce == 0 && self.text_layer == 0
     }
     pub fn total(&self) -> usize {
-        self.pulse + self.zoom_bounce
+        self.pulse + self.zoom_bounce + self.text_layer
     }
 }
 
@@ -86,6 +95,18 @@ fn migrate_retired_effects(value: &mut Value) -> RetiredCounts {
                             } else {
                                 counts.zoom_bounce += 1;
                             }
+                            return false;
+                        }
+                        // **文字层退役**（2026-10-20 用户口径：「算了，删除文字层吧」）。
+                        //
+                        // ⚠️ 判据是 `type="element"` **且** `kind="text"` 两个一起 —— **不是** `type`
+                        //    也不是单独的 `kind`：`element{kind:"sticker"}` 是活着的贴纸载体，
+                        //    顺手删掉就是「把贴纸也退役了」，而贴纸这一侧本任务一个字都不许动。
+                        // ⚠️ 枚举变体留着（`Event::Element`）—— 删变体 = 老文件直接打不开（R4 红线）。
+                        if kind == "element"
+                            && item.get("kind").and_then(|k| k.as_str()) == Some("text")
+                        {
+                            counts.text_layer += 1;
                             return false;
                         }
                     }
@@ -334,6 +355,118 @@ duration = 0.6
             }
             other => panic!("应当是 Camera：{other:?}"),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // 文字层退役（2026-10-20 用户口径：「算了，删除文字层吧」）
+    // -----------------------------------------------------------------------
+
+    /// 一份含**3 条文字层 + 1 条贴纸元素 + 1 条运镜**的老工程。
+    const TEXT_LAYER_TOML: &str = r#"
+[[segments]]
+start = 0.0
+end = 30.0
+
+[[segments.events]]
+type = "element"
+kind = "text"
+time = 1.0
+end = 3.0
+text = "名场面"
+style = "hook"
+
+[[segments.events]]
+type = "element"
+kind = "text"
+time = 5.0
+end = 7.0
+text = "第二段"
+style = "comment"
+style_anim = "vtext"
+
+[[segments.events]]
+type = "element"
+kind = "text"
+time = 9.0
+end = 11.0
+text = "第三段"
+style_anim = "tilt"
+layout_angle_deg = -12.0
+
+[[segments.events]]
+type = "element"
+kind = "sticker"
+time = 12.0
+end = 14.0
+text = "ysyk"
+
+[[segments.events]]
+type = "camera"
+time = 15.0
+end = 20.0
+zoom = "中"
+"#;
+
+    /// ★ 判据：3 条文字层**读时丢弃**、计数 3；**贴纸与运镜一条都不许少**（贴纸侧完全不动）。
+    #[test]
+    fn retired_text_elements_are_dropped_and_counted() {
+        let toml_value: toml::Value = toml::from_str(TEXT_LAYER_TOML).unwrap();
+        let json = upgrade_toml_value(&toml_value).unwrap();
+        let segs: Vec<crate::project::Segment> =
+            serde_json::from_value(json["segments"].clone()).expect("丢掉文字层之后必须读得出来");
+        assert_eq!(segs[0].events.len(), 2, "只剩贴纸 + 运镜");
+        assert!(
+            segs[0].events.iter().any(|e| matches!(e, crate::project::Event::Camera { .. })),
+            "运镜必须留着"
+        );
+        assert!(
+            segs[0].events.iter().any(|e| matches!(
+                e, crate::project::Event::Element { kind, .. } if kind == "sticker"
+            )),
+            "**贴纸元素不许被误删**（判据只看 kind==text）"
+        );
+    }
+
+    /// 计数要能点名（`RetiredCounts.text_layer`）—— 直接调纯函数比抓日志可靠。
+    #[test]
+    fn text_layer_drop_reports_its_own_count() {
+        let toml_value: toml::Value = toml::from_str(TEXT_LAYER_TOML).unwrap();
+        let plain = serde_json::to_value(&toml_value).unwrap();
+        let mut v = plain.clone();
+        let counts = super::migrate_retired_effects(&mut v);
+        assert_eq!(counts.text_layer, 3, "三条文字层都要点名计到");
+        assert_eq!(counts.pulse + counts.zoom_bounce, 0);
+        // 幂等：丢过之后再来一趟一条都不剩。
+        let counts2 = super::migrate_retired_effects(&mut v);
+        assert_eq!(counts2.text_layer, 0, "幂等：第二次为 0");
+    }
+
+    /// ★ R4：**不含文字层**的工程 `upgrade` 前后逐字节相同。
+    #[test]
+    fn r4_project_without_text_layer_is_byte_identical() {
+        let raw = r#"
+[[segments]]
+start = 0.0
+end = 30.0
+
+[[segments.events]]
+type = "camera"
+time = 1.0
+end = 5.0
+zoom = "中"
+
+[[segments.events]]
+type = "element"
+kind = "sticker"
+time = 6.0
+end = 8.0
+text = "ysyk"
+"#;
+        let toml_value: toml::Value = toml::from_str(raw).unwrap();
+        let plain = serde_json::to_string(&serde_json::to_value(&toml_value).unwrap()).unwrap();
+        let upgraded =
+            serde_json::to_string(&upgrade_toml_value(&toml_value).unwrap()).unwrap();
+        assert_eq!(plain, upgraded, "没有文字层的工程必须逐字节不变（R4）—— 贴纸元素也不许动");
     }
 }
 

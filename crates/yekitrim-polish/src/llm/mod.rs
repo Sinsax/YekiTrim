@@ -227,15 +227,7 @@ pub async fn run_llm_pipeline(
         if stickers > 0 {
             tracing::info!("  · 贴纸已对齐最近字幕 {} 条", stickers);
         }
-        // 文字元素**候补**守卫（与 `process/mod.rs` Step 1d2b 成对，2026-10-19 用户口径）：
-        // 文字突出且指向性强，只当候补 —— 与贴纸同时出现时贴纸优先、一段最多留一条。
-        // 排在这里：贴纸的时间窗口刚被 2b1 吸到字幕上，互斥判据用的必须是最新的那一份。
-        let dropped_text = crate::process::cap_text_elements(&mut segments, mute_ranges);
-        if dropped_text > 0 {
-            tracing::info!(
-                "  ✂ 文字元素超出候补配额/与贴纸冲突：删 {dropped_text} 条（文字只当候补，贴纸优先）"
-            );
-        }
+        // ⚠️ 文字层退役（2026-10-20）：这里原来还有一次 `cap_text_elements`（与 process 成对）。
         // 句末边界守卫（总方案 §2）：与 `process/mod.rs` Step 0b 是**配对的两处**。
         // ⚠️ **排在 `cap_pip_shots` 那组之后**：那组按段边界对齐画中画，边界挪了就得重对齐；
         // 反过来排会让画中画停在旧边界上（编辑器里看着对、出片再被 process 挪一次就错位）。
@@ -416,8 +408,6 @@ pub async fn regenerate_segment_events(
     crate::process::cap_pip_shots(&mut one);
     crate::process::align_pip_shots(&mut one, subtitles);
     crate::process::close_pip_shots(&mut one);
-    // 文字元素候补守卫（与整片那条路 Step 4b 同一个调用点，2026-10-19）
-    crate::process::cap_text_elements(&mut one, mute_ranges);
 
     let events = std::mem::take(&mut one[0].events);
     let count = events.len();

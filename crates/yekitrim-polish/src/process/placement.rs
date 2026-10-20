@@ -143,6 +143,8 @@ pub struct BoxSize {
 }
 
 impl BoxSize {
+
+
     /// 贴纸盒（**历史行为**：`280 × sticker_scale` 见方 + `18 × sticker_scale` 上浮）。
     ///
     /// 这条是**默认路径**，`pick_sticker_position` 的就是它 ⇒ 贴纸落点逐像素不变（R4）。
@@ -150,15 +152,6 @@ impl BoxSize {
         Self { w: f.sticker_size(), h: f.sticker_size(), float_up: f.float_up() }
     }
 
-    /// 文字盒：按**排版算出来的**实际宽高（无入场上浮）。
-    ///
-    /// ⚠️ **2026-10-11（§5 E3）摘掉了 `#[cfg(test)]`** —— 生产调用方接上了
-    /// （[`TextLayout::box_size`]，由 `process::mod` 的文字排版步骤驱动）。
-    /// 在那之前它挂着 `cfg(test)`：那不是"藏起来"，是**让它一直接着编译、
-    /// 但没接上生产时不会漏掉**（dead_code 警告就是"还没接上"的提醒）。
-    pub fn text(w: f64, h: f64) -> Self {
-        Self { w, h, float_up: 0.0 }
-    }
 }
 
 /// 候选网格步长（16px ≈ 帧宽的 0.83%）。
@@ -838,261 +831,16 @@ impl ElementColor {
     }
 }
 
-/// 文字在画面上的**纵向锚点**（规格里的 `pos`）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TextAnchor {
-    /// 顶部。
-    Top,
-    /// 居中。
-    Center,
-    /// 底部（与字幕带错开）。
-    Bottom,
-    /// **自动**：不给纵向带，让求解器在**整块安全区**里挑。
-    ///
-    /// ⚠️ 这是现在的**默认**（2026-10-12 用户定）：面板上去掉了「纵向位置」下拉，
-    /// 文字与贴纸一样"只说什么、不指定摆哪"。原来的三条带语义一律保留
-    /// （老工程里写过的 `pos` 照旧生效），只是**新事件不再会自动落到带上**。
-    Auto,
-}
+// ⚠️ 文字层退役（2026-10-20）：这里原来是文字排版的一整套（TextAnchor / TextLayout /
+// wrap_text / CHAR_W_RATIO / LINE_HEIGHT_EM）。随文字层一起删了；
+// 贴纸的落点求解器（pick_sticker_position / Rect / Frame）一个字节都没动。
 
-impl TextAnchor {
-    /// 认不出的一律 `Auto` —— 与贴纸同口径（"没指定" = "让后处理挑"）。
-    ///
-    /// ⚠️ 以前兜底是 `Bottom`（贴底）。改成 `Auto` 是因为 `pos` 已从界面去掉
-    /// （用户口径「和贴纸同逻辑」）⇒ "字段缺失"是**常态**而不是"写坏了"，
-    /// 老兜底会让所有没带 `pos` 的文字统统贴底、与"自动算"背道而驰。
-    pub fn parse(raw: &str) -> Self {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "top" => Self::Top,
-            "center" => Self::Center,
-            "bottom" => Self::Bottom,
-            _ => Self::Auto,
-        }
-    }
-}
-
-/// 一段文字的**排版结果**：折行、字号、以及由此推出的盒子。
-///
-/// ⚠️ 这是 E3 的核心交付物 —— 在它之前，落点求解器只会算**固定 280px 的贴纸盒**，
-/// 而文字是**变宽高**的（字号 + 折行）⇒ 不接上它，`pick_box_position` 会把
-/// 一段三行的字按"一个 280 方块"去避让，结果是**大字压住主播脸**。
-#[derive(Debug, Clone, PartialEq)]
-pub struct TextLayout {
-    /// 折好行的文本（每行一条）。
-    pub lines: Vec<String>,
-    /// 实际字号（文档像素）。
-    pub font_size: f64,
-    /// 行高（文档像素）。
-    pub line_height: f64,
-    /// 盒子宽（文档像素）。
-    pub w: f64,
-    /// 盒子高（文档像素）。
-    pub h: f64,
-    /// 纵向锚点。
-    pub anchor: TextAnchor,
-    /// 样式预设。
-    pub style: TextStyle,
-}
-
-/// 一个字符的**估算宽度**占字号的比例。
-///
-/// ⚠️ **这是估算，不是度量** —— 本仓不引字体度量库（那会把一个排版问题变成
-/// 一个"字体文件在哪"的问题，而 `polish-render` 那条纪律是**不猜系统字体**）。
-/// 取 1.0 是 CJK 全角的常见比例；ASCII 窄于它，所以**估出来偏宽**。
-///
-/// ⚠️ **偏宽是刻意的方向**：盒子算大 ⇒ 落点求解器避让得更多 ⇒
-/// "字压住主播脸"更难发生。反方向（估窄）会让避让不足，而那正是本项要消灭的症状。
-const CHAR_W_RATIO: f64 = 1.0;
-
-/// 行高 / 字号的默认比例（与底座 `text_layout::LINE_HEIGHT_EM` 同值）。
-const LINE_HEIGHT_EM: f64 = 1.2;
-
-impl TextLayout {
-    /// 把一段文字按给定样式与画布排出来。
-    ///
-    /// * `text`：原始文本（可含显式换行）；
-    /// * `style`：四档预设；
-    /// * `anchor`：纵向锚点；
-    /// * `f`：输出帧（画布尺寸）。
-    ///
-    /// 折行规则与字幕**同一套常量**（`CAPTION_SAFE_WIDTH_RATIO` 等），
-    /// 不是另发明一套 —— 两套折行规则会在"字幕装得下、大字装不下"这种边界上打架。
-    pub fn solve(text: &str, style: TextStyle, anchor: TextAnchor, f: Frame) -> Self {
-        Self::solve_with(text, style, anchor, f, style.base_stroke_px())
-    }
-
-    /// 与 [`solve`] 相同，但**描边宽度由调用方给**（文档像素，外侧宽度）。
-    ///
-    /// ⚠️ **为什么需要它**（2026-10-18 用户口径「文字层的描边…没有和字幕的描边同等，当前很细」）：
-    /// `TextStyle::base_stroke_px()` 是四档 6/5/2/4（规格 §4.2「描边 = 字号的 5–8%」），
-    /// 而字幕的描边是 `[style.subtitle].stroke`（默认 **12px**、用户可配）——
-    /// 两者差一倍以上，观感就是"文字层的描边很细"。
-    /// 现在 `process` 把**字幕那份宽度**传进来 ⇒ 元素与字幕**同一份描边**
-    /// （这是用户口径对规格 §4.2 的直接覆盖：宁可超出 5–8%，也要和字幕一致）。
-    ///
-    /// ⚠️ **盒子必须用同一个值**：描边是外侧宽度，盒子不加够就会在贴边时切掉一圈 ——
-    /// 描边从 6 变 12，那圈差整整 12px（贴纸避让与居中都会偏）。
-    pub fn solve_with(
-        text: &str,
-        style: TextStyle,
-        anchor: TextAnchor,
-        f: Frame,
-        stroke_px: f64,
-    ) -> Self {
-        use crate::project::{
-            CAPTION_MAX_LINES, CAPTION_MIN_FONT_RATIO, CAPTION_SAFE_WIDTH_RATIO,
-        };
-
-        let max_w = f.w * CAPTION_SAFE_WIDTH_RATIO;
-        // 字号用**比例**：像素在预览（640×360）与成片（1920×1080）里含义不同。
-        let mut font_size = style.base_font_px() / FRAME_H * f.h;
-
-        // 字号自适应：**先按原字号折行，超行数就按比例缩，再折一次**。
-        //
-        // ⚠️ 只缩不重折是错的：缩了字号之后每行能装更多字，行数会**变少** ——
-        // 不重折会留下"缩过头的窄盒子"（字小了、行还没合并）。
-        let mut lines = wrap_text(text, font_size, max_w);
-        if lines.len() as u32 > CAPTION_MAX_LINES {
-            let ratio = (CAPTION_MAX_LINES as f64 / lines.len() as f64).max(CAPTION_MIN_FONT_RATIO);
-            font_size *= ratio;
-            lines = wrap_text(text, font_size, max_w);
-        }
-        // 缩到下限仍超行数 ⇒ **截断**（与字幕的 `max_lines` 同语义：
-        // 宁可少一行也不让它铺满全屏）。⚠️ 截断这件事调用方要如实报出来。
-        lines.truncate(CAPTION_MAX_LINES as usize);
-        if lines.is_empty() {
-            lines.push(String::new());
-        }
-
-        let line_height = font_size * LINE_HEIGHT_EM;
-        let text_w = lines
-            .iter()
-            .map(|l| display_width(l) * font_size * CHAR_W_RATIO)
-            .fold(0.0_f64, f64::max);
-        // 描边在外侧 ⇒ 盒子要把描边算进去，否则贴边时会切掉一圈。
-        // ⚠️ 宽度用**调用方给的那个**（= 字幕那份）；非有限/<=0 才退回档位默认。
-        let stroke_px = if stroke_px.is_finite() && stroke_px > 0.0 {
-            stroke_px
-        } else {
-            style.base_stroke_px()
-        };
-        let stroke = stroke_px / FRAME_H * f.h;
-        let w = (text_w + stroke * 2.0).min(f.w).max(1.0);
-        let h = (line_height * lines.len() as f64 + stroke * 2.0).min(f.h).max(1.0);
-
-        Self { lines, font_size, line_height, w, h, anchor, style }
-    }
-
-    /// 送给落点求解器的盒子。
-    pub fn box_size(&self) -> BoxSize {
-        BoxSize::text(self.w, self.h)
-    }
-
-    /// 盒子左上角的目标位置（**未避让前**的锚点落点）。
-    ///
-    /// ⚠️ `top`/`bottom` 都留 `STICKER_MARGIN` 的边距 —— 与贴纸同一套安全边距，
-    /// 两套边距会让"文字贴边"看起来像 bug。
-    ///
-    /// ⚠️ [`TextAnchor::Auto`] 返回**安全区中心**，是个"还没决定"的占位值：
-    /// 真正的落点由 Step 1d3 之后的 2b2 走 `pick_box_position` 定
-    /// （那一步在整块安全区里挑，与贴纸同一个求解器）—— 见 `mod.rs` 的
-    /// `layout_text_elements` 注释「落点不在这里定」。
-    /// 这里给中心而不是 `(0,0)`：万一有路径只读这个值，中心也是"没有偏好"的
-    /// 最合理表达，不会把字甩到左上角。
-    pub fn anchor_origin(&self, f: Frame) -> (f64, f64) {
-        let margin = STICKER_MARGIN;
-        let x = (f.w - self.w) / 2.0;
-        let y = match self.anchor {
-            TextAnchor::Top => margin,
-            TextAnchor::Center | TextAnchor::Auto => (f.h - self.h) / 2.0,
-            // 与字幕带错开：字幕在底，文字压上去两行都读不了。
-            TextAnchor::Bottom => (f.h - self.h - margin - self.caption_clearance(f)).max(margin),
-        };
-        (x, y)
-    }
-
-    /// `pos` → **求解器的纵向偏好区间**（输出帧像素 `(y0, y1)`，盒子上沿要落在其中）。
-    ///
-    /// # ⚠️ 为什么需要这一步
-    ///
-    /// `anchor_origin` 按 `pos` 算出的 `y` **会被 Step 2b2 的落点求解器整体覆写**
-    /// （那边只按余量与帧心距离挑点）。于是 `pos` 对成片**零影响** —— 实测四个取值
-    /// 落盘 `x`/`y` 完全相同。本函数把 `pos` 的语义**转发**给求解器，
-    /// 由它作为"安全集内部的偏好"兑现（见 [`pick_box_position_pref`]）。
-    ///
-    /// 区间取**该锚点的期望盒位上下各留一个盒高**：足够把该档的所有安全位圈进来，
-    /// 又不至于把另一档的位也算成"本档"。`Auto` 返回 `None`（无偏好 = 与改造前逐像素一致）。
-    pub fn anchor_prefer_band(&self, f: Frame) -> Option<(f64, f64)> {
-        let margin = STICKER_MARGIN;
-        match self.anchor {
-            TextAnchor::Auto => None,
-            TextAnchor::Top => Some((0.0, margin + self.h * 2.0)),
-            TextAnchor::Center => {
-                // 盒心落在帧心上下各半盒高之内
-                let cy = f.h / 2.0;
-                Some((cy - self.h, cy + self.h))
-            }
-            TextAnchor::Bottom => Some((
-                (f.h - self.h - margin - self.h * 2.0).max(0.0),
-                f.h,
-            )),
-        }
-    }
-
-    /// `bottom` 锚点时，文字底边**离画面底**要留多少 —— 也就是字幕带占掉的高度。
-    ///
-    /// ⚠️ **是「字幕带上沿到画面底」的距离，不是「字幕带自己的高」** ——
-    /// 我第一版写成了后者（`band.y1 - band.y0`），结果是底部锚点的盒底落在 894、
-    /// 而字幕带上沿在 856：**文字压住字幕**，正是本项要消灭的症状。
-    /// 差的正是字幕带下方那 70px 留白（`bottom_off`）—— 那一段文字也进不去。
-    ///
-    /// ⚠️ 用 `band.y0` 反推而不是写死一个数：字幕带随画布与字号变，
-    /// 写死会在竖屏上错位。
-    ///
-    /// ⚠️ **这里传 `None` 是有意的**：`TextLayout` 手上没有 `ProjectFile`
-    /// （拿不到 `[style.subtitle].position_pct`），而这条路径算出的 `x`/`y`
-    /// 会被 Step 2b2 用真障碍集**整体覆写**（`mod.rs` 的 `pick_box_position`）——
-    /// 那一处才是生效的避让，且已按 `position_pct` 传参。
-    /// ⇒ 这里保持历史值即可，改它不会影响成片（改错反而让 Step 1d3 的中间态更难对账）。
-    fn caption_clearance(&self, f: Frame) -> f64 {
-        let band = caption_band(f, 72.0 * f.kh(), 12.0 * f.kh(), None);
-        (f.h - band.y0).max(0.0)
-    }
-}
-
-/// 按可用宽度折行。**显式换行优先**（用户写的换行不能被自动折行吃掉）。
-///
-/// 折行单位是**字符**（不是词）—— 中文没有词边界，按词折会得到
-/// "这一行只有一个词、下一行十个词"那种参差结果。英文长词会被硬断，
-/// 那是有意的（宁可断词也不溢出）。
-fn wrap_text(text: &str, font_size: f64, max_w: f64) -> Vec<String> {
-    let per_line = ((max_w / (font_size * CHAR_W_RATIO)).floor() as usize).max(1);
-    let mut out = Vec::new();
-    for para in text.split('\n') {
-        let chars: Vec<char> = para.chars().collect();
-        if chars.is_empty() {
-            out.push(String::new());
-            continue;
-        }
-        let mut start = 0;
-        while start < chars.len() {
-            let end = (start + per_line).min(chars.len());
-            out.push(chars[start..end].iter().collect());
-            start = end;
-        }
-    }
-    out
-}
 
 /// 一个字符串的**显示宽度**（按字符数；制表符算 4）。
 ///
 /// ⚠️ 与底座 `text_layout` 的宽度口径**必须一致**，否则"本仓说装得下、
 /// 底座画出来溢出"。底座用的是字符数 + 制表符展开，这里照抄。
-fn display_width(s: &str) -> f64 {
-    s.chars()
-        .map(|c| if c == '\t' { 4.0 } else { 1.0 })
-        .sum()
-}
+
 /// 输出帧弹幕带：按模板 `y = (d.y / 1920) * (540×k)` 映射实际轨道高度，
 /// 取最小/最大轨道并加字高。没有弹幕（`ys` 为空）→ `None`（此时弹幕图层根本不画）。
 pub fn danmaku_band(f: Frame, font_size: f64, stroke_px: f64, ys: &[f64]) -> Option<Rect> {
@@ -1566,24 +1314,6 @@ mod tests {
     ///
     /// 变异自证：把 solve_with 里那个 stroke_px 判断换回 base_stroke_px()
     /// ⇒ 第一条断言红（盒子不再随传入宽度变）。
-    #[test]
-    fn element_stroke_width_enters_the_box_and_falls_back_when_invalid() {
-        let f = Frame { w: 1920.0, h: 1080.0 };
-        let thin = TextLayout::solve_with("标题", TextStyle::Hook, TextAnchor::Top, f, 6.0);
-        let thick = TextLayout::solve_with("标题", TextStyle::Hook, TextAnchor::Top, f, 12.0);
-        assert!(
-            (thick.w - thin.w - 12.0).abs() < 0.01,
-            "描边从 6 变 12，盒子应宽 12px，实际 {} 到 {}",
-            thin.w,
-            thick.w
-        );
-        assert!((thick.h - thin.h - 12.0).abs() < 0.01, "高度同理");
-        let zero = TextLayout::solve_with("标题", TextStyle::Hook, TextAnchor::Top, f, 0.0);
-        let nan = TextLayout::solve_with("标题", TextStyle::Hook, TextAnchor::Top, f, f64::NAN);
-        let def = TextLayout::solve("标题", TextStyle::Hook, TextAnchor::Top, f);
-        assert_eq!(zero.w, def.w, "0 必须退回档位默认，不能把盒子算成空");
-        assert_eq!(nan.w, def.w, "NaN 同理");
-    }
 
     #[test]
     fn manual_pos_is_center_and_converts_to_box_corner() {
@@ -1660,143 +1390,25 @@ mod tests {
     ///
     /// ⚠️ 判据必须是**行为**（落点真的不同），不是"求解器收了这个参数"——
     /// 收下不用照样编译、照样绿。
-    #[test]
-    fn pos_really_moves_the_text_box() {
-        let ts = TextStyle::Hook;
-        let text = "测试文字";
-        let band = caption_band(F, 72.0, 12.0, None);
-        let blocked = vec![Blocked::new(band, ObstacleKind::Captions)];
-
-        let mut ys = Vec::new();
-        for name in ["top", "center", "bottom"] {
-            let anchor = TextAnchor::parse(name);
-            let l = TextLayout::solve(text, ts, anchor, F);
-            let b = l.box_size();
-            let pick = pick_box_position_pref(
-                &blocked,
-                &[],
-                0.5,
-                F,
-                &b,
-                l.anchor_prefer_band(F),
-            );
-            assert!(!pick.relaxed, "{name}: 不该退化成兜底解");
-            ys.push((name, pick.y));
-        }
-        // 三档必须**真的分开**，且顺序正确（top < center < bottom）
-        let (nt, yt) = ys[0];
-        let (nc, yc) = ys[1];
-        let (nb, yb) = ys[2];
-        assert!(
-            yt < yc - 50.0,
-            "{nt} 必须明显高于 {nc}（top:{yt}, center:{yc}）—— pos 不起作用了？"
-        );
-        assert!(
-            yc < yb - 50.0,
-            "{nc} 必须明显高于 {nb}（center:{yc}, bottom:{yb}）—— pos 不起作用了？"
-        );
-        // `bottom` 还要**避让字幕带**（底边不得压进去）
-        assert!(
-            yb < band.y0,
-            "bottom 档压进了字幕带（y:{yb} vs band.y0:{}）",
-            band.y0
-        );
-    }
 
     /// **偏好不许压过安全**：偏好区里没有安全位时，必须回落全域解。
     ///
     /// ⚠️ 这条钉的是"安全优先"这条前提 —— 没有它，`pos:"top"` 会把文字直接放在
     /// 一个正压着障碍的位置上（"为了满足 pos 去压主播脸"）。
-    #[test]
-    fn prefer_never_beats_safety() {
-        // 顶部整条横带挡住：top 偏好区里没有任何安全位
-        let top_band = Rect::new(0.0, 0.0, F.w, 300.0);
-        let blocked = vec![Blocked::new(top_band, ObstacleKind::Liver)];
-        let b = BoxSize::text(400.0, 100.0);
-
-        let auto = pick_box_position_pref(&blocked, &[], 0.5, F, &b, None);
-        let pref = pick_box_position_pref(&blocked, &[], 0.5, F, &b, Some((0.0, 200.0)));
-
-        assert!(!auto.relaxed, "全域解应当是安全的");
-        assert!(
-            !pref.relaxed,
-            "偏好解不许因为 'top' 被满足就压住障碍 —— 必须回落安全解"
-        );
-        // 且真的没压住障碍
-        assert!(
-            pref.y >= top_band.y1 - 1e-6,
-            "偏好解压住了障碍：y={} < band.y1={}",
-            pref.y,
-            top_band.y1
-        );
-    }
 
     /// `Auto`（没写 pos）= **无偏好** ⇒ 与改造前逐像素一致（存量零回归 R4）。
-    #[test]
-    fn auto_anchor_has_no_preference() {
-        let l = TextLayout::solve("测试文字", TextStyle::Comment, TextAnchor::Auto, F);
-        assert!(
-            l.anchor_prefer_band(F).is_none(),
-            "Auto 必须返回 None：老工程（没写 pos）落点逐像素不变"
-        );
-        // 与不传偏好完全相同
-        let b = l.box_size();
-        let blocked: Vec<Blocked> = Vec::new();
-        assert_eq!(
-            pick_box_position_pref(&blocked, &[], 0.3, F, &b, None).y,
-            pick_box_position(&blocked, &[], 0.3, F, &b).y,
-        );
-    }
 
     /// **动态盒真的被求解器用了** —— 大盒子必须比小盒子让得更远。
     ///
     /// ⚠️ 这条是 §5 E3 的**核心判据**：本项存在的理由是"文字按真盒子避让，
     /// 而不是按固定的 280 方块"。判据若只验"求解器能跑"，把盒子换回
     /// `BoxSize::sticker` 也照样绿 —— 而那正是要防的回归。
-    #[test]
-    fn 大盒子比小盒子让得更远() {
-        let blocked = vec![Blocked {
-            rect: Rect::new(600.0, 300.0, 1320.0, 800.0),
-            kind: ObstacleKind::Liver,
-        }];
-        let seed = 0.5;
-        let small = BoxSize::text(120.0, 80.0);
-        let big = BoxSize::text(900.0, 300.0);
-        let ps = pick_box_position(&blocked, &[], seed, F, &small);
-        let pb = pick_box_position(&blocked, &[], seed, F, &big);
-        assert!(
-            pb.clearance <= ps.clearance,
-            "大盒子的余量 {} 反而大于小盒子的 {} —— 盒子尺寸没进求解器",
-            pb.clearance,
-            ps.clearance
-        );
-        // 至少有一维要真的被推得更远（否则"余量相同"可能只是都没碰到）。
-        let moved = (pb.x - ps.x).abs() > 1.0 || (pb.y - ps.y).abs() > 1.0;
-        assert!(
-            moved,
-            "大盒子与小盒子的落点完全相同（({}, {}) vs ({}, {})）—— 盒子尺寸没生效",
-            pb.x, pb.y, ps.x, ps.y
-        );
-    }
 
     /// 排版出来的盒子**必须与求解器口径一致**（都按画布参数化）。
     ///
     /// ⚠️ 分开验"排版"与"求解"会漏掉它们**互不匹配**这一类错：
     /// 排版按文档像素算、求解按别的尺度算，两边各自单测都过，
     /// 合起来落点是错的。
-    #[test]
-    fn 排版盒与求解器同在文档像素口径() {
-        let l = TextLayout::solve("测试文字", TextStyle::Chapter, TextAnchor::Top, F);
-        let r = box_at(l.anchor_origin(F).0, l.anchor_origin(F).1, &l.box_size());
-        assert!(
-            (r.x1 - r.x0 - l.w).abs() < 1e-6 && (r.y1 - r.y0 - l.h).abs() < 1e-6,
-            "盒子的矩形尺寸 ({}, {}) 与排版 ({}, {}) 不一致 —— 两者口径不同",
-            r.x1 - r.x0,
-            r.y1 - r.y0,
-            l.w,
-            l.h
-        );
-    }
 
     // ── §5 E3：文字排版 ────────────────────────────────────────────
 
@@ -1910,38 +1522,11 @@ mod tests {
     ///
     /// ⚠️ 这条抓的是"把字号写成像素常量"这类改动：横屏下它是对的，
     /// 竖屏下 `1080` 高的画布会得到与 `1920` 一样宽的字 ⇒ **溢出安全宽**。
-    #[test]
-    fn 字号随画布高度缩放() {
-        let land = Frame { w: 1920.0, h: 1080.0 };
-        let port = Frame { w: 1080.0, h: 1920.0 };
-        let a = TextLayout::solve("标题", TextStyle::Hook, TextAnchor::Top, land);
-        let b = TextLayout::solve("标题", TextStyle::Hook, TextAnchor::Top, port);
-        assert!(
-            (b.font_size / a.font_size - 1920.0 / 1080.0).abs() < 1e-9,
-            "竖屏字号 {} 与横屏 {} 的比不是 1920/1080 —— 字号没按画布缩放",
-            b.font_size,
-            a.font_size
-        );
-    }
 
     /// 长文本必须**折行**，且折出来的每一行都装得进安全宽。
     ///
     /// ⚠️ "每行都装得下"是核心判据：只验"行数 > 1"会让
     /// "折了行但每行仍溢出"的改动通过 —— 而那正是本项要消灭的症状。
-    #[test]
-    fn 长文本折行且每行都在安全宽内() {
-        let text = "这是一段相当长的文字".repeat(6);
-        let l = TextLayout::solve(&text, TextStyle::Hook, TextAnchor::Top, F);
-        assert!(l.lines.len() > 1, "这么长的文本应当折行，实得 {} 行", l.lines.len());
-        let max_w = F.w * crate::project::CAPTION_SAFE_WIDTH_RATIO;
-        for (i, line) in l.lines.iter().enumerate() {
-            let w = display_width(line) * l.font_size * CHAR_W_RATIO;
-            assert!(
-                w <= max_w + 1e-6 + l.font_size,
-                "第 {i} 行宽 {w} 超出安全宽 {max_w} —— 折行没按安全宽折"
-            );
-        }
-    }
 
     /// 超行数上限时**缩字号**（不是直接截断），且缩到下限后才截。
     ///
@@ -1954,105 +1539,22 @@ mod tests {
     /// 会红。而如果当时是"改成 64 个字凑够 4 行"，那**下一次**调字号它还会红 ——
     /// 判据就变成了"改动的障碍"。
     /// ⇒ 现在**按字号与安全宽现算**需要多少字才能超上限，字号再调也不会腐烂。
-    #[test]
-    fn 超行数先缩字号到最后才截断() {
-        use crate::project::CAPTION_MAX_LINES;
-        // 每行放得下几个字（与 `wrap_text` 同一条式子：`max_w / (font_size × CHAR_W_RATIO)`）。
-        let max_w = F.w * crate::project::CAPTION_SAFE_WIDTH_RATIO;
-        let font_size = TextStyle::Hook.base_font_px();
-        let per_line = ((max_w / (font_size * CHAR_W_RATIO)).floor() as usize).max(1);
-        // 取「刚好多一行」的字数（上限 +1 行）—— 保证一定超、且超得最少。
-        let over = per_line * (CAPTION_MAX_LINES as usize + 1);
-        assert!(
-            over > per_line * CAPTION_MAX_LINES as usize,
-            "算出来的超限字数（{over}）没超过 {CAPTION_MAX_LINES} 行 —— 判据的前提不成立"
-        );
-        let text = "字".repeat(over);
-        let l = TextLayout::solve(&text, TextStyle::Hook, TextAnchor::Top, F);
-        assert!(
-            l.font_size < TextStyle::Hook.base_font_px(),
-            "{} 个字在 {font_size}px 下排了 {} 行，超了上限却没缩字号（仍是 {}）—— 会直接丢字",
-            over,
-            over / per_line,
-            l.font_size
-        );
-        assert!(
-            l.lines.len() <= CAPTION_MAX_LINES as usize,
-            "缩完之后仍有 {} 行（上限 {}）",
-            l.lines.len(),
-            CAPTION_MAX_LINES
-        );
-        // 缩到下限仍超 ⇒ 截断到上限。
-        let huge = "字".repeat(400);
-        let l2 = TextLayout::solve(&huge, TextStyle::Hook, TextAnchor::Top, F);
-        assert_eq!(
-            l2.lines.len(),
-            crate::project::CAPTION_MAX_LINES as usize,
-            "极端长文本必须截到上限，实得 {}",
-            l2.lines.len()
-        );
-    }
 
     /// 显式换行**不能被自动折行吃掉**。
     ///
     /// ⚠️ 用户写两行是**有意的排版意图**；自动折行把两行并成一行
     /// （或把一行拆成三行）会让"我明明写了两行"变成"成片里不是那样"。
-    #[test]
-    fn 显式换行被保留() {
-        let l = TextLayout::solve("第一行\n第二行\n第三行", TextStyle::Comment, TextAnchor::Top, F);
-        assert_eq!(l.lines.len(), 3, "三条显式换行应当得到 3 行，实得 {:?}", l.lines);
-        assert_eq!(l.lines[0], "第一行");
-        assert_eq!(l.lines[2], "第三行");
-    }
 
     /// 盒子必须**把描边算进去**（外侧宽度），且随样式变。
     ///
     /// ⚠️ 描边是**外侧**的（与 `SubtitleStyle::stroke_ratio` 同口径）——
     /// 不计入盒子的话，贴边时会被切掉一圈，而那是"看起来像裁切 bug"、
     /// 实际是"盒子算小了"。
-    #[test]
-    fn 盒子含外侧描边且随样式变() {
-        let short = TextLayout::solve("字", TextStyle::Hook, TextAnchor::Top, F);
-        let thin = TextLayout::solve("字", TextStyle::Comment, TextAnchor::Top, F);
-        assert!(
-            short.w > thin.w,
-            "hook（粗描边 + 大字号）的盒子应当比 comment 宽：{} vs {}",
-            short.w,
-            thin.w
-        );
-        // 描边只算一次、且是两侧各一份：盒宽 ≥ 文本宽 + 2×描边。
-        let stroke = TextStyle::Hook.base_stroke_px() / FRAME_H * F.h;
-        let text_w = display_width("字") * short.font_size;
-        assert!(
-            (short.w - (text_w + stroke * 2.0)).abs() < 1e-6,
-            "盒宽 {} 与 文本 {text_w} + 2×描边 {stroke} 对不上",
-            short.w
-        );
-    }
 
     /// 三个纵向锚点**互不相同**、且底部那个**与字幕带错开**。
     ///
     /// ⚠️ 最后那条是本项的目标之一（规格 §8："文字不压主播脸、不与字幕带重叠"）：
     /// 底部锚点若贴到 `H - h - margin`，文字会正好压在字幕上 —— 两行都读不了。
-    #[test]
-    fn 三个纵向锚点分开且底部让开字幕带() {
-        let top = TextLayout::solve("字", TextStyle::Chapter, TextAnchor::Top, F);
-        let mid = TextLayout::solve("字", TextStyle::Chapter, TextAnchor::Center, F);
-        let bot = TextLayout::solve("字", TextStyle::Chapter, TextAnchor::Bottom, F);
-        let (_, ty) = top.anchor_origin(F);
-        let (_, my) = mid.anchor_origin(F);
-        let (_, by) = bot.anchor_origin(F);
-        assert!(ty < my, "top({ty}) 应当在 center({my}) 之上");
-        assert!(my < by, "center({my}) 应当在 bottom({by}) 之上");
-        // 底部让开字幕带：盒底必须在字幕带上沿之上。
-        let band = band_caption();
-        assert!(
-            by + bot.h <= band.y0 + 1e-6,
-            "底部锚点的盒底 {} 侵入了字幕带（带上沿 {}）—— 文字会压住字幕",
-            by + bot.h,
-            band.y0
-        );
-    }
 
     /// **`Auto` 是"没偏好"**（2026-10-12，用户口径「和贴纸同逻辑」）。
     ///
@@ -2064,52 +1566,11 @@ mod tests {
     ///   ① `parse` 的兜底档（认不出 = 让后处理挑）；
     ///   ② `Auto` 的占位落点**不是**任何一条实档 —— 它用中线，且**不**走
     ///      `Bottom` 那条"减字幕带"的路（那会让自动档偷偷继承贴底语义）。
-    #[test]
-    fn 认不出的纵向档落到自动且占位取中线() {
-        // ① 兜底：空串、脏值、大小写混杂，一律 `Auto`。
-        assert_eq!(TextAnchor::parse(""), TextAnchor::Auto);
-        assert_eq!(TextAnchor::parse("  "), TextAnchor::Auto);
-        assert_eq!(TextAnchor::parse("middle"), TextAnchor::Auto);
-        assert_eq!(TextAnchor::parse("AUTO"), TextAnchor::Auto);
-        // ⚠️ 三条实档**必须仍认** —— 老工程里写过的 `pos` 照旧生效，
-        //    这次改的是"不写时怎么办"，不是"不认它们了"。
-        assert_eq!(TextAnchor::parse("top"), TextAnchor::Top);
-        assert_eq!(TextAnchor::parse("center"), TextAnchor::Center);
-        assert_eq!(TextAnchor::parse("bottom"), TextAnchor::Bottom);
-
-        // ② 占位落点 = 中线，与 `Center` 逐值相同、且**不等于** `Bottom`。
-        let auto = TextLayout::solve("字", TextStyle::Chapter, TextAnchor::Auto, F);
-        let mid = TextLayout::solve("字", TextStyle::Chapter, TextAnchor::Center, F);
-        let bot = TextLayout::solve("字", TextStyle::Chapter, TextAnchor::Bottom, F);
-        let (ax, ay) = auto.anchor_origin(F);
-        let (mx, my) = mid.anchor_origin(F);
-        let (_, by) = bot.anchor_origin(F);
-        assert!((ay - my).abs() < 1e-9, "自动档的占位应当就是中线：{ay} vs {my}");
-        assert!((ax - mx).abs() < 1e-9, "自动档的横向占位也该是中线：{ax} vs {mx}");
-        assert!(
-            (ay - by).abs() > 1.0,
-            "自动档的占位**不能**等于贴底档（{ay} vs {by}）—— \
-             那等于让『自动』偷偷继承贴底语义"
-        );
-    }
 
     /// `BoxSize::text` 用的就是排版结果（不是默认值）。
     ///
     /// ⚠️ 这条抓的是"排版算了、但求解器仍拿固定 280 盒"这类改动 ——
     /// 那正是本项存在的原因（大字压住主播脸），而**从代码上看不出来**。
-    #[test]
-    fn 送给求解器的盒子就是排版结果() {
-        let l = TextLayout::solve("一段挺长的标题文字", TextStyle::Hook, TextAnchor::Top, F);
-        let b = l.box_size();
-        assert_eq!(b.w, l.w);
-        assert_eq!(b.h, l.h);
-        assert_eq!(b.float_up, 0.0, "文字没有入场上浮（与贴纸不同）");
-        assert!(
-            (b.w - crate::process::placement::STICKER_SIZE).abs() > 1.0
-                || (b.h - crate::process::placement::STICKER_SIZE).abs() > 1.0,
-            "文字盒恰好等于贴纸的 280×280 —— 那多半是没接上排版结果"
-        );
-    }
 
     // ── §5 E3：动态盒（文字用）─────────────────────────────────────
 
@@ -2145,32 +1606,6 @@ mod tests {
     ///
     /// 判据取**相关性**而不是某个具体坐标：文字宽高变化的组合太多，
     /// 钉死一个坐标只能证明"这条路我跑过"，证明不了"它按盒子大小避让"。
-    #[test]
-    fn bigger_box_is_pushed_further_from_the_caption_band() {
-        // 一条底部字幕带：盒子越宽，越难在它上方找到位置
-        let blocked = vec![Blocked::new(band_caption(), ObstacleKind::Captions)];
-        let narrow = BoxSize::text(300.0, 100.0);
-        let wide = BoxSize::text(1500.0, 100.0);
-
-        let mut narrow_clear = 0.0;
-        let mut wide_clear = 0.0;
-        for seed_i in 0..32 {
-            let seed = seed_i as f64 / 32.0;
-            let a = pick_box_position(&blocked, &[], seed, F, &narrow);
-            let b = pick_box_position(&blocked, &[], seed, F, &wide);
-            // 宽盒子的下沿必须**在字幕带上方**（否则就是"大字压住字幕"）
-            assert!(
-                b.y + wide.h <= band_caption().y0 + 1e-6 || b.x + wide.w <= band_caption().x0 || b.x >= band_caption().x1,
-                "seed {seed}：1500 宽的盒子压进了字幕带: {b:?}"
-            );
-            narrow_clear += a.clearance;
-            wide_clear += b.clearance;
-        }
-        assert!(
-            wide_clear <= narrow_clear + 1e-9,
-            "宽盒子的平均余量不该比窄盒子大（{wide_clear} vs {narrow_clear}）—— 动态盒没生效？"
-        );
-    }
 
     /// **纵向避让必须用盒子的 `h`，不是 `w`**（正方形近似的变异要能被抓到）。
     ///
@@ -2181,36 +1616,8 @@ mod tests {
     /// 会主动躲到中间去。真正能分辨两种算法的是**"有没有位置可放"**：
     ///   * 用真实高度（120）：障碍下方那一大片都能放 ⇒ `relaxed = false`；
     ///   * 用宽度当高（1400）：盒子比画面还高 ⇒ **一个候选都放不下** ⇒ `relaxed = true`。
-    #[test]
-    fn vertical_fit_uses_box_height_not_width() {
-        // 一块薄障碍（横向铺满、只有 60px 高）
-        let blocked = vec![Blocked::new(Rect::new(0.0, 0.0, 1920.0, 60.0), ObstacleKind::Liver)];
-        let flat = BoxSize::text(1400.0, 120.0);
-        const N: usize = 32;
-        for seed_i in 0..N {
-            let seed = seed_i as f64 / N as f64;
-            let p = pick_box_position(&blocked, &[], seed, F, &flat);
-            assert!(
-                !p.relaxed,
-                "seed {seed}: 扁盒子（1400×120）退化到了 relaxed ——                  说明纵向避让把它当成了 1400 高的巨型盒子（拿了宽度当高）: {p:?}"
-            );
-            assert!(p.y + flat.h <= F.h + 1e-6, "seed {seed}: 盒子出画: {p:?}");
-        }
-    }
 
     /// 文字盒**不带**入场上浮（`: `float_up = 0`）—— 用错的后果是落点整体偏上 18px。
-    #[test]
-    fn text_box_has_no_float_up() {
-        let t = BoxSize::text(400.0, 120.0);
-        assert_eq!(t.float_up, 0.0, "文字没有贴纸那种入场飘起，占位不该往上留");
-        let r = box_at(100.0, 200.0, &t);
-        assert_eq!((r.x0, r.y0, r.x1, r.y1), (100.0, 200.0, 500.0, 320.0));
-        // 对照：贴纸盒**要**往上留 `float_up`（否则入场那一瞬会压住东西）
-        let s = BoxSize::sticker(F);
-        assert!(s.float_up > 0.0, "贴纸盒必须留入场上浮占位");
-        let rs = box_at(0.0, 0.0, &s);
-        assert!(rs.y0 < 0.0, "贴纸盒的上沿应当在 y 之上（留出上浮量）");
-    }
 
     /// 竖屏贴纸尺寸 = **短边**基准：横竖画布下贴纸绝对像素相同（都是 280×280），
     /// 不再按 `k = W/1920` 缩成 157.5（用户报「贴纸在竖屏模式没有正常大小」）。

@@ -339,55 +339,12 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
         }
     }
 
-    // Step 1d2b: 文字元素**候补**守卫（2026-10-19 用户口径）。
-    //
-    // 用户对文字效果的定位是**候补**：它突出、指向性强（观众一定会读那句话），
-    // 滥用适得其反 —— 只有「没有更合适的贴纸/特效」时才拿它换一种表达。
-    // 所以这里只做两条**确定性**兜底（LLM 在段窗口里数不出全段有几张贴纸）：
-    // ① 与贴纸**同一时刻** ⇒ 贴纸优先、删文字；② 同一段最多留一条。
-    // 与 `llm/mod.rs` Step 4b 成对：只改一处的话，编辑器里看到的与出片时的不是同一份。
-    // ⚠️ 这一步只是**先删一轮**（省得 Step 1d3 给注定要删的文字排版）；
-    //    贴纸窗口在 2b1 才被吸到字幕上 ⇒ 那边对齐完还会再兜一次（幂等）。
-    {
-        let dropped = cap_text_elements(&mut config.segments, &config.mute_ranges);
-        if dropped > 0 {
-            tracing::info!(
-                "  ✂ 文字元素超出候补配额/与贴纸冲突：删 {dropped} 条（文字只当候补，贴纸优先）"
-            );
-        }
-    }
-
-    // Step 1d3: 文字元素排版（§5 E3）—— **只排版、不定落点**。
-    //
-    // ⚠️ **这一步存在的理由**：在它之前，落点求解器只会算**固定 280px 的贴纸盒**，
-    //    而文字是**变宽高**的（字号 + 折行）。不排版就把文字当"一个 280 方块"
-    //    去避让 ⇒ 大字压住主播脸 —— 而那正是 §5 要消灭的症状。
-    //
-    // ⚠️ **落点不在这里定**：这里只算盒子与把**解析后的样式**写回 `source`。
-    //    真正的落点由 Step 2b2 走 `pick_box_position`（与贴纸同一个求解器）——
-    //    因为障碍物（主播脸/字幕带/弹幕）那套东西是在 Step 2b 才组装出来的。
-    //    第一版在这里直接写锚点位置，结果是"文字排在画面正中、
-    //    **完全没避开主播脸**"，而且**不报错**。
-    {
-        let (cw, ch) = config.canvas_size();
-        // **文字元素的描边 = 字幕的描边**（用户口径 2026-10-18）。`[style.subtitle].stroke`
-        // 形如 `"12px #403c3b"`；解析不出（0）就退回**字幕的默认 12px** —— 不回退到元素档位
-        // 那四档，那样又变回"元素比字幕细一倍"。
-        let el_stroke_px = {
-            let v = crate::process::placement::parse_px(&config.style.subtitle.stroke);
-            if v.is_finite() && v > 0.0 { v } else { 12.0 }
-        };
-        let laid_out = layout_text_elements(
-            &mut config.segments,
-            cw as f64,
-            ch as f64,
-            el_stroke_px,
-            &config.mute_ranges,
-        );
-        if laid_out > 0 {
-            tracing::info!("  · 文字元素排版：已排 {laid_out} 条（§5 E3）");
-        }
-    }
+    // ⚠️ **文字层已整条退役**（2026-10-20 用户口径：「算了，删除文字层吧」）。
+    // 这里原来有 Step 1d2b（候补配额守卫 cap_text_elements）与 Step 1d3（排版
+    // layout_text_elements）两步 —— 都随文字层一起删了。老工程里的 element{kind:"text"}
+    // 在**读时**就被丢掉（project/legacy.rs::migrate_retired_effects 的 RetiredCounts.text_layer，
+    // 日志点名计数），所以走到这一步时**不可能**再有文字层；两个函数留着就是死代码。
+    // ⚠️ **贴纸侧一步都没动**：element{kind:"sticker"} 走 Step 2b/2b1/2c，与这两步无关。
 
     // Step 1e: 跳切配额（§17）。跳切在语法上就是"接缝处的构图跳" = `mute_ranges` 的边界
     // 上落一条 `cut: true` 的运镜（**零新字段**，规格方案 A）。LLM 有表达权（写 cut）、
@@ -718,12 +675,8 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
         if n > 0 {
             tracing::info!("  · 贴纸已对齐最近字幕 {} 条", n);
         }
-        // 贴纸窗口刚刚变了 ⇒ 文字的互斥判据要按**最新**那份重算（1d2b 那一遍已经过时）。
-        // 幂等：只删文字，不碰贴纸/运镜。
-        let dropped = cap_text_elements(&mut config.segments, &config.mute_ranges);
-        if dropped > 0 {
-            tracing::info!("  ✂ 对齐后重算文字互斥：删 {dropped} 条（贴纸优先）");
-        }
+        // ⚠️ 文字层退役（2026-10-20）：这里原来有第二次 `cap_text_elements`（贴纸窗口变了 ⇒
+        // 重算文字互斥）。现在没有文字层可算；**贴纸那一侧一个字节都没动**。
     }
 
     // Step 2b: 推导贴纸落点 —— 从 人物 / 字幕 / 弹幕 反选安全区，在安全区中心撒点
@@ -840,109 +793,10 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
         }
     }
 
-    // Step 2b2: 文字元素落点（§5 E3）—— **与贴纸同一个求解器**。
-    //
-    // ⚠️ 为什么在 Step 2b **之后**：障碍物（主播脸 / 字幕带 / 弹幕带 / 主画面）
-    //    是 2b 组装出来的，而文字要避的正是它们。第一版把落点写在 Step 1d3，
-    //    结果是"文字排在画面正中、完全没避开主播脸"，而且**不报错**。
-    //
-    // ⚠️ 用 `pick_box_position`（**动态盒**版本）而不是 `pick_sticker_position`：
-    //    后者的盒子写死 `280 × sticker_scale`。文字是变宽高的 ——
-    //    按 280 方块避让会让三行大字**压住主播脸**，而那正是本项要消灭的症状。
-    {
-        let (cw, ch) = config.canvas_size();
-        let f = placement::Frame::new(cw, ch);
-        let video_size = crate::render::get_video_size(
-            &project_path.join(&config.source.video).to_string_lossy(),
-        );
-        let obstacles = sticker_obstacles(&config, &data_dir, video_size);
-
-        let mut placed: Vec<(f64, f64, placement::Rect)> = Vec::new();
-        let mut count = 0usize;
-        let mut relaxed = 0usize;
-        // **逐块手动落点**的条数（求解器没参与）。
-        let mut manual_n = 0usize;
-        let mut min_clearance = f64::MAX;
-
-        for seg in &mut config.segments {
-            for (idx, event) in seg.events.iter_mut().enumerate() {
-                // ⚠️ 时间**先取出来**再解构：解构会把 `event` 可变借出去，
-                //    之后再调 `event.get_time()` 是"可变借还活着时又要不可变借"（E0502）。
-                let time = event.get_time();
-                let end = event.end_or_default().unwrap_or(time);
-                // ⚠️ **手动落点也必须在解构之前取**（同一条 E0502 理由）。
-                let manual = event.manual_pos().map(str::to_owned);
-                // 屏蔽区间里看不见 —— 不落点（与贴纸同一条口径）
-                if crate::project::event_starts_muted(&config.mute_ranges, event) {
-                    continue;
-                }
-                let crate::project::Event::Element { kind, text, style, pos, x, y, .. } = event
-                else {
-                    continue;
-                };
-                if kind.trim().to_lowercase() != "text" || text.trim().is_empty() {
-                    continue;
-                }
-                let ts = placement::TextStyle::parse(style.as_deref().unwrap_or(""));
-                let anchor = placement::TextAnchor::parse(pos.as_deref().unwrap_or(""));
-                let layout = placement::TextLayout::solve(text, ts, anchor, f);
-                let b = layout.box_size();
-                // ⚠️⚠️ **逐块手动落点优先**（与贴纸同一条口径）：有它 ⇒ 求解器完全不参与。
-                //    `manual_pos` 是**盒子中心**，落盘的 `x`/`y` 是**左上角**。
-                if let Some(mp) = manual.as_deref() {
-                    if let Some((mx, my)) = placement::manual_pos_to_box_px(mp, b.w, b.h, f) {
-                        *x = Some(placement::pct_of(mx, f.w));
-                        *y = Some(placement::pct_of(my, f.h));
-                        placed.push((time, end + 0.65, placement::box_at(mx, my, &b)));
-                        count += 1;
-                        manual_n += 1;
-                        continue;
-                    }
-                    tracing::info!("  ⚠ 文字元素 @{time:.1}s: manual_pos 认不出，退回自动落点");
-                }
-
-                let blocked = obstacles.blocked_at(time, end, &placed);
-                let seed = (idx as f64 * 5.1 + seg.start * 1.7).fract();
-                // ⚠️ **`pos` 要真的挪动落点**（`placement.rs::tests::pos_really_moves_the_text_box` 钉着）：
-                //    只用无偏好版本时 `pos` 会被求解器**无条件覆写**。
-                let pick = placement::pick_box_position_pref(
-                    &blocked, &obstacles.allow, seed, f, &b,
-                    layout.anchor_prefer_band(f),
-                );
-                *x = Some(pick.x_pct(f));
-                *y = Some(pick.y_pct(f));
-                if pick.relaxed {
-                    relaxed += 1;
-                    tracing::info!(
-                        "  ⚠ 文字元素 @{time:.1}s: 帧内无安全落点, 取重叠最小 ({}, {})",
-                        x.as_deref().unwrap_or("?"),
-                        y.as_deref().unwrap_or("?"),
-                    );
-                }
-                placed.push((time, end + 0.65, placement::box_at(pick.x, pick.y, &b)));
-                min_clearance = min_clearance.min(pick.clearance);
-                count += 1;
-            }
-        }
-
-        if manual_n > 0 {
-            tracing::info!("  ✓ text 落点 {manual_n} 个由**手动**指定（求解器完全不参与）");
-        }
-        if count > 0 {
-            tracing::info!(
-                "  ✓ text 落点 {count} 个 (按**排版后的真盒子**避让{}, 最小余量 {:.0}px)（§5 E3）",
-                if relaxed > 0 {
-                    format!(", {relaxed} 个兜底")
-                } else {
-                    String::new()
-                },
-                min_clearance,
-            );
-            if relaxed > 0 {
-                tracing::info!("  ⚠ 有 {relaxed} 条文字没找到无重叠落点 —— 考虑把那条文字缩短或挪 pos");
-            }
-        }
-    }
+    // ⚠️ **Step 2b2（文字元素落点）已随文字层退役**（2026-10-20 用户口径：「算了，删除文字层吧」）。
+    // 老工程里的文字层事件在读时就被丢掉（project/legacy.rs 的 RetiredCounts.text_layer），
+    // 所以这里永远不会有文字要落点。
+    // ⚠️ **贴纸的落点（Step 2b）一个字节都没动** —— 它走的是 pick_sticker_position。
 
     // Step 2c: sticker end 自适应 —— 尾帧落在紧随其后的字幕结束点, 贴纸不早退
     // （手工定过时间的贴纸跳过：改过的结束时间不再被延长）
@@ -2208,169 +2062,7 @@ pub fn ensure_intro_fade_in(config: &mut project::ProjectFile) -> bool {
 ///
 /// ⚠️ 必须是这四个词本身（`hook`/`chapter`/`comment`/`count`）——
 /// 消费方（转译器）拿它去选轨道的 id 与报告文案，换一个拼法就会分叉。
-fn style_name(ts: crate::process::placement::TextStyle) -> &'static str {
-    use crate::process::placement::TextStyle as T;
-    match ts {
-        T::Hook => "hook",
-        T::Chapter => "chapter",
-        T::Comment => "comment",
-        T::Count => "count",
-    }
-}
 
-/// 文字元素排版（§5 E3）：给每条 `kind = "text"` 的元素算出盒子尺寸。
-///
-/// 把结果写回 `element.style` 之外的**既有字段**（`x`/`y`）—— 不新增契约字段：
-/// * `x`/`y` 本来就表示"落点百分比"（贴纸用），文字用**百分比**表示盒子左上角，
-///   与贴纸同一套坐标系 ⇒ 渲染端不必区分两种元素；
-/// * 写的是**算出来的锚点**（top/center/bottom 三档的中线位置），
-///   避让仍由渲染端做（它才有障碍物信息）。
-///
-/// 返回值 = 实际排版了几条（用于日志）。
-///
-/// ⚠️ **认不出的 `style` 按 `comment` 处理并打日志**，不报错 ——
-/// `style` 是 LLM 写的自由文本，错一个字母就让整条出片失败，代价远大于"字小了一点"。
-fn layout_text_elements(
-    segments: &mut [project::Segment],
-    frame_w: f64,
-    frame_h: f64,
-    // **字幕那份描边宽度**（文档像素）—— 文字元素与字幕用同一个值，见下面写回处那条注释。
-    stroke_px: f64,
-    mute_ranges: &[crate::project::MuteRange],
-) -> usize {
-    use crate::process::placement::{ElementColor, Frame, TextAnchor, TextLayout, TextStyle};
-
-    let f = Frame { w: frame_w, h: frame_h };
-    let mut done = 0usize;
-    for seg in segments.iter_mut() {
-        for ev in seg.events.iter_mut() {
-            // 屏蔽区间里看不见 —— 不排版（省一次几何求解，也不改它的 x/y）
-            if crate::project::event_starts_muted(mute_ranges, ev) {
-                continue;
-            }
-            let crate::project::Event::Element {
-                kind, text, style, pos, x, y, source, color, manual, manual_pos, ..
-            } = ev
-            else {
-                continue;
-            };
-            if kind.trim().to_lowercase() != "text" {
-                continue;
-            }
-            // C3（规格 §5）：**手工摆过位置/时间的文字不排版写回** —— 落点归用户
-            //（manual = 手工定过时间，manual_pos = 手工定过落点；任一条成立都不覆盖 x/y）。
-            // ⚠️ 但下面仍然写 source：那是**解析出来的样式参数**（字号/描边/颜色/倾斜…），
-            //    消费方（转译器/预览）只读它 —— 不写就等于让手工摆位的文字丢掉样式
-            //    （另一种"改了没生效"，而这正是 B3 要防的那类静默错误）。
-            let layout_owned =
-                !*manual && manual_pos.as_deref().map(str::trim).unwrap_or("").is_empty();
-            if text.trim().is_empty() {
-                continue;
-            }
-            let raw_style = style.clone().unwrap_or_default();
-            if !raw_style.trim().is_empty() && !TextStyle::is_known(&raw_style) {
-                tracing::warn!(
-                    "  ⚠ 文字元素「{}」的 style = \"{}\" 认不出，按 comment 处理",
-                    text,
-                    raw_style
-                );
-            }
-            let ts = TextStyle::parse(&raw_style);
-            // ---- 颜色预设（2026-10-13）----
-            //
-            // ⚠️⚠️ **"没写"与"写错了"必须分开**（两者都走档位默认色，但只有后者要报）：
-            //    `None` / 空串 ⇒ 用户没表达颜色 ⇒ **静默**走 `ts.color()`（存量工程 R4）；
-            //    非空但认不出 ⇒ **打一行点名**再退回默认色。
-            //    合并成一条 `unwrap_or_default()` 的话，"LLM 写了 `#ff0000`"这种
-            //    （模型很自然会这么写）会**静默降级成白色** —— 用户以为上色了、成片是白的，
-            //    而报告里一行差异都没有。这正是本仓最恨的形状。
-            let raw_color = color.clone().unwrap_or_default();
-            let ec = if raw_color.trim().is_empty() {
-                None
-            } else {
-                let parsed = ElementColor::parse(&raw_color);
-                if parsed.is_none() {
-                    tracing::warn!(
-                        "  ⚠ 文字元素「{}」的 color = \"{}\" 认不出，按 style 默认色处理。\
-                         可选值：{}",
-                        text,
-                        raw_color,
-                        ElementColor::ALL.map(|c| c.name()).join(" / ")
-                    );
-                }
-                parsed
-            };
-            let anchor = TextAnchor::parse(pos.as_deref().unwrap_or(""));
-            let layout = TextLayout::solve_with(text, ts, anchor, f, stroke_px);
-            // C3：手工事件只解样式、**不动落点**（见上面 layout_owned 的说明）
-            if layout_owned {
-                let (px, py) = layout.anchor_origin(f);
-                // 写**百分比**（与贴纸的 `x`/`y` 同一种表示）。
-                *x = Some(format!("{:.2}%", px / f.w * 100.0));
-                *y = Some(format!("{:.2}%", py / f.h * 100.0));
-            }
-            // ⚠️ 把**解析后的样式参数**一起写回去，让转译器**读**而不是自己再存一份。
-            //
-            // 为什么必须这样：四档的数值（字号/描边/颜色/字重）如果 Rust 与 JS
-            // 各存一份，分叉的症状是"算出来的盒子与画出来的字对不上"
-            // （文字溢出自家的底衬色块），而且**两边单测各自都过**。
-            // 本仓对付这类问题的既定形态就是 `process` 解析、消费方读
-            //（`Event::Element.name`/`source` 对贴纸做的同一件事）。
-            //
-            // 格式：`<style>|<font_px>|<stroke_px>|<r,g,b,a>|<sr,sg,sb,sa>|<weight>|<backdrop>|<tilt_deg>|<squash_y>|<color_name>`
-            // —— 用 `|` 分隔而不是 JSON：`source` 是 `Option<String>`，
-            // 塞 JSON 会让它看起来像结构化数据，而它只是"这一条解析出来的参数"。
-            //
-            // ⚠️ **T3 的两个字段追加在末尾**（不是插在中间）—— 消费方按位置解析，
-            //    插在中间会让所有既有字段**静默错位**（`backdrop` 会被读成 `tilt_deg`，
-            //    症状是"底衬没了、字歪了"，而**两边单测各自都过**）。
-            //    新增字段一律**往后加**。
-            //
-            // ⚠️⚠️ **第 10 段（颜色预设名）同样追加在末尾**（2026-10-13）——
-            //    这条纪律在这一段上被第二次使用，理由一字不变。
-            //
-            //    为什么写**预设名**而不是它解出来的 RGBA：第 4 段已经是 RGBA 了，
-            //    再写一份 RGBA 等于同一个事实存两处（本仓的老病）。写名字让
-            //    **转译器与预览各自去查同一张表** —— 而"四处的表必须同值"
-            //    是可以用一条判据钉住的（`check-element-color.mjs`），
-            //    "两处 RGBA 恰好相等"则只能靠人看。
-            //
-            //    ⚠️ **认不出 / 没写 ⇒ 写空串**（不是省略这一段）：段数必须**恒定**，
-            //       否则消费方的 `split('|').length` 会在"有颜色"与"没颜色"之间跳 ——
-            //       而长度判据正是老工程兼容的支点（`{7, 9}` 那两档）。
-            let c = ec.map(|e| e.rgba()).unwrap_or_else(|| ts.color());
-            let sc = ec.map(|e| e.stroke_for(ts)).unwrap_or_else(|| ts.stroke_color());
-            // ⚠️ **描边宽度 = 字幕那份**（2026-10-18 用户口径「文字层的描边没有和字幕的
-            //    描边同等，当前很细」）：这里以前写 `ts.base_stroke_px()`（四档 6/5/2/4），
-            //    而字幕是 `[style.subtitle].stroke`（默认 12px、用户可配置）⇒ 差一倍以上。
-            //    ⚠️ 消费方（转译器 `parseTextStyle` / DOM 预览 `tx.style.strokePx`）都**只读
-            //    这一段**，所以改这一处三端同时同步 —— 别在各自那边再写死一个值。
-            *source = Some(format!(
-                "{}|{}|{}|{},{},{},{}|{},{},{},{}|{}|{}|{}|{}|{}",
-                style_name(ts),
-                ts.base_font_px(),
-                stroke_px,
-                c[0],
-                c[1],
-                c[2],
-                c[3],
-                sc[0],
-                sc[1],
-                sc[2],
-                sc[3],
-                ts.font_weight(),
-                ts.has_backdrop() as u8,
-                // T3：倾斜（度，正=顺时针）与纵向压缩（1.0 = 不压）。
-                ts.tilt_deg(),
-                ts.squash_y(),
-                // 第 10 段：颜色预设名（没写 = 空串）。
-                ec.map(|e| e.name()).unwrap_or(""),
-            ));
-            done += 1;
-        }
-    }
-    done
-}
 
 fn resolve_camera_anchors(config: &mut project::ProjectFile, data_dir: &Path) {
     let ctx = AnchorCtx::collect(config, data_dir);
@@ -2632,153 +2324,12 @@ y = "10%"
     /// 症状是"底衬没了、字歪了"，而**两边单测各自都过**）。
     ///
     /// ⇒ 这条断言把**顺序本身**钉住：谁想改顺序，必须先看见这条红了。
-    #[test]
-    fn element_source_field_order_is_pinned() {
-        let mut segs = vec![Segment {
-            start: 0.0,
-            end: 5.0,
-            fx: "low".into(),
-            note: String::new(),
-            role: String::new(),
-            extra: Default::default(),
-            events: vec![Event::Element {
-                anim: None,
-                style_anim: None,
-                effect_anim: None,
-                transition_anim: None,
-                layout_angle_deg: None,
-                time: 0.5,
-                end: Some(4.0),
-                kind: "text".into(),
-                text: "第 3 次了".into(),
-                style: Some("count".into()),
-                pos: None,
-                color: None,
-                sticker_tag: None,
-                x: None,
-                y: None,
-                manual: false,
-                name: None,
-                source: None,
-                manual_pos: None,
-            }],
-        }];
-        // ⚠️ 第 4 个参数 = **字幕那份描边宽度**（2026-10-18 起文字元素与字幕同宽）。
-        assert_eq!(layout_text_elements(&mut segs, 1920.0, 1080.0, 12.0, &[]), 1);
-
-        let Event::Element { source, .. } = &segs[0].events[0] else {
-            panic!("还是那条 element");
-        };
-        let src = source.as_deref().expect("排版必须写回 source");
-        let parts: Vec<&str> = src.split('|').collect();
-        assert_eq!(
-            parts.len(),
-            10,
-            "字段个数变了（下游按位置解析）：{src}"
-        );
-        // 逐位钉住——**名字**比"个数"更能说明意图。
-        assert_eq!(parts[0], "count", "p0 = style 名");
-        // ⚠️ 2026-10-13：四档字号统一为 80（`ELEMENT_FONT_PX`），这里从 64 跟着改。
-        //    判据**照旧把具体值钉死** —— 它验的是"串里的值来自枚举、不是写死的"，
-        //    改成"等于 base_font_px()"会让它变成同义反复（永远绿）。
-        assert_eq!(parts[1], "80", "p1 = font_px");
-        // ⚠️ 2026-10-18：p2 = **字幕那份**描边（调用方传 12），不再是档位默认的 4 ——
-        //    用户口径「文字层的描边没有和字幕的描边同等，当前很细」。
-        assert_eq!(parts[2], "12", "p2 = stroke_px（= 字幕的描边）");
-        assert_eq!(parts[3], "255,255,255,255", "p3 = 填充色");
-        assert_eq!(parts[4], "26,26,26,255", "p4 = 描边色");
-        assert_eq!(parts[5], "800", "p5 = 字重");
-        assert_eq!(parts[6], "0", "p6 = backdrop");
-        assert_eq!(parts[7], "-4", "p7 = tilt_deg（T3 追加）");
-        assert_eq!(parts[8], "1", "p8 = squash_y（T3 追加）");
-        // ⚠️ 2026-10-13：第 10 段 = 颜色预设名。**这条 entry 没写 color**
-        //    ⇒ 必须是**空串**（不是省略这一段）——段数恒定是下游兼容的支点。
-        assert_eq!(parts[9], "", "p9 = color 预设名（没写 ⇒ 空串，段数不许变）");
-    }
 
     /// 第 10 段是**颜色预设名**，且它真的**改变了填充/描边**（不是只写个名字）。
     ///
     /// ⚠️ 两条一起验：只验 `p9 == "pink"` 的话，"把名字写进去但颜色仍用档位默认"
     /// 这种改动会**全绿** —— 而症状正是"面板上选了粉色、成片是白的"，报告一行差异都没有。
     /// ⇒ 必须同时验 **p3/p4 真的变了**。
-    #[test]
-    fn element_source_color_preset_changes_fill_and_stroke() {
-        use crate::project::Event;
-        fn seg_with(color: Option<&str>) -> Vec<Segment> {
-            vec![Segment {
-                start: 0.0,
-                end: 5.0,
-                fx: "low".into(),
-                note: String::new(),
-                role: String::new(),
-                extra: Default::default(),
-                events: vec![Event::Element {
-                    anim: None,
-                    style_anim: None,
-                    effect_anim: None,
-                    transition_anim: None,
-                    layout_angle_deg: None,
-                    time: 0.5,
-                    end: Some(4.0),
-                    kind: "text".into(),
-                    text: "愤怒".into(),
-                    style: Some("hook".into()),
-                    color: color.map(str::to_string),
-                    pos: None,
-                    sticker_tag: None,
-                    x: None,
-                    y: None,
-                    manual: false,
-                    name: None,
-                    source: None,
-                    manual_pos: None,
-                }],
-            }]
-        }
-        let run = |color: Option<&str>| {
-            let mut segs = seg_with(color);
-            assert_eq!(layout_text_elements(&mut segs, 1920.0, 1080.0, 12.0, &[]), 1);
-            let Event::Element { source, .. } = &segs[0].events[0] else {
-                panic!("还是那条 element");
-            };
-            source
-                .as_deref()
-                .expect("排版必须写回 source")
-                .split('|')
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-        };
-
-        // ① 没写 color ⇒ 走档位默认色（hook 是白），第 10 段空串。
-        let none = run(None);
-        assert_eq!(none[9], "", "没写 color ⇒ 第 10 段必须是空串");
-        assert_eq!(none[3], "255,255,255,255", "没写 color ⇒ 用 hook 的默认白");
-
-        // ② 写了 pink ⇒ 第 10 段是名字，**且 p3 真的变成粉色**。
-        let pink = run(Some("pink"));
-        assert_eq!(pink[9], "pink", "第 10 段必须是预设名");
-        assert_eq!(
-            pink[3], "217,139,174,255",
-            "写了 pink 但填充色没变 —— 面板上选了粉色、成片却是白的（且不报错）"
-        );
-        assert_ne!(pink[3], none[3], "pink 必须与默认白不同");
-
-        // ③ 认不出的值 ⇒ 退回档位默认色 + 第 10 段空串（**不静默**，见 warn）。
-        let bogus = run(Some("#ff0000"));
-        assert_eq!(bogus[9], "", "认不出的 color ⇒ 第 10 段空串（不把垃圾写进产物）");
-        assert_eq!(bogus[3], none[3], "认不出的 color 必须退回档位默认色");
-
-        // ④ **黑字必须翻白描边**（`ElementColor::stroke_for`）——
-        //    否则黑填充 + 近黑描边 = 糊成一团墨，而两个字段各自看都是对的。
-        let black = run(Some("black"));
-        assert_eq!(black[9], "black");
-        assert_eq!(black[3], "24,24,24,255", "black 的填充");
-        assert_eq!(
-            black[4], "255,255,255,230",
-            "black 的描边必须翻成白 —— 近黑描边 + 黑字 = 读不出来"
-        );
-        assert_ne!(black[4], none[4], "黑字的描边必须与白字的描边不同");
-    }
 
     /// 七档颜色预设的**名字与 RGBA**都必须是可往返的（`parse` ↔ `name` 互逆）。
     ///
@@ -2827,57 +2378,6 @@ y = "10%"
     ///
     /// ⚠️ 没有这条，"四档各自的值"与"串里写的值"可能各说各话 ——
     /// 上面那条只验了 `count` 一档。这里换一档，确认确实**是从枚举读的**。
-    #[test]
-    fn element_source_reads_tilt_and_squash_from_the_style() {
-        let mut segs = vec![Segment {
-            start: 0.0,
-            end: 5.0,
-            fx: "low".into(),
-            note: String::new(),
-            role: String::new(),
-            extra: Default::default(),
-            events: vec![Event::Element {
-                anim: None,
-                style_anim: None,
-                effect_anim: None,
-                transition_anim: None,
-                layout_angle_deg: None,
-                time: 0.5,
-                end: Some(4.0),
-                kind: "text".into(),
-                text: "章节".into(),
-                style: Some("chapter".into()),
-                pos: None,
-                color: None,
-                sticker_tag: None,
-                x: None,
-                y: None,
-                manual: false,
-                name: None,
-                source: None,
-                manual_pos: None,
-            }],
-        }];
-        assert_eq!(layout_text_elements(&mut segs, 1920.0, 1080.0, 12.0, &[]), 1);
-        let Event::Element { source, .. } = &segs[0].events[0] else {
-            panic!("还是那条 element");
-        };
-        let src = source.as_deref().unwrap();
-        let parts: Vec<&str> = src.split('|').collect();
-        use crate::process::placement::TextStyle;
-        assert_eq!(
-            parts[7],
-            TextStyle::Chapter.tilt_deg().to_string(),
-            "tilt 必须来自 TextStyle::Chapter"
-        );
-        assert_eq!(
-            parts[8],
-            TextStyle::Chapter.squash_y().to_string(),
-            "squash 必须来自 TextStyle::Chapter"
-        );
-        // `chapter` 是唯一被压扁的那一档 —— 顺带确认这条不是"所有档都一样"。
-        assert_eq!(parts[8], "0.92");
-    }
 
     fn seg_with(events: Vec<Event>) -> Segment {
         Segment { start: 0.0, end: 10.0, fx: "low".into(), note: String::new(), events, role: String::new(), extra: Default::default() }
@@ -3039,29 +2539,7 @@ y = "10%"
 
     // ── C3：manual 字段不被覆盖（规格 §5）+ B3 的判据本体 ──────────────────
 
-    fn text_el(time: f64, end: Option<f64>, x: Option<&str>, y: Option<&str>, manual: bool, manual_pos: Option<&str>) -> Event {
-        Event::Element {
-            anim: None,
-            style_anim: None,
-            effect_anim: None,
-            transition_anim: None,
-            layout_angle_deg: None,
-            time,
-            end,
-            kind: "text".into(),
-            text: "手工摆位".into(),
-            style: Some("hook".into()),
-            pos: None,
-            color: None,
-            sticker_tag: None,
-            x: x.map(str::to_string),
-            y: y.map(str::to_string),
-            manual,
-            name: None,
-            source: None,
-            manual_pos: manual_pos.map(str::to_string),
-        }
-    }
+
 
     fn manual_camera(t: f64, origin: &str) -> Event {
         Event::Camera {
@@ -3124,40 +2602,6 @@ y = "10%"
 
     /// **C3 文字半边**：`manual` 或 `manual_pos` 的文字**不排版写回 x/y**，
     /// 但 source（解析出来的样式参数）照写 —— 不写就等于让手工摆位的文字丢掉字号/描边。
-    #[test]
-    fn manual_text_layout_skips_position_write() {
-        let mut segs = vec![Segment {
-            start: 0.0,
-            end: 10.0,
-            fx: "med".into(),
-            note: String::new(),
-            role: String::new(),
-            events: vec![
-                text_el(1.0, Some(3.0), Some("11%"), Some("22%"), true, None),
-                text_el(4.0, Some(6.0), Some("31%"), Some("32%"), false, Some("70% 30%")),
-                text_el(7.0, Some(9.0), None, None, false, None),
-            ],
-            extra: Default::default(),
-        }];
-        let done = layout_text_elements(&mut segs, 1920.0, 1080.0, 12.0, &[]);
-        assert_eq!(done, 3, "三条都该解出样式（source）");
-        let et = |i: usize| {
-            let Event::Element { x, y, source, .. } = &segs[0].events[i] else { panic!() };
-            (x.clone(), y.clone(), source.clone())
-        };
-        assert_eq!(et(0).0.as_deref(), Some("11%"), "manual 的 x 被排版改掉了（C3 回归）");
-        assert_eq!(et(0).1.as_deref(), Some("22%"));
-        assert_eq!(et(1).0.as_deref(), Some("31%"), "manual_pos 的 x 被排版改掉了（C3 回归）");
-        assert_eq!(et(1).1.as_deref(), Some("32%"));
-        assert_eq!(
-            et(2).0.is_some() && et(2).1.is_some(),
-            true,
-            "对照组（自动落点）必须被排版写回 —— 否则上面两条是空转"
-        );
-        for i in 0..3 {
-            assert!(et(i).2.is_some(), "第 {i} 条的 source（样式）不许丢");
-        }
-    }
 
     /// **端到端 C3 判据**（规格 §5 的 `manual_event_fields_survive_process`）：
     /// 一条 manual 的贴纸 / 运镜 / 文字，跑完真 `cmd_process` 之后
@@ -3193,7 +2637,6 @@ y = "10%"
                     manual_pos: Some("20% 30%".into()),
                 },
                 manual_camera(5.0, "33% 44%"),
-                text_el(8.0, Some(10.0), None, None, true, Some("70% 30%")),
             ],
         }];
         write_matrix_project(path, &cfg);
@@ -3214,16 +2657,8 @@ y = "10%"
             unreachable!()
         }
 
-        let text = evs.iter().find(|e| matches!(e, Event::Element { .. })).expect("文字还在");
-        assert_eq!(text.get_time(), 8.0, "manual 文字的 time 变了");
-        assert_eq!(text.end(), Some(10.0), "manual 文字的 end 变了");
-        assert_eq!(text.manual_pos(), Some("70% 30%"), "manual_pos 变了");
-        let Event::Element { x, y, source, .. } = text else { unreachable!() };
-        let px: f64 = x.as_deref().unwrap_or("").trim_end_matches('%').parse().unwrap_or(-1.0);
-        let py: f64 = y.as_deref().unwrap_or("").trim_end_matches('%').parse().unwrap_or(-1.0);
-        assert!(px > 60.0, "文字的 x 不是 manual_pos（70% 盒子中心）换算来的，实得 {x:?} —— 排版把它盖掉了");
-        assert!(py > 15.0 && py < 30.0, "文字的 y 不是 manual_pos（30%）换算来的，实得 {y:?}");
-        assert!(source.is_some(), "样式 source 必须照写（否则手工文字丢掉字号/描边）");
+        // ⚠️ 文字层退役（2026-10-20）：这一条原来还断言"manual 文字元素"的 time/end/manual_pos/x/y/source
+        // 不被 process 改写。文字层已整条删除，这里只保留贴纸与运镜两条（贴纸侧完全没动）。
     }
 
     /// B3 的**判据本体**：五个用户字段里任何一个变了都要被指出来（含条数变化）。
