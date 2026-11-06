@@ -1,29 +1,66 @@
 <template>
   <div>
     <div v-if="loadError" class="error-banner"><Icon name="alert" :size="15" /> {{ loadError }}</div>
-    <div class="row slices-bar">
-      <span class="muted small">片段操作</span>
-      <button class="mini-btn" :disabled="!clipsRef" @click="clipsRef?.redetect()">重新检测</button>
-      <button class="mini-btn" :disabled="!clipsRef" @click="clipsRef?.openAdd()">添加片段</button>
-      <button
-        v-if="uncutCount"
-        class="mini-btn primary"
-        :title="'把 ' + uncutCount + ' 个未剪切事件全部剪出来'"
-        @click="clipsRef?.cutAll()"
-      >一键全切（{{ uncutCount }}）</button>
-    </div>
-    <div v-if="loading" class="grid cols-3">
-      <div v-for="i in 6" :key="'sk' + i" class="skeleton"></div>
-    </div>
-    <ProjectClipsSection
-      v-else-if="project"
-      ref="clipsRef"
-      :project="project"
-      :project-data="projectDataRef"
-      :source-url="sourceUrl"
-      @changed="load({ silent: true })"
+
+    <!-- 真·空页（没事件也没片段）：一句人话 + 两条路。
+         卡片墙用 `v-show` 藏着而**不卸载** —— 手动添加的弹窗住在 `ProjectClipsSection` 里，
+         卸载了 `clipsRef` 就变 null，那颗「手动添加」就点不动了。 -->
+    <AppEmptyState
+      v-if="showEmptyAll"
+      icon="scissors"
+      title="还没有可剪的片段"
+      description="先在「识别」页找亮点，再回来剪片段"
+      primary="去识别"
+      :primary-to="`/p/${pid}/prepare`"
+      secondary="手动添加"
+      @secondary="openAddClip"
     />
-    <div v-else class="empty"><div class="empty-icon"><Icon name="film" :size="24" /></div>未找到项目</div>
+
+    <div v-show="!showEmptyAll">
+      <!-- 操作条：一个主行动 + 一个「⋯ 更多」。
+           ⚠️ `slices.redetect` / `slices.add-clip` 是**高级项**，必须留在 `<details>` 里
+           （`webui/scripts/check-simplify.mjs` 校验 advancedOnly 的锚点位置），别搬回一级。 -->
+      <div class="row slices-bar">
+        <button
+          v-if="uncutCount > 0"
+          class="btn btn-primary"
+          data-cap="slices.cut-all"
+          :title="`把 ${uncutCount} 个还没剪出来的事件一次剪成片段`"
+          @click="clipsRef?.cutAll()"
+        >一键剪出全部（{{ uncutCount }}）</button>
+        <details class="more-menu">
+          <summary class="mini-btn" title="更多片段操作">⋯ 更多</summary>
+          <div class="more-pop">
+            <button class="mini-btn" data-cap="slices.redetect" :disabled="!clipsRef" @click="clipsRef?.redetect()">重新检测</button>
+            <button class="mini-btn" data-cap="slices.add-clip" :disabled="!clipsRef" @click="clipsRef?.openAdd()">添加片段</button>
+          </div>
+        </details>
+      </div>
+
+      <!-- 全部剪完了：下一步只由这条 NextStepBar 承担（操作条不再重复一颗「去出片」，
+           一页一个主按钮）。data-cap 挂在这里，契约里仍是 slices.go-polish。 -->
+      <NextStepBar
+        v-if="clipCount > 0 && uncutCount === 0"
+        data-cap="slices.go-polish"
+        :title="`已剪出 ${clipCount} 个片段`"
+        desc="做智能剪辑、运镜与封面"
+        cta="去出片"
+        :to="`/p/${pid}/polish`"
+      />
+
+      <div v-if="loading" class="grid cols-3">
+        <div v-for="i in 6" :key="'sk' + i" class="skeleton"></div>
+      </div>
+      <ProjectClipsSection
+        v-else-if="project"
+        ref="clipsRef"
+        :project="project"
+        :project-data="projectDataRef"
+        :source-url="sourceUrl"
+        @changed="load({ silent: true })"
+      />
+      <div v-else class="empty"><div class="empty-icon"><Icon name="film" :size="24" /></div>未找到项目</div>
+    </div>
   </div>
 </template>
 
@@ -35,6 +72,8 @@ import { projectData } from '../api/projectData'
 import { uncutEventsOf, mediaUrl } from '../utils'
 import { onJobDone } from '../composables/useJobs'
 import Icon from '../components/Icon.vue'
+import AppEmptyState from '../components/AppEmptyState.vue'
+import NextStepBar from '../components/NextStepBar.vue'
 import ProjectClipsSection from '../components/ProjectClipsSection.vue'
 
 const route = useRoute()
@@ -52,9 +91,22 @@ const sourceUrl = ref('')
 let inflight = null
 let queuedReload = false
 
-/** 未剪切事件数（操作条的「一键全切」只在有东西可切时出现）。
+/** 未剪切事件数（操作条的「一键剪出全部」只在有东西可剪时出现）。
  *  规则与卡片墙一致（`utils.uncutEventsOf`）：序号被**别的**事件的旧片段占着也算未剪切。 */
 const uncutCount = computed(() => uncutEventsOf(projectDataRef.value?.events, projectDataRef.value?.clips).length)
+/** 已剪出的片段数（「去出片（N）」与「已剪出 N 个片段」都用它）。 */
+const clipCount = computed(() => (projectDataRef.value?.clips || []).length)
+/** 检测到的事件数：一个都没有 = 这一页还没有"可剪的片段"。 */
+const eventCount = computed(() => (projectDataRef.value?.events || []).length)
+/** 真·空页：没事件也没片段。读失败时**不出空态**（让上面的错误条说话，别伪装成"没东西可剪"）。 */
+const showEmptyAll = computed(() =>
+  !loading.value && !loadError.value && !!project.value && !clipCount.value && !eventCount.value
+)
+
+/** 空态里的「手动添加」：弹窗住在卡片墙组件里，借它的 `openAdd()` 打开。 */
+function openAddClip() {
+  clipsRef.value?.openAdd()
+}
 
 /**
  * 取切片页的全部数据（事件 / 片段 / 精修状态 / 原片地址）。
@@ -136,6 +188,18 @@ onUnmounted(offJobDone)
 
 <style scoped>
 .error-banner { margin-bottom:12px; }
-.slices-bar { align-items:center; margin-bottom:10px; }
+.slices-bar { align-items:center; gap:8px; margin-bottom:10px; }
 button:disabled { opacity:.45; cursor:not-allowed; }
+/* 「⋯ 更多」= 二级操作披露：贴右边，弹层浮在上层、不挤动操作条与卡片墙 */
+.more-menu { position:relative; margin-left:auto; }
+.more-menu > summary { list-style:none; cursor:pointer; user-select:none; }
+.more-menu > summary::-webkit-details-marker { display:none; }
+.more-menu[open] > summary { color:var(--pink-text); border-color:var(--main); }
+.more-pop {
+  position:absolute; right:0; top:calc(100% + 6px); z-index:20;
+  display:flex; flex-direction:column; gap:6px; min-width:104px; padding:8px;
+  background:var(--card); border:1px solid var(--line); border-radius:var(--r-sm);
+  box-shadow:0 8px 22px rgba(0,0,0,.14);
+}
+.more-pop .mini-btn { justify-content:flex-start; white-space:nowrap; }
 </style>

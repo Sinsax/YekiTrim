@@ -1,0 +1,1 @@
+import{r as i}from"./index-BfbP9VHw.js";function u(l,s=!1){const o=`yekitrim.ui.${l}`;let a=!!s;try{const t=localStorage.getItem(o);t==="1"?a=!0:t==="0"&&(a=!1)}catch{}const e=i(a);function r(t){e.value=!!t;try{localStorage.setItem(o,e.value?"1":"0")}catch{}}function c(){r(!e.value)}return{open:e,set:r,toggle:c,storageKey:o}}export{u};

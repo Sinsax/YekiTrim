@@ -12,16 +12,17 @@
        排序：按**最后一次改动**从新到旧（`clips[].mtime` = 片段目录里最新的文件时间，
        刚剪完 / 刚精修过的排最前），同秒并列时回落项目 id 降序 + rank 升序。
        数据全部来自 workbench store 的 per-project 缓存（loadProjectData，单飞 + 失效矩阵）。 -->
-  <div class="card card-blk mb-12">
+  <div class="card card-blk mb-12" data-cap="home.clips-overview">
     <div class="row spread mb-8">
-      <b class="t m-0"><Icon name="film" :size="15" /> 切片总览</b>
+      <b class="t m-0"><Icon name="film" :size="15" /> 最近片段</b>
       <span class="muted small">共 {{ allClips.length }} 个片段 · {{ wb.projects?.length || 0 }} 个项目</span>
     </div>
 
     <div v-if="wb.error" class="error-banner"><Icon name="alert" :size="15" /> {{ wb.error }}</div>
 
-    <!-- ─── 筛选 tag（对齐切片页那套：`mini-btn` + `.selected`，选中态持久化） ─── -->
-    <div class="sort-bar">
+    <!-- ─── 筛选 tag（对齐切片页那套：`mini-btn` + `.selected`，选中态持久化） ───
+         还没有任何片段时整条不渲染：先给一句"从一段录像开始"，别摆一排筛不出东西的按钮。 -->
+    <div v-if="allClips.length" class="sort-bar">
       <span class="muted small">筛选</span>
       <button
         v-for="f in OV_FILTERS"
@@ -50,8 +51,9 @@
       >热度名次</button>
     </div>
 
-    <!-- ─── 搜索：关键词 + 落点勾选（标题常驻零请求；字幕/弹幕按需拉） ─── -->
-    <div class="ov-search">
+    <!-- ─── 搜索：关键词 + 落点勾选（标题常驻零请求；字幕/弹幕按需拉） ───
+         空态下同样不渲染（见上面筛选条的注释）。 -->
+    <div v-if="allClips.length" class="ov-search">
       <input
         v-model="query"
         class="fld-input ov-q"
@@ -74,7 +76,11 @@
     </div>
 
     <!-- ─── 一个卡片墙：所有命中的片段（不分栏） ─── -->
-    <div v-if="!shownClips.length && !loading" class="muted small ov-empty">
+    <!-- 一条片段都没有：只留一句指路（筛选/搜索已在上面隐藏），别让空态显得像坏了。 -->
+    <div v-if="!allClips.length && !loading" class="muted small ov-empty">
+      还没有片段 · 从一段录像开始
+    </div>
+    <div v-else-if="!shownClips.length && !loading" class="muted small ov-empty">
       {{ emptyText }}
     </div>
     <div v-if="shownClips.length" ref="wall" class="ov-wall" :class="{ noscroll: noScroll }">

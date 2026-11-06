@@ -81,64 +81,9 @@
 - ⚠️ **Dhampir 加载期间不许播**（门帘 + 播放键置灰 + `togglePlay` 三道闸；热重载不挂）：见
   `docs/webui-components.md` §2.5。
 ### 封面设计器（`CoverDesigner.vue`）
-- **真图层栈（PS 口径）**：面板 = 左预览 / 右「左：属性 · 右：图层列表 · 底：工具条」；
-  **列表与设置左右排布**、右栏 `minmax(220px,20%)`、两栏走 **grid**（别退回 flex 子项 —— `flex-basis`
-  会被内容顶开、不等宽）；⚠️ 面板**定高**（`CONTROLS_MIN_H` 380px 下限，否则裁掉底部工具条）、两栏各自滚且
-  `min-height` 必须 **0**（`auto` ⇒ 永不出滚动条）。列表**上 = 更靠前** = `[cover] layers` **倒序**；
-  顺序与可见性都落盘，出片由 `resolve_cover_stack`/`plan_cover_layers` 注 z-index，前端
-  `resolveStack`/`blockZ`/`layerVisible`/`layerStyle` 是**镜像** —— **两边一起改**。几何数字见 ③.1。
-- **图层行** `[拖柄 ⠿][眼睛][缩略][名字][徽标][垃圾桶]`：**眼睛 = 非破坏性隐藏**（`visible:false` →
-  `display:none`，行留着淡化）· **删除 = 从栈里摘掉**（固定层属性全留、加回来即恢复；**特效/表情连
-  `[[cover.effects]]` 那条一起删**）· **视频预览 `locked`**：可隐藏、不给删/拖。
-  ⚠️ 别退回"用属性字段模拟开关"（v1 已废）。
-- **拖动排序**：行上 HTML5 DnD + 2px 插入指示线（显示序 = 栈倒序，换算集中在 `moveLayerTo`）；快捷键绑
-  `.controls`（**别挂 window**）：`Ctrl/Cmd+[ ]` 上下移、`Shift` 置顶底、`Delete` 删层。
-- **画布拖动跟选中层走**（`dragTarget` 是唯一判据）：视频预览→`bg_x/bg_y`（滚轮 `bg_zoom`）· 文字→
-  `text_x/text_y` · 特效/表情→`x/y`（滚轮 `amount`）· 滤镜/背景/安全区→**不可拖**（`not-allowed`）；`Shift` 单轴。
-- **文字面板**：左文本框 / 右控件列**各占 50%**（标题·X·Y·字体·字号），下面两列一行（对齐·行距 / 描边·字距）
-  → 高亮色·文字阴影 → 高亮关键词。**每个数值都是「滑块 + 行尾可填数字」**（`.rv-input`：手填可越 step 栅格；
-  夹 `[min,max]`、**不吸附 step**、清空/非数字不写；不用 `SliderField.vue` —— `@container` 会把标签挤到第二行）。
-- ⚠️ **高亮词要显示"出片真正在用的那串"**：`cover.highlight_keywords` 为空时出片**回退** `[filter] highlight`
-  （`cover.rs::cover_highlight_words`）—— 面板照实显示并写明来源（`hlSourceHint`），用户一改就固化到封面
-  （以前只读 `cover.*` → "面板空、标题却高亮"）。③.7 有全表。⚠️ 高亮串走 `v-html`，CSS **必须 `:deep()`**，否则匹配不上、
-  高亮色**静默**失效。⚠️ **高亮字号 `hl_font_scale` 同读 `--hl-fs`**。
-- **新建图层**（底部工具条，菜单向上弹）：可叠加六种（表情·光晕·模糊·暗角点·颜色覆盖·扫描线，落
-  `[[cover.effects]]`、带稳定随机 `id`）+ 单层三种（背景·滤镜·文字；已有→标「已有」但**可点**）；
-  视频预览与安全区不在菜单里。**文字预设已删**。
-- ⚠️ **内容层的 z-index 只在行内给**（`layerStyle()`）：CSS 里不许写
-  `.stage-bg/.stage-media/.vignette-layer/.gradient-layer/.title-wrap` 的 z-index；设计器专属两层固定在上面
-  （900 / 950）。
-- ⚠️ **特效要有槽位结构**：`.fx-slot`（承载 z-index）> `.fx-item`，与出片 HTML 同构；`overlay` 的槽位必须带
-  `isolation:isolate`（改造前它没真混合，省了老封面变色），`blur` 的槽位**不能**加；`.fx-layer` 也不许有 z-index。
-- **三层各有各的图源，谁也不许覆盖谁**（文字 / 关键帧 `_cover_frame.jpg` / 背景 `_cover_bg.jpg`）。
-- ⚠️ **属性面板类名不能叫 `.pane`**（`app.css` 有全局 `.pane{display:none}`，改回去整块隐身且**不报错**）；
-  ⚠️ **高亮词必须 `font-family:inherit`**（全局 `*{font-family:var(--font)}` 直接命中 `v-html` 的 `span.hl`，
-  直接命中压过继承 ⇒ 只有前端会漂；③.7）。钉子 = `check-cover-stage.mjs` ⑥/⑥b/⑥c。删掉选中的层后要自动落到
-  文字/栈顶，别让面板空着。
-- ⚠️ **导入背景图片写 `_cover_bg.jpg`**（同时置 `bg_mode=image`），**别再写回 `_cover_frame.jpg`**；
-  `cover.image` 导入时不要清空；⚠️ **出片不再删 `_cover_frame.jpg`**（它即关键帧层的图源）。
-- ⚠️ **关键帧文件可能不存在**：模糊背景 404 → `onBgImageError()` **只对 blur**、**不带 time** 调
-  `/api/polish/cover-frame`，只补一次（`bgFrameTried`），再失败提示手动「导出关键帧」。
-- **安全区线框**：`.guide-169` = `width:95%; height:95%`（1824×1026）· `.guide-43` = `height:100%` +
-  `aspect-ratio:4/3`（1440×1080）；⚠️ **别写 `inset:5%`**（百分比横竖不同基准，得 1728×972）；显隐 = 列表
-  里那两行的眼睛，偏好 `localStorage['yekitrim.ui.coverGuides']`；⚠️ **只画在设计器**（③.5）。
-- **标题首次自动排版 `fitTitleIntoSafeArea()`**：① 磁盘无 `title_lines`（首次，可动字号/位置）；② **LLM 生成
-  标题（`resizeFont:false`，只挪位置不改字号**，用户报过「字号被 LLM 改」）；手动不触发。
-- **封面字体空 = 跟字体库默认位**：预览/出片都按 **id** 解析 + 注入 `@font-face`；别退回 `fallback_stack`（内部族名解析不到）。
-- ⚠️ **默认对齐 `left`**、`text_x = "35%"`：老工程字段存在就不走默认；**别改 `cover.rs::cover_text_align` 的
-  `_ => ("center","center")` 兜底**（那个 `_` 也兜着合法值 `"center"`）。⚠️ `text` 进模板前必须 `escape_html`。
-- ⚠️ **镜像清单**：字体栈 · 描边 `#2a2522` · 阴影
-  `0 5px 22px rgba(0,0,0,.78)`（×`stageScale`）· 渐变底色取自 `[style.subtitle].highlight_color` · **层序/z-index
-  走同一个栈** · 特效公式（`blur`=`1+amount×14`、`overlay`=`rgba(hex,amount)`+blend、emoji=`48+amount×240`）·
-  emoji **描边环**（4 向 `drop-shadow`、别加对角；宽 = 联排 `描边/4`、特效层 `size×0.03`）·
-  `liverOrigin()` 优先序 = `region_origin`（自由选框中心 > `origin_grid` > `origin` > `grid[0]` > `65% 50%`）·
-  `bg_zoom` 0.5~3 · **高亮字号 `--hl-fs`**。
-- ⚠️ **取帧播放器常驻舞台**（`.stage-video-live`；`_cover_frame.jpg` 的 img 只兜底）：**不许按选中层门控**（曾
-  这么干 → 切层没法拖进度条、选好的帧跳回去）；前端不是帧源（后端 ffmpeg 截帧），同帧靠 `seekToFramePos`
-  （钉子 ②）。
-- **四处必须同步**：`CoverConfig`（含 `layers`）/ `cover-config` 白名单 / `templates/cover.html` / **设计器
-  镜像**；`sanitize_hex_color`、`cover_bg_mode` 只在 `cover.rs` 一份。`configLoaded` 是**写入门闸**：读失败出
-  错误条 + 「重试」。
+- 细则（图层栈/镜像清单/四处同步/写入门闸/安全区）见 **`docs/webui-components.md` §③**；
+  改它之前先读那张表，别只改前端镜像（出片侧 `cover.rs` 与 `templates/cover.html` 必须同步）。
+  `configLoaded` 是写入门闸：读失败出错误条 + 重试，别拿默认值写回。
 ### 运镜（camera）
 - **倍率只有一张表**：`CameraStyle::factor`，四处都走它。⚠ 模板 canvas 路径曾硬编码 `1.8/1.5`、完全不读
   `[style.camera]`，而它才是出片路径 —— 别写回去。

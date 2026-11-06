@@ -24,7 +24,8 @@
         <div class="side-cap">项目（{{ filteredProjects.length }}）</div>
         <div v-if="wb.loading && !wb.projects.length" class="hint">加载中…</div>
         <div v-else-if="!filteredProjects.length" class="hint">
-          {{ wb.projects.length ? '无匹配项目' : '还没有项目：去首页「新增项目」' }}
+          <template v-if="wb.projects.length">无匹配项目</template>
+          <router-link v-else class="empty-add" to="/workbench">去添加第一个项目</router-link>
         </div>
         <ProjectNode
           v-for="p in filteredProjects"
@@ -291,6 +292,9 @@ defineExpose({ openJobs: () => emit('open-jobs') })
 .rail-proj:hover { background:var(--main-soft); color:var(--pink-text); }
 .rail-proj.on { background:var(--grad-main); color:var(--on-main); box-shadow:var(--shadow-pink); }
 .rail-hint { padding:4px 0; }
+/* 空项目提示 = 去首页添加第一个项目的入口（不再是一句点不动的死文字） */
+.empty-add { color:var(--pink-text); text-decoration:underline; }
+.empty-add:hover { color:var(--main-deep); }
 
 .side.mini .side-foot { align-items:center; padding:8px 0; }
 /* 用户块只做展示（登出改成了右侧按钮 + 二次确认），光标别留成可点的手型 */

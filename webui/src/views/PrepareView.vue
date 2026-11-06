@@ -1,8 +1,42 @@
 <template>
   <div>
-    <div v-if="loadError" class="error-banner"><Icon name="alert" :size="15" /> {{ loadError }}</div>
+    <!-- 项目不存在（服务端 404）：空态 + 回首页 / 重新导入。
+         ⚠️ 其它读取错误**不许**伪装成空态（见 views/AGENTS.md「读失败」），走下面的错误横幅 + 重试。 -->
+    <AppEmptyState
+      v-if="notFound"
+      icon="film"
+      title="项目不存在或已移除"
+      description="可能已被移除，或链接里的项目 id 不对。重新导入同一个目录即可再绑回来。"
+      primary="回首页"
+      primary-to="/workbench"
+      secondary="重新导入"
+      @secondary="goImport"
+    />
 
-    <div class="grid cols-main">
+    <template v-else>
+      <div v-if="loadError" class="error-banner">
+        <Icon name="alert" :size="15" />
+        <span class="flex-1">{{ loadError }}</span>
+        <button class="mini-btn flex-none" title="重新读取这个项目的状态与素材" @click="load">重试</button>
+      </div>
+
+      <!-- LLM 未配置：**不拦路**（检测照跑，退化按弹幕/字幕热度 + 一个整段），只是提前说清结果。 -->
+      <div v-if="llmMissing" class="llm-banner" title="在「设置 → AI 模型」里配好接口与密钥后，检测会按话题切成多个亮点">
+        <Icon name="alert" :size="14" />
+        <span class="flex-1">未配置 AI 模型：这次只按弹幕/字幕热度找亮点，可能只得到一个整段。</span>
+        <router-link class="mini-btn flex-none" to="/settings/llm">去配置 AI</router-link>
+      </div>
+
+      <!-- 一键处理完成：亮点/片段数 + 下一步。 -->
+      <NextStepBar
+        v-if="completed"
+        :title="completedText"
+        cta="去挑片段"
+        :to="slicesPath"
+      />
+      <div v-if="completedHint" class="hint completed-hint" :title="completedHintTitle">{{ completedHint }}</div>
+
+      <div class="grid cols-main">
       <!-- 左：播放器 + 字幕轨道 + 切片标记 -->
       <div>
         <div class="card player-card">
@@ -35,12 +69,23 @@
           </div>
         </div>
 
+        <!-- 字幕轨道：默认收起（只留一句"有多少条 + 保存状态"），要拖块/改字再展开。
+             展开状态首帧同步读 localStorage（`useDisclosure`）—— 别改成 v-show，轨道挂载时要量宽度。 -->
         <div class="card mt-12">
           <div class="row spread mb-6">
-            <b class="t m-0">字幕轨道</b>
-            <span class="muted small" :class="{ err: saveState === 'error' }">{{ saveHint }}</span>
+            <b class="t m-0">字幕 {{ segments.length }} 条</b>
+            <span class="row" style="gap:8px">
+              <span class="muted small" :class="{ err: saveState === 'error' }">{{ saveHint }}</span>
+              <button
+                class="mini-btn flex-none"
+                data-cap="prepare.subtitle-track"
+                :title="subsOpen ? '收起字幕轨道（编辑内容不会丢，已自动保存）' : '展开后能拖块改起止、改文本（改动自动保存）'"
+                @click="toggleSubs"
+              >{{ subsOpen ? '收起编辑' : '展开编辑' }}</button>
+            </span>
           </div>
           <SubtitleTrack
+            v-if="subsOpen"
             :segments="segments"
             :duration="duration"
             :current-time="currentTime"
@@ -54,14 +99,55 @@
         </div>
       </div>
 
-      <!-- 右：预处理 + 切片（动作集中在一列；切片块紧贴预处理下方，别占左列的竖高） -->
+      <!-- 右：识别（一块卡，高级项默认折叠）。主按钮紧跟状态 chips，其余收进「处理选项」/「手动切片」。 -->
       <div class="side-col">
         <div class="card card-blk">
-          <b class="t">预处理</b>
+          <b class="t">识别</b>
           <div class="row" style="gap:6px;flex-wrap:wrap;margin:8px 0 10px">
-            <span class="chip" :class="chipClass('transcribe')" :title="transcribeChipTitle">转写 {{ chipText('transcribe') }}</span>
-            <span class="chip" :class="chipClass('detect')">事件检测 {{ chipText('detect') }}</span>
+            <span class="chip" :class="chipClass('transcribe')" :title="transcribeChipTitle">识别声音 {{ chipText('transcribe') }}</span>
+            <span class="chip" :class="chipClass('detect')">找亮点 {{ chipText('detect') }}</span>
+            <span v-if="autoCut" class="chip" :class="chipClass('cut')" title="剪出片段（「处理选项」里可关自动剪出）">剪出片段 {{ chipText('cut') }}</span>
           </div>
+
+          <!-- 主按钮（状态机见 primaryLabel / onPrimary）：没有事件时 = 一键处理，
+               已有事件 = 去挑片段；运行中禁用，进度与「停止」在下面的任务盒。 -->
+          <button
+            class="btn btn-primary run-btn"
+            data-cap="prepare.run-all"
+            :disabled="primaryDisabled"
+            :title="primaryTitle"
+            @click="onPrimary"
+          >
+            <span v-if="jobRunning" class="spinner"></span>
+            {{ primaryLabel }}
+          </button>
+          <div class="hint mt-6" title="hybrid 模式要 qwen3-asr（879 MB），single 只要 SenseVoice（165 MB）；缺模型时会在转写前自动下载，进度见任务">首次会先下载字幕模型（约 879 MB / 165 MB），进度见任务</div>
+
+          <div v-if="job.id" class="job-box mt-12">
+            <div class="row spread small">
+              <b>{{ kindText(job.kind) }}</b>
+              <span class="chip" :class="statusClass(job.status)">{{ statusText(job.status) }}</span>
+            </div>
+            <div class="muted small mt-2">{{ job.message || '运行中' }}</div>
+            <div v-if="job.total > 0" class="progress mt-6"><div :style="{ width: jobPct + '%' }"></div></div>
+            <div class="row mt-6" style="gap:6px">
+              <button class="mini-btn flex-none" @click="openJobs()">查看任务</button>
+              <button v-if="jobRunning" class="mini-btn danger flex-none" :disabled="canceling" @click="cancelJob">
+                <Icon name="x" :size="10" /> 停止
+              </button>
+            </div>
+          </div>
+
+          <!-- 处理选项：ASR 模式 / 主播名 / 分步处理 / 弹幕与字幕清单 / 重新处理。默认收起。 -->
+          <details class="adv-blk" :open="materialsOpen" @toggle="syncMaterials">
+            <summary data-cap="prepare.materials" title="ASR 模式、主播名、分步处理、弹幕/字幕清单与重新处理">处理选项</summary>
+
+            <!-- 自动剪出：开 = 主按钮一次跑完（识别 → 找亮点 → 剪出片段）；
+                 关 = 只到找亮点（主按钮文案变「开始识别」），片段到切片页自己挑。 -->
+            <label class="opt-row mt-6" :class="{ dis: busy }" title="开：一次点击跑完识别 → 找亮点 → 剪出片段；关：只到找亮点">
+              <input type="checkbox" :checked="autoCut" :disabled="busy" @change="setAutoCut($event.target.checked)">
+              <span>自动剪出片段</span>
+            </label>
 
           <!-- ASR 模式：写进本工程 `yekitrim.toml` 的 `[asr] mode`（merge 时覆盖全局配置，
                接口走 `PUT /api/project-data/config {patch}` —— 保留注释与其他 section）。
@@ -73,19 +159,22 @@
             <select
               v-model="asrMode"
               class="asr-select"
+              data-cap="prepare.asr-mode"
               :disabled="!canPickAsr || busy"
               @change="saveAsrMode"
             >
               <option value="hybrid">hybrid · 更准（双模型）</option>
               <option value="single">single · 更快（单模型）</option>
             </select>
+            <!-- 只识别 = 只跑 ASR 转写（**不接检测**）：换模式再出一份字幕的入口。
+                 两种模式各一次，跑过的模式槽就占了（`canRunAsr`）。 -->
             <button
               class="mini-btn flex-none"
-             
+              data-cap="prepare.run-step"
               :disabled="!canRunAsr || busy"
               :title="asrRunTitle"
               @click="runAsr"
-            >{{ canRunAsr ? '跑 ASR' : '已跑过' }}</button>
+            >{{ canRunAsr ? '只识别' : '已跑过' }}</button>
           </div>
           <div class="hint asr-hint">{{ asrHint }}</div>
           <!-- 主播名：全局 `[detection] vtuber_name` 只是**默认值**，每个工程可以自己写一份
@@ -102,6 +191,18 @@
             >
             <span class="muted small" :title="vtuberHint">生效：{{ effectiveVtuber || '（未设）' }}</span>
           </div>
+
+          <!-- 分步：只找亮点（只跑检测、不剪片段）。「只识别」在上面 ASR 那一行（只转写）。 -->
+          <div class="asr-row mt-8" title="只跑事件检测：整份覆盖 events.json，已剪片段不受影响">
+            <span class="asr-name">分步</span>
+            <button
+              class="mini-btn flex-1 jc-center"
+              :disabled="!hasTranscript || !hasVideo || busy"
+              title="只找亮点：只跑事件检测，不剪片段"
+              @click="runDetectOnly"
+            >只找亮点</button>
+          </div>
+          <div class="hint mt-6" title="只识别 = 只转写（产物进字幕列表）；只找亮点 = 只跑检测（不剪片段）">只识别 = 只转写；只找亮点 = 只检测</div>
 
           <!-- 输入素材：弹幕 / 字幕都是**随时可换的输入**（生效值写进 yekitrim.toml），不是产物。
                清单式（两块的显示与交互完全一致）：
@@ -133,39 +234,21 @@
             <div class="hint mt-6">{{ assetsHint }}</div>
           </div>
 
-          <!-- 转写 + 事件检测合成一个按钮：两段仍是**两个任务**依次跑（转写完再起检测），
-               所以后一段失败只需再点一次，已经跑完的前一段不会重跑。
-               已有字幕时它只做（重新）检测 —— 检测随时能重跑，那个形态**永不置灰**；
-               没有字幕时才走转写，而转写受**模式槽**限制：当前模式跑过就置灰
-               （`canRunAsr`，与上面那颗「跑 ASR」同口径），要换字幕走下面的清单，
-               要再出一份就换个模式（换模式后这个按钮自己就活了）。 -->
-          <button
-            class="btn btn-primary run-btn"
-            :disabled="busy || (!hasTranscript && !canRunAsr)"
-            :title="prepareTitle"
-            @click="runPrepare"
-          >
-            <span v-if="busy" class="spinner"></span>
-            {{ prepareLabel }}
-          </button>
+            <!-- 重新找亮点：只重跑事件检测（整份覆盖 events.json），不重切片段。
+                 已剪片段不受影响；要重切去「挑片段」页点「一键剪出全部」。 -->
+            <button
+              v-if="hasEvents || hasClips"
+              class="btn btn-danger block-btn mt-6"
+              data-cap="prepare.redetect"
+              :disabled="busy || !hasVideo"
+              :title="redetectTitle"
+              @click="onRedetect"
+            >重新找亮点</button>
+          </details>
 
-          <div v-if="job.id" class="job-box mt-12">
-            <div class="row spread small">
-              <b>{{ kindText(job.kind) }}</b>
-              <span class="chip" :class="statusClass(job.status)">{{ statusText(job.status) }}</span>
-            </div>
-            <div class="muted small mt-2">{{ job.message || '运行中' }}</div>
-            <div v-if="job.total > 0" class="progress mt-6"><div :style="{ width: jobPct + '%' }"></div></div>
-            <button class="mini-btn mt-6" @click="openJobs()">查看任务</button>
-          </div>
-
-          <div class="hint mt-8">{{ prepareHint }}</div>
-        </div>
-
-        <!-- 切片：一组入点/出点 → 填标题 →「切片」即建事件并开始剪切（没填标题会打开表单）。
-             多组 = **分段剪、合并输出**（粗剪拓展 2026-10-06）。 -->
-        <div class="card card-blk mt-12">
-          <b class="t">切片</b>
+          <!-- 手动切片：整块原样保留（判据 ⑳/㉔/㉕/㉙ 以这里的结构与缩进为锚，别重排）。 -->
+          <details class="adv-blk" :open="manualOpen" @toggle="syncManual">
+            <summary data-cap="prepare.manual-slice" title="自己标入点/出点：多组 = 分段剪、合并输出">手动切片</summary>
           <!-- 多段（粗剪拓展 2026-10-06）：一组入点/出点 = 一条片段；**多组 = 分段剪、合并输出**。
                段间空隙里"有内容"的部分会被丢掉，无字幕的保留（交给后处理「去静音」变屏蔽区间）。
                点一行选中它，「标记入点/出点」落到选中那一行；单行时与老行为完全等价。 -->
@@ -231,9 +314,11 @@
           <div class="hint mt-6" title="标题只用于人工查看，不影响目录与文件名；没填标题会打开表单">
             标题只用于展示<span class="mono">（clip-NN/clip.mp4）</span>
           </div>
+          </details>
         </div>
       </div>
     </div>
+    </template>
 
     <!-- 选择弹幕 / 字幕文件：候选来自项目目录（服务端扫），admin 还能浏览服务器任意目录。
          选中的这份会**加入清单**并立即生效（清单里随时能切回来）。 -->
@@ -315,14 +400,18 @@ import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import Icon from '../components/Icon.vue'
 import AppModal from '../components/AppModal.vue'
+import AppEmptyState from '../components/AppEmptyState.vue'
+import NextStepBar from '../components/NextStepBar.vue'
 import ServerDirPicker from '../components/ServerDirPicker.vue'
 import SubtitleTrack from '../components/prepare/SubtitleTrack.vue'
 import MaterialList from '../components/prepare/MaterialList.vue'
 import { projectData } from '../api/projectData'
+import { healthPayload, refreshHealth } from '../stores/health'
 import { humanBytes } from '../stores/project'
 import { isAdmin } from '../stores/auth'
-import { watchJob, kindText, statusClass, statusText, busyOn, outKey, QUEUED_HINT } from '../api/jobs'
-import { useJobs } from '../composables/useJobs'
+import { watchJob, jobsApi, kindText, statusClass, statusText, busyOn, outKey, QUEUED_HINT } from '../api/jobs'
+import { useJobs, onJobDone } from '../composables/useJobs'
+import { useDisclosure } from '../composables/useDisclosure'
 import { toast } from '../stores/toast'
 import { confirmDialog } from '../stores/dialog'
 import { openJobs } from '../stores/ui'
@@ -343,6 +432,44 @@ const activeSub = computed(() => segments.value.find(
 ) || null)
 const playing = ref(false)
 const loadError = ref('')
+/** 首次状态还没读回来（网络盘上可能要几秒）：这期间别把主按钮写成「还没有输入视频」。 */
+const statusLoading = ref(true)
+/** 服务端 404（项目不存在 / 无权访问）：走空态，**不当成普通读取失败**（见 views/AGENTS.md「读失败」）。 */
+const notFound = ref(false)
+/** `/api/health.llm === false`：只多一句提示，**不挡任何操作**（检测会退化成热度 + 一个整段）。 */
+const llmMissing = ref(false)
+/** 三块可折叠区的展开状态：首帧同步读 localStorage（`useDisclosure`），避免先展开再收起闪一下。 */
+const { open: materialsOpen, set: setMaterialsOpen } = useDisclosure('prepare.materials', false)
+const { open: manualOpen, set: setManualOpen } = useDisclosure('prepare.manualSlice', false)
+const { open: subsOpen, set: setSubsOpen } = useDisclosure('prepare.subtitles', false)
+/** 自动剪出片段（默认开）：开 = 主按钮一键跑完识别 → 找亮点 → 剪出片段；关 = 只到找亮点。 */
+const AUTO_CUT_KEY = 'yekitrim.ui.prepare.autoCut'
+const autoCut = ref(readAutoCut())
+/** 一键处理成功后的结果（亮点数 / 片段数），给顶部「下一步」条用；读不到就保持 null（不报假数）。 */
+const completed = ref(null)
+/** 「停止」防连点。 */
+const canceling = ref(false)
+/** 当前阶段（服务端 `stage_started` 给的英文名）：单一 process 任务靠它把 chips 打到对应那一格。 */
+const stageNow = ref('')
+
+/** 读自动剪出开关（默认 true；localStorage 只有显式 '0' 才算关）。 */
+function readAutoCut() {
+  try {
+    return localStorage.getItem(AUTO_CUT_KEY) !== '0'
+  } catch {
+    return true
+  }
+}
+
+function setAutoCut(next) {
+  autoCut.value = !!next
+  try { localStorage.setItem(AUTO_CUT_KEY, autoCut.value ? '1' : '0') } catch {}
+}
+
+/** `<details>` 的开关状态与 localStorage 双向同步（原生 toggle 事件）。 */
+function syncMaterials(e) { if (e?.target) setMaterialsOpen(e.target.open) }
+function syncManual(e) { if (e?.target) setManualOpen(e.target.open) }
+function toggleSubs() { setSubsOpen(!subsOpen.value) }
 
 const segments = ref([])
 /** 轨道总长：视频元数据时长与最后一条字幕取大者（视频还没加载时只能靠字幕兜底） */
@@ -417,7 +544,7 @@ const saveHint = computed(() => {
   if (saveState.value === 'saving') return '保存中…'
   if (saveState.value === 'error') return '保存失败：' + saveError.value
   if (saveState.value === 'saved') return '已保存 ' + saveAt.value
-  return '点块在上方属性条改文本与入点 / 出点，改动自动保存'
+  return subsOpen.value ? '点块在上方属性条改文本与入点 / 出点，改动自动保存' : '展开后可拖块改字幕'
 })
 
 const jobRunning = computed(() => job.status === 'running' || job.status === 'queued')
@@ -426,13 +553,21 @@ const runningStage = computed(() => (jobRunning.value ? jobStage.value : ''))
 const jobStage = computed(() => {
   const k = job.kind || ''
   if (k === 'stage_detect') return 'detect'
-  if (k === 'stage_transcribe' || k === 'pipeline') return 'transcribe'
+  if (k === 'stage_transcribe') return 'transcribe'
+  if (k === 'stage_cut') return 'cut'
+  // 一键处理（process）= extract + transcribe + detect + cut 一个任务：阶段只能从 `stage_started` 认
+  if (k === 'stage_process' || k === 'pipeline') {
+    if (stageNow.value === 'EventDetector') return 'detect'
+    if (stageNow.value === 'Transcriber') return 'transcribe'
+    if (stageNow.value === 'Cutter') return 'cut'
+  }
   return ''
 })
 // 项目级作用域（`p{pid}:out`）：转写/检测/订正/剪切都写 output/*，互相排队。
 // 别的项目在跑、或某个片段在精修，都不会让这个按钮变灰（并行能力）。
-const { jobs: allJobs, reload: reloadJobs } = useJobs()
-const scopeBusyJob = computed(() => busyOn(allJobs.value, [outKey(pid.value)]))
+// ⚠️ 快照过期（`stale`）时**降级放行**：一次读取故障不该把按钮永久锁死（见 components/AGENTS.md）。
+const { jobs: allJobs, reload: reloadJobs, stale: jobsStale } = useJobs()
+const scopeBusyJob = computed(() => (jobsStale.value ? null : busyOn(allJobs.value, [outKey(pid.value)])))
 const busy = computed(() => jobRunning.value || !!scopeBusyJob.value)
 const busyText = computed(() => (jobRunning.value ? kindText(job.kind) : scopeBusyJob.value ? kindText(scopeBusyJob.value.kind) : ''))
 const hasTranscript = computed(
@@ -444,11 +579,71 @@ const hasTranscript = computed(
  *  前者"重新检测照常生效"，后者才需要去跑 ASR / 选文件。 */
 const txEmptyText = computed(() => (segments.value.length > 0
   ? `清单里没登记 —— 当前用 transcript.json（${segments.value.length} 段）`
-  : '还没有字幕 —— 用上面的「跑 ASR」生成，或自己选一份字幕文件（srt / json）'))
-/** 已有检测结果（`status.files` 里带「事件」那一项）→ 重新检测要二次确认 */
+  : '还没有字幕 —— 用处理选项里的「只识别」生成，或自己选一份字幕文件（srt / json）'))
+/** 已有检测结果（`status.files` 里带「事件」那一项）→ 主按钮去挑片段 / 重新处理要二次确认 */
 const hasEvents = computed(() => hasFile('事件'))
+/** 已有剪切产物（`clips/clips_order.txt`）→ 重跑全流程前也要确认（片段不会被删，但会被重切） */
+const hasClips = computed(() => hasFile('片段顺序'))
+/** 有没有输入视频：没有时主按钮禁用（「还没有输入视频」）。 */
+const hasVideo = computed(() => !!status.value?.input_file)
+/** 切片页路径（主按钮与「下一步」条共用）。 */
+const slicesPath = computed(() => `/p/${encodeURIComponent(pid.value)}/slices`)
 /** 转写成功后自动接着跑检测（两段之间不留手动步骤） */
 const chainDetect = ref(false)
+
+// ---- 主按钮状态机（没有事件 → 一键处理 / 去挑片段；运行中禁用）----
+const primaryDisabled = computed(() => {
+  if (jobRunning.value) return true
+  if (statusLoading.value) return true // 状态还没读回来：先别下结论
+  if (!hasVideo.value) return true // 没有输入视频：什么都跑不了
+  if (hasEvents.value) return false // 已识别：随时能去挑片段
+  if (busy.value) return true
+  // 一个字幕都没有、而当前 ASR 模式的槽已经占了：这次转写后端也会 409（先选字幕或换模式）
+  if (!hasTranscript.value && !canRunAsr.value) return true
+  return false
+})
+const primaryLabel = computed(() => {
+  if (runningStage.value === 'transcribe') return `转写中 ${jobPct.value}%`
+  if (runningStage.value === 'detect') return `检测中 ${jobPct.value}%`
+  if (runningStage.value === 'cut') return `剪切中 ${jobPct.value}%`
+  if (jobRunning.value) return '处理中…'
+  if (statusLoading.value) return '读取中…'
+  if (!hasVideo.value) return '还没有输入视频'
+  if (hasEvents.value) return '去挑片段 →'
+  if (!hasTranscript.value && !canRunAsr.value) return '先选一份字幕'
+  return autoCut.value ? '开始处理' : '开始识别'
+})
+const primaryTitle = computed(() => {
+  if (statusLoading.value) return '正在读取这个项目的状态…'
+  if (!hasVideo.value) return '还没有输入视频：先去项目设置里填 input_file（或跑一次音频提取）'
+  if (hasEvents.value) return '已经找到亮点：去切片页挑要发的片段'
+  if (!hasTranscript.value && !canRunAsr.value) {
+    return `「${asrMode.value}」模式的 ASR 已经跑过 —— 从处理选项的字幕列表里选一份，或换个模式再跑`
+  }
+  if (autoCut.value) return '一次点击跑完：转写 → 找亮点 → 剪出片段（已完成的阶段会跳过）'
+  return '一次点击跑完：转写 → 找亮点（不剪片段，片段到切片页自己挑）'
+})
+/** 一键处理成功后的「下一步」文案：片段数只有在这次真的切了片段时才报（分步跑只报亮点数）。 */
+const completedText = computed(() => {
+  const c = completed.value
+  if (!c) return ''
+  if (!c.cut) return `已找到 ${c.events} 个亮点`
+  return `已找到 ${c.events} 个亮点 · 已剪出 ${c.clips} 个片段`
+})
+/** 只找到一条事件时补一句 —— 没配 AI 的那次通常就是「完整录像」一整段。 */
+const completedHint = computed(() => {
+  const c = completed.value
+  if (!c || c.events !== 1) return ''
+  return /^完整录像/.test(c.firstLabel)
+    ? '只得到一个整段，配置 AI 后可细分'
+    : '只找到一个亮点，可重新处理再试'
+})
+const completedHintTitle = computed(() => (completed.value && /^完整录像/.test(completed.value.firstLabel)
+  ? '未配置 AI 模型（或模型没识别出话题）时，检测只产出一个「完整录像」事件。'
+  : '检测只产出一条事件时的提示。'))
+/** 「重新找亮点」：只重跑检测。已有片段时不去动 events.json，直接把人送到挑片段页补切。 */
+const redetectTitle = '只重跑事件检测：整份覆盖 events.json，不重切片段；已剪片段不受影响'
+
 
 // ---- 输入素材（弹幕 / 字幕）：清单式，生效值写进 `yekitrim.toml`，随时可换 ----
 // 声明放在 ASR 块之前：ASR 槽位来自同一份 `assets`（下面 `asrSlots` 要读它）。
@@ -531,36 +726,10 @@ const assetsHint = computed(() => {
 })
 const transcribeChipTitle = computed(() => {
   const used = Object.keys(asrSlots.value || {}).filter((m) => slotUsedOf(m))
-  if (!used.length) return '还没有 ASR 产物：用「跑 ASR」生成，或自己选一份字幕文件'
+  if (!used.length) return '还没有 ASR 产物：用处理选项里的「只识别」生成，或自己选一份字幕文件'
   return `ASR 产物已出（${used.join(' / ')}）—— 每种模式各一次，要再跑就换模式`
 })
 
-const prepareLabel = computed(() => {
-  if (runningStage.value === 'transcribe') return `转写中 ${jobPct.value}%`
-  if (runningStage.value === 'detect') return `检测中 ${jobPct.value}%`
-  if (!hasTranscript.value) return '开始预处理'
-  if (!hasEvents.value) return '开始事件检测'
-  return '重新检测'
-})
-const prepareTitle = computed(() => {
-  if (!hasTranscript.value && !canRunAsr.value) {
-    return `「${asrMode.value}」模式的 ASR 已经跑过（产物在字幕列表里）—— 从列表里选一份字幕，或换个模式再跑`
-  }
-  if (!hasTranscript.value) return '依次执行：转写 → 事件检测（转写会自动先提取音频）'
-  if (!hasEvents.value) return '转写已完成，接着跑事件检测'
-  return '重新检测：整份覆盖 events.json（已剪片段不受影响）'
-})
-const prepareHint = computed(() => {
-  if (runningStage.value) return '正在跑，完成后按钮会回到可用状态。'
-  if (!hasTranscript.value) {
-    if (!canRunAsr.value) {
-      return `「${asrMode.value}」模式的 ASR 已经出过产物，就在上面的字幕列表里 —— 选一份（或换个模式再跑），才有字幕可检测。`
-    }
-    return '一次点击依次跑：转写 → 事件检测。两段是两个任务，后一段失败再点一次即可，已完成的转写不会重跑。'
-  }
-  if (!hasEvents.value) return '转写已完成，接着跑事件检测（会整份覆盖 events.json，已剪片段不受影响）。'
-  return '字幕和弹幕都随时能换（上面列表里切换）—— 换了之后点这个按钮重新检测生效。'
-})
 const canSlice = computed(
   () => sliceRows.value.length > 0
     && sliceRows.value.every((r) => Number(r.end) > Number(r.start)),
@@ -601,6 +770,8 @@ function chipText(key) {
   if (runningStage.value === key) return `${jobPct.value}%`
   // 转写这一格看的是**字幕文件**：音频只是转写的副产品，光有 wav 不算转写完。
   if (key === 'transcribe') return hasTranscript.value ? '✓' : '待开始'
+  if (key === 'detect') return hasFile('事件') ? '✓' : '待开始'
+  if (key === 'cut') return hasFile('片段顺序') ? '✓' : '待开始'
   return hasFile('事件') ? '✓' : '待开始'
 }
 function chipClass(key) {
@@ -612,12 +783,27 @@ function chipClass(key) {
 
 async function load() {
   loadError.value = ''
+  if (!status.value) statusLoading.value = true
   try {
-    const st = await projectData.status(pid.value)
+    const st = await projectData.status(pid.value, '读取项目状态')
+    notFound.value = false
+    statusLoading.value = false
     status.value = st
     inputName.value = st.input_file || ''
     src.value = mediaUrl(pid.value, st.input_file)
   } catch (e) {
+    // ⚠️ **404 = 项目不存在/无权访问**：走整页空态（回首页 / 重新导入），别再接着读配置/字幕 ——
+    // 那些请求也只会各 404 一次。其余错误仍走错误横幅 + 重试（读失败不许伪装成空态）。
+    if (e?.status === 404) {
+      notFound.value = true
+      status.value = null
+      segments.value = []
+      src.value = ''
+      inputName.value = ''
+      statusLoading.value = false
+      return
+    }
+    statusLoading.value = false
     loadError.value = '项目状态读取失败：' + (e?.message || '')
   }
   // ASR 模式：读 **merged** 配置（项目 `yekitrim.toml` 覆盖全局）—— 这页要显示的是
@@ -869,11 +1055,10 @@ async function saveAsrMode() {
   }
 }
 
-/** 「跑 ASR」：**只转写**（不接检测）。
+/** 「只识别」：**只转写**（不接检测）—— 换模式再出一份字幕的入口。
  *
- *  主按钮那条链是"没字幕时转写 → 检测"，这个按钮是**换模式再出一份**的入口：
  *  跑完产物登记进字幕列表并置为生效值（服务端 `assets::bind_asr_artifact`），
- *  要不要换成它、要不要接着检测，都由用户在上面决定。
+ *  要不要接着检测由用户决定（主按钮 / 只找亮点）。
  *  同一模式跑过就不再跑（`canRunAsr`，服务端对 `stage=transcribe` 也按模式 409 兜底）。 */
 async function runAsr() {
   if (busy.value) { toast('该项目正在' + busyText.value + '，请稍候'); return }
@@ -882,16 +1067,72 @@ async function runAsr() {
     return
   }
   chainDetect.value = false
+  completed.value = null
   await startStage('transcribe')
 }
 
-/** 预处理主按钮：没转写就先转写（完成后自动接检测），已有转写就（重新）检测。
+/** 「只找亮点」：只跑事件检测（不剪片段）—— 有字幕就能随时重跑，已剪片段不受影响。 */
+async function runDetectOnly() {
+  if (busy.value) { toast('该项目正在' + busyText.value + '，请稍候'); return }
+  if (!hasTranscript.value) { toast('还没有字幕，先「只识别」或选一份字幕'); return }
+  chainDetect.value = false
+  completed.value = null
+  await startStage('detect')
+}
+
+/** 处理选项里的「重新找亮点」：有已剪片段时不重跑检测（会让 events 与片段错位），
+ *  直接去挑片段页补切；没有片段才重跑检测（`startStage` 自带二次确认）。 */
+function onRedetect() {
+  if (hasClips.value) {
+    toast('已有剪好的片段：去「挑片段」页重新检测或补切')
+    router.push(slicesPath.value)
+    return
+  }
+  runDetectOnly()
+}
+
+/** 主按钮：已有亮点 → 直接去切片页；否则按「自动剪出」开关走一键处理或两段式。 */
+async function onPrimary() {
+  if (!hasVideo.value) return
+  if (hasEvents.value) { goSlices(); return }
+  if (autoCut.value) await runAll()
+  else await runPrepare()
+}
+
+function goSlices() {
+  router.push(slicesPath.value)
+}
+
+/** 一键处理：**一个任务**跑完 识别 → 找亮点 → 剪出片段（后端 `stage=process` 会跳过已完成阶段）。
+ *  已有亮点/片段时二次确认 —— 文案（`redetectWarning`）写明片段不会被删。 */
+async function runAll() {
+  if (busy.value) { toast('该项目正在' + busyText.value + '，请稍候'); return }
+  if (hasClips.value) {
+    toast('已有剪好的片段：去「挑片段」页重新检测或补切')
+    router.push(slicesPath.value)
+    return
+  }
+  if (hasEvents.value) {
+    const ok = await confirmDialog(redetectWarning(), { title: '覆盖上一次的处理结果？', danger: true })
+    if (!ok) return
+  }
+  completed.value = null
+  try {
+    const r = await projectData.pipeline(pid.value, { stage: 'process', resume: 'auto' })
+    attachJob(r.id, 'stage_process', !!r.queued)
+    if (r.queued) toast(QUEUED_HINT)
+  } catch (e) {
+    toast(e.message, 'err')
+  }
+}
+
+/** 两段式（「自动剪出片段」关掉时）：没字幕先转写（完成后自动接检测），已有字幕就只检测。
  *
  *  ⚠️ 这里**不会再起第二次转写**：只要工程里已经有转写（ASR 产物或选中的外部字幕），
- *  这个按钮永远只做（重新）检测。想再出一份 ASR 产物走上面那个「跑 ASR」
- *  （每种模式各一次），想换字幕走字幕列表里的「切换」。 */
+ *  这个按钮只做（重新）检测。想再出一份 ASR 产物走「只识别」（每种模式各一次）。 */
 async function runPrepare() {
   if (busy.value) { toast('该项目正在' + busyText.value + '，请稍候'); return }
+  completed.value = null
   if (!hasTranscript.value) {
     chainDetect.value = true
     await startStage('transcribe')
@@ -918,8 +1159,15 @@ async function startStage(stage) {
   }
 }
 
+/** 阶段英文名 → 行内中文（服务端 `stage_started` 给的是 `AudioExtractor` / `Transcriber` / …）。 */
+function stageText(name) {
+  const map = { AudioExtractor: '提取音频', Transcriber: '转写', EventDetector: '检测', Cutter: '剪出片段' }
+  return map[name] || '处理'
+}
+
 function attachJob(id, kind, queued = false) {
   Object.assign(job, { id, kind, status: queued ? 'queued' : 'running', current: 0, total: 0, message: queued ? '排队中' : '已启动' })
+  stageNow.value = ''
   // `watchJob()` 返回 `{ close() }` 对象（不是函数）：当函数调会抛错，
   // 且下面的订阅就不会执行 → 任务永远停在「运行中」。
   jobClose?.close?.()
@@ -927,7 +1175,10 @@ function attachJob(id, kind, queued = false) {
     onEvent(e) {
       if (e.type === 'progress') { job.current = e.current; job.total = e.total }
       if (e.type === 'log') job.message = e.message
-      if (e.type === 'stage_started') job.message = e.stage + ' 运行中'
+      if (e.type === 'stage_started') {
+        stageNow.value = e.stage || ''
+        job.message = stageText(e.stage) + ' 运行中'
+      }
     },
     onSummary(s) {
       job.status = s.status
@@ -939,15 +1190,20 @@ function attachJob(id, kind, queued = false) {
     onDone: async (s) => {
       job.status = s.status
       jobClose = null
+      stageNow.value = ''
       reloadJobs() // 别等 3 秒轮询：作用域门控要立刻松开
       if (s.status === 'succeeded') toast('任务完成')
+      else if (s.status === 'cancelled') toast('任务已停止')
       else toast('任务失败：' + (s.error || s.message || '未知错误'), 'err')
       await load()
       // 转写成功 → 接着起检测任务（转写失败就别往下走，留着让用户处理）
       const chained = chainDetect.value && kind === 'stage_transcribe'
-      // "素材已切换"那句提示只在**检测真的跑了**之后才过期：单独跑一次 ASR
-      // （「跑 ASR」按钮，不接检测）没有消费用户切过的弹幕/字幕，提示要留着。
+      // "素材已切换"那句提示只在**检测真的跑了**之后才过期：单独跑一次「只识别」
+      // （不接检测）没有消费用户切过的弹幕/字幕，提示要留着。
       if (s.status === 'succeeded' && (chained || kind === 'stage_detect')) assetDirty.value = false
+      // 成功 → 取结果数字给「下一步」条；分步跑（只识别/只找亮点）不报片段数
+      if (s.status === 'succeeded' && kind === 'stage_process') await captureResult(true)
+      else if (s.status === 'succeeded' && !chained && kind === 'stage_detect') await captureResult(false)
       if (chained) {
         chainDetect.value = false
         if (s.status === 'succeeded') startStage('detect')
@@ -955,6 +1211,57 @@ function attachJob(id, kind, queued = false) {
     }
   })
   toast('已启动')
+}
+
+/** 停任务：走 `/api/jobs/:id/cancel`（服务端在阶段边界生效）。 */
+async function cancelJob() {
+  if (!job.id || canceling.value) return
+  canceling.value = true
+  try {
+    await jobsApi.cancel(job.id)
+    toast('已请求停止')
+  } catch (e) {
+    toast(e.message || '停止失败', 'err')
+  } finally {
+    canceling.value = false
+  }
+}
+
+/** 取结果数字（亮点 / 片段）。读不到就保持 `null` —— 别把"读失败"报成「已找到 0 个」。 */
+async function captureResult(cut) {
+  try {
+    const [ev, cl] = await Promise.all([
+      projectData.events(pid.value, '读取事件列表').catch((e) => {
+        if (e?.status === 404) return { events: [] }
+        throw e
+      }),
+      projectData.clips(pid.value, '读取切片列表').catch((e) => {
+        if (e?.status === 404) return []
+        throw e
+      })
+    ])
+    const list = (ev && ev.events) || []
+    completed.value = {
+      events: list.length,
+      clips: (cl || []).length,
+      firstLabel: String(list[0]?.label || ''),
+      cut: !!cut
+    }
+  } catch {
+    completed.value = null
+  }
+}
+
+/** `/api/health.llm`：**读 `stores/health.js` 的唯一缓存**（首页 checklist 同源），别各拉一次。
+ *  失败时回落 null（不显示横幅 = 不误报"没配"），不挡页面。 */
+async function loadHealth() {
+  const h = healthPayload() || await refreshHealth()
+  llmMissing.value = h?.llm === false
+}
+
+/** 404 空态：去首页的「添加录像」重新导入（同一个目录会绑回同一个工程）。 */
+function goImport() {
+  router.push({ path: '/workbench', query: { add: '1' } })
 }
 
 function openAdd() {
@@ -1027,8 +1334,23 @@ async function doCreate({ start: s, end: e, ranges, label: lb, summary: sm, type
   }
 }
 
+// 这个项目的管线任务在**别处**跑完（或本页重新挂载后才结束）时，状态 chips / 素材也要跟着刷新。
+// 本页自己发起的任务由 `watchJob` 的 onDone 处理（这里按 id 跳过，免得同一次结束刷两遍）。
+// ⚠️ 必须用返回的退订函数在 onUnmounted 里退订：`router-view :key=pid` 会让本视图反复挂载，
+// 不退订就会攒出一串陈旧回调 —— 任务一结束它们同时各打一整套 project-data 请求（见 useJobs.js）。
+const offJobDone = onJobDone((j) => {
+  if (!j || String(j.project ?? '') !== String(pid.value)) return
+  if (j.id && j.id === job.id) return
+  if (jobRunning.value) return
+  if (!/^(stage_|pipeline$|cut_)/.test(String(j.kind || ''))) return
+  load()
+})
+
 function onKey(e) {
   if (isEditableKeyEvent(e)) return
+  // 按钮 / 链接 / `<summary>` 自己的 Space 激活别被播放快捷键抢走（折叠区要能键盘展开）
+  const tag = String(e.target?.tagName || '').toUpperCase()
+  if (tag === 'BUTTON' || tag === 'A' || tag === 'SUMMARY') return
   if (e.code === 'Space') {
     e.preventDefault()
     togglePlay()
@@ -1037,10 +1359,12 @@ function onKey(e) {
 
 onMounted(() => {
   load()
+  loadHealth()
   window.addEventListener('keydown', onKey)
 })
 onUnmounted(() => {
   jobClose?.close?.()
+  offJobDone()
   clearTimeout(saveTimer)
   window.removeEventListener('keydown', onKey)
 })
@@ -1094,4 +1418,25 @@ onUnmounted(() => {
 .asr-hint { margin:5px 0 9px; }
 .hint { font-size:12px; color:var(--ink-dim); }
 .job-box { padding:10px; border:1px dashed var(--line); border-radius:var(--r-sm); background:var(--bg-soft); }
+/* ---- 简化后的披露区 / 横幅（右列只剩一块卡：主按钮 + 两个 <details>） ---- */
+/* 「处理选项」「手动切片」：默认收起；观感与设置页 `.form-adv` 同一套。 */
+.adv-blk { margin-top:12px; border-top:1px dashed var(--line-soft); padding-top:6px; }
+.adv-blk > summary { cursor:pointer; font-weight:700; font-size:13px; color:var(--ink-dim);
+  display:flex; align-items:center; gap:8px; padding:4px 0; list-style:none; }
+.adv-blk > summary::-webkit-details-marker { display:none; }
+.adv-blk > summary::before { content:"▸"; color:var(--ink-faint); flex:none; }
+.adv-blk[open] > summary::before { content:"▾"; }
+.adv-blk > summary:hover { color:var(--ink); }
+/* 「自动剪出片段」开关行 */
+.opt-row { display:flex; align-items:center; gap:8px; font-size:12.5px; color:var(--ink); cursor:pointer; }
+.opt-row input[type="checkbox"] { width:auto; flex:none; margin:0; }
+.opt-row.dis { opacity:.55; cursor:not-allowed; }
+/* 「重新处理」：占满一行的危险按钮（不是主 CTA） */
+.block-btn { width:100%; justify-content:center; }
+/* LLM 未配置：整页一行琥珀色提示，不拦任何操作 */
+.llm-banner { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:12px;
+  padding:8px 12px; border-radius:var(--r-sm); background:var(--amber-soft); color:var(--amber-deep);
+  border:1px solid var(--amber); font-size:12.5px; }
+/* 完成后的单条提示（只找到一条事件时） */
+.completed-hint { margin:-6px 0 10px; }
 </style>

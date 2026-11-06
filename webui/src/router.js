@@ -66,7 +66,7 @@ const routes = [
     : '/workbench' },
   { path: '/polish', redirect: '/workbench' },
   { path: '/jobs', redirect: '/workbench' },
-  { path: '/models', redirect: '/settings/account' },
+  { path: '/models', redirect: '/workbench' },
   { path: '/:pathMatch(.*)*', redirect: '/workbench' }
 ]
 

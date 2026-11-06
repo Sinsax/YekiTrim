@@ -22,6 +22,13 @@ Vue3 工作台的全部前端：壳 + 面包屑、hash 路由、首页 `#/workbe
 
 ## 边界
 
+**简化 / 披露**
+- 一级文案在 `utils.js::STEPS`（`name` 白话 / `tech` 技术名）与 `api/jobs.js::KIND_ZH`；别处不抄第二份。
+- 每个能力入口带 `data-cap`，清单 `docs/webui-capabilities.json`；高级项用 `useDisclosure`/`<details>` 默认折叠，
+  **隐藏 ≠ 删除**。门禁：`node webui/scripts/check-simplify.mjs --phase=P1`。
+- `stores/health.js` 是 `/api/health` 的唯一缓存（`local_no_auth` 仍只认那个字段）；首页 checklist 与出片
+  `dhampirStatus` 都读它，别各拉一次。
+
 **主题**
 - `stores/theme.js` 是唯一写 `<html data-theme>` 的地方，localStorage `yekitrim.ui.theme`
   （缺省 = 跟随系统）。⚠ **模块初始化时同步写 DOM**，`main.js` 在任何 import **之前**引入

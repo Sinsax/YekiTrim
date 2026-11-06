@@ -2,12 +2,11 @@
   <div class="wb-root">
     <div class="page-head">
       <div>
-        <h1>工作台</h1>
-        <div class="sub">把录像变成项目</div>
+        <h1>首页</h1>
+        <div class="sub">把一段录像变成可发布的片段</div>
       </div>
       <div class="actions">
-        <!-- 运行状况有问题时只在这里放一枚短提示（点开跳到卡片并展开）——
-             别再把整张 300px 的卡片 order:-1 冒到页标题之上（首屏主功能会被挤出屏幕）。 -->
+        <!-- 运行状况有问题时放一枚短提示（点开跳到卡片并展开）；常驻状态在页尾的运行状况行。 -->
         <button v-if="doctorProblem" class="mini-btn doctor-chip" :title="doctorIssues.join('；')"
                 @click="openDoctor">
           <Icon name="alert" :size="13" /> 运行状况：{{ doctorIssues.length }} 项待处理
@@ -18,31 +17,117 @@
 
     <div v-if="wb.error" class="error-banner"><Icon name="alert" :size="15" /> {{ wb.error }}</div>
 
-    <!-- ═════ 切片总览：全部项目的切片卡片预览（进行中 / 已完成导出 两个列表） ═════ -->
-    <HomeClipsOverview />
+    <!-- 首页顺序（P1 简化）：开始使用检查 → 继续上次 → 添加录像 → 最近片段 → 素材库 → 运行状况。
+         功能一个都没删：检查项折叠、添加向导折叠、素材库折叠、运行状况沉底。 -->
 
-    <!-- ═════ 新增项目：先选来源，再走对应导入方式 ═════ -->
-    <div class="card card-blk mb-12">
-      <div class="row spread mb-8">
-        <b class="t m-0"><Icon name="plus" :size="15" /> 新增项目</b>
-        <span class="muted small">选一个来源，下面切换成对应的导入方式</span>
+    <!-- ═════ 开始使用：运行环境 / 字幕模型 / AI 模型（可选）/ 第一段录像 ═════ -->
+    <SetupChecklist
+      :health="health"
+      :doctor="doctor"
+      :models="models"
+      :project-count="(wb.projects || []).length"
+      :loading="checking"
+      @open-doctor="openDoctor"
+      @open-wizard="openWizard"
+      @go-llm="goLlm"
+      @refresh="recheck"
+    />
+
+    <!-- ═════ 继续上次项目：有 wb.last 就认它，否则用最新加入的那个 ═════ -->
+    <router-link
+      v-if="continueInfo"
+      class="card card-blk mb-12 continue-card"
+      data-cap="home.continue"
+      :to="`/p/${continueInfo.pid}/${continueInfo.step}`"
+    >
+      <span class="cc-icon"><Icon name="play" :size="15" /></span>
+      <span class="cc-body">
+        <b class="cc-title" :title="continueInfo.name">继续：{{ continueInfo.name }}</b>
+        <span class="muted small" :title="continueInfo.tech">下一步：{{ continueInfo.label }}</span>
+      </span>
+      <span class="btn btn-primary cc-go">继续 →</span>
+    </router-link>
+
+    <!-- ═════ 添加录像：主行动折叠成一颗按钮；没有项目时默认展开向导 ═════ -->
+    <div ref="addCard" class="card card-blk mb-12">
+      <div class="add-head">
+        <button
+          class="btn"
+          :class="{ 'btn-primary': !continueInfo && !showWizard }"
+          type="button"
+          data-cap="home.add-project"
+          :aria-expanded="showWizard ? 'true' : 'false'"
+          @click="toggleWizard"
+        >＋ 添加录像</button>
+        <span class="flex-1"></span>
+        <span v-if="showWizard" class="muted small">选一个来源，下面切换成对应的导入方式</span>
       </div>
 
-      <div class="wiz-srcs">
-        <div
-          v-for="s in sources"
-          :key="s.key"
-          class="wiz-src"
-          :class="{ on: source === s.key, off: s.disabled }"
-          :title="s.desc"
-          @click="!s.disabled && (source = s.key)"
-        >
-          <Icon :name="s.icon" :size="15" />
-          <b>{{ s.title }}</b>
-          <span v-if="s.badge" class="chip n">{{ s.badge }}</span>
+      <div v-show="showWizard" class="wiz-body">
+        <!-- 三个来源卡都在；不可用的**标出来但不禁用点击** —— 点开才能看到原因/设置入口。
+             ⚠️ 锚点必须是字面量（check-simplify 逐字计数），所以不用 v-for。 -->
+        <div class="wiz-srcs">
+          <div
+            v-if="isAdmin"
+            class="wiz-src"
+            data-cap="home.source-local"
+            :class="{ on: source === 'local', off: srcOf('local').disabled }"
+            :title="srcTitle('local')"
+            @click="pickSource('local')"
+          >
+            <Icon name="folder" :size="15" />
+            <b>服务器文件</b>
+            <span v-if="srcOf('local').disabled" class="chip n">不可用</span>
+          </div>
+          <div
+            class="wiz-src"
+            data-cap="home.source-recorder"
+            :class="{ on: source === 'recorder', off: srcOf('recorder').disabled }"
+            :title="srcTitle('recorder')"
+            @click="pickSource('recorder')"
+          >
+            <Icon name="download" :size="15" />
+            <b>录播姬录制</b>
+            <span v-if="srcOf('recorder').disabled" class="chip n">不可用</span>
+          </div>
+          <div
+            class="wiz-src"
+            data-cap="home.source-bilibili"
+            :class="{ on: source === 'bilibili', off: srcOf('bilibili').disabled }"
+            :title="srcTitle('bilibili')"
+            @click="pickSource('bilibili')"
+          >
+            <Icon name="film" :size="15" />
+            <b>B 站链接</b>
+            <span v-if="srcOf('bilibili').disabled" class="chip n">不可用</span>
+          </div>
         </div>
-      </div>
 
+        <!-- 三条路都不可用时给一块说明（来源卡还留在上面，点开仍能看到各自的原因/设置）。 -->
+        <AppEmptyState
+          v-if="allSourcesUnavailable && !sourceTouched && isAdmin"
+          class="mt-12"
+          icon="alert"
+          title="暂时不能添加录像"
+          description="下载器与录播姬都未就绪。"
+          primary="去设置"
+          primary-to="/settings/integrations"
+          secondary="重新检查"
+          @secondary="recheck"
+        />
+        <AppEmptyState
+          v-else-if="allSourcesUnavailable && !sourceTouched"
+          class="mt-12"
+          icon="alert"
+          title="暂时不能添加录像"
+          description="下载器与录播姬都未就绪；请联系管理员。"
+          primary="重新检查"
+          @primary="recheck"
+          secondary="运行状况"
+          @secondary="openDoctor"
+        />
+
+        <template v-if="!allSourcesUnavailable || sourceTouched">
       <!-- ① 服务器文件（仅管理员可见；非管理员连来源按钮都没有）
            两种选法**都要**（用户口径："能输入选择 + 弹出文件浏览器选择"，是**增加**不是替代）：
              · **输入选择** = 下面这份内联 ServerDirPicker（可直接填/粘贴服务器绝对路径，
@@ -252,7 +337,7 @@
                 B 站下载需要 <span class="mono">yt-dlp</span>（{{ dl.license || 'Unlicense' }}，
                 {{ dl.pinned_version ? '版本 ' + dl.pinned_version : '内置' }}）。
                 <template v-if="isAdmin">点右边按钮下载并校验（约 17 MB，只下一次）。</template>
-                <template v-else>请让管理员在「设置 → 系统」里安装</template>
+                <template v-else>请让管理员在「设置 → 采集与下载」里安装</template>
               </div>
               <div v-if="dlError" class="error-banner mt-6">{{ dlError }}</div>
             </div>
@@ -372,7 +457,12 @@
           </p>
         </template>
       </div>
+        </template>
+      </div>
     </div>
+
+    <!-- ═════ 切片总览：全部项目的切片卡片（一面墙 + 筛选/搜索；空时不占地方） ═════ -->
+    <HomeClipsOverview />
 
     <!-- 素材库 = **视频 / 贴纸 / 字体 三合一**，**文件夹管理器**布局（左侧选类型、右侧网格）。
          用户 2026-10-09：「素材库ui改成文件夹管理器类似的感觉，左侧选择类型视频，贴纸，字体」
@@ -390,7 +480,8 @@
          ⚠️ **默认折叠成一行**：以前"有问题就 order:-1 冒到页标题之上"，一个可选模型
          没下载就让 300px 的卡片占满首屏、主功能被压到第二屏（用户截图实测）。 -->
     <div id="doctor-card" ref="doctorCard" class="card card-blk doctor-card">
-      <button class="doctor-head" :aria-expanded="doctorOpen ? 'true' : 'false'" @click="doctorOpen = !doctorOpen">
+      <button class="doctor-head" data-cap="home.doctor"
+              :aria-expanded="doctorOpen ? 'true' : 'false'" @click="doctorOpen = !doctorOpen">
         <Icon name="cpu" :size="15" />
         <b class="t" style="margin:0">运行状况</b>
         <span v-if="doctorIssues.length" class="chip a">{{ doctorIssues.length }} 项待处理</span>
@@ -417,16 +508,18 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import Icon from '../components/Icon.vue'
 import ServerDirPicker, { VIDEO_EXTS } from '../components/ServerDirPicker.vue'
 import AppModal from '../components/AppModal.vue'
+import AppEmptyState from '../components/AppEmptyState.vue'
 import ServerFileBrowser from '../components/ServerFileBrowser.vue'
+import SetupChecklist from '../components/SetupChecklist.vue'
 import MediaLibrary from '../components/MediaLibrary.vue'
 import HomeClipsOverview from '../components/HomeClipsOverview.vue'
 import ModelList from '../components/ModelList.vue'
 import { authState } from '../stores/auth'
-import { localNoAuthKnown } from '../stores/health'
+import { localNoAuthKnown, healthPayload, refreshHealth } from '../stores/health'
 import { createLocalProject } from '../stores/project'
 
 /** 工程标志文件（与后端 `path::PROJECT_CONFIG_FILE` 同名） */
@@ -443,51 +536,103 @@ import { toast } from '../stores/toast'
 import { confirmDialog } from '../stores/dialog'
 import { ingestApi } from '../api/ingest'
 import { fmtBytes, fmtTime, ingestState, loadRecords, setReady } from '../stores/ingest'
-import { fmtClock, fmtCount } from '../utils'
-import { loadProjects, wb } from '../stores/workbench'
+import { fmtClock, fmtCount, nextStep, STEPS } from '../utils'
+import {
+  cacheOf,
+  loadProjects,
+  polishedCountOf,
+  sortProjectsNewestFirst,
+  uncutEventsOf,
+  wb
+} from '../stores/workbench'
 import { api } from '../api/client'
 
 const isAdmin = computed(() => authState.user?.role === 'admin')
+const router = useRouter()
+const route = useRoute()
 
-// 来源选择：不同来源 → 不同导入方式（本地浏览 / 录播姬待处理 / B站链接）
+// ---- 继续上次项目 ----
+//
+// 优先 `wb.last`（上次打开过的项目），认不出来（已移除 / 本地存储残留）就用最新加入的。
+// 详情只在校验通过（`cache.status` 非空）时才给 `nextStep`，否则按项目 stage 粗判。
+const continueProject = computed(() => {
+  const list = wb.projects || []
+  if (!list.length) return null
+  const last = wb.last?.pid
+    ? list.find((p) => String(p.id) === String(wb.last.pid))
+    : null
+  return last || sortProjectsNewestFirst(list)[0] || null
+})
+const continueInfo = computed(() => {
+  const p = continueProject.value
+  if (!p) return null
+  const c = cacheOf(p.id)
+  const detail = c.status
+    ? { clips: c.clips, uncutEvents: uncutEventsOf(p.id), polishedCount: polishedCountOf(p.id) }
+    : null
+  const n = nextStep(p, detail)
+  const tech = STEPS.find((x) => x.key === n.step)?.tech || ''
+  return { pid: p.id, name: p.name || ('项目 #' + p.id), step: n.step, label: n.label, tech }
+})
+
+// ---- 添加录像向导：有项目时折叠成「＋ 添加录像」，没有项目时默认展开 ----
+//
+// `projectsLoaded` 用来避免首帧闪一下展开态：刚 setup 时 wb.projects 还是空的，
+// 直接按"空 = 展开"会让已有项目的用户看到向导先展开再收起。
+const addCard = ref(null)
+const projectsLoaded = ref(false)
+const wizardOpen = ref(false)
+const wizardTouched = ref(false)
+const showWizard = computed(() => {
+  if (wizardTouched.value) return wizardOpen.value
+  return projectsLoaded.value && (wb.projects || []).length === 0
+})
+function toggleWizard() {
+  wizardOpen.value = !showWizard.value
+  wizardTouched.value = true
+}
+function openWizard() {
+  wizardTouched.value = true
+  wizardOpen.value = true
+  requestAnimationFrame(() => addCard.value?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }))
+}
+
+// ---- /api/health（首页 checklist 与来源默认都读它；缓存只在 stores/health.js）----
+const health = ref(null)
+const checking = ref(true)
+async function loadHealth(force = false) {
+  // 首次挂载优先用 store 里已有的载荷（路由守卫刚问过 `/api/health`），避免白打一次；
+  // 从设置页回来 / 用户点刷新 / 「重新检查」走 force，保证拿到最新状态。
+  const h = force ? await refreshHealth() : (healthPayload() || await refreshHealth())
+  if (!h) return
+  health.value = h
+  // 采集就绪位顺手同步（原先在 onMounted 里直接读 /api/health，现在统一走 store）
+  setReady(h.ingest_ready !== false)
+  // 下载器就绪位顺便从 health 拿一次（省一个请求），细节（版本/许可）由 loadDownloader 补
+  if (h.downloader) {
+    Object.assign(dl, {
+      ready: h.downloader.ready === true,
+      verified: h.downloader.verified === true,
+      kind: h.downloader.kind || ''
+    })
+  }
+}
+/** checklist 的「重新检查」：置 loading（它会把 checklist 收成一行"正在检查"）。 */
+async function recheck() {
+  checking.value = true
+  await Promise.allSettled([loadDoctor(), loadHealth(true)])
+  checking.value = false
+}
+function goLlm() {
+  // 设置页是 admin-only；普通用户点过来只给一句解释，别让路由守卫把它弹回首页。
+  if (isAdmin.value) router.push('/settings/llm')
+  else toast('AI 模型由管理员配置')
+}
+
+// 来源选择：不同来源 → 不同导入方式（本地浏览 / 录播姬待处理 / B站链接）。
+// 状态声明放在 `dl` 之后（默认来源要等下载器/录播姬的可用位回来才能定）。
 // 「服务器文件」是 admin-only 来源（`/api/fs/list`、`kind:"local"` 都对非管理员 403），
 // 所以非管理员**整条不显示** —— 不给一个点不动、只写着"仅管理员"的入口。
-/**
- * 默认来源。本地模式（`--local-no-auth` 单机形态）默认落在**服务器文件** ——
- * 那才是"把盘上已有的录像变成项目"的主路径；录播姬是给接了采集的人用的。
- * ⚠️ `localNoAuthKnown()` 能同步拿到，是因为路由守卫在**任何视图挂载之前**已经 await 过它
- * （见 router.js）—— 否则这里只能等异步，会先闪一下录播姬再跳过来。
- */
-const source = ref(localNoAuthKnown() ? 'local' : 'recorder')
-const sources = computed(() => {
-  const list = []
-  if (isAdmin.value) {
-    list.push({ key: 'local', title: '服务器文件', desc: '浏览服务器上已有的录像，直接建项目', icon: 'folder', badge: '' })
-  }
-  list.push(
-    {
-      key: 'recorder',
-      title: '录播姬录制',
-      desc: '录完自动入库；历史/漏推送可扫描导入',
-      icon: 'download',
-      badge: ''
-    },
-    {
-      key: 'bilibili',
-      title: 'B 站链接',
-      desc: '粘贴视频地址，下载完成后自动建项目（弹幕一并抓取）',
-      icon: 'link',
-      badge: ''
-    }
-  )
-  return list
-})
-// 选中的来源必须始终是"看得见且可用"的那一个（角色变化 / 列表变化时自动落到第一个可用的）
-watch(sources, (list) => {
-  if (!list.some((s) => s.key === source.value && !s.disabled)) {
-    source.value = (list.find((s) => !s.disabled) || list[0])?.key || 'recorder'
-  }
-}, { immediate: true })
 
 // ---- ② 我的直播间（录播姬）----
 const rooms = ref([])
@@ -810,6 +955,70 @@ const dl = reactive({
 const dlBusy = ref(false)
 const dlError = ref('')
 
+// ---- 来源选择（默认管理员 → 服务器文件；否则下载器就绪 → B站；再否则录播姬）----
+//
+// `sourceTouched` = 用户手动点过来源卡。点过之后**默认策略不再抢方向盘** ——
+// 即使之后 health/downloader 回来把默认值改了，也留在用户选的那一项。
+const SOURCE_META = {
+  local: { title: '服务器文件', desc: '浏览服务器上已有的录像，直接建项目', icon: 'folder' },
+  recorder: { title: '录播姬录制', desc: '录完自动入库；历史/漏推送可扫描导入', icon: 'download' },
+  bilibili: { title: 'B 站链接', desc: '粘贴视频地址，下载完成后自动建项目（弹幕一并抓取）', icon: 'link' }
+}
+const source = ref(isAdmin.value || localNoAuthKnown() ? 'local' : 'recorder')
+const sourceTouched = ref(false)
+const sourceCards = computed(() => {
+  const list = []
+  if (isAdmin.value) {
+    list.push({ key: 'local', ...SOURCE_META.local, disabled: false, reason: '' })
+  }
+  const recDown = roomsAvailable.value === false
+  list.push({
+    key: 'recorder',
+    ...SOURCE_META.recorder,
+    disabled: recDown,
+    reason: recDown ? '录播姬未接入：由管理员在「设置 → 采集与下载」配置' : ''
+  })
+  const biliDown = dl.ready === false
+  list.push({
+    key: 'bilibili',
+    ...SOURCE_META.bilibili,
+    disabled: biliDown,
+    reason: biliDown ? '下载器未就绪：选中后看安装指引，或由管理员在设置里配置' : ''
+  })
+  return list
+})
+function srcOf(key) {
+  return sourceCards.value.find((s) => s.key === key)
+    || { key, ...(SOURCE_META[key] || {}), disabled: false, reason: '' }
+}
+/** 悬停 title：卡片说明 + 不可用原因（行内只留「不可用」两个字）。 */
+function srcTitle(key) {
+  const s = srcOf(key)
+  return [s.desc, s.reason].filter(Boolean).join('\n')
+}
+const defaultSourceKey = computed(() => {
+  if (isAdmin.value || localNoAuthKnown()) return 'local'
+  if (dl.ready === true) return 'bilibili'
+  return 'recorder'
+})
+/** 三条来源都不可用（非 admin 时 local 卡不存在）：给一块说明，别让用户对着空向导。 */
+const allSourcesUnavailable = computed(() => {
+  const list = sourceCards.value
+  return list.length > 0 && list.every((s) => s.disabled)
+})
+// 默认来源只在用户没手动点过时生效；`sourceCards` 变化（角色/可用位）时也重新对齐。
+watch([defaultSourceKey, () => sourceCards.value.map((s) => s.key).join(',')], () => {
+  if (sourceTouched.value) return
+  const list = sourceCards.value
+  const wanted = defaultSourceKey.value
+  source.value = list.some((s) => s.key === wanted) ? wanted : (list[0]?.key || 'recorder')
+}, { immediate: true })
+function pickSource(key) {
+  // 不可用也允许点：下面那块 gate 会显示原因/设置入口 —— 这比"点不动"更有用。
+  sourceTouched.value = true
+  source.value = key
+}
+
 const biliUrl = ref('')
 const biliBusy = ref(false)
 const biliError = ref('')
@@ -927,6 +1136,8 @@ async function scanNow() {
 
 async function refresh() {
   await loadProjects()
+  // 页头「刷新」= 项目 + 运行状况 + 环境检查一起重来（用户点它就是"有什么不对"）
+  await Promise.allSettled([loadDoctor(), loadHealth(true)])
 }
 
 /**
@@ -982,14 +1193,21 @@ async function loadDoctor() {
 }
 
 onMounted(async () => {
+  // PrepareView 的 404「重新导入」会带 `?add=1` 回首页：直接展开添加录像向导，
+  // 并把参数清掉（否则刷新/后退还会再展开一次）。
+  if (String(route.query.add || '') === '1') {
+    openWizard()
+    const q = { ...route.query }
+    delete q.add
+    router.replace({ path: route.path, query: q, hash: route.hash }).catch(() => {})
+  }
   await loadProjects()
-  loadDoctor()
-  try {
-    const h = await api('/api/health')
-    setReady(h?.ingest_ready !== false)
-    // 下载器就绪位顺便从 health 拿一次（省一个请求），再单独查一次细节（版本/许可）
-    if (h?.downloader) Object.assign(dl, { ready: h.downloader.ready === true, verified: h.downloader.verified === true, kind: h.downloader.kind || '' })
-  } catch {} // /api/health 是高频成功路径，失败由 api() 记日志即可（不挡首屏）
+  // 项目列表回来后才知道"要不要默认展开添加向导"
+  projectsLoaded.value = true
+  // doctor + health 一起等：checklist 首帧先显示「正在检查环境…」，别先报缺项再消失。
+  // health 强制重拉：从设置页回来时组件会整个重挂，只有这里能保证「回首页就重查」。
+  await Promise.allSettled([loadDoctor(), loadHealth()])
+  checking.value = false
   await loadRooms()
   await loadDownloader()
   // 管理员顺路查一次存放位置是否已配置（config 是 admin-only；失败不拦，后端兜底）
@@ -1001,10 +1219,14 @@ onMounted(async () => {
   }
 })
 
-// 从设置页回来要重查（组件被 keep-alive / 复用时 onMounted 不会重跑）
-const route = useRoute()
-watch(() => route.fullPath, (to, from) => {
-  if (isAdmin.value && to !== from && String(to).startsWith('/workbench')) {
+// 从设置页回来要重查（组件被 keep-alive / 复用时 onMounted 不会重跑）。
+// 看 name 而不是 fullPath：清 `?add=1` 只改 query，不该触发整轮检查。
+watch(() => route.name, (to, from) => {
+  if (to !== 'workbench' || to === from) return
+  // 设置页可能刚改过模型 / 下载器 / LLM：回首页时静默重查 doctor + health（不置 loading）
+  loadDoctor()
+  loadHealth(true)
+  if (isAdmin.value) {
     ingestApi.config()
       .then((d) => { rootConfigured.value = !!(d?.storage?.projects_root || '').trim() })
       .catch(() => {})
@@ -1023,8 +1245,30 @@ watch(() => route.fullPath, (to, from) => {
 .src-side { display:flex; flex-direction:column; gap:8px; }
 .src-side .btn { width:100%; justify-content:center; }
 .src-side .create-bar { display:block; }
-/* 首页根：flex 列只为让「运行状况」用 order 换位（正常沉底、有问题冒头） */
+/* 首页根：flex 列只为让各块保持顺序稳定 */
 .wb-root { display:flex; flex-direction:column; }
+/* 继续上次项目：整卡都是 router-link，点哪儿都进下一步 */
+.continue-card {
+  display:flex; align-items:center; gap:12px; text-decoration:none;
+  border-color:var(--main-glow); background:var(--card);
+}
+.continue-card:hover { border-color:var(--main); box-shadow:var(--shadow); }
+.cc-icon {
+  width:32px; height:32px; flex:none; border-radius:var(--r-full);
+  display:flex; align-items:center; justify-content:center;
+  background:var(--main-soft); color:var(--pink-text);
+}
+.cc-body { flex:1 1 auto; min-width:0; display:flex; flex-direction:column; gap:2px; }
+.cc-title {
+  display:block; font-size:13.5px; color:var(--main-deep);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.cc-go { flex:none; }
+/* 添加录像：头部按钮 + 折叠向导 */
+.add-head { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.wiz-body { margin-top:2px; }
+/* 不可用来源**仍可点**（点开看原因/设置入口）；全局 `.wiz-src.off` 是 not-allowed，这里盖掉 */
+.wiz-src.off { cursor:pointer; }
 /* 录播姬不可用：只留一行提示 + 「去设置」（因不可用而整块不渲染时，这一行是唯一入口） */
 .room-down { display:flex; align-items:center; gap:10px; padding:9px 12px; flex-wrap:wrap;
   border:1px dashed var(--line-soft); border-radius:8px; background:var(--bg-soft); font-size:13px; }

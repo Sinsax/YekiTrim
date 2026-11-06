@@ -1,11 +1,16 @@
 <template>
   <div>
-    <!-- 紧凑页头一行：chip + 片段标题（竖高省给预览；哪个片段由面包屑/片段卡说明） -->
+    <!-- 紧凑页头一行：chip + 片段标题（竖高省给预览；哪个片段由面包屑/片段卡说明）。
+         「列表」= 回到不带 :clip 的列表页（`?list=1` 让 doLoad 跳过自动选片，见下面 doLoad）。 -->
     <div class="page-head compact-head">
-      <span class="chip p">精修</span>
-      <h1 class="m-0">{{ dir ? title : '选择要精修的片段' }}</h1>
-      <span v-if="!dir" class="sub m-0">从片段库选一个片段开始精修</span>
-      <div class="actions"></div>
+      <span class="chip p">出片</span>
+      <h1 class="m-0">{{ dir ? title : '选择要出片的片段' }}</h1>
+      <span v-if="!dir" class="sub m-0">从片段库选一个片段开始出片</span>
+      <div class="actions">
+        <router-link v-if="clipName" class="mini-btn"
+                     :to="{ name: 'project-polish', params: { pid }, query: { list: '1' } }"
+                     title="回到片段列表（不自动打开片段）">列表</router-link>
+      </div>
     </div>
 
     <!-- 切片列表读不到：**必须与"真的没有切片"分开**（以前失败被 catch 成空数组，
@@ -142,9 +147,9 @@
                       约 84px，中文四个字（12px×4=48px）+ padding 22px + 边框 2px = 72px
                       ⇒ 放得下，不会溢出。 -->
               <div class="side-tabs">
-                <button class="mini-btn" :class="{ selected: sideTab === 'project' }" @click="sideTab = 'project'">项目设置</button>
-                <button class="mini-btn" :class="{ selected: sideTab === 'canvas' }" @click="sideTab = 'canvas'">画面尺寸</button>
-                <button class="mini-btn" :class="{ selected: sideTab === 'intro' }" @click="sideTab = 'intro'">片头片尾</button>
+                <button class="mini-btn" data-cap="polish.track-settings" :class="{ selected: sideTab === 'project' }" @click="sideTab = 'project'">项目设置</button>
+                <button class="mini-btn" data-cap="polish.canvas" :class="{ selected: sideTab === 'canvas' }" @click="sideTab = 'canvas'">画面尺寸</button>
+                <button class="mini-btn" data-cap="polish.intro" :class="{ selected: sideTab === 'intro' }" @click="sideTab = 'intro'">片头片尾</button>
               </div>
 
               <template v-if="sideTab === 'project'">
@@ -444,16 +449,19 @@
        要改全局默认音量走 `polish.toml` 的 `[sfx] volume`。**别再把这组捡回来。** -->
 
                 <div class="lane-sep"></div>
-            <!-- LLM 剪辑：重新分段 + 重新生成全部事件。
+            <!-- 智能剪辑（原「LLM 剪辑」）：重新分段 + 重新生成全部事件。
                  失败的分段会在时间轴上标色、可单独重做那一段。 -->
             <div class="row" style="gap:6px">
-              <button class="btn flex-1 jc-center" :disabled="scopeBusy"
+              <button class="btn flex-1 jc-center" data-cap="polish.llm" :disabled="scopeBusy"
                       :title="scopeBusy ? '该片段正在' + scopeBusyText : '重新分段 + 重做全部事件；失败的段会在时间轴上标色，可单独重做'"
-                      @click="runLlmJob"><Icon name="sparkles" :size="12" /> LLM 剪辑</button>
+                      @click="runLlmJob"><Icon name="sparkles" :size="12" /> 智能剪辑</button>
             </div>
 
-            <!-- 出片 -->
-            <button class="btn btn-primary mt-6 w-full jc-center" :disabled="scopeBusy" :title="scopeBusy ? '该片段正在' + scopeBusyText : ''" @click="openRenderModal"><Icon name="film" :size="13" /> 渲染导出</button>
+            <!-- 出片：底座未就绪时**不在这里置灰**（点开弹窗才看得到具体原因），
+                 弹窗里的主按钮「开始渲染」由 `renderBlocked` 挡住；悬停 title 先提示一句。 -->
+            <button class="btn btn-primary mt-6 w-full jc-center" data-cap="polish.export" :disabled="scopeBusy"
+                    :title="renderBlockReason"
+                    @click="openRenderModal"><Icon name="film" :size="13" /> 导出成片</button>
 
             <!-- 别人（别的视图/标签页）占用这个片段时也提示一句，别让按钮变灰得没头没脑 -->
             <div v-if="!jobRunning && scopeBusyJob" class="hint mt-8">
@@ -563,7 +571,7 @@
         <!-- 时间轴编辑器独占一整行（在预览/生成两栏之下）：横向空间全给刻度与泳道。
              标题/提示由 slot 交给组件，省掉独立卡片头；去静音只在这块，右侧不再重复。
              改动走「本地即时镜像 → 预览实时刷新 → 防抖落盘 → 防抖后处理」这条链。 -->
-        <div class="card tl-card mt-16">
+        <div class="card tl-card mt-16" data-cap="polish.timeline">
           <TimelineEditor ref="timelineRef" :key="'tl' + segKey" :dir="dir" :pid="pid" :current-time="currentTime" :playing="previewPlaying" :reprocess-busy="scopeBusy" :lane-open="openLane" :lanes-on="lanesOn" :src-fps="srcFps" @seek="seekTo" @toggle="togglePreviewPlay" @preview="onTimelinePreview" @saved="onEditSaved" @done="onEditDone" @reprocess="runProcessJob" @retried="onTimelineRetried" @redo-segment="redoSegment" @lane-open="onLaneOpen" @toggle-lane="toggleLane" :point-result="pointResult" @point-pick="onPointPickMode">
             <template #head>
               <b>时间轴编辑器</b>
@@ -605,10 +613,10 @@
           </TimelineEditor>
         </div>
 
-        <div class="mt-16"><CoverDesigner :key="'cv' + coverKey" :dir="dir" :pid="pid" @changed="refreshClipEntry(true)" /></div>
+        <div class="mt-16" data-cap="polish.cover"><CoverDesigner :key="'cv' + coverKey" :dir="dir" :pid="pid" @changed="refreshClipEntry(true)" /></div>
 
         <!-- 产物整行：成片 + 封面 + 输出目录 -->
-        <div class="card mt-16 artifact-bar">
+        <div class="card mt-16 artifact-bar" data-cap="polish.artifact">
           <div class="row spread">
             <div class="row">
               <b class="t m-0">产物</b>
@@ -628,14 +636,14 @@
           <div class="row mt-8">
             <img v-if="coverUrl && !coverFailed" :src="coverUrl" class="cover-thumb" alt="封面" @error="coverFailed = true">
             <video v-if="renderedUrl && !renderedFailed" :src="renderedUrl" controls playsinline class="video-bar" @error="renderedFailed = true"></video>
-            <div v-if="!(coverUrl && !coverFailed) && !(renderedUrl && !renderedFailed)" class="muted small">渲染导出或生成封面后在这里查看</div>
+            <div v-if="!(coverUrl && !coverFailed) && !(renderedUrl && !renderedFailed)" class="muted small">导出成片或生成封面后在这里查看</div>
           </div>
         </div>
       </template>
     </template>
 
     <!-- 渲染导出弹窗 -->
-    <AppModal :show="renderModal" title="渲染导出" @close="renderModal = false">
+    <AppModal :show="renderModal" title="导出成片" @close="renderModal = false">
       <label>输出文件（项目内相对路径，留空用默认）</label>
       <!-- ⚠️ 示例用**真实默认名**（`vtuber-clip.mp4`，见 `project/config.rs::default_output`）。
            以前写的是 `export.mp4` —— 那只是文档里的举例，实际产物叫 vtuber-clip，
@@ -662,7 +670,9 @@
         底座未就绪
       </p>
       <template #footer>
-        <button class="btn btn-primary" :disabled="scopeBusy" @click="doRender">开始渲染</button>
+        <button class="btn btn-primary" :disabled="scopeBusy || renderBlocked"
+                :title="renderBlockReason"
+                @click="doRender">开始渲染</button>
         <button class="btn" @click="renderModal = false">取消</button>
       </template>
     </AppModal>
@@ -784,7 +794,8 @@ const renderModal = ref(false)
 const renderOutput = ref('')
 // 出片通道这个选择项**已删除**（2026-10-01）：出片只剩底座一条腿，本仓那条 headless
 // Chrome 兜底腿整条删掉了，留一个只有一个选项的下拉只会让人以为"还有得选、只是我没选对"。
-/** 底座出片通道的就绪位（M3）：打开渲染弹窗时抓一次；`null` = 还没问到（不显示任何提示）。 */
+/** 底座出片通道的就绪位（M3）：片段一就绪就**预取**，打开导出弹窗时再刷新一次；
+ *  `null` = 还没问到（不显示任何提示、也不挡导出）。 */
 const dhampirStatus = ref(null)
 const dhampirProblems = computed(() =>
   (dhampirStatus.value?.problems ?? []).map((p) => String(p).split('（')[0]).join('；'),
@@ -805,15 +816,42 @@ const dhampirDetail = computed(() =>
     .filter(Boolean)
     .join('\n'),
 )
-/** 打开"渲染导出"时顺带问一次底座就绪位 —— 失败不影响出片流程（提示而已，`api()` 已记日志）。 */
+/** 这份就绪位是给哪个片段问的：换片段要清掉旧结论，别拿上一个片段的答案挡这个片段的导出。 */
+let dhampirStatusDir = ''
+
+/**
+ * 预取/刷新底座就绪位。
+ *
+ * 以前只在打开「导出成片」弹窗时问一次，于是**用户点开弹窗才发现不可用**；P1 把它提到
+ * "片段加载完就问"（主按钮也能据此提前置灰）。失败不影响出片流程 —— 只是不显示提示，
+ * 真正点「开始渲染」时该报的错照旧会报（`api()` 已记日志）。
+ *
+ * `force`：用户刚点开导出弹窗，重新问一次（底座可能刚装好/刚坏掉）。
+ */
+async function loadDhampirStatus(force = false) {
+  const target = dir.value
+  if (!target || !ready.value) return
+  if (!force && dhampirStatusDir === target) return
+  dhampirStatusDir = target
+  try {
+    dhampirStatus.value = await fetchDhampirStatus(pid.value, target)
+  } catch {
+    // 就绪位拿不到 = 不显示提示（点导出时该报的错照旧会报）
+  }
+}
+
+// `dir` / `ready` 一就绪就预取（不再等点开弹窗）；换片段时先清旧结论。
+watch([dir, ready], () => {
+  if (!dir.value || !ready.value) return
+  if (dhampirStatusDir === dir.value) return
+  dhampirStatus.value = null
+  loadDhampirStatus()
+})
+
+/** 打开"导出成片"时刷新一次底座就绪位（失败不影响出片流程）。 */
 async function openRenderModal() {
   renderModal.value = true
-  dhampirStatus.value = null
-  try {
-    dhampirStatus.value = await fetchDhampirStatus(pid.value, dir.value)
-  } catch {
-    // 就绪位拿不到 = 不显示提示（点渲染时该报的错照旧会报）
-  }
+  await loadDhampirStatus(true)
 }
 const timelineRef = ref(null)
 const previewRef = ref(null)
@@ -869,6 +907,14 @@ const scopeBusy = computed(() => !!scopeBusyJob.value || jobRunning.value)
 const scopeBusyText = computed(() => {
   if (jobRunning.value) return jobLabel(job.kind)
   return scopeBusyJob.value ? kindText(scopeBusyJob.value.kind) : ''
+})
+/** 底座**明确说不可用**时挡住导出（`null` = 还没问到 ⇒ 不挡；真点下去时该报的错照旧会报）。 */
+const renderBlocked = computed(() => !!(dhampirStatus.value && !dhampirStatus.value.ready))
+/** 导出按钮/弹窗主按钮被挡的原因（没被挡时为空串）—— 别让按钮灰得没头没脑。 */
+const renderBlockReason = computed(() => {
+  if (renderBlocked.value) return '底座未就绪：' + (dhampirProblems.value || '原因见导出弹窗里的提示')
+  if (scopeBusy.value) return '该片段正在' + scopeBusyText.value
+  return ''
 })
 const jobStatusText = computed(() => {
   if (!job.id) return '空闲' // 状态栏常驻：没任务时也要有状态，不许整块消失
@@ -1285,15 +1331,24 @@ async function doLoad(opts = {}) {
       loadedClip.value = ''
       ready.value = false
       cfg.value = null
+      // 没有片段可开时，上一个片段的配置读取错误与这里无关 —— 别让错误卡顶掉"去切片"空态
+      cfgError.value = ''
       return
     }
-    // 无 :clip → 自动打开**上次操作过的**片段；没有记录（或已失效）→
-    // 片段列表 + 空态（视频/编辑器都不加载），不再随手挑一个默认片段。
+    // 无 :clip → 先回**上次操作过的**片段；没有记录（或已失效）→ 自动打开**第一个还没导出**
+    // 的片段（P1：省掉"先进列表再挑一个"的一次点击）。
+    // ⚠️ `?list=1` 是页头「列表」按钮回来的：**整段自动选片都跳过**（含"上次片段"那一档 ——
+    //    否则刚从编辑器点「列表」，last clip 立刻又把编辑器打开，列表卡永远进不去）。
     let wanted = clipName.value
-    if (!wanted) {
+    const listMode = route.query.list === '1'
+    if (!wanted && !listMode) {
       let last = null
       try { last = localStorage.getItem(LAST_CLIP_KEY.value) } catch {}
       if (last && clips.value.some((c) => c.name === last)) wanted = last
+      if (!wanted) {
+        const firstUnexported = clips.value.find((c) => !isExported(c))
+        if (firstUnexported) wanted = firstUnexported.name
+      }
     }
     const entry = wanted ? clips.value.find((c) => c.name === wanted) : null
     if (!entry) {
@@ -1302,6 +1357,8 @@ async function doLoad(opts = {}) {
       loadedClip.value = ''
       ready.value = false
       cfg.value = null
+      // 列表模式下没有"当前片段"，上一个片段的读失败错误不许顶掉列表卡
+      cfgError.value = ''
       return
     }
     dir.value = entry.dir || clipDirOf(wanted)
@@ -1414,6 +1471,15 @@ async function loadClips() {
   }
 }
 
+/** 这份片段**是否已经导出** —— 出过成片或出过封面都算。
+ *  与切片页二级筛选/卡片 chip **同一套判据**（`rendered || cover`），也是本页"自动选第一个
+ *  未导出片段"的依据（见 `doLoad`）：别写成"进没进过精修"——剪切收尾就会 init，那个判据恒真。 */
+function isExported(c) {
+  const key = String(c?.dir || '').replace(/\\/g, '/').toLowerCase()
+  const p = polishByDir.value[key] || null
+  return !!(p?.rendered || p?.cover)
+}
+
 /** 片段列表行：`N · 标题` + 状态 chip（**只在有话可说时才有 chip**）。
  *  ⚠ 与切片页卡片上那枚 chip 同一套判据/用词（`isExported` = 出过片**或**出过封面）：
  *  **别在这里叫「已精修」**，也**别再挂「精修中」** —— 剪切收尾服务端就把工程建好了
@@ -1424,7 +1490,7 @@ function clipRow(c) {
   const dir = String(c.dir || '').replace(/\\/g, '/').toLowerCase()
   const p = polishByDir.value[dir] || null
   const initialized = !!p?.polish_ready
-  const exported = !!(p?.rendered || p?.cover)
+  const exported = isExported(c)
   const state = exported ? '已导出' : (initialized ? '' : '未初始化')
   // **多段片段**的段数（`clip.json` 的 `ranges`）：卡片上打「N 段」标记（>1 才算）
   const segs = Array.isArray(c.meta?.ranges) ? c.meta.ranges.length : 0
