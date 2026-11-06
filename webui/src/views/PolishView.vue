@@ -7,6 +7,16 @@
       <h1 class="m-0">{{ dir ? title : '选择要出片的片段' }}</h1>
       <span v-if="!dir" class="sub m-0">从片段库选一个片段开始出片</span>
       <div class="actions">
+        <!-- 快速出片 / 精修（P2）：默认快速（`ui.polishMode`，持久化）；`?mode=pro` 是一次性覆盖。
+             ⚠️ `data-cap` 挂在这个**分段容器**上，且全页只此一处（判据 check-simplify 数锚点）。 -->
+        <div class="mode-seg" data-cap="polish.quick-mode">
+          <button class="mini-btn" :class="{ selected: viewMode === 'quick' }"
+                  title="快速出片：智能剪辑 / 画面 / 导出 / 封面"
+                  @click="setViewMode('quick')">快速出片</button>
+          <button class="mini-btn" :class="{ selected: viewMode === 'pro' }"
+                  title="精修：时间轴 / 轨道设置 / 封面设计器全在"
+                  @click="setViewMode('pro')">精修</button>
+        </div>
         <router-link v-if="clipName" class="mini-btn"
                      :to="{ name: 'project-polish', params: { pid }, query: { list: '1' } }"
                      title="回到片段列表（不自动打开片段）">列表</router-link>
@@ -115,7 +125,9 @@
               <!-- ⚠️ 轨道设置面板**已整块搬到右栏常驻**（用户 2026-10-06：「还是把轨道设置放在右侧常驻」）。
                    这里只剩时间轴块的属性面板挂载点 —— `#tl-props-host` 必须是**空容器**：
                    TimelineEditor 用 Teleport 直接往目标里插节点，与本页面子节点混在一起会被 patch 顶掉。 -->
-              <div class="props-host">
+              <!-- ⚠️ 属性面板是**精修专属**：快速模式里预览要占满整宽（用户口径：快速只留预览）。
+                   判据 ⑰ 仍钉着 `#tl-props-host` 是**空容器**、且全页唯一。 -->
+              <div v-if="viewMode === 'pro'" class="props-host">
                 <div id="tl-props-host"></div>
               </div>
 
@@ -124,6 +136,73 @@
                 <div v-if="selectRegion" class="hint mt-8">拖框体平移 / 拖角缩放 / 空白重画</div>
                 <div v-else-if="pointEdit" class="hint mt-8">点预览上的位置即可</div>
               </div>
+            </div>
+          </div>
+
+          <!-- 快速出片（默认）：三步 + 封面 + 紧凑任务条（P2）。
+               ⚠️ **必须在 `.right-col` 之外**：判据 ⑰ 数的是 `.right-col` 里的卡片数（= 1），
+               快速卡塞进去就变成 2、`rightCardCount` 直接翻红。
+               ⚠️ 它仍是 `.edit-grid` 的**第二个 grid 子节点**（走同一条 300px 轨道），
+               不是另起一格 —— 多一个子节点会掉到下一行占满整宽。
+               ⚠️ 第一颗按钮的锚点 = `polish.quick-llm`（各 P2 能力锚点全页各一处）。 -->
+          <div v-if="viewMode === 'quick'" class="card quick-col">
+            <div class="quick-sec">
+              <div class="quick-h"><b>① 智能剪辑</b><span class="muted small">重新分段 + 生成事件</span></div>
+              <div v-if="llmMissing" class="quick-warn">
+                <span>未配置 AI</span>
+                <router-link to="/settings/llm" class="mini-btn">去配置</router-link>
+              </div>
+              <div class="row mt-6" style="gap:6px">
+                <button class="btn flex-1 jc-center" data-cap="polish.quick-llm"
+                        :disabled="scopeBusy || llmMissing"
+                        :title="llmMissing ? '未配置 AI：去设置 → AI 模型填一个 key' : '重新分段 + 重做全部事件（会确认一次）'"
+                        @click="runLlmJob()"><Icon name="sparkles" :size="12" /> 生成剪辑方案</button>
+                <button class="mini-btn" :disabled="scopeBusy || llmMissing"
+                        title="智能剪辑成功后自动打开导出弹窗；失败或取消则什么都不做"
+                        @click="runLlmAndExport">并导出</button>
+              </div>
+            </div>
+
+            <div class="quick-sec">
+              <div class="quick-h"><b>② 画面</b><span class="muted small">横屏 / 竖屏</span></div>
+              <div class="row" style="gap:6px">
+                <button v-for="o in orientationOptions" :key="o.value" class="mini-btn flex-1 jc-center"
+                        :class="{ selected: (canvasCfg.orientation || 'landscape') === o.value }"
+                        :disabled="stageBusy || !ready" :title="o.label"
+                        @click="patchCanvas({ orientation: o.value })">{{ o.value === 'portrait' ? '竖屏' : '横屏' }}</button>
+              </div>
+            </div>
+
+            <div class="quick-sec">
+              <div class="quick-h"><b>③ 导出成片</b><span class="muted small">底座渲染</span></div>
+              <button class="btn btn-primary w-full jc-center" data-cap="polish.quick-export"
+                      :disabled="scopeBusy || renderBlocked" :title="renderBlockReason || '打开导出弹窗'"
+                      @click="openRenderModal"><Icon name="film" :size="13" /> 导出成片</button>
+            </div>
+
+            <div class="quick-sec">
+              <div class="quick-h"><b>封面</b><span class="muted small">独立于成片</span></div>
+              <div class="row" style="gap:6px">
+                <button class="btn flex-1 jc-center" data-cap="polish.quick-cover"
+                        :disabled="scopeBusy" title="按当前封面配置生成封面（不重出成片）"
+                        @click="generateCover">生成封面</button>
+                <button class="mini-btn" title="切到精修，去封面设计器改版式" @click="editCoverInPro">编辑封面</button>
+              </div>
+            </div>
+
+            <!-- 紧凑任务条：任务名 + 状态 chip + 中断；**失败原因常驻**（不许折叠藏起来）。
+                 与时间轴右上角那份是同一组状态（`job` / `jobStatusText` / `cancelJob`），不另起一套。 -->
+            <div class="quick-sec quick-job">
+              <div class="row spread" style="gap:6px">
+                <span class="small muted">任务</span>
+                <b class="small flex-1 ellipsis">{{ job.kind ? jobLabel(job.kind) : '—' }}</b>
+                <span class="chip" :class="jobChipClass">{{ jobStatusText }}</span>
+                <button v-if="jobRunning" class="mini-btn danger" :disabled="canceling" @click="cancelJob">中断</button>
+              </div>
+              <div v-if="jobRunning && job.total > 0" class="qbar mt-6">
+                <i :style="{ width: Math.round((job.current / job.total) * 100) + '%' }"></i>
+              </div>
+              <div v-if="job.status === 'failed' && job.error" class="quick-err mt-6">{{ job.error }}</div>
             </div>
           </div>
 
@@ -136,7 +215,11 @@
                ⚠️ 页签**没有**「项目设置页 →」那种跳转链接（用户 2026-10-06：「删除，不需要这个」）。
                ⚠️ 必须全在**同一个 grid 子节点** `.right-col` 里：`.edit-grid` 是两列
                （`cols-main` = `1fr 300px`），摊成多个子节点时后面的会充当"第三列"
-               **掉到下一行占满整宽**。判据 ⑰ 钉着。 -->
+               **掉到下一行占满整宽**。判据 ⑰ 钉着。
+               ⚠️ P2：整块右栏是**精修（pro）专属**（快速模式换成 `.quick-col`）。
+               这里包一层 `<template v-if>` 而**不是**给它加 `v-if`：判据 ⑰ 拿
+               `.right-col` 这个类名当锚点切源码，锚点必须原样保留。 -->
+          <template v-if="viewMode === 'pro'">
           <div class="right-col">
             <div class="card">
               <!-- **三个页签独占最上面一行**（用户口径：「三个标签页放在最上面，删除最上面
@@ -567,7 +650,9 @@
               </template>
             </div>
           </div>
+          </template>
         </div>
+        <template v-if="viewMode === 'pro'">
         <!-- 时间轴编辑器独占一整行（在预览/生成两栏之下）：横向空间全给刻度与泳道。
              标题/提示由 slot 交给组件，省掉独立卡片头；去静音只在这块，右侧不再重复。
              改动走「本地即时镜像 → 预览实时刷新 → 防抖落盘 → 防抖后处理」这条链。 -->
@@ -613,9 +698,10 @@
           </TimelineEditor>
         </div>
 
-        <div class="mt-16" data-cap="polish.cover"><CoverDesigner :key="'cv' + coverKey" :dir="dir" :pid="pid" @changed="refreshClipEntry(true)" /></div>
+        <div ref="coverCardEl" class="mt-16" data-cap="polish.cover"><CoverDesigner :key="'cv' + coverKey" :dir="dir" :pid="pid" @changed="refreshClipEntry(true)" /></div>
+        </template>
 
-        <!-- 产物整行：成片 + 封面 + 输出目录 -->
+        <!-- 产物整行（**两种模式共用**）：成片 + 封面 + 输出目录。快速模式也要看得到产物。 -->
         <div class="card mt-16 artifact-bar" data-cap="polish.artifact">
           <div class="row spread">
             <div class="row">
@@ -684,7 +770,7 @@ import { ref, computed, reactive, onMounted, onUnmounted, watch, nextTick } from
 import { useRoute, useRouter } from 'vue-router'
 import { toast } from '../stores/toast'
 import { confirmDialog } from '../stores/dialog'
-import { ui, toggleFragRows } from '../stores/ui'
+import { ui, toggleFragRows, setPolishMode } from '../stores/ui'
 import Icon from '../components/Icon.vue'
 import AppModal from '../components/AppModal.vue'
 import PolishPreview from '../components/PolishPreview.vue'
@@ -697,12 +783,14 @@ import { addClient } from '../stores/log'
 import { projectData } from '../api/projectData'
 import {
   fetchProject, fetchSubtitles, saveProjectPatch,
-  initPolish, runLlm, runLlmSegment, runProcess, runRender,
+  initPolish, runLlm, runLlmSegment, runProcess, runRender, runCover,
   fetchDhampirStatus, fetchDhampirProject, fetchStickerSources, fetchFonts,
   fetchVideoLibrary,
   openPath, REGION_LABELS,
 } from '../api/polish'
 import { localNoAuthKnown } from '../stores/health'
+// `/api/health` 的同一份缓存：P2 快速模式的「智能剪辑」能力位（别在这里再拉一次）。
+import { healthPayload, refreshHealth } from '../stores/health'
 import { ensureFontFace, fontFamilyFor, fontInLibrary, fontLabelFor } from '../polish/fonts'
 import { freeRect, regionRect } from '../polish/engine'
 import { jobsApi, watchJob, busyOn, clipKey, kindText, KIND_ZH, QUEUED_HINT } from '../api/jobs'
@@ -714,6 +802,32 @@ const routePid = route.params.pid || ''
 const pid = ref(routePid)
 const dir = ref('')
 const clipName = computed(() => route.params.clip || '')
+/** 出片模式：`'quick'`（默认，快速出片）/ `'pro'`（精修）。
+ *
+ *  ⚠️ **`?mode=pro` 是一次性覆盖**（判据脚本要它先切 pro 再断言 `.props-host`）：
+ *  它只在首次挂载时生效、**不写 localStorage**；`ui.polishMode` 才是用户手动选的那一档。
+ *  ⚠️ 用 ref 而不是 computed：覆盖是"一次性的"，用户随后点「快速出片」就该真的切走，
+ *  不能被地址栏里那个 `?mode=pro` 一直按着。 */
+const viewMode = ref(route.query.mode === 'pro' ? 'pro' : ui.polishMode)
+
+/** 用户点页头分段按钮：切视图 + 记住选择（`?mode=pro` 覆盖在此被用户的选择取代）。 */
+function setViewMode(mode) {
+  const next = mode === 'pro' ? 'pro' : 'quick'
+  viewMode.value = next
+  setPolishMode(next)
+  // ⚠️ 必须把地址栏里的一次性覆盖清掉：否则用户从 `?mode=pro` 手动切到「快速出片」后，
+  //    一刷新又被 URL 按回 pro（`?mode=pro` 应该是"这次打开用 pro"，不是"永久"）。
+  if (route.query.mode) {
+    const q = { ...route.query }
+    delete q.mode
+    router.replace({ name: route.name, params: route.params, query: q }).catch(() => {})
+  }
+}
+// `?mode=pro` 也可能在**同一个页面里**出现（门禁/深链切 hash 不重新挂载组件）：
+// 只要查询串变成 pro 就跟着切；查询串被上面的 setViewMode 清掉时**不回切**（用户的选择赢）。
+watch(() => route.query.mode, (m) => {
+  if (m === 'pro') viewMode.value = 'pro'
+})
 /** 当前已经加载完成的片段名：用于跳过 `load()` 自己 `router.replace` 触发的 watch。 */
 const loadedClip = ref('')
 // 记住最后操作过的片段：下次从侧栏进精修页自动回到它（每项目一个键）
@@ -819,6 +933,18 @@ const dhampirDetail = computed(() =>
 /** 这份就绪位是给哪个片段问的：换片段要清掉旧结论，别拿上一个片段的答案挡这个片段的导出。 */
 let dhampirStatusDir = ''
 
+/** `/api/health.llm === false`：快速出片的「智能剪辑」置灰并给去配置的入口。
+ *
+ *  ⚠️ **只挡智能剪辑，不挡导出**（没有 AI 也照样能出片）；读不到 health 时保持 `false`
+ *  （= 不误报"没配"、也不误灰按钮）—— 与预处理页 `llmMissing` 同一条口径。
+ *  ⚠️ 读的是 `stores/health.js` 的**唯一缓存**（首页 checklist 同源），别在这里再拉一次。 */
+const llmMissing = ref(false)
+
+async function loadLlmReady() {
+  const h = healthPayload() || await refreshHealth()
+  llmMissing.value = h?.llm === false
+}
+
 /**
  * 预取/刷新底座就绪位。
  *
@@ -855,6 +981,8 @@ async function openRenderModal() {
 }
 const timelineRef = ref(null)
 const previewRef = ref(null)
+/** 封面设计器那张卡的 DOM（快速模式「编辑封面」切到精修后滚过去）。 */
+const coverCardEl = ref(null)
 
 // ---- 源素材帧率（成片轨的帧号域分母）----
 // ⚠️ **不是**工程网格帧率（`timeline.timebase`，转译器给它 30fps 下限）：电台那种 5fps 素材
@@ -1812,7 +1940,22 @@ async function initProject() {
   startJob('init', () => initPolish(pid.value, dir.value), { after: () => { segKey.value++; load({ silent: true }) } })
 }
 
-async function runLlmJob() {
+/** 快速模式的「智能剪辑」：全部重做（不接导出）。
+ *  ⚠️ 页头那颗专业按钮仍是 `@click="runLlmJob"`（判据 ㉗ 钉着这个字面量）。 */
+function runLlmJob() {
+  return runLlmAll(false)
+}
+
+/** 快速模式的「并导出」：**只有智能剪辑成功**才接着开导出弹窗（失败/取消不继续）。
+ *  ⚠️ `startJob` 的 `after` 在成功/失败/取消三种终态都会跑，所以判据必须自己看 `job.status`。 */
+function runLlmAndExport() {
+  return runLlmAll(true)
+}
+
+/**
+ * 「智能剪辑」= **全部重做**（用户要求）：清掉断点续传、重新分段、重新生成全部事件。
+ */
+async function runLlmAll(chainExport) {
   // 「LLM 剪辑」= **全部重做**（用户要求）：清掉断点续传、重新分段、重新生成全部事件。
   // 会覆盖当前的段与事件（含手工加的），所以先确认；失败的段会在时间轴上标琥珀色，
   // 想只补某一段就用分段属性里的「只重做本段事件」。
@@ -1822,7 +1965,14 @@ async function runLlmJob() {
     { title: 'LLM 剪辑（全部重做）？' }
   )
   if (!ok) return
-  startJob('llm', () => runLlm(pid.value, dir.value, true), { after: () => { segKey.value++; load({ silent: true }) } })
+  startJob('llm', () => runLlm(pid.value, dir.value, true), {
+    after: async () => {
+      segKey.value++
+      await load({ silent: true })
+      // 只有真的成功才接导出：失败/取消时开弹窗只会让人以为"方案好了、可以出了"
+      if (chainExport && job.status === 'succeeded') openRenderModal()
+    },
+  })
 }
 
 /** 只重做某一段的事件（时间轴 → 选中分段 → 属性面板里的按钮）。
@@ -1843,6 +1993,28 @@ async function redoSegment(index) {
   startJob('llm_segment', () => runLlmSegment(pid.value, dir.value, index), {
     after: () => { segKey.value++; load({ silent: true }) }
   })
+}
+
+/** 快速模式「生成封面」：封面任务与渲染**解耦**（不重出成片，也不碰预览重挂）。
+ *
+ *  `after` 里刷新片段产物行（成片/封面链接来自 `/api/project-data/polish`）；
+ *  `coverKey++` 是给专业模式的封面设计器用的（快速模式下它没挂载，自增无害）。 */
+function generateCover() {
+  if (!dir.value) return
+  startJob('cover', () => runCover(pid.value, dir.value), {
+    after: async () => {
+      coverKey.value++
+      await refreshClipEntry(true)
+    },
+  })
+}
+
+/** 快速模式「编辑封面」：切到精修，并滚到封面设计器那张卡。
+ *  ⚠️ 它只在 pro 子树里（`v-if`），切完要等**下一帧**DOM 才存在。 */
+async function editCoverInPro() {
+  setViewMode('pro')
+  await nextTick()
+  coverCardEl.value?.scrollIntoView({ block: 'start' })
 }
 
 /** 是否**本机**（本地免登录模式）—— 路由守卫在任何视图挂载之前已经 await 过 `localNoAuth()`，
@@ -2769,6 +2941,7 @@ onMounted(() => {
   loadStickerSources()
   loadFonts()
   loadVideoLibrary()
+  loadLlmReady()
 })
 onUnmounted(() => {
   pageGone = true
@@ -2785,6 +2958,29 @@ onUnmounted(() => {
 .edit-grid { align-items:start; }
 /* 右栏那一列：两块卡片上下常驻（`min-width:0` 让内部的长控件能正常收缩，不被 grid 顶宽） */
 .right-col { display:flex; flex-direction:column; gap:12px; min-width:0; }
+/* 页头「快速出片 / 精修」分段：两颗小胶囊并排（选中态复用 `.mini-btn.selected`） */
+.mode-seg { display:flex; gap:4px; }
+/* 快速出片的右栏卡：与 `.right-col` 走**同一条** 300px grid 轨道，但**不住在** `.right-col`
+   里（判据 ⑰ 只数 `.right-col` 内的卡片数，快速卡进去就变成 2）。 */
+.quick-col { display:flex; flex-direction:column; min-width:0; }
+.quick-sec { min-width:0; padding:10px 0; border-top:1px solid var(--line-soft); }
+.quick-sec:first-child { padding-top:0; border-top:none; }
+.quick-sec:last-child { padding-bottom:0; }
+.quick-h { display:flex; align-items:baseline; gap:6px; margin-bottom:6px; font-size:12px; }
+.quick-h > .small { font-weight:400; }
+/* 未配置 AI：琥珀条只挡「智能剪辑」，不挡导出 */
+.quick-warn { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:6px;
+  padding:5px 8px; border-radius:var(--r-sm); border:1px solid var(--amber);
+  background:var(--amber-soft); color:var(--amber-deep); font-size:11px; }
+.quick-warn .mini-btn { padding:2px 8px; }
+.quick-col .ellipsis { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* 失败原因常驻（快速卡里没有「展开」这一步，所以整块可见、超长内部滚动） */
+.quick-err { padding:5px 8px; border-radius:var(--r-sm); border:1px solid var(--red);
+  background:var(--red-soft); color:var(--red-deep); font-size:11px; line-height:1.4;
+  max-height:96px; overflow:auto; word-break:break-word; }
+/* 进度条：只在总量已知时出现（不占常驻高度） */
+.qbar { height:6px; overflow:hidden; border-radius:var(--r-full); background:var(--bg-soft); }
+.qbar > i { display:block; height:100%; background:var(--grad-main); transition:width .2s; }
 /* 预览卡内部：属性面板（时间轴 Teleport 过来的）在左，预览舞台在右 */
 .preview-row { display:flex; gap:12px; align-items:stretch; margin-top:8px; }
 /* 挂载点定宽 + relative；面板绝对定位撑满它 —— 属性表单再长也只在面板内部滚动，
