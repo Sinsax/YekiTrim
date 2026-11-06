@@ -13,13 +13,16 @@
       </div>
     </div>
 
-    <div v-if="!ingestState.ready" class="empty mb-16">
+    <!-- ⚠️ 只在**真的问了并且答否**（`=== false`）时显示：`null` = 还没问到。
+         以前写成 `!ready`，直接打开 #/ingest 会先闪一句"未接入"（其实只是还没问）。 -->
+    <div v-if="ingestState.ready === false" class="empty mb-16">
       <div class="empty-icon"><Icon name="alert" :size="24" /></div>
       <div>录播姬接入尚未就绪（需要 <span class="mono">[ingest] webhook_enabled = true</span>
         与 <span class="mono">[ingest.recorder] root</span>）。</div>
       <div class="small muted mt-8">
         本机执行 <span class="mono">yekitrim ingest token</span> 生成 webhook token，并把录播姬的录制目录填进配置。
       </div>
+      <div class="mt-8"><button class="mini-btn" @click="loadHealth">重新检查</button></div>
     </div>
 
     <div v-if="error" class="error-banner"><Icon name="alert" :size="15" /> {{ error }}</div>
@@ -101,7 +104,8 @@ import {
   ingestState,
   loadRecords,
   loadRules,
-  saveRules
+  saveRules,
+  setReady
 } from '../stores/ingest'
 
 const isAdmin = computed(() => authState.user?.role === 'admin')
@@ -202,7 +206,20 @@ async function scan() {
   }
 }
 
-onMounted(load)
+/** 能力位：决定上面那条"未接入"横幅显示不显示（null = 还没问到，别当 false）。 */
+async function loadHealth() {
+  try {
+    const h = await api('/api/health')
+    setReady(h?.ingest_ready !== false)
+  } catch {
+    /* api() 已写日志；保持 null，让「未接入」横幅不误报 */
+  }
+}
+
+onMounted(async () => {
+  await loadHealth()
+  await load()
+})
 </script>
 
 <style scoped>

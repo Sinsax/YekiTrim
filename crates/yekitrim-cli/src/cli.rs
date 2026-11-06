@@ -98,7 +98,7 @@ pub enum Command {
         output: Option<PathBuf>,
     },
 
-    /// 全自动管线处理（无视 state，从头跑到尾）
+    /// 全自动管线处理（**补齐未完成的阶段**：已有产物的阶段会跳过，不重跑）
     Process {
         /// 输入视频文件 (默认使用 yekitrim.toml 中记录的 input_file)
         #[arg(short, long)]

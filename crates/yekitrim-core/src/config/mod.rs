@@ -257,6 +257,33 @@ extensions = ["flv", "mkv", "mp4", "ts"]
 # 入库后自动执行到哪一步：none | transcribe | detect | cut
 auto_pipeline = "detect"
 
+[ingest.webhook]
+# 通用"录制完成"入口：POST /api/ingest/webhook/<token>
+# 与录播姬共用 [ingest] 的 webhook_enabled / token_hash / allow_ips。
+# 录像根目录（宿主机绝对路径）；空 = 未启用。事件里的路径必须落在它下面。
+root = ""
+# 如果录制软件给的是容器内路径（例 biliLive-tools 的 /app/video/...），把容器前缀填这里；
+# 非空时先剥掉前缀，再按 root 解析。
+container_root = ""
+# 建项目后自动执行到哪一步：none | transcribe | detect | cut
+# 默认 none：通用入口不知道来源贵不贵，先建项目、让用户自己点。
+auto_pipeline = "none"
+
+[publish.bililive_tools]
+# 出片回传：YekiTrim 把成片复制到 biliLive-tools 看得见的暂存目录，再调它的投稿 API。
+# 空 = 未启用。B站登录/分区/标签/封面/重试/分P 全在 biliLive-tools 里配。
+base_url = ""
+# 600 权限文件，内容是一行 BILILIVE_TOOLS_PASSKEY（别把密钥写进这个文件）
+passkey_file = ""
+# biliLive-tools 的上传预设 id（在它的 UI 里维护分区/标签/合集）
+upload_preset_id = "default"
+# 成片暂存目录（宿主机路径；biliLive-tools 容器要能读到）
+staging_dir = ""
+# 同一个目录在 biliLive-tools 容器内的路径（例 /app/video/_yekitrim_publish）
+container_staging_root = ""
+# B站账号 uid（0 = 自动取 /user/list 的第一个）
+uid = 0
+
 [auth]
 # 自助注册（邀请码）：开启后 /api/auth/register 才受理注册请求，
 # 但**必须**有可用邀请码才能注册成功 —— 码本身才是凭证，这里只是总闸。
@@ -373,31 +400,27 @@ pub fn write_project_config_exact(
     write_project_config_inner(cfg_path, input, danmaku, output_dir, false)
 }
 
-fn write_project_config_inner(
-    cfg_path: &Path,
-    input: &Path,
-    danmaku: Option<&Path>,
-    output_dir: Option<&str>,
-    auto_discover_danmaku: bool,
-) -> Result<()> {
-    // 优先从全局配置复制，不存在则使用内建默认
-    let global_path = crate::path::yekitrim_home().join("config.toml");
-    let mut body = if global_path.exists() {
-        tracing::info!("从全局配置复制: {}", global_path.display());
-        std::fs::read_to_string(&global_path)?.replace(
-            "# YekiTrim 全局默认配置 — 所有工程共享\n# 相同参数会被 yekitrim.toml 覆盖",
-            "",
-        )
-    } else {
-        GLOBAL_CONFIG_TOML.replace(
-            "# YekiTrim 全局默认配置 — 所有工程共享\n# 相同参数会被 yekitrim.toml 覆盖",
-            "",
-        )
-    };
-
-    let mut doc: toml_edit::DocumentMut = body.parse()?;
-    doc.remove("llm");
-    doc.remove("correct");
+/// 由**全局程序配置文本**生成本工程配置的正文（`[project]` 块之外的部分）。
+///
+/// ⚠️ **工程配置只允许带"按工程变化"的段**：`[asr]` / `[detection]` / `[cutting]` / `[sfx]`。
+/// 其余段一律剥掉，原因是**安全 + 逻辑**双重的：
+///
+/// 1. 工程目录会被共享、搬到 NAS、发给别人（webhook 模式下它甚至直接建在录像目录里）。
+///    整份拷贝会把 `[ingest] token_hash` / `[ingest.recorder].api_pass` /
+///    `[publish.bililive_tools] passkey_file` / `[auth]` / `[storage]` 抄进每个工程
+///    —— 实测 demo 工程的 `yekitrim.toml` 里就是这些。
+/// 2. `merge()` 把工程段当**覆盖值**：管理员后来改了全局口令，老工程会拿旧副本顶回去
+///    （项目优先），于是"设置页改了没生效"这句话永远查不到原因。
+///
+/// 剥离清单：`[llm]`（独立 llm.toml）/ `[correct]`（订正 prompt 只住程序配置）/
+/// `[auth]` / `[publish]` / `[storage]` / `[ingest]`（含 `ingest.*` 子表）。
+/// `[detection]` 里的 prompt 同样只住程序配置 —— 见「改内建 prompt 要同步用户配置」。
+fn project_config_body(global_text: &str, output_dir: Option<&str>) -> Result<String> {
+    let mut doc: toml_edit::DocumentMut = global_text.parse()?;
+    // 程序级段（其中多个带凭证）：不是工程该覆盖的东西，别抄进工程文件。
+    for section in ["llm", "correct", "auth", "publish", "storage", "ingest"] {
+        doc.remove(section);
+    }
     // 工程配置也带版本号（拷全局那份时通常已经带了；这里兜住"全局配置没构建过"的情形）
     doc.insert(VERSION_KEY, toml_edit::value(CONFIG_VERSION as i64));
 
@@ -418,7 +441,31 @@ fn write_project_config_inner(
         doc["cutting"]["output_dir"] = toml_edit::value(dir);
     }
 
-    body = doc.to_string();
+    Ok(doc.to_string())
+}
+
+fn write_project_config_inner(
+    cfg_path: &Path,
+    input: &Path,
+    danmaku: Option<&Path>,
+    output_dir: Option<&str>,
+    auto_discover_danmaku: bool,
+) -> Result<()> {
+    // 优先从全局配置复制，不存在则使用内建默认
+    let global_path = crate::path::yekitrim_home().join("config.toml");
+    let global_body = if global_path.exists() {
+        tracing::info!("从全局配置复制: {}", global_path.display());
+        std::fs::read_to_string(&global_path)?
+    } else {
+        GLOBAL_CONFIG_TOML.to_string()
+    }
+    .replace(
+        "# YekiTrim 全局默认配置 — 所有工程共享\n# 相同参数会被 yekitrim.toml 覆盖",
+        "",
+    );
+    // ⚠️ **只保留允许工程覆盖的段**（安全：程序级凭证不许抄进工程文件；逻辑：
+    // 项目段会在 merge() 里盖住全局，管理员改全局口令后老工程拿旧副本顶回去）。
+    let body = project_config_body(&global_body, output_dir)?;
 
     // 构建 [project] 块（带注释），放在最前面
     let config_dir = cfg_path.parent().unwrap_or(Path::new("."));
@@ -778,6 +825,36 @@ fn merge(base: &mut Config, overlay: Config) {
     }
     if overlay.ingest.recorder.auto_pipeline != "detect" {
         base.ingest.recorder.auto_pipeline = overlay.ingest.recorder.auto_pipeline.clone();
+    }
+    // 通用 webhook（与录播姬是两套根目录；`root` 空 = 未启用）
+    if !overlay.ingest.webhook.root.is_empty() {
+        base.ingest.webhook.root = overlay.ingest.webhook.root.clone();
+    }
+    if !overlay.ingest.webhook.container_root.is_empty() {
+        base.ingest.webhook.container_root = overlay.ingest.webhook.container_root.clone();
+    }
+    if overlay.ingest.webhook.auto_pipeline != "none" {
+        base.ingest.webhook.auto_pipeline = overlay.ingest.webhook.auto_pipeline.clone();
+    }
+
+    // 出片回传（biliLive-tools 投稿）；空 = 未启用
+    if !overlay.publish.bililive_tools.base_url.is_empty() {
+        base.publish.bililive_tools.base_url = overlay.publish.bililive_tools.base_url.clone();
+    }
+    if !overlay.publish.bililive_tools.passkey_file.is_empty() {
+        base.publish.bililive_tools.passkey_file = overlay.publish.bililive_tools.passkey_file.clone();
+    }
+    if overlay.publish.bililive_tools.upload_preset_id != "default" {
+        base.publish.bililive_tools.upload_preset_id = overlay.publish.bililive_tools.upload_preset_id.clone();
+    }
+    if !overlay.publish.bililive_tools.staging_dir.is_empty() {
+        base.publish.bililive_tools.staging_dir = overlay.publish.bililive_tools.staging_dir.clone();
+    }
+    if !overlay.publish.bililive_tools.container_staging_root.is_empty() {
+        base.publish.bililive_tools.container_staging_root = overlay.publish.bililive_tools.container_staging_root.clone();
+    }
+    if overlay.publish.bililive_tools.uid != 0 {
+        base.publish.bililive_tools.uid = overlay.publish.bililive_tools.uid;
     }
 
     if !overlay.ingest.recorder.api_base.is_empty() {
@@ -1937,5 +2014,84 @@ merge_gap_secs = 90.0
         assert_eq!(back.detection.scattered.min_secs, 6.5);
         assert_eq!(back.detection.scattered.merge_min_subs, 4);
         assert_eq!(back.detection.scattered.merge_gap_secs, 45.0, "没写过的保持默认");
+    }
+}
+
+#[cfg(test)]
+mod project_template_tests {
+    use super::*;
+
+    /// 新建工程配置**不许带程序级/凭证段**（安全回归，2026-10-30）。
+    ///
+    /// 根因：生成器把**整份全局 config.toml** 复制进 `yekitrim.toml`，只删了 `llm` / `correct`
+    /// —— demo 工程实测带出 `[ingest] token_hash` / `[ingest.recorder].api_pass` /
+    /// `[publish.bililive_tools] passkey_file` / `[auth]` / `[storage]`。工程目录会被共享、
+    /// 搬到 NAS、发给别人（webhook 模式下它甚至直接建在录像目录里）。
+    #[test]
+    fn new_project_config_never_carries_program_level_sections() {
+        // ① 内建模板（全局 config.toml 不存在时走它）
+        let body = project_config_body(GLOBAL_CONFIG_TOML, Some("./output")).unwrap();
+        assert_no_program_level_leak(&body);
+        for key in ["[asr]", "[detection]", "[cutting]", "[sfx]"] {
+            assert!(body.contains(key), "允许工程覆盖的段不能丢: {key}\n{body}");
+        }
+
+        // ② 模拟"已有全局 config.toml"（里面是真凭证）⇒ 同样剥干净，且活段照旧
+        let global = r#"config_version = 3
+[asr]
+mode = "hybrid"
+[detection]
+danmaku_window_secs = 10
+system_prompt = "程序配置里的 prompt"
+[cutting]
+output_dir = "./output"
+[sfx]
+blacklist = ["tag:x"]
+[storage]
+projects_root = "/srv/yekitrim-projects"
+[ingest]
+token_hash = "scrypt$abc$def"
+webhook_enabled = true
+[ingest.recorder]
+root = "/rec"
+api_pass = "brec-plain-pass"
+[ingest.webhook]
+root = "/rec/webhook"
+[publish.bililive_tools]
+base_url = "http://127.0.0.1:4321"
+passkey_file = "/home/u/.blt-passkey"
+[auth]
+registration_enabled = true
+"#;
+        let body = project_config_body(global, Some("./out2")).unwrap();
+        assert_no_program_level_leak(&body);
+        for key in ["[asr]", "[detection]", "[cutting]", "[sfx]"] {
+            assert!(body.contains(key), "允许工程覆盖的段不能丢: {key}\n{body}");
+        }
+        assert!(
+            !body.contains("程序配置里的 prompt"),
+            "[detection] 的 prompt 只住程序配置（改 prompt 要同步用户那份）:\n{body}"
+        );
+        assert!(body.contains("output_dir = \"./out2\""), "本工程的输出目录要写进去:\n{body}");
+    }
+
+    /// 判据：这些程序级/凭证痕迹一个都不许出现在生成的项目配置里。
+    fn assert_no_program_level_leak(body: &str) {
+        // 程序级段整段不在。按 TOML 解析判定，避免误伤注释里提到的 `[llm]` 这类字样
+        // （`[asr]` 的注释就写着「需配置 [llm]」—— 那不是配置段）。
+        let parsed: toml::Value = body.parse().expect("生成的工程配置必须是合法 TOML");
+        for section in ["llm", "correct", "auth", "publish", "storage", "ingest"] {
+            assert!(
+                parsed.get(section).is_none(),
+                "工程配置里不许出现程序级段 [{section}]:\n{body}"
+            );
+        }
+        // 凭证/主机级字面量一个都不许留（含注释里漏抄的）
+        for needle in ["token_hash", "api_pass", "passkey_file", "cookie_file", "projects_root"] {
+            assert!(
+                !body.contains(needle),
+                "新建工程配置里不许出现程序级/凭证内容 {needle:?}:\n{body}"
+            );
+        }
     }
 }

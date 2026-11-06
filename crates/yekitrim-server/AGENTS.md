@@ -75,7 +75,7 @@
   （下载模型 vs 转写 `ensure_models`）、`stickers`（表情包构建）、`dir:{规范化绝对路径}`（精修目录兜底键）。
   **全切刻意不带 `clip:*`**：它只处理没有 `clip.mp4` 的目录，与精修并行是安全的（用户拍板）；单条重切与同片段的
   精修必须互斥。
-- 每个创建点（8 处，清单见 `docs/job-queue.md`）都必须先 `handle.wait_start()` 再干活 —— 排队期间被取消时它返回
+- 每个创建点（9 处，清单见 `docs/job-queue.md`）都必须先 `handle.wait_start()` 再干活 —— 排队期间被取消时它返回
   `Err`，**直接收工**。
 - **任务一定要有终态**（否则**永久**占着资源键与档位名额，同项目后续任务无声排队）：① 任务体 panic / 线程起不来 →
   `api::spawn_job` 的兜底替它 `fail`（`[profile.release]` **不再** `panic = "abort"`，所以 panic 那条兜底真的会跑；
@@ -102,7 +102,7 @@
   `<data_dir>/logs/render-<job_id>.log`，再用 `follow_render_output` 边跑边读。
   ⚠ 绝对不要改回 `Command::output()`/管道：ffmpeg 与底座拉起的孙进程是**孙进程**，它们会继承 stdout
   句柄 —— 只要还有一个活着，管道就永远不 EOF，`output()` 一直等下去。
-- **取消 = 杀进程树**（`render_proc::kill_tree(pid)` → `taskkill /F /T`，含 ffmpeg 与底座拉起的孙进程）。**启动清扫孤儿**：
+- **取消 = 杀进程树**（`render_proc::kill_tree(pid)`：Windows `taskkill /F /T`；Unix 子进程在 spawn 时 `process_group(0)` 自成一组、取消时 `kill -9 -<pid>` —— 正 pid 只杀得到子进程，ffmpeg/底座孙进程会留下来继续烧 CPU）。**启动清扫孤儿**：
   每次渲染往 `<data_dir>/render-procs/<job_id>.pid` 登记 pid，`server::run` 启动时 `render_proc::sweep_orphans`
   结束遗留渲染（**先核对命令行**再杀，pid 会被系统回收）。
 

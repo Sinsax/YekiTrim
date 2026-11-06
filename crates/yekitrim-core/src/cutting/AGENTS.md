@@ -62,8 +62,17 @@
   重新检测换掉 events.json 后照样能显示（见 WebUI 一节「切片与事件的对应关系」）
 - **不覆盖别人的片段**：目标目录已有 `clip.json` 且与本次事件标题不同、区间 IoU < 0.5 →
   该条剪切报错跳过（`foreign_clip_conflict`，含单测），不让目录名变化撞掉已剪好的成片
+- ⚠️ **转写文件的解析顺序必须与 service 的 `Workspace::transcript_path` 一致**（`load_transcript`）：
+  `ctx.transcript`（内存里已填的）→ `transcript_file`（相对**工程根**）→ `output/transcript.json` →
+  `output/video.srt`。只认最后一项会让「ASR 产物在 `output/transcript.json`、工程没有 transcript_file、
+  也没有 video.srt」的工程剪出**没有 `clip.srt`** 的片段（真实 cut-all 实测：clip-01 只有 clip.dm.srt）；
+  相对基准错了则会静默退回旧稿。判据：`cut_falls_back_to_output_transcript_json_and_emits_clip_srt`
+  与 `external_json_transcript_file_still_wins_over_output_fallback`。
 - 字幕: 从原始 SRT 裁剪时间范围 + 偏移 → `<clip_dir>/clip.srt`（弹幕 → `<clip_dir>/clip.dm.srt`，元数据 → `clip.json`）
 - 输出: `output/publish_config.json` + `output/clips/clips_order.txt` (按弹幕热度降序)
+  ⚠️ **增量剪切必须合并旧索引**（`PublishConfig::merge_from_disk`），不能只写本批：单条重切/一键全切
+  是**逐事件**跑 Cutter 的，只写本批会把其它片段从发布索引与播放顺序里洗掉（2026-10-30 实测：全切后
+  `publish_config.json` 只剩最后一条）。判据 `publish_index_merges_incremental_cuts_and_drops_missing_files`。
 - **弹幕取用统一走 `danmaku::load_danmaku_auto`**（`cutting/mod.rs` 已改）：以前单独用 `parse_ass`，
   录播姬 XML 弹幕会只有热力图、没有 `clip.dm.srt`。
 - **`silence.rs::detect_silence_ranges` 先按时间排序 + 合并重叠区间**再取相邻间隔

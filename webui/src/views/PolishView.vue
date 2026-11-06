@@ -682,7 +682,7 @@ import TimelineEditor from '../components/TimelineEditor.vue'
 import FragmentList from '../components/polish/FragmentList.vue'
 import CoverDesigner from '../components/CoverDesigner.vue'
 import { clipMediaUrl } from '../utils'
-import { api, apiOr } from '../api/client'
+import { api } from '../api/client'
 import { addClient } from '../stores/log'
 import { projectData } from '../api/projectData'
 import {
@@ -870,8 +870,6 @@ const scopeBusyText = computed(() => {
   if (jobRunning.value) return jobLabel(job.kind)
   return scopeBusyJob.value ? kindText(scopeBusyJob.value.kind) : ''
 })
-const pctJob = computed(() => job.total > 0 ? Math.round(job.current * 100 / job.total) : 0)
-const jobFinished = computed(() => ['succeeded', 'failed', 'cancelled'].includes(job.status))
 const jobStatusText = computed(() => {
   if (!job.id) return '空闲' // 状态栏常驻：没任务时也要有状态，不许整块消失
   return { queued: '排队中', running: '运行中', succeeded: '完成', failed: '失败', cancelled: '已取消' }[job.status] || job.status
@@ -933,10 +931,13 @@ const elementsSaving = ref(false)
 const swayDeg = computed(() => numOrNullValue(cfg.value?.elements?.sway_deg))
 const swayMs = computed(() => numOrNullValue(cfg.value?.elements?.sway_ms))
 
-// ── §23 节奏报告（**只读**）─────────────────────────────────────────
+// ── §23 节奏报告（**只读**；界面那一行已按用户口径撤下，接线保留）────────────
 // ⚠️ 后端只在**扫出空档时**才落 `data/pacing.json` ⇒ 没有这个键 = 画面本来就很密。
 //    **必须把这两种情况分开显示**：把"很密"显示成"0 段空档"是错的
 //    （用户会以为算过、以为没问题），而显示成"没有数据"也是错的（其实正是好结果）。
+// ⚠️ 这三件（`pacing` / `pacingText` / `pacingTitle`）**故意留着**（用户 2026-10-13 口径：
+//    「只删界面、保留前端接线」，`webui/scripts/check-layout-invariants.mjs` ① 逐个钉着"定义必须存在"）。
+//    下次要把那一行显示加回来，模板里直接用它 —— 别当成没人用的死代码删掉。
 const pacing = computed(() => cfg.value?._pacing || null)
 
 /** 一行摘要。⚠️ 行内文案 ≤20 字（右栏内容宽只有 266px）。 */
@@ -1068,11 +1069,6 @@ const curRegion = computed(() => (cfg.value?.layout || {})[selectRegion.value] |
 /** 该区域是否已有自由选框（否则回退到九宫格 grid） */
 const hasFreeRect = computed(() => !!freeRect(curRegion.value))
 const selLabel = computed(() => REGION_LABELS[selectRegion.value] || selectRegion.value)
-const REGION_HINTS = {
-  liver: '框住主播，运镜聚焦框中心',
-  danmaku_area: '框住弹幕显示区（供运镜参考）'
-}
-const regionHint = computed(() => REGION_HINTS[selectRegion.value] || '')
 /** 展示用矩形：框选模式看编辑值，否则看已保存的选框 / 九宫格包围盒 */
 const shownRect = computed(() => {
   if (selectRegion.value) return selRect.value
@@ -1418,22 +1414,25 @@ async function loadClips() {
   }
 }
 
-/** 片段列表行：`N · 标题` + 状态 chip（未初始化 / 精修中 / 已导出）。
- *  ⚠ 与切片页卡片上那枚 chip 同一套用词（那边是 `isExported`）：**别在这里叫「已精修」** ——
- *  「已精修 / 精修中」并列正是用户报过的那种歧义，现在全应用统一成「已导出」。
- *  判据也一致：出过片**或**出过封面都算。 */
+/** 片段列表行：`N · 标题` + 状态 chip（**只在有话可说时才有 chip**）。
+ *  ⚠ 与切片页卡片上那枚 chip 同一套判据/用词（`isExported` = 出过片**或**出过封面）：
+ *  **别在这里叫「已精修」**，也**别再挂「精修中」** —— 剪切收尾服务端就把工程建好了
+ *  （`polish init`），于是每个片段一生下来都是"polish_ready 且没导出" ⇒ 那枚 chip **恒亮**、
+ *  零信息量（用户 2026-10-30 报「三个片段都挂着精修中，误导」）。
+ *  ⇒ 只有两种真的需要说：**已导出**（有产物）与**未初始化**（老片段要补一次 init）。 */
 function clipRow(c) {
   const dir = String(c.dir || '').replace(/\\/g, '/').toLowerCase()
   const p = polishByDir.value[dir] || null
   const initialized = !!p?.polish_ready
-  const state = !initialized ? '未初始化' : (p.rendered || p.cover ? '已导出' : '精修中')
+  const exported = !!(p?.rendered || p?.cover)
+  const state = exported ? '已导出' : (initialized ? '' : '未初始化')
   // **多段片段**的段数（`clip.json` 的 `ranges`）：卡片上打「N 段」标记（>1 才算）
   const segs = Array.isArray(c.meta?.ranges) ? c.meta.ranges.length : 0
   return {
     name: c.name,
     title: c.meta?.title || c.name,
     state,
-    chip: state === '已导出' ? 'g' : state === '精修中' ? 'p' : 'n',
+    chip: state === '已导出' ? 'g' : 'n',
     segments: segs > 1 ? segs : 0,
     // 各段源区间（按时间）：卡片上的悬停 title 用 `rangesHint` 一次列全（>1 段才有）
     ranges: segs > 1 ? c.meta.ranges : [],
@@ -1634,8 +1633,14 @@ async function refreshClipEntry(force = false) {
     clipEntry.value = polishByDir.value[key]
     return
   }
-  const list = pid.value ? await apiOr(projectData.paths.polishMap(pid.value), [], '刷新片段状态') : []
-  clipEntry.value = (list || []).find((p) => norm(p.dir) === key) || null
+  // ⚠️ 读失败**不许伪装成"没渲染过"**：回退成 null 会让产物栏显示「未渲染 / 无封面」，
+  // 而磁盘上那两个文件都在（用户会以为产物被删了）。失败保留上一次那份 + 留痕。
+  try {
+    const list = pid.value ? await api(projectData.paths.polishMap(pid.value), { label: '刷新片段状态' }) : []
+    clipEntry.value = (list || []).find((p) => norm(p.dir) === key) || null
+  } catch (e) {
+    addClient('warn', '片段产物状态刷新失败（保留上一次的显示）：' + e.message, 'polish')
+  }
 }
 
 // ---- 任务驱动 ----
@@ -2352,13 +2357,8 @@ const sameRatio = computed(() => {
  *  ⚠️ **放大后必须出现** —— 否则 `scale>1` 的裁切取景能力在这类工程里根本没有入口。
  *  缩放那条**不在这组里**（任何比例下都有用：>1 = 放大裁切），常驻。 */
 const showStageGeom = computed(() => !sameRatio.value || stageScaleNum.value !== 1)
-/** 背景：契约说 `bg=none`（横画布铺满、画面铺满画布）时调它看不出效果 ⇒ 隐藏；
- *  竖画布铺满仍铺衬底（`resolve_stage` 里那条画布方向的门控），照常显示。 */
-const stageBgVisible = computed(() => {
-  const st = cfg.value?._canvas?.stage
-  if (!st) return true
-  return (st.bg || 'none') !== 'none'
-})
+// 背景控件（纯色/模糊 + 取色）**已从界面撤下**：`[stage] bg_mode / bg_color` 一直有效，
+// 只是没有入口了（改就改 polish.toml）。这里不再留 stageBgVisible/Display/Color 那三件死代码。
 // ---- 轨道显示开关（`[stage.lanes]`：时间轴每条轨道前那枚眼睛）----
 // 「哪一类渲不渲染」的**唯一判据在 Rust**（`ProjectFile::lane_enabled`）：显式开关优先，
 // 缺字段时按 素材竖/画布竖 取默认（运镜与视觉特效默认关、音效跟画布、字幕弹幕贴纸恒开）。
@@ -2414,17 +2414,6 @@ function onLaneOpen(lane) {
 // ⚠️ 这里原来还有两张"视觉特效 / 音效计数"的表（从 `spec/effects.json` 派生）。
 // 用户 2026-10-06 第二轮："特效事件/这条轨道上还没有特效事件/开关只影响渲染…… 音效事件 0 条/
 // 逐条在事件的属性面板里改 这两个根本没用" ⇒ **整块删掉**（连读数一起）：面板只留控件。
-const bgOptions = [
-  { value: 'color', label: '纯色' },
-  { value: 'blur', label: '模糊' },
-]
-/** 背景按钮的高亮态：'black' 并入纯色（渲染结果一样），`auto`/认不出的值都当**模糊**
- *  —— 与 Rust `stage_bg_mode` 的等价关系一致（2026-10-02 删掉「自动」档之后）。 */
-const stageBgDisplay = computed(() => {
-  const m = String(stageCfg.value.bg_mode || '').toLowerCase()
-  return m === 'color' || m === 'black' ? 'color' : 'blur'
-})
-const stageBgColor = computed(() => stageCfg.value.bg_color || '#000000')
 /** 缩放：滑块与数字框同源；手填的值夹 `[0.1, 4]`、非数字不写（与 `resolve_stage` 的夹取一致） */
 const stageScaleNum = computed(() => {
   const v = Number(stageCfg.value.scale)
@@ -2708,12 +2697,6 @@ async function patchSticker(patch) {
 // 切片段时退出编辑态：草稿属于上一个片段，不能跨片段保存
 watch(() => loadedClip.value, () => cancelPointEdit())
 
-function onCoverError() {
-  coverFailed.value = true
-}
-function onRenderedError() {
-  renderedFailed.value = true
-}
 
 onMounted(() => {
   load()

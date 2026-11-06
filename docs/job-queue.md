@@ -43,7 +43,7 @@
 | 档位 | 名额 | 超额行为 | 成员 |
 |---|---|---|---|
 | `Light` 轻活 | **不占闸门**（不限） | 只有资源键冲突才排队 | `polish_init`、`polish_process`、`polish_cover` |
-| `Medium` 略重 | `MEDIUM_CONCURRENT` = **3** | 本档排满则排队 | `cut_one`、`stage_extract`、`stage_detect`、`correct`、`polish_llm`、`sticker_build`、`download_models` |
+| `Medium` 略重 | `MEDIUM_CONCURRENT` = **3** | 本档排满则排队 | `cut_one`、`stage_extract`、`stage_detect`、`correct`、`polish_llm`、`sticker_build`、`download_models`、`publish` |
 | `Heavy` 重活 | `HEAVY_CONCURRENT` = **2** | 本档排满则排队 | `stage_transcribe`、`stage_cut`、`stage_process`/`pipeline`、`cut_all`、`polish_render`、`ingest_*` |
 
 两个上限是 `jobs.rs` 里的常量（与旧 `MAX_CONCURRENT_JOBS` 同一约定：**要调就改常量**，
@@ -364,7 +364,13 @@ webui 任务行在排队时显示：
 | `correct` | LLM 订正转录文本，写 `video_llm.srt` + checkpoint | 前端入口已撤，只剩 CLI `yekitrim correct` | 略重 |
 | `polish_llm` | 精修 LLM 生成剪辑方案（分段 / 运镜 / 贴纸 / 覆盖层…），跑完在**同一个任务内自动接一次 process 后处理** | 精修页「LLM 剪辑」 | 略重 |
 | `sticker_build` | 读一个贴纸包的文件名，LLM 压出 10~20 个语义 tag，写 `<包名>.toml` 并注册进 `sticker.toml` | 首页「表情包」区块 | 略重 + 后台 |
-| `download_models` | 下载全套 ASR 模型（sensevoice + qwen3-asr，约 1.1GB）到 `<程序目录>/.yekitrim/models/`，sensevoice 还补 hr-files，再解包 | 设置页「模型」 | 略重 + 后台 |
+| `download_models` | 下载全套 ASR 模型（sensevoice + qwen3-asr，约 1.1GB）到 `<数据目录>/.yekitrim/models/`，sensevoice 还补 hr-files，再解包 | 设置页「模型」 | 略重 + 后台 |
+
+### 发布类
+
+| kind | 实际做什么 | 触发入口 | 档位 |
+|---|---|---|---|
+| `publish` | 把选中切片复制到 biliLive-tools 的 staging 目录（len+mtime 判重），逐条 `/bili/validUploadParams` + `/bili/upload`，每提交一条写 `output/publish_state.json`。占 `p:out` + `p:idx`（与剪切/管线互斥）；取消在**每条切片之间**生效 | 切片页「发布 / 发布全部」 | 略重 |
 
 ### 精修类
 
@@ -375,11 +381,11 @@ kind = `polish_{sub}`，`sub` 就是 CLI 子命令名（`yekitrim polish <sub> <
 | `polish_init` | 初始化精修工程：建 `polish.toml` + `data/` + `sfx/`，从 `clip.json` 自动认标题/时长/素材路径，探测弹幕文件，最后 `cmd_parse` 解析素材。已存在则报错（不覆盖） | 轻活 |
 | `polish_llm` | 见上（LLM 生成 segments，随后接 process） | 略重 |
 | `polish_process` | 后处理：按当前 polish.toml 与 layout 重算每个事件的位置/锚点/时长吸附。**无 LLM、幂等**，每次都全量重算 | 轻活 |
-| `polish_render` | 渲染导出：走**独立 CLI 子进程**（`yekitrim polish render <dir>`，会先跑一次 process），进程里 headless Chrome 抽帧 + ffmpeg 分块编码 | 重活 |
-| `polish_cover` | 出封面：同样走独立子进程（`yekitrim polish cover <dir>`），headless Chrome 截 1920×1080 | 轻活 |
+| `polish_render` | 渲染导出：走**独立 CLI 子进程**（`yekitrim polish render <dir>`，会先跑一次 process），画面由底座 **Dhampir** 渲染，本仓用 ffmpeg 混音/合流 | 重活 |
+| `polish_cover` | 出封面：同样走独立子进程（`yekitrim polish cover <dir>`），静态 **Takumi** 光栅化 1920×1080 | 轻活 |
 
-`render` / `cover` 之所以走子进程而不是进程内调用，是因为 headless Chrome 在 WebUI 服务进程内
-启动会超时；代价是取消要按 pid 杀进程树（`render_proc.rs`）。
+`render` / `cover` 之所以走子进程而不是进程内调用，是为了取消时能按 pid 杀整棵进程树
+（Windows `taskkill /F /T`；Linux 子进程 `process_group(0)` + `kill -9 -<pid>`，否则孙进程会留下继续跑）。
 
 ### 不是任务的东西
 

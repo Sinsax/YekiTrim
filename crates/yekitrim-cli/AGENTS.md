@@ -56,13 +56,16 @@
   `doctor [--url <base>]` / `ingest token [--disable]` / `ingest status` /
   `user list|info|add|passwd|check|disable|init-admin|reset-admin-password|invite|invites|invite-revoke` /
   `config init [--path]` / `config show` / `config migrate [路径…]` / `correct [-t <transcript>]` / `server <ServerArgs>` /
-  `polish init|llm|process|render|cover|preview|doctor|test` / `polish stickers list|test|scan|build`。
+  `polish init|llm|process|render|cover|preview|doctor|test` / `polish stickers list|test|scan|build` /
+  `fonts list|install [--id]`。
   `stage_name(num)`（1..4 → AudioExtractor/Transcriber/EventDetector/Cutter）在 `cli.rs`。
   所有 stage 命令的 `-i` 可选，默认从 `yekitrim.toml` 的 `input_file` 读取。
   **各命令是什么**（原先记在根卡里 —— 模块内容归模块卡，这次迁 `tools/` 时为最坏指令链预算把它挪回来）：
   `init` 建 `yekitrim.toml`；`extract`/`transcribe`/`detect`/`cut` = Stage 1~4
   （`detect`/`cut` 的自动发现顺序：参数 > config > `output_dir` 里的 json > `*.srt`）；
-  `process` 全自动管线（`--dry-run` = 只到 Stage 3）；`silence`「去静音」**只写 `polish.toml`、不改视频**；
+  `process` 全自动管线（`--dry-run` = 只到 Stage 3。⚠️ 它是**补齐未完成的阶段**：`current_stage` 已经
+  覆盖到的阶段一律"已存在，跳过"—— 改完 prompt / 模型想重跑，得用单级命令；根卡那句"无视检查全部重跑"
+  与实际不符，已在本卡纠正）；`silence`「去静音」**只写 `polish.toml`、不改视频**；
   `download` 把全部 ASR 模型下到 `<程序>/.yekitrim/models/`；`status` 看当前进度；
   `config migrate` = **把已下线的键从配置文件里真清掉并写回**（工程级配置按设计不自动写回，见 core/config 卡）；
   `usage` LLM 用量（token/缓存命中/耗时，账本 `llm_usage`）；`doctor` 安全与运行状况摘要；
@@ -107,12 +110,22 @@
   （唯一一份定义在 service 侧，见 `crates/yekitrim-service/AGENTS.md`）。
 - ⚠️ **新增会走 LLM 的 CLI 分支要记得挂 `try_install_cli_sink()`**，否则用量统计里没有它
   （写库失败只 warn，**绝不影响调用结果**）。
-- `yekitrim init` 走的是**命令自带的 `--config`**（`Command::Init.config` = `yekitrim.toml` 的**写出路径**，
-  缺省取输入视频的同级目录），**不读**全局 `-c/--config`；其余分支才用全局 `cli.config` 当配置路径。
+- `yekitrim init` 的 `--config` 是 **`yekitrim.toml` 的写出路径**（缺省取输入视频的同级目录），不读全局
+  `cli.config`；⚠️ 但它和全局 `-c/--config` 在 clap 里**是同一个 id**，所以 `-c` 写在**子命令之前**时
+  也会被 init 采用（实测 `yekitrim -c A.toml init v.mp4` ⇒ 写到 A.toml；子命令自己的 `--config` 优先）。
+  `init` **之后**的 `-c` 会被 clap 直接拒（那个位置只有 `--config`）。其余分支一律用全局
+  `cli.config` 当**读**的配置路径。
 - `polish preview` 是**两条路**：先在输入目录向上找 `yekitrim.toml` —— 找到就起 `yekitrim_server::run()`
-  打开同一 WebUI 精修页（`ServerArgs { host: "127.0.0.1", port: DEFAULT_PORT, open: true, config: Some(cfg), … }`，
-  路径经 `percent_encode_component` 拼 `/#/project/.../polish?dir=`）；找不到才回退旧的独立
-  `yekitrim_polish::commands::cmd_preview`，保证命令仍然可用。
+  打开同一 WebUI 精修页（`ServerArgs { host: "127.0.0.1", port: DEFAULT_PORT, open: true, config: Some(cfg), … }`）；
+  找不到才回退旧的独立 `yekitrim_polish::commands::cmd_preview`，保证命令仍然可用。
+  ⚠️ **打开的是哪一页（代价：一条曾经静默失效的路由）**：WebUI v5 起只认数字项目 id ——
+  `webui/src/router.js` 对 `/project/:cfg/:rest` 里**非数字**的 `:cfg` 一律 redirect 到 `/workbench`，
+  而且**没有任何视图再读 `?dir=`**。所以旧实现拼的 `/#/project/<配置路径>/polish?dir=<片段目录>`
+  永远落工作台首页（命令退出 0、页面却不是那个片段）。现在 `polish_preview_path` 拼
+  `/#/p/<pid>/polish[/<clip>]`：`pid` 由 `project_id_for_config` 查账本 `projects` 表
+  （**只读、不建库**），`:clip` 只取**目录名**并 percent-encode（精修页拿它匹配 `clips[].name`，
+  传绝对路径永远匹配不上；vue-router 会把 `%20` 解回来）。工程还没登记进项目库 ⇒ 退回 `/#/workbench`
+  并打一条 info（回去还能导入工程）。**改路由先看 `webui/src/router.js`**，别凭记忆调。
 - `polish llm` 在 CLI 保留**断点续传**（`cmd_llm(input, false)`）——长片重跑很贵；编辑器那颗按钮走的是 `full=true`。
 - `polish render` 用 `std::env::set_var("VTEDIT_RENDERER", renderer)` 传后端。⚠️ **默认 `dhampir`**
   （**出片只剩这一条腿**，2026-09-30 用户拍板切换）；老写法 `wgpu` / `native` 视作 dhampir，
@@ -125,14 +138,23 @@
   `dhampir::readiness()` 的同一份判断）。
 - `Command::Status` 自己组装输出：`yekitrim_service::Workspace::load` + `project_snapshot`（`current_stage` 由
   输出文件存在性推导），再读 `output/transcript.json` 的 `asr_metadata` 打印模型/锚点覆盖率/降级原因。
+  ⚠️ 两条口径：① `current_stage` = **最后跑完的** stage（状态机 `stage > current + 1` 才拒绝）⇒
+  标记走 `stage_mark`：`num <= current` ✓、`num == current + 1` →、其余 ·（以前最后跑完那一级被标成
+  "正在跑"、真正的下一步是 ·，而且每行打了两遍标记）；② `Workspace::load` / `load_config_at`
+  **刻意容忍配置不存在**（server 要先能算路径），但 `status` 是在回答"这个工程走到哪了" ——
+  配置文件不存在时**报错并非零退出**，否则"找错目录"会被伪装成"全新工程"（脚本里
+  `status && 下一步` 也跟着错）。
 
 > 改动只允许落在本目录；跨模块改动先读对方卡，并跑两条门禁。
 
 ## 验证
 
 ```bash
-cargo check -p yekitrim-cli
+export SHERPA_ONNX_LIB_DIR=/home/toki/project/sherpa-onnx-prebuilt-no-tts/build/cmake-build/install/lib
+cargo check -p yekitrim-cli --all-targets   # 0 warnings
+cargo test -p yekitrim-cli                  # 纯函数单测（路由拼装 / status 标记 / 项目 id 查询）
 ```
 
-只做入口装配，所以没有单测、只要求编译通过（0 warnings）。改了命令面或 `ServerArgs` 的字段，
-顺手跑一次 `cargo run -- --help`。
+只做入口装配，所以绝大多数东西没有单测 —— 但**拼 URL、算标记、查账本这类纯逻辑有**
+（`main.rs` 的 `tests`：`polish preview` 的目标路由、`status` 的标记口径、项目 id 查询）。
+改了命令面或 `ServerArgs` 的字段，顺手跑一次 `cargo run -- --help`。

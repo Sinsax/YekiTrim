@@ -99,7 +99,59 @@ fn open_exclusive(path: &Path) -> std::io::Result<File> {
         // 0 = 不共享：第二个进程连打开都会失败，进程死掉则由系统自动释放
         opts.share_mode(0);
     }
-    opts.open(path)
+    let file = opts.open(path)?;
+    #[cfg(unix)]
+    {
+        // ⚠️ Unix 的普通 open **不互斥**：两个进程都能打开同一个文件、都能读到
+        // "上一个持有者"（甚至是空文件），于是"同时启动的两个 server"会双双放行
+        // —— 抢同一批项目与同一个 SQLite（WAL 也挡不住两个进程各写一批）。
+        // 唯一可靠的做法是给句柄加 flock(LOCK_EX|LOCK_NB)：锁跟着**打开的文件描述**
+        // 走，进程死掉由内核自动释放（与 Windows 的 share_mode(0) 同一语义），
+        // 所以这里拿不到锁就等于"真的有人在跑"。
+        //
+        // 不引第三方 crate（与 disk.rs 的 GetDiskFreeSpaceExW 同一个理由）：
+        // flock 是 libc/BSD 的稳定 ABI，两个常量在所有 Unix 上都一样。
+        // ⚠️ 它是**建议锁**：不阻塞 read_lock（yekitrim doctor 仍能读出持有者），
+        // 只保证"第二个 open_exclusive 一定失败"。
+        lock_exclusive(&file)?;
+    }
+    Ok(file)
+}
+
+#[cfg(unix)]
+fn lock_exclusive(file: &File) -> std::io::Result<()> {
+    use std::os::unix::io::AsRawFd;
+    extern "C" {
+        fn flock(fd: i32, operation: i32) -> i32;
+    }
+    const LOCK_EX: i32 = 2;
+    const LOCK_NB: i32 = 4;
+    // SAFETY: 传入的 fd 属于仍然存活的 File；flock 只读 fd 与标志位，不持有指针。
+    let rc = unsafe { flock(file.as_raw_fd(), LOCK_EX | LOCK_NB) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+/// 拒绝启动时的**统一文案**。
+///
+/// 两条拒绝路径 —— ①拿不到独占句柄（对方真的在跑）②句柄到手但锁文件里记的 pid 仍存活
+/// （锁文件是从别处复制来的 / 同进程已持有一把）—— 说的其实是同一件事：
+/// **这个 data_dir 已经有一个 yekitrim server**。所以首行必须逐字一致：用户、文档、
+/// 日志检索都靠「已有 yekitrim server」这一句认出它（历史事故：两条文案各说各的，
+/// 用户在 Linux 上看到的是「锁文件…记录的进程仍在运行」，与文档里的报错对不上）。
+/// 差别只在"下一步该怎么办"，由 `advice` 交代。
+fn conflict_message(path: &Path, who: &str, advice: &str) -> String {
+    format!(
+        "已有 yekitrim server 在使用同一个数据目录：{}（{}）。\n\
+         同一 data_dir 不允许两个实例同时运行（会抢项目、端口与 SQLite）。\n\
+         {}",
+        path.display(),
+        who,
+        advice
+    )
 }
 
 /// 已持有的单实例锁；进程退出（含 `Drop`）时释放，并尽力删掉锁文件。
@@ -126,14 +178,11 @@ impl InstanceLock {
                     .as_ref()
                     .map(|h| h.label())
                     .unwrap_or_else(|| "无法读取持有者信息（锁被独占）".to_string());
-                bail!(
-                    "已有 yekitrim server 在使用同一个数据目录：{}（{}）。\n\
-                     同一 data_dir 不允许两个实例同时运行（会抢项目、端口与 SQLite）。\n\
-                     确认那个进程已停止后重试；若要用另一份账号账本，请用 --data-dir <其它目录>。\n\
-                     底层错误: {e}",
-                    path.display(),
-                    who
-                );
+                bail!("{}", conflict_message(
+                    &path,
+                    &who,
+                    &format!("确认那个进程已停止后重试；若要用另一份账号账本，请用 --data-dir <其它目录>。\n底层错误: {e}")
+                ));
             }
         };
 
@@ -146,11 +195,11 @@ impl InstanceLock {
             .unwrap_or(false);
         if prev_alive && !force {
             let who = prev.as_ref().map(|p| p.label()).unwrap_or_default();
-            bail!(
-                "锁文件 {} 记录的进程仍在运行：{who}。\n\
-                 若确认那是无关进程（例如锁文件是从别的部署复制过来的），用 --force 接管。",
-                path.display()
-            );
+            bail!("{}", conflict_message(
+                &path,
+                &who,
+                "若确认那是无关进程（例如锁文件是从别的部署复制过来的），用 --force 接管。"
+            ));
         }
         if prev_alive {
             tracing::warn!("⚠ 已用 --force 接管 yekitrim.lock（原持有者 {who} 仍存活）",
@@ -244,6 +293,28 @@ mod tests {
         assert!(
             format!("{:#}", second.err().unwrap()).contains("已有 yekitrim server"),
             "错误文案要能指导用户"
+        );
+    }
+
+    /// **独占句柄真的互斥**（跨平台判据）：Windows 靠 `share_mode(0)`，Unix 靠 `flock`。
+    ///
+    /// 2026-10-30 之前 Unix 侧只是普通 `open` —— 两个进程都能拿到句柄，互斥全靠
+    /// "锁文件里记的 pid 还活着"这条**事后**判断：同时启动的两个 server 会双双放行，
+    /// 各自写同一个 SQLite / 抢同一批项目。去掉 `lock_exclusive` 立刻红。
+    #[test]
+    fn second_opener_is_rejected_on_every_platform() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = lock_path(dir.path());
+        let first = open_exclusive(&path).expect("第一次打开应成功");
+        let second = open_exclusive(&path);
+        assert!(
+            second.is_err(),
+            "第二个独占句柄必须拿不到（Unix flock / Windows share_mode(0)）"
+        );
+        drop(first);
+        assert!(
+            open_exclusive(&path).is_ok(),
+            "释放后必须能再次打开 —— 否则崩溃残留会永久锁死服务"
         );
     }
 

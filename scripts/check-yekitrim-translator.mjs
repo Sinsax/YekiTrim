@@ -938,9 +938,19 @@ const MUTATIONS = [
     to: "`${cue.style.name}|${cue.pos}|${cue.styleAnim || ''}` +\n        `|${cue.effectAnim || ''}|${cue.transitionAnim || ''}|${originKey}`",
   },
   {
-    name: '颜色那一维改用预设名（而不是 RGBA 值）⇒ 同色不同名的条目被拆成两条轨',
+    name: '颜色那一维改回预设名（colorName 已退役）⇒ 分组维恒空 + 解析器又带上死字段',
     from: "const colorKey = Array.isArray(cue.color) ? cue.color.join(',') : '';",
     to: "const colorKey = cue.style.colorName || '';",
+  },
+  {
+    name: '颜色 id 后缀丢掉"等于档位默认色就不加"这一半 ⇒ 没写 color 的老工程 id 全变（R4 破）',
+    from: "colorKey && colorKey !== styleDefaultColor.join(',')",
+    to: "colorKey && colorKey !== ''",
+  },
+  {
+    name: '轨 id 的颜色后缀恒空 ⇒ 两种颜色的同档文字撞同一个 id（后一条盖掉前一条）',
+    from: "          ? 'c' + colorKey.replace(/,/g, '_')\n          : '';",
+    to: "          ? ''\n          : '';",
   },
   {
     name: 'cue 不带颜色 ⇒ 上游取不到值（轨道照样分，但每条都是默认色）',
@@ -1322,16 +1332,17 @@ const MUTATIONS = [
   },
   {
     // M2：把"没配倍率"的兜底退回 1.0 —— 远景档会整段不拉远（成片里看不出来，只有报告一行）。
+    // ⚠️ 2026-10-30：档位表在 2026-10-20 变成五档 +「微」，锚点跟着更新（旧锚点已不命中）。
     name: 'zoomFactor 的"远"档默认值退回 1.0（不再照抄模板的 0.55）',
-    from: '  const defaults = { 特写: 1.8, 近: 1.5, 远: 0.55, 中: 1.3 };',
-    to: '  const defaults = { 特写: 1.8, 近: 1.5, 远: 1.0, 中: 1.3 };',
+    from: '  const defaults = { 特写: 2.0, 近: 1.5, 微: 1.06, 远: 0.55, 全: 1.0, 中: 1.3 };',
+    to: '  const defaults = { 特写: 2.0, 近: 1.5, 微: 1.06, 远: 1.0, 全: 1.0, 中: 1.3 };',
   },
   {
-    // §18-A：特写档（1.8）是**新加的第四档** —— 把它退回"近"的 1.5，
+    // §18-A：特写档（现在是 2.0）是**独立一档** —— 把它退回"近"的 1.5，
     // 症状是"特写不够特写"，而从报告上看不出来（倍率只体现为画面大小）。
     name: '（§18-A）zoomFactor 的"特写"档退回近景 1.5（第四档失效）',
-    from: '  const defaults = { 特写: 1.8, 近: 1.5, 远: 0.55, 中: 1.3 };',
-    to: '  const defaults = { 特写: 1.5, 近: 1.5, 远: 0.55, 中: 1.3 };',
+    from: '  const defaults = { 特写: 2.0, 近: 1.5, 微: 1.06, 远: 0.55, 全: 1.0, 中: 1.3 };',
+    to: '  const defaults = { 特写: 1.5, 近: 1.5, 微: 1.06, 远: 0.55, 全: 1.0, 中: 1.3 };',
   },
   {
     // M2：`color` 档的 Solid 写成 Linear —— 单色覆盖层会变成"两个同色档的渐变"（看不出来，但形状不对）。
@@ -3572,12 +3583,21 @@ function checkTextPosLanes(mod, src) {
       '最后一维必须是 **RGBA 值**（`cue.color.join(\',\')`），不是 `colorName` —— ' +
       '按名字分会让"comment 的默认黄"与"显式写的 yellow"分到两条轨（值相同却拆开），' +
       '而按值分永远正确');
-    // ⚠️ 轨 id 里带的是**预设名**（R4：没写 color 的老工程 id 逐字符不变）。
-    ok(src.includes("const colorTag = cues[0].style.colorName || ''"),
-      '轨 id 的颜色后缀必须取 `cues[0].style.colorName`（**空串 = 不加后缀**）—— ' +
-      '用 RGBA 的话连没写颜色的老工程也会多出一串 ⇒ 产物整个变样（R4 破）');
-    ok(src.includes('`${colorTag ? \'_\' + colorTag : \'\'}`'),
-      '`colorTag` 为空时**不许加下划线**（否则老工程 id 变成 `text_hook_bottom_`）');
+    // ⚠️⚠️ 轨 id 的颜色后缀：**RGBA + "等于档位默认色就不加"**（2026-10-30 颜色预设链退役后重钉）。
+    //    预设名已经没人解析（第 10 段只做段数兼容），后缀只能按**值**；而"等于默认色 ⇒ 空"
+    //    是 R4 的那一半：没写 color 的老工程 id 必须逐字符不变。
+    ok(src.includes('const styleDefaultColor = (TEXT_STYLE_FALLBACK[styleName] ?? TEXT_STYLE_FALLBACK.comment).color;'),
+      '轨 id 的颜色后缀必须与**档位默认色**比较（styleDefaultColor）—— ' +
+      '少了它，没写 color 的老工程也会多一段颜色后缀 ⇒ 产物整个变样（R4 破）');
+    ok(src.includes("colorKey && colorKey !== styleDefaultColor.join(',')"),
+      "等价的比较条件：colorKey !== styleDefaultColor.join(',') ⇒ 等于默认色时后缀为空");
+    ok(src.includes("? 'c' + colorKey.replace(/,/g, '_')"),
+      '颜色后缀必须按 **RGBA** 拼、并保留 _ 分隔符 —— ' +
+      '把逗号吃掉会让 [1,23,4,5] 与 [12,3,4,5] 拼成同一个 id（两条轨撞同一个 id，后一条盖掉前一条）');
+    ok(!src.includes('colorName'),
+      '颜色**预设名**链已退役：转译器里不许再出现 colorName（第 10 段只允许用于段数兼容）');
+    ok(src.includes("colorTag ? '_' + colorTag : ''"),
+      'colorTag 为空时**不许加下划线**（否则老工程 id 变成 text_hook_bottom_）');
     // ---- 逐条颜色：**行为**判据（不只是"代码在"）----
     //
     // ⚠️ 上面那几条只证明"分组键里有颜色" —— 而本仓栽过太多次
@@ -3609,6 +3629,68 @@ function checkTextPosLanes(mod, src) {
     ok(src.includes('anchor_bottom: anchorBottomFor(posName, st, height)'),
       '轨上必须真的写出 `anchorBottomFor(posName, st, height)` —— ' +
       '算出来了却没写进轨，等于没接');
+    // ---- ④c **颜色分轨 + id**（2026-10-30 颜色预设链退役后重钉：**行为**判据）----
+    //
+    // 两条只有颜色不同的同档文字：必须是**两条轨、两条 id**，且颜色真的进了轨级 color。
+    // 同时钉 **R4**：没写 color 的那条（7 段 source）id 必须逐字符等于 text_hook_top。
+    {
+      const colorToml = [
+        'config_version = 1',
+        'duration = 6.0',
+        'processed = true',
+        '',
+        '[source]',
+        'video = "clip.mp4"',
+        'subtitles = ""',
+        'danmaku = ""',
+        '',
+        '[canvas]',
+        'width = 1920',
+        'height = 1080',
+        '',
+        '[[segments]]',
+        'start = 0.0',
+        'end = 6.0',
+        '',
+        '[[segments.events]]',
+        'type = "element"',
+        'kind = "text"',
+        'time = 0.2',
+        'end = 2.0',
+        'text = "默认色"',
+        'style = "hook"',
+        'pos = "top"',
+        'source = "hook|80|6|255,255,255,255|26,26,26,255|900|0"',
+        '',
+        '[[segments.events]]',
+        'type = "element"',
+        'kind = "text"',
+        'time = 3.0',
+        'end = 5.0',
+        'text = "蓝字"',
+        'style = "hook"',
+        'pos = "top"',
+        'source = "hook|80|6|64,64,255,255|26,26,26,255|900|0|0|1|cyan"',
+        '',
+      ].join(String.fromCharCode(10));
+      const colorProject = mod.translate(mod.parseToml(colorToml), dir, join(dir, 'color.doc.json'));
+      const colorIds = (colorProject.timeline?.tracks ?? [])
+        .map((t) => String(t.id))
+        .filter((id) => id.startsWith('text_hook_top'));
+      ok(colorIds.includes('text_hook_top'),
+        '老工程（7 段 source、没写 color）的轨 id 必须逐字符是 text_hook_top —— 实得 ' +
+        JSON.stringify(colorIds) + '；多出颜色后缀 = 存量产物 id 全变（R4 破）');
+      ok(colorIds.length === 2 && new Set(colorIds).size === 2,
+        '两种颜色必须是两条不同的轨/id：实得 ' + JSON.stringify(colorIds) +
+        ' —— 共用一条 = 后写覆盖先写（成片里全变成同一色，而报告一行差异都没有）');
+      const coloredId = colorIds.find((id) => id !== 'text_hook_top');
+      ok(coloredId === 'text_hook_top_c64_64_255_255',
+        '颜色后缀必须按 RGBA 拼（_c64_64_255_255）：实得 ' + coloredId);
+      const coloredTrack = (colorProject.timeline?.tracks ?? []).find((t) => t.id === coloredId);
+      ok(JSON.stringify(coloredTrack?.subtitle?.color) === JSON.stringify([64, 64, 255, 255]),
+        '异色那条轨的 subtitle.color 必须是 64,64,255,255 —— 实得 ' +
+        JSON.stringify(coloredTrack?.subtitle?.color) + '（轨级字段没接上 = 成片里全是默认色）');
+    }
     return checks;
   } finally {
     rmSync(dir, { recursive: true, force: true });

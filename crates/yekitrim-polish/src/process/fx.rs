@@ -223,6 +223,25 @@ fn zoom_state_at(seg: &Segment, t: f64) -> Option<String> {
     cur.map(|(_, z)| z)
 }
 
+/// 某段内覆盖 `t` 的那条运镜的**机位**（`origin` + `anchor`）。
+///
+/// ⚠️ 派生事件（句读微推 / 段尾收束）只该动 **zoom**，不该动机位。
+/// 它们原先一律写 `origin="50% 50%"` + `anchor=None`，而 `resolve_camera_anchors`
+/// 把这一对值当作**老工程占位**迁移成 `anchor="liver"`（Step 2d 在 1f2 之后）⇒
+/// 段内一次微推就把焦点从弹幕/贴纸/用户落点**拉到主播**，画面横跳一下且不报错。
+/// 继承当前机位之后，叠加事件与它所叠加的那条运镜解析出同一个落点。
+fn camera_focus_at(seg: &Segment, t: f64) -> Option<(String, Option<String>)> {
+    let mut cur: Option<(f64, String, Option<String>)> = None;
+    for ev in &seg.events {
+        if let Event::Camera { time, origin, anchor, .. } = ev {
+            if *time <= t + 1e-9 && cur.as_ref().map(|(bt, _, _)| time >= bt).unwrap_or(true) {
+                cur = Some((*time, origin.clone(), anchor.clone()));
+            }
+        }
+    }
+    cur.map(|(_, origin, anchor)| (origin, anchor))
+}
+
 /// **① 爆点驱动景别**（§一①）：按段内爆点分数分配景别，**不用 LLM、无随机**。
 ///
 /// 只改每段**最早那条非 manual 运镜**。分档口径（相对全片均值，不设绝对阈值）：
@@ -306,12 +325,15 @@ pub fn add_micro_push(segments: &mut [Segment], subtitles: &[Subtitle]) -> usize
             });
             if !exists {
                 let end = (cursor + 2.0).min(seg.end);
+                // 继承当前机位（见 `camera_focus_at`）：微推只改 zoom，不许把焦点拽走。
+                let (origin, anchor) = camera_focus_at(seg, cursor)
+                    .unwrap_or_else(|| ("50% 50%".to_string(), None));
                 seg.events.push(Event::Camera {
                     time: cursor,
                     end: Some(end),
                     zoom,
-                    origin: "50% 50%".into(),
-                    anchor: None,
+                    origin,
+                    anchor,
                     anchor_to: None,
                     to_origin: None,
                     cut: false,
@@ -336,31 +358,10 @@ pub fn add_micro_push(segments: &mut [Segment], subtitles: &[Subtitle]) -> usize
             };
         }
     }
-    // **轮换归一**：按**全片时间序**给第 i 条补位分配 AUTO_FILL_KINDS[i % 3]
-    // ⇒ 相邻两条必然不同类（确定性、无随机；重跑结果相同 ⇒ 幂等）。
-    {
-        let mut order: Vec<(usize, usize, f64)> = Vec::new();
-        for (si, seg) in segments.iter().enumerate() {
-            for (ei, ev) in seg.events.iter().enumerate() {
-                if is_auto_fill(ev) {
-                    order.push((si, ei, ev.get_time()));
-                }
-            }
-        }
-        order.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
-        for (i, (si, ei, time)) in order.into_iter().enumerate() {
-            let want = AUTO_FILL_KINDS[i % AUTO_FILL_KINDS.len()];
-            if transient_kind(&segments[si].events[ei]) == Some(want) {
-                continue;
-            }
-            let dur = segments[si].events[ei]
-                .end()
-                .map(|e| (e - time).max(0.1))
-                .unwrap_or(AUTO_FILL_SECS);
-            segments[si].events[ei] =
-                make_auto_fill(want, time, dur, Some(AUTO_FILL_ANCHOR.to_string()));
-        }
-    }
+    // ⚠️ 这里**不该**有「轮换归一」：那是 `fill_visual_gaps` 的收尾（补**新**事件之后
+    // 按全片时间序归一）。这段曾被整块复制到这里 —— 除了每趟多造一遍上一趟的补位事件，
+    // 它还带着那条**永远为假**的判据（拿 `transient_kind` 的 `"overlay"` 去比候选名
+    // `"overlay_hue"`，见 `auto_fill_category`）。微推只负责加自己的运镜事件。
     added
 }
 
@@ -398,12 +399,15 @@ pub fn segment_breathing(segments: &mut [Segment]) -> usize {
             let cur = zoom_state_at(seg, tail).unwrap_or_else(|| "全".to_string());
             let target = weaker(&cur);
             if target != cur {
+                // 同微推：只动 zoom，机位继承当前镜头（见 `camera_focus_at`）。
+                let (origin, anchor) = camera_focus_at(seg, tail)
+                    .unwrap_or_else(|| ("50% 50%".to_string(), None));
                 seg.events.push(Event::Camera {
                     time: tail,
                     end: Some(seg.end),
                     zoom: target,
-                    origin: "50% 50%".into(),
-                    anchor: None,
+                    origin,
+                    anchor,
                     anchor_to: None,
                     to_origin: None,
                     cut: false,
@@ -424,7 +428,17 @@ pub fn segment_breathing(segments: &mut [Segment]) -> usize {
 /// ⚠️ **必须排在 Step 3（音效规则引擎）之后**：规则引擎会删掉"字幕里找不到依据"的独立 sfx，
 ///    而这条是运镜驱动的、没有台词依据 —— 排前面会被它当场删掉。
 /// ⚠️ 幂等：0.3s 内已有任意 Sfx 就跳过。
-pub fn sync_camera_sfx(segments: &mut [Segment]) -> usize {
+/// ⚠️⚠️ **名字必须由调用方从 catalog 解析**（2026-10-30 修）：这里曾写死 `name: "whoosh"`，
+///    而 **catalog 里根本没有 whoosh**（1213 条 0 命中）⇒ ① Step 4 每次报
+///    「未在 catalog 中找到」、成片里没有这一声；② 下一趟 Step 3 的规则引擎把这条
+///    "解析失败"的 Sfx 清空/删掉 ⇒ 功能**活不过一次 process**。这不是"音效没配好"，
+///    是**配了一个不存在的 id**。
+///    解析不到（全被屏蔽 / 库缺失）⇒ **不造事件**（宁缺毋滥，由调用方报一行）。
+///    返回真正补上的条数。
+pub fn sync_camera_sfx(
+    segments: &mut [Segment],
+    mut resolve_transition_sfx: impl FnMut() -> Option<String>,
+) -> usize {
     let mut wanted: Vec<(usize, f64)> = Vec::new();
     for (si, seg) in segments.iter().enumerate() {
         for ev in &seg.events {
@@ -443,16 +457,18 @@ pub fn sync_camera_sfx(segments: &mut [Segment]) -> usize {
             }
         }
     }
-    let n = wanted.len();
+    let mut added = 0usize;
     for (si, time) in wanted {
+        let Some(name) = resolve_transition_sfx() else { continue };
         segments[si].events.push(Event::Sfx {
             time,
-            name: "whoosh".into(),
+            name,
             volume: None,
             end: None,
         });
+        added += 1;
     }
-    n
+    added
 }
 
 /// **⑨ 竖素材纵向运镜**（§一⑨）：竖屏**只做纵向**推拉/位移，不做横向（横摇必露边）。
@@ -460,13 +476,18 @@ pub fn sync_camera_sfx(segments: &mut [Segment]) -> usize {
 /// 判据只读**工程里已有的字段**（`canvas.orientation` / `stage`），**不在 process 里开子进程探源**。
 /// 做法：每段那条运镜的 `origin` 只动 **y**（42% ↔ 58% 交替）、zoom 在 `全`/`微` 之间交替。
 /// ⚠️ 幂等：目标值由段序号决定，第二趟算出同一组值。
+/// ⚠️⚠️ **必须把 `anchor` / `anchor_to` / `to_origin` 清掉**（2026-10-30 修）：
+///    本函数跑在 Step 2d `resolve_camera_anchors` **之前**，而那里对 `anchor` 是
+///    **无条件覆盖 origin** —— 留着锚点，这里写好的 `50% 42%` 会被按锚点重算掉
+///    （默认运镜的 anchor 恒为 `liver`）⇒ 竖屏纵向位移**一次都没生效**，而日志照旧报条数。
+///    清掉锚点 = "只保留这里的纵向落点"；锚点语义里的横向移动本就不允许。
 pub fn direct_vertical_portrait(segments: &mut [Segment]) -> usize {
     let mut changed = 0usize;
     for (i, seg) in segments.iter_mut().enumerate() {
         let y = if i % 2 == 0 { 42.0 } else { 58.0 };
         let zoom = if i % 2 == 0 { "全" } else { "微" };
         for ev in seg.events.iter_mut() {
-            if let Event::Camera { time, zoom: z, origin, manual, .. } = ev {
+            if let Event::Camera { time, zoom: z, origin, anchor, anchor_to, to_origin, manual, .. } = ev {
                 if *manual || (*time - seg.start).abs() >= 1.0 {
                     continue;
                 }
@@ -478,6 +499,19 @@ pub fn direct_vertical_portrait(segments: &mut [Segment]) -> usize {
                 }
                 if z.trim() != zoom {
                     *z = zoom.to_string();
+                    here += 1;
+                }
+                // 清掉横向/纵向的锚点意图（理由见函数注释：Step 2d 会覆盖 origin）。
+                if anchor.is_some() {
+                    *anchor = None;
+                    here += 1;
+                }
+                if anchor_to.is_some() {
+                    *anchor_to = None;
+                    here += 1;
+                }
+                if to_origin.is_some() {
+                    *to_origin = None;
                     here += 1;
                 }
                 if here > 0 {
@@ -1058,7 +1092,9 @@ pub fn fill_visual_gaps(
         order.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
         for (i, (si, ei, time)) in order.into_iter().enumerate() {
             let want = AUTO_FILL_KINDS[i % AUTO_FILL_KINDS.len()];
-            if transient_kind(&segments[si].events[ei]) == Some(want) {
+            // ⚠️ 比的是**类别名**（`overlay_hue` → `"overlay"`），不是候选名本身 ——
+            //    否则已有 hue 补位永远"认不出"，每趟都会把它重造一遍（无害但白写）。
+            if transient_kind(&segments[si].events[ei]) == auto_fill_category(want) {
                 continue;
             }
             let dur = segments[si].events[ei]
@@ -1080,6 +1116,24 @@ pub fn fill_visual_gaps(
 /// 导致 clip-15 在 80s 里出现 7 次**完全相同的模糊**（其中 6 条是补位）。
 /// 现在 `overlay(hue)` 已在五端求值（`ebffcab`）⇒ 恢复三档轮换。
 pub const AUTO_FILL_KINDS: [&str; 3] = ["blur", "overlay_hue", "vignette"];
+
+/// 「温和候选」→ [`transient_kind`] 的**类别名**。
+///
+/// ⚠️ 两者**不是同一个词**：候选表里叫 `overlay_hue`（造出来的是
+/// `overlay{overlay_type:"hue"}`），而 `transient_kind` 对任何 overlay 都返回 `"overlay"`。
+/// 直接拿候选名去跟类别名比 ⇒ **永远不相等**，后果是两处静默失效（实测过）：
+/// * 轮换归一每趟都把已有的 hue 补位重造一遍（判据"已经是它"永远为假）；
+/// * `cap_repeated_fx` 把 `overlay` 与 `overlay_hue` 当成**两种类型** ⇒
+///   一条 blur 被换成 hue 之后，可以紧贴着一条真 overlay 而判据认为"相邻不同类"
+///   （第二趟再换回去 ⇒ 两趟结果不一致）。
+pub(crate) fn auto_fill_category(kind: &str) -> Option<&'static str> {
+    match kind {
+        "blur" => Some("blur"),
+        "overlay_hue" => Some("overlay"),
+        "vignette" => Some("vignette"),
+        _ => None,
+    }
+}
 
 /// 造一条补位事件（`kind` 取 [`AUTO_FILL_KINDS`] 里的值）。
 fn make_auto_fill(kind: &str, at: f64, dur: f64, marker: Option<String>) -> Event {
@@ -1175,12 +1229,19 @@ pub fn cap_repeated_fx(segments: &mut [Segment], duration: f64, mute_ranges: &[M
             continue;
         }
         // 找一个**与邻居不同类、且没超限**的温和候选；找不到就留给下一轮（不删）。
+        // ⚠️ 比较与计数一律走**类别名**（见 `auto_fill_category`）—— 拿候选名
+        //    `"overlay_hue"` 去比 `transient_kind` 的 `"overlay"` 永远不相等：
+        //    ① 可以把一条 blur 换成 hue 后紧贴一条真 overlay（相邻同类却判绿）；
+        //    ② `count.get("overlay_hue")` 恒为 0 ⇒ 上限对 hue 补位完全失效。
         let pick = AUTO_FILL_KINDS
             .iter()
             .copied()
-            .filter(|c| Some(*c) != prev && Some(*c) != next)
-            .find(|c| count.get(c).copied().unwrap_or(0) < cap);
+            .filter_map(|c| auto_fill_category(c).map(|cat| (c, cat)))
+            .filter(|(_, cat)| Some(*cat) != prev && Some(*cat) != next)
+            .find(|(_, cat)| count.get(cat).copied().unwrap_or(0) < cap)
+            .map(|(c, _)| c);
         let Some(target) = pick else { continue };
+        let target_kind = auto_fill_category(target).expect("AUTO_FILL_KINDS 的每一项都在类别表里");
         // 换成目标类型的等价事件（time/end/sfx 原样保留）。
         let (time, end, sfx, sfx_volume, anchor) = match &segments[si].events[ei] {
             Event::Flash { time, end, sfx, sfx_volume, .. } => (*time, *end, sfx.clone(), *sfx_volume, None),
@@ -1205,8 +1266,8 @@ pub fn cap_repeated_fx(segments: &mut [Segment], duration: f64, mute_ranges: &[M
         }
         segments[si].events[ei] = ev;
         *count.entry(kind).or_insert(0) = count.get(kind).copied().unwrap_or(1) - 1;
-        *count.entry(target).or_insert(0) += 1;
-        order[i].3 = target;
+        *count.entry(target_kind).or_insert(0) += 1;
+        order[i].3 = target_kind;
         changed += 1;
         tracing::info!("  ⚠ 特效去重：@{time:.1}s {kind} -> {target}（相邻同类 / 超出全片上限 {cap} 条）");
     }
@@ -1352,14 +1413,17 @@ fn profile_with(
 
 /// **相邻同类**（FX 口径）：按时间序有**多少对**相邻的瞬时特效同类。
 ///
-/// ⚠️ 只算 `cap_repeated_fx` **看得见**的那批（手工/屏蔽段跳过；带 color/colors 的设计覆盖层跳过）——
-/// 那才是守卫能负责的范围，拿全量算会永远 >0。
+/// ⚠️ 只算 `cap_repeated_fx` **看得见**的那批（手工 / **屏蔽段**跳过；带 color/colors 的
+/// 设计覆盖层跳过）——那才是守卫能负责的范围，拿全量算会永远 >0。
+/// ⚠️ **屏蔽段必须在这里也跳过**：守卫本身不看屏蔽段（那段成片里不存在），
+///    指标若把屏蔽段算进来，日志会一直说"相邻同类 N（0 才算过）"而守卫永远无法把它降到 0
+///    —— 一个**永远不可能满足**的指标比没有指标更糟。
 /// ⚠️ 与 `cap_repeated_fx` 的候选集合同口径，**别在别处再写一份判定**。
-pub fn adjacent_same_transient(segments: &[Segment]) -> usize {
+pub fn adjacent_same_transient(segments: &[Segment], mute_ranges: &[MuteRange]) -> usize {
     let mut order: Vec<(f64, &'static str)> = Vec::new();
     for seg in segments {
         for ev in &seg.events {
-            if ev.is_time_manual() {
+            if ev.is_time_manual() || crate::project::event_starts_muted(mute_ranges, ev) {
                 continue;
             }
             if matches!(ev, Event::Overlay { color: Some(_), .. })
@@ -2877,11 +2941,22 @@ mod tests {
                 origin: "50% 50%".into(), anchor: None, anchor_to: None, to_origin: None,
                 cut: true, handheld: false, manual: false, speed: None, tilt: None },
         ])];
-        assert_eq!(sync_camera_sfx(&mut segs), 1);
-        let sfx: Vec<f64> = segs[0].events.iter().filter_map(|e| match e {
-            Event::Sfx { time, .. } => Some(*time), _ => None }).collect();
-        assert_eq!(sfx, vec![2.0], "音效必须落在运镜起点上");
-        assert_eq!(sync_camera_sfx(&mut segs), 0, "幂等");
+        assert_eq!(sync_camera_sfx(&mut segs, || Some("swish1_".into())), 1);
+        let sfx: Vec<(f64, String)> = segs[0].events.iter().filter_map(|e| match e {
+            Event::Sfx { time, name, .. } => Some((*time, name.clone())), _ => None }).collect();
+        assert_eq!(sfx, vec![(2.0, "swish1_".to_string())], "音效必须落在运镜起点上");
+        assert_eq!(sync_camera_sfx(&mut segs, || Some("swish1_".into())), 0, "幂等");
+        // **解析不到就不造事件**（旧实现写死 whoosh：catalog 里没有它，下一趟会被清掉）。
+        let mut bare = vec![seg_ev(0.0, 10.0, vec![
+            Event::Camera { time: 2.0, end: Some(4.0), zoom: "近".into(),
+                origin: "50% 50%".into(), anchor: None, anchor_to: None, to_origin: None,
+                cut: true, handheld: false, manual: false, speed: None, tilt: None },
+        ])];
+        assert_eq!(sync_camera_sfx(&mut bare, || None), 0, "没有可用音效 ⇒ 不补");
+        assert!(
+            !bare[0].events.iter().any(|e| matches!(e, Event::Sfx { .. })),
+            "解析失败时不许留一条空名字的 Sfx（那会挡住下一次补位）"
+        );
     }
 
     /// ⑨ 竖屏只动 y（x 恒 50%），且幂等。
@@ -4853,6 +4928,22 @@ mod auto_fill_tests {
     fn fx_vign(t: f64) -> Event {
         Event::Vignette { time: t, end: Some(t + 0.4), anchor: None, sfx: None, sfx_volume: None }
     }
+    /// 「设计过的」覆盖层（无 color/colors，所以**参与**同类去重）。
+    fn fx_overlay(t: f64) -> Event {
+        Event::Overlay {
+            time: t,
+            end: Some(t + 0.5),
+            overlay_type: "gradient".into(),
+            color: None,
+            opacity: Some(0.3),
+            colors: None,
+            shape: None,
+            angle: None,
+            sfx: None,
+            sfx_volume: None,
+            anchor: None,
+        }
+    }
     fn fx_flash(t: f64) -> Event {
         Event::Flash { time: t, end: Some(t + 0.3), color: None, anchor: None, sfx: None, sfx_volume: None }
     }
@@ -4907,6 +4998,30 @@ mod auto_fill_tests {
             assert_ne!(w[0], w[1], "换完之后相邻不许同类：{kinds:?}");
         }
         assert_eq!(cap_repeated_fx(&mut segs, 30.0, &[]), 0, "幂等：第二趟 0 改动");
+    }
+
+    /// ★ B（2026-10-30 修）：`overlay_hue` 与 `overlay` 是**同一类**。
+    ///
+    /// 旧实现拿候选名（`overlay_hue`）直接跟 `transient_kind` 的类别名（`overlay`）比 ⇒
+    /// 永远不相等：把中间的 blur 换成 hue 之后，它会与旁边一条真 overlay **相邻同类**，
+    /// 而守卫认为"相邻不同类"、指标也看不见；下一趟 process 又会把它换走 ⇒ **两趟不一致**。
+    /// 变异自证：把 `auto_fill_category` 换成 `|c| Some(*c)`（= 退回旧口径）⇒ 本条红。
+    ///
+    /// 构造要点：被换的是**前两条**（`prev` 与它同类才会触发换型），而右侧紧挨着一条真
+    /// overlay —— 换出来的 hue 正好与它相邻同类。旧口径拿 `"overlay_hue"` 去比
+    /// `"overlay"` 判"不同类"，于是把这条 adjacency 放过去了。
+    #[test]
+    fn cap_repeated_fx_treats_hue_overlay_as_overlay_and_is_idempotent() {
+        let mut segs = vec![seg_ev(0.0, 10.0, vec![fx_blur(1.0), fx_blur(2.0), fx_overlay(3.0)])];
+        let n = cap_repeated_fx(&mut segs, 80.0, &[]);
+        assert!(n >= 1, "相邻两条 blur 必须被换类型（实得 {n}）");
+        assert_eq!(
+            adjacent_same_transient(&segs, &[]),
+            0,
+            "换完之后相邻两条不许同类（hue 覆盖层也算 overlay）：{:?}",
+            segs[0].events.iter().map(kind_of).collect::<Vec<_>>()
+        );
+        assert_eq!(cap_repeated_fx(&mut segs, 80.0, &[]), 0, "幂等：第二趟 0 改动");
     }
 
     /// ★ B：没有 manual 字段的瞬时特效不受豁免（如实记录这条边界）。
@@ -4965,10 +5080,17 @@ mod auto_fill_tests {
         let p = static_profile(&segs, 40.0);
         assert_eq!(p.dense_3s, 1, "3s 内三条特效应算一个密集段（实得 {}）", p.dense_3s);
         // blur -> vignette -> flash -> blur：相邻都不同类。
-        assert_eq!(adjacent_same_transient(&segs), 0);
+        assert_eq!(adjacent_same_transient(&segs, &[]), 0);
         // 两条相邻的 blur 必须被数出来。
         let dup = vec![seg_ev(0.0, 20.0, vec![fx_blur(1.0), fx_blur(9.0)])];
-        assert_eq!(adjacent_same_transient(&dup), 1);
+        assert_eq!(adjacent_same_transient(&dup, &[]), 1);
+        // **屏蔽段不算**（守卫也不看它们）—— 否则"相邻同类 0"这个门槛永远达不到。
+        let mutes = vec![MuteRange { start: 0.0, end: 20.0 }];
+        let muted = vec![seg_ev(0.0, 20.0, vec![fx_blur(1.0), fx_blur(9.0)])];
+        assert_eq!(adjacent_same_transient(&muted, &mutes), 0);
+        // 一半在屏蔽区：只剩一条可见 ⇒ 0 对。
+        let mutes = vec![MuteRange { start: 0.0, end: 5.0 }];
+        assert_eq!(adjacent_same_transient(&muted, &mutes), 0);
     }
 
 }

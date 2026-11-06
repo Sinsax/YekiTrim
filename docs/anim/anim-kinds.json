@@ -66,6 +66,54 @@
   "preset": {}
  },
  {
+  "kind": "perchar",
+  "kindLabel": "逐字",
+  "axis": "transition",
+  "value": "perchar",
+  "label": "逐字",
+  "preset": {
+   "perChar": {
+    "scaleFrom": 0.2,
+    "scaleTo": 1,
+    "perCharFrames": 18,
+    "staggerFrames": 2
+   },
+   "perCharOutFrames": 18
+  }
+ },
+ {
+  "kind": "perchar",
+  "kindLabel": "逐字",
+  "axis": "transition",
+  "value": "perchar_big",
+  "label": "逐字（旧）",
+  "preset": {
+   "perChar": {
+    "scaleFrom": 0.2,
+    "scaleTo": 1,
+    "perCharFrames": 18,
+    "staggerFrames": 2
+   },
+   "perCharOutFrames": 18
+  }
+ },
+ {
+  "kind": "perchar",
+  "kindLabel": "逐字",
+  "axis": "transition",
+  "value": "perchar_small",
+  "label": "逐字（旧）",
+  "preset": {
+   "perChar": {
+    "scaleFrom": 0.2,
+    "scaleTo": 1,
+    "perCharFrames": 18,
+    "staggerFrames": 2
+   },
+   "perCharOutFrames": 18
+  }
+ },
+ {
   "kind": "shake",
   "kindLabel": "抖动",
   "axis": "effect",
@@ -77,40 +125,35 @@
   }
  },
  {
-  "kind": "perchar",
-  "kindLabel": "逐字变化",
-  "axis": "effect",
-  "value": "perchar_big",
-  "label": "逐字变大",
-  "preset": {
-   "perChar": {
-    "scaleSpread": 0.8,
-    "perCharFrames": 18,
-    "staggerFrames": 2
-   }
-  }
- },
- {
-  "kind": "perchar",
-  "kindLabel": "逐字变化",
-  "axis": "effect",
-  "value": "perchar_small",
-  "label": "逐字变小",
-  "preset": {
-   "perChar": {
-    "scaleSpread": -0.55,
-    "perCharFrames": 18,
-    "staggerFrames": 2
-   }
-  }
- },
- {
   "kind": "heartbeat",
   "kindLabel": "心跳",
   "axis": "effect",
   "value": "heartbeat",
   "label": "标准",
   "preset": {
+   "scaleCurve": [
+    {
+     "ms": 0,
+     "scale": 1
+    },
+    {
+     "ms": 60,
+     "scale": 1.05
+    },
+    {
+     "ms": 140,
+     "scale": 1
+    },
+    {
+     "ms": 220,
+     "scale": 1.02
+    },
+    {
+     "ms": 320,
+     "scale": 1
+    }
+   ],
+   "scaleCycleMs": 1000,
    "heartbeatPeaksMs": [
     0,
     210,

@@ -165,18 +165,23 @@ mod tests {
 
     #[test]
     fn resolve_joins_root_for_relative() {
+        // ⚠️ 夹具必须是**真·绝对路径**：原来的 `C:/projects/demo` 在 Linux 上
+        // `Path::is_absolute()` 为 false（有前缀才叫绝对，盘符在 Linux 上只是普通字符），
+        // 于是 "C:/other/video.mp4" 也被 join 到工程根上 —— 绿在 Windows、红在 Linux，
+        // 与产品语义无关。`temp_dir()` 在两个平台上都是绝对路径。
+        let base = std::env::temp_dir();
         let ws = Workspace {
-            config_file: PathBuf::from("C:/projects/demo/yekitrim.toml"),
-            root_dir: PathBuf::from("C:/projects/demo"),
+            config_file: base.join("demo").join("yekitrim.toml"),
+            root_dir: base.join("demo"),
         };
         assert_eq!(
             ws.resolve("output/clips/1.mp4"),
-            PathBuf::from("C:/projects/demo/output/clips/1.mp4")
+            base.join("demo").join("output/clips/1.mp4")
         );
-        assert_eq!(
-            ws.resolve("C:/other/video.mp4"),
-            PathBuf::from("C:/other/video.mp4")
-        );
+        // 绝对路径原样返回（不许被 join 到工程根）—— 这是 `transcript_file` /
+        // `danmaku_file` 指向项目外文件时能生效的前提。
+        let outside = base.join("other").join("video.mp4");
+        assert_eq!(ws.resolve(&outside.to_string_lossy()), outside);
     }
 
     #[test]

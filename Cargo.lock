@@ -3594,6 +3594,7 @@ dependencies = [
  "flate2",
  "futures-util",
  "mime_guess",
+ "reqwest",
  "serde",
  "serde_json",
  "subtle",

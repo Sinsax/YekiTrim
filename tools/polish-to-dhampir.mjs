@@ -886,7 +886,8 @@ function cuesToAss(cues, { font, fontSize = 42, danmaku = true, outlinePx, shado
   // ⚠️ **`Default` 这一档的填充色 = 第一条 cue 的颜色**（2026-10-13）。
   //
   // 为什么要这样：ASS 的 `Style:` 是**整条轨一份**，而文字元素的颜色是**逐条**的
-  // （七档命名预设，见 `ElementColor`）。轨内颜色不一致时没法用一份 style 表达。
+  // （老工程 `source` 串的第 4/5 段 RGBA —— 颜色**预设名**那条链已退役，见 `parseTextStyle`）。
+  // 轨内颜色不一致时没法用一份 style 表达。
   //
   // 两条路：① 每种颜色拆成独立 ASS/层；② 用行内覆盖 `\c`。
   // 选 ② —— ① 会把**同一个 style+pos 的文字**拆成一堆层，层数随用色数膨胀
@@ -2900,8 +2901,10 @@ export function translate(config, clipDir, outPath, options = {}) {
   const TEXT_STYLE_FALLBACK = {
     hook: { fontPx: 80, strokePx: 6, color: [255, 255, 255, 255], strokeColor: [26, 26, 26, 255], weight: 900, backdrop: false },
     chapter: { fontPx: 80, strokePx: 5, color: [255, 255, 255, 255], strokeColor: [26, 26, 26, 255], weight: 700, backdrop: true },
-    // ⚠️ comment.color 必须与 Rust ElementColor::Yellow.rgba() 逐值相等（旧值 255,226,122）。
-    //    四处对拍由 webui/scripts/check-color-parity.mjs 钉住（改一处不改其余 ⇒ 红）。
+    // ⚠️ comment.color 必须与 Rust `TextStyle::Comment.color()` 逐值相等（A 套：[217,196,138]，
+    //    旧值 [255,226,122]）。跨语言两份实现 —— 改一处不改另一处 ⇒ 同一句老文字在两条出片通道
+    //    里颜色不同，而两边各自看都正常（颜色**预设**那条链已于 2026-10-30 退役，
+    //    现在只剩这两处"档位默认色"仍须对拍）。
     comment: { fontPx: 80, strokePx: 2, color: [217, 196, 138, 255], strokeColor: [26, 26, 26, 255], weight: 700, backdrop: true },
     count: { fontPx: 80, strokePx: 4, color: [255, 255, 255, 255], strokeColor: [26, 26, 26, 255], weight: 800, backdrop: false },
   };
@@ -3069,17 +3072,15 @@ export function translate(config, clipDir, outPath, options = {}) {
       // T3：角度制（正 = 顺时针）/ 纵向倍数（1.0 = 不压）。
       tiltDeg: Number.isFinite(tiltRaw) ? tiltRaw : 0,
       squashY: Number.isFinite(squashRaw) ? squashRaw : 1,
-      // ---- 第 10 段：颜色预设名（2026-10-13）----
+      // ---- 第 10 段：**只读兼容，不消费**（颜色链 2026-10-30 整条退役）----
       //
-      // ⚠️⚠️ **这里**只带出来**给人看 / 给报告用**，`color`/`strokeColor` 两个 RGBA
-      //    已经由 `process` 算好写在第 4/5 段里了（含 `black` 的翻白描边）。
-      //    ⇒ **不许**拿这个名去查表覆盖 RGBA —— 那是第二份颜色来源，
-      //       而 `black` 那条"描边成对翻转"的规则就只住在 Rust 里，
-      //       转译器再查一次表必然漏掉它（黑字配近黑描边 = 糊成一团）。
+      // 老工程（2026-10-13 ~ 2026-10-20 的文字层）的 `source` 串末尾还有一段颜色**预设名**
+      // （`pink` / `black` …）。那个名字对应的 `ElementColor` 与写入方 `layout_text_elements`
+      // 都已删除，**没有任何渲染会读它**。
       //
-      //    这一段存在的意义是**可追溯**：产物里能看出"这条字的颜色是用户选的哪一档"，
-      //    而不是只能从 RGBA 反推。空串 = 没写（走档位默认色）。
-      colorName: parts.length >= 10 ? String(parts[9] || '').trim().toLowerCase() : '',
+      // ⚠️ 但**段数判据必须继续收 10 段**：只认 {7,9} 的话，老工程整条字会退回兜底样式
+      //    （字号/颜色全变、报告只有一行 note）。⇒ 解析器认得第 10 段、**故意不读进对象**。
+      // ⚠️ 也**别**拿它查表覆盖 RGBA：真正生效的颜色只有第 4/5 段两串 RGBA。
       parsed: true,
     };
   }
@@ -5071,12 +5072,12 @@ export function translate(config, clipDir, outPath, options = {}) {
               end: endFrame,
               text: textBody,
               style: st,
-              // ---- 逐条颜色（2026-10-13）----
+              // ---- 逐条颜色（老工程 `source` 串第 4/5 段）----
               //
-              // ⚠️ **直接拿 `st.color`**（= 写回串第 4 段，**`process` 已经把颜色预设
-              //    算进去了**，含 `black` 那条"描边成对翻白"）。
-              //    ⇒ 这里**不许**再拿 `st.colorName` 去查表 —— 那是第二份颜色来源，
-              //       而 `black` 的描边规则只住在 Rust 里，查表必然漏掉它。
+              // ⚠️ **只认 RGBA**：颜色**预设名**那条链（提示词 → ElementColor → 第 10 段）
+              //    已于 2026-10-30 整条退役，第 10 段只被"段数判据"接受、**不读进对象**。
+              //    真正生效的颜色来源只有这一处 `st.color`（第 4 段）。
+              //    ⇒ 这里**不许**再引入"按名字查表"——那会是第二份颜色来源。
               //
               // ⚠️ 同名轨里各条颜色可以不同（同一 style+pos 的两条字可以是粉的和红的），
               //    而 ASS 的 `Style:` 是**轨级一份** ⇒ 由 `cuesToAss` 用行内 `\c` 逐条覆盖。
@@ -7081,10 +7082,9 @@ export function translate(config, clipDir, outPath, options = {}) {
       //       底座自己光栅化文字（`text_overlay.rs`），**根本不读那个 ASS**。
       //       只做 ASS 那半边 = 「文件里颜色对、成片里全是白的」，正是本仓最恨的形状。
       //
-      //    ⚠️ 颜色进 key 用**RGBA 串**而不是 `colorName`：
-      //       `colorName` 只在写了预设时才有值，而**没写时各档的默认色本来就不同**
-      //       （`comment` 是暖黄、其余是白）—— 按名字分会让 comment 的默认黄
-      //       和"显式写了 yellow"混进同一轨（值恰好相同，但那是巧合，不是不变量）。
+      //    ⚠️ 颜色进 key 用**RGBA 串**：**没写时各档的默认色本来就不同**
+      //       （`comment` 是暖黄、其余是白）—— 按"有没有写名字"分会让 comment 的默认黄
+      //       和"显式写了 yellow"分不到一起（值恰好相同，但那是巧合，不是不变量）。
       //       按**值**分则永远正确：值相同才共用一轨。
       const colorKey = Array.isArray(cue.color) ? cue.color.join(',') : '';
       // ⚠️ 分组维度 = (样式 × 纵向档 × 排版档 × 动效档 × **过渡档** × 颜色)。
@@ -7184,20 +7184,24 @@ export function translate(config, clipDir, outPath, options = {}) {
       //    ⇒ 新工程：`anim` 是空的，改由两路拼（下面那段），不撞老 id。
       const animTag = cues[0].anim
         || [styleAnimName, effectAnimName, transitionAnimName].filter(Boolean).join('+');
-      // ⚠️⚠️ **颜色进 id 用的是「预设名」，不是 RGBA**（2026-10-13）——
-      //    这是 R4 的关键那一半：**没写 color 的老工程，`colorName` 是空串 ⇒
-      //    id 逐字符不变**（`text_hook_bottom`，与改造前相同）。
-      //    用 RGBA 的话，**每一轨**的 id 都会多出一串颜色（连没写颜色的老工程也是，
-      //    因为它们都有档位默认色）⇒ 产物**整个变样**。
+      // ⚠️⚠️ **颜色进 id 用 RGBA，但"等于档位默认色 ⇒ 不进 id"**（2026-10-30 改）——
+      //    颜色**预设名**已退役（第 10 段不再读），id 只能按值区分；而 id 与分组同源
+      //    （都按 RGBA）才能保证"轨内颜色一致"这条不变式。
+      //    R4 的关键那一半靠**默认色**保住：没写 color 的老工程，RGBA 恰好等于该档默认色
+      //    ⇒ tag 为空 ⇒ id 逐字符不变（`text_hook_bottom`，与改造前相同）。
+      //    显式写过颜色的老工程 id 会带 `_c217_139_174_255` —— 内部标识的**有意**变化：
+      //    预设名已经没有解析方，留着它只会多维护一条死链路。
       //
-      //    ⚠️ 而分组用的是 RGBA（见上面 `key`）：那个必须按**值**分，
-      //       因为"没写 color"时各档默认色不同。两者口径不同是**有意的**：
-      //       id 要的是"用户表达了什么"，分组要的是"渲染出来一样不一样"。
-      //
-      //    ⚠️ 认不出的颜色名（`process` 已经报过 warn 并退回默认色）在这里
-      //       **不进 id** —— 它没有改变任何渲染结果（RGBA 与默认色相同，
-      //       所以本来就会与默认色那条分到同一组）。
-      const colorTag = cues[0].style.colorName || '';
+      //    ⚠️ 分隔符必须保留（`_` 而不是把逗号吃掉）：`[1,23,4,5]` 与 `[12,3,4,5]`
+      //       拼成纯数字串都是 `12345` —— 两个不同颜色会撞同一个 id，后一条轨整个盖掉前一条。
+      const styleDefaultColor = (TEXT_STYLE_FALLBACK[styleName] ?? TEXT_STYLE_FALLBACK.comment).color;
+      const colorKey = Array.isArray(cues[0].style.color) ? cues[0].style.color.join(',') : '';
+      // ⚠️ 这里**不带前导下划线**（`id` 那边统一拼 `_` + tag）—— 带上的话会变成
+      //    `text_hook_top__c…` 两个下划线；判据钉的是两者拼起来的**最终 id**。
+      const colorTag =
+        colorKey && colorKey !== styleDefaultColor.join(',')
+          ? 'c' + colorKey.replace(/,/g, '_')
+          : '';
       // ⚠️ **位置进 id**（2026-10-15）：`origin` 是**轨级**字段 ⇒ 两个不同落点必须是两条轨，
       //    否则后写的会覆盖先写的（与本文件里 `anchor_bottom` / 颜色那几处**同一个理由**）。
       //    没有 origin 时这一段是空串 ⇒ 老工程 id 逐字符不变（R4）。

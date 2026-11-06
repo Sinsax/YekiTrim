@@ -2,7 +2,7 @@
 //    `ANIM_PRESETS` 后跑 `node scripts/gen-anim-attribution.mjs` 重新生成。
 //    判据模式：`node scripts/check-anim-attribution.mjs`（不一致就红）。
 //
-// **三轴 9 档**的参数归属表：每一档归到「排版 / 过渡 / 动效」之一，
+// **三轴 10 档**的参数归属表：每一档归到「排版 / 过渡 / 动效」之一，
 // 并保留"这一档**实际给了哪些字段**"这一层。
 //
 // # 这张表是怎么来的（⚠️ 别改成手写）
@@ -24,14 +24,15 @@
 //    `fade` 就是那个反例：`axis='transition'`，但**一个字段都不给** ——
 //    它靠"压掉全局 `[elements]`"表达"只淡入淡出"，不是"没实现"。
 //
-// # 统计（9 档）
-//   style 3 · transition 2 · effect 4
+// # 统计（10 档）
+//   style 3 · transition 5 · effect 2
 export const ANIM_ATTRIBUTION = {
   'arc': { axis: 'style', form: ['per_char'], motion: [] },
   'fade': { axis: 'transition', form: [], motion: [] },
   'heartbeat': { axis: 'effect', form: [], motion: ['scale_in_from', 'scale_in_peak', 'scale_in_ms'] },
-  'perchar_big': { axis: 'effect', form: ['per_char'], motion: [] },
-  'perchar_small': { axis: 'effect', form: ['per_char'], motion: [] },
+  'perchar': { axis: 'transition', form: ['per_char'], motion: [] },
+  'perchar_big': { axis: 'transition', form: ['per_char'], motion: [] },
+  'perchar_small': { axis: 'transition', form: ['per_char'], motion: [] },
   'pop': { axis: 'transition', form: [], motion: ['scale_in_from', 'scale_in_peak', 'scale_in_ms'] },
   'shake': { axis: 'effect', form: [], motion: ['shake_px', 'shake_hz'] },
   'tilt': { axis: 'style', form: ['layers[].transform'], motion: [] },

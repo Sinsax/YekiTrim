@@ -13,7 +13,13 @@
 //! # 金样口径
 //!
 //! `tests/fixtures/r4-legacy-demo.toml` 取自仓库里**已入库**的演示工程
-//! （`docs/wgpu-effect-reference/demo/polish.toml`，233 行、13 个事件、10 种事件类型）。
+//! （`docs/wgpu-effect-reference/demo/polish.toml`，233 行、10 种事件类型）。
+//!
+//! ⚠️ **2026-10-30 从金样里摘掉了 `pulse` / `hue_shift` 两个事件**：它们已分别退役
+//! （`pulse` 读时丢弃、`hue_shift` 读时迁移成 `overlay{hue}`），金样若继续带着它们，
+//! 本文件就会把"有意退役"误报成"事件被静默丢弃"（字节稳定那条也会随之失配）。
+//! 退役本身有专测：`project::legacy::tests`（丢弃/迁移/计数/幂等）。金样只负责
+//! **仍然活着的老写法**（`duration` / `entrance` / 键集稳定 / 两次写盘逐字节相同）。
 //! 它特意是**老写法**：事件用 `duration`（**没有 `time`+`end`**），
 //! 且 `[style.subtitle]` 里带着**已下线的 `entrance`** ——
 //! 于是它一次钉住三件事：① `duration` 升级；② 已下线键被吞掉；

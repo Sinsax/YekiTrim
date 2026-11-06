@@ -7,6 +7,12 @@
 //   * 不带参：重新生成并写盘（改了 `ANIM_PRESETS` 之后跑它）；
 //   * `--check`：**只比对不写盘**（判据模式）—— 表与源码不一致就 exit 1。
 //
+// ⚠️ **2026-10-30 修过一次假红**：轨 id 不再等于 `text_comment_bottom_<档名>` ——
+//   2026-10-15 起带落点（`_x<..>y<..>`）、2026-10-30 起带颜色（`_c<..>`）⇒
+//   按旧 id 找轨会抛「`tilt` 的轨没生成」，而产品其实完全正常。
+//   现在按 **animTag 后缀**匹配（见 `animTagOf`）。改转译器的轨 id 形状时，
+//   这个解析要一起看 —— 它已经绊过一次。
+//
 // ============================================================================
 // ⚠️⚠️ 本文件 2026-10-14 起是「**测量台**」，不是「抄表器」
 // ============================================================================
@@ -232,6 +238,23 @@ const keysOf = (doc, id) => {
   return []
 }
 
+/// 从**文字轨 id** 里取出「档位标签」。
+///
+/// 轨 id 形状（2026-10-30 实测）：
+///   `text_<style>_<pos>[_x<..>y<..>][_<animTag>][_c<r>_<g>_<b>_<a>]`
+///   * `posTag`（2026-10-15 加）：`origin` 是轨级字段，落点不同必须分轨；
+///   * `colorTag`（2026-10-30 加）：显式颜色也进 id。
+/// ⇒ 旧写法「按 `text_comment_bottom_<档名>` 找轨」**已经找不到**（id 里多了落点/颜色）——
+///   症状是生成器抛「轨没生成」，看起来像产品坏了，其实是**测量台的锚点过期**。
+/// ⚠️ 颜色 tag 自带前导 `_c`、id 又拼一个 `_` ⇒ 实测有 `_tilt__c255_...` 的双下划线，
+///   剥完颜色后要再收掉尾巴那个 `_`。
+const animTagOf = (id) => String(id)
+  .replace(/^text_comment_bottom/, '')
+  .replace(/^_x[\d.]+y[\d.]+/, '')
+  .replace(/_c\d+_\d+_\d+_\d+$/, '')
+  .replace(/_+$/, '')
+  .replace(/^_/, '')
+
 /**
  * **测量**：逐档单独跑一遍转译器，把产物里**真的出现**的字段分成两路。
  *
@@ -296,11 +319,27 @@ export async function measure(file = TRANSLATOR) {
       const events = names.map((n, i) => ({ name: n, axisField: FIELD[axisOf[n]], time: 0.1 * i }))
       writeProject(dir, events)
       const doc = runTranslator(dir, file)
+      // ⚠️ 用**档位标签后缀**找轨（别写死旧 id 形状 —— 落点/颜色进 id 之后它就断了）。
+      //    先建索引，顺带钉住"两条轨的标签相同"这种真的会撞的情形。
+      const textIds = (doc.timeline?.tracks ?? []).map((t) => t.id)
+        .filter((id) => id.startsWith('text_comment_bottom'))
+      const byTag = new Map()
+      for (const id of textIds) {
+        const tag = animTagOf(id)
+        if (byTag.has(tag)) {
+          throw new Error(
+            '两条文字轨的档位标签相同（' + tag + '）：' + byTag.get(tag) + ' / ' + id +
+            ' —— 轨 id 的写法变了，本测量台的解析要跟着改')
+        }
+        byTag.set(tag, id)
+      }
       for (const n of names) {
-        const id = `text_comment_bottom_${n}`
-        const sub = subOf(doc, id)
+        const id = byTag.get(n)
+        const sub = id ? subOf(doc, id) : null
         if (sub === null) {
-          throw new Error(`\`${n}\` 的轨没生成 —— 测量台的前提取不到，别用猜测的表糊过去`)
+          throw new Error(
+            '`' + n + '` 的轨没生成（按档位标签找不到；实际文字轨：' + JSON.stringify(textIds) + '）' +
+            ' —— 测量台的前提取不到，别用猜测的表糊过去')
         }
         measured[n] = {
           // 产物里**真的出现**的键（含轨级常量 —— 交叉验证时要按"这一档声明的"过滤）。

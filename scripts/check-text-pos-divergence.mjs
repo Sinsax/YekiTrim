@@ -24,15 +24,30 @@
 // `safe_width_ratio` 同时被 `layout()` 真正读起来。转译器把 `pos` 映射过去。
 // 真机实测三档在成片里的文字纵向重心：**0.394 / 0.663 / 0.903**（严格单调，跨度 549px）。
 //
-// # 这条判据盯什么（★ 已经从"盯落差被写清"翻成"盯接线别断"）
+// # ⚠️⚠️ 2026-10-20 口径更新：**文字层整条退役，界面上的 `pos` 下拉与纵向档位一起删了**
 //
-//   ① 转译器必须把 `pos` 真的写进 `anchor_bottom`，且**按 (样式 × 档位) 两维分轨**
-//      —— `anchor_bottom` 是轨级常量、`pos` 是逐事件的，只按样式分轨会**互相覆盖**
-//      （实测真实工程里 `hook` 同时有 `top` 与 `center`）；
-//   ② 界面上的**旧警示不许回来**（回来就是谎报：用户会以为选了「上」没用）；
+// 用户口径：「算了，删除文字层吧」。⇒ 老工程里的 `element{kind:"text"}` 在
+// **读时丢弃并计数**（`project/legacy.rs::RetiredCounts.text_layer`），编辑器不再有
+// 文字元素面板（纵向位置下拉/三轴动效/角度滑杆全删）。于是本判据旧的 ②b 段
+// （Rust `TextAnchor::Auto` 三档、兜底不是贴底）**永久红且指错地方** —— 那些代码是
+// **按新口径删掉的**，不是坏了。已退役，改成「退役守卫」（排版实现不许回来 + 老数据丢弃计数）。
+//
+// **转译器那半仍然有效**：转译器直接读 `polish.toml`（不经过 Rust 的读时丢弃），
+// 所以**未保存过的老工程**走底座那条腿时仍会产出文字轨 —— `pos → anchor_bottom`
+// 与分轨/轨 id 的不变式必须继续成立，否则老工程在底座里会「位置错/互相覆盖」且不报错。
+//
+// # 这条判据盯什么（2026-10-20 之后）
+//
+//   ① 转译器必须把 `pos` 真的写进 `anchor_bottom`，且分轨键覆盖全部**轨级常量**
+//      —— `anchor_bottom` / `scale_in_*` / 三轴档 / 颜色 / **落点** 都是轨级参数，
+//      少一维就两档共用一个常量（后写覆盖先写，报告里一行差异都没有）；
+//   ② 界面上的**旧警示不许回来**（回来就是谎报）；**纵向位置下拉也不许回来**
+//      （文字层面板已删；它若单独回来 = 用户能设、成片里没有）；
 //   ③ 规格文档必须记着这条已接通（别让后来的人照旧结论重新提一遍需求）；
 //   ④ **判据的前提**：ASS 对齐码仍是 `2` —— 那一列至今不表达纵向，
 //      纵向全靠 `anchor_bottom`。它若变了，本判据要重审。
+//   ⑤ **退役守卫**：Rust 的 `TextAnchor` / `TextLayout` 定义不许回来；
+//      老数据必须读时丢弃并计数（日志点名）。
 //
 //     node scripts/check-text-pos-divergence.mjs
 //     node scripts/check-text-pos-divergence.mjs --self-test
@@ -91,16 +106,16 @@ check(
 //    直接写成 `'...${cue.anim || ''}...'` 会让 JS 在 `''` 处提前闭合字符串
 //    （实测把整份判据写成语法错误、**跑都跑不起来**）。
 check(
-  '★ 分轨键含「样式 × 纵向档 × 样式动效 × 动效动效 × **过渡动效** × 颜色」' +
+  '★ 分轨键含「样式 × 纵向档 × 样式动效 × 动效动效 × **过渡动效** × 颜色 × **落点**」' +
     '（都是轨级参数，少一维就互相覆盖）',
-  // ⚠ 2026-10-14（三轴）：键里又多了 `transitionAnim` 一维 ——
-  //   不带它的话，「同样式/同档位/同动效、**两个不同过渡**」
-  //   会共用一条轨。（这条判据的锚点是**源码字面量**，
-  //   改分轨键就必须一起改 —— 它已经绊过两次了，这是第三次。）
+  // ⚠ 2026-10-14（三轴）：键里又多了 `transitionAnim` 一维；
+  //   2026-10-15 **落点（`originKey`）** 又进来一维（`origin` 是轨级字段，两个不同落点
+  //   必须分轨，否则后写的覆盖先写的 —— 与本文件里颜色那处同一个理由）。
+  //   ⇒ 现在键是 **7 维**：style|pos|styleAnim|effectAnim|transitionAnim|color|origin。
+  //   这条判据的锚点是**源码字面量**，改分轨键就必须一起改（已经绊过三次）。
   // ⚠ 用**正则**而不是字面量：这段源码里同时有反引号与单引号，
-  //   写成字面量会在 `''` 处提前闭合（已踩三次）。正则只要求
-  //   「**同一个分轨键里**同时出现 style/pos/styleAnim/effectAnim/transitionAnim/colorKey」。
-  /`\$\{cue\.style\.name\}\|\$\{cue\.pos\}\|\$\{cue\.styleAnim[\s\S]{0,200}?\$\{cue\.transitionAnim[\s\S]{0,80}?\$\{colorKey\}`/.test(TRANS),
+  //   写成字面量会在 `''` 处提前闭合（已踩三次）。
+  /`\$\{cue\.style\.name\}\|\$\{cue\.pos\}\|\$\{cue\.styleAnim[\s\S]{0,200}?\$\{cue\.transitionAnim[\s\S]{0,120}?\$\{colorKey\}\|\$\{originKey\}`/.test(TRANS),
 );
 check(
   '遍历顺序里含三个档位（top/center/bottom 都要分到轨）',
@@ -112,8 +127,11 @@ check(
 //    ⚠️ 两级化后尾部那个档名是 `animTag`（两轴拼出来的，`fade_only`/`pop_std`
 //    那种单轴档与老 `anim` **逐字符相同** ⇒ R4 不变）。
 check(
-  '轨 id 带档位后缀 + 动效档后缀（两条不同档的轨不能撞同一个 id）',
-  /const id = `text_\$\{styleName\}_\$\{posName\}\$\{animTag \? '_' \+ animTag : ''\}`/.test(TRANS),
+  '轨 id 带档位后缀 + 动效档后缀 + 落点 + 颜色（两条不同档的轨不能撞同一个 id）',
+  // ⚠ 2026-10-15 起 id 还带 `posTag`（落点）、2026-10-30 起带 `colorTag`（颜色）——
+  //   三者与分轨键**同一个理由**：轨级参数不同就必须不同 id，否则底座按 id 认层、
+  //   后一条把前一条整个盖掉，而报告里一行差异都没有。
+  /const id = `text_\$\{styleName\}_\$\{posName\}\$\{posTag\}\$\{animTag \? '_' \+ animTag : ''\}`[\s\S]{0,80}?\$\{colorTag \? '_' \+ colorTag : ''\}/.test(TRANS),
 );
 // ⚠️ `bottom` 档**故意不写**：它要减 `caption_clearance`（字幕带高度，只有底座知道），
 //    写死会与字幕重叠。所以这里判的是"它被显式地排除"，而不是"它也有值"。
@@ -195,18 +213,28 @@ check(
 //    所以"字段缺失"是**常态**。若兜底仍是 `Bottom`（老口径），
 //    所有没带 `pos` 的文字都会贴底 —— 与"自动算"正好相反，而且不报错。
 // ---------------------------------------------------------------------------
+//
+// ⚠️⚠️ **2026-10-20 口径更新：文字层退役。**
+//   旧断言（已退役）：`placement.rs` 里必须有 `TextAnchor::Auto` 档、
+//   `TextAnchor::parse` 兜底是 `Auto`、`Auto` 走中线占位。
+//   为什么退役：文字层整条退役（用户口径「算了，删除文字层吧」）——
+//   `TextAnchor` / `TextLayout` / `wrap_text` 随文字排版一起删了（见 placement.rs:548 那段注释），
+//   老工程里的 `element{kind:"text"}` 在 **project/legacy.rs 读时丢弃并计数**。
+//   ⇒ 旧断言在"产品按新口径删干净了"之后永久红，而且红的时候指错地方。
+//   现在锁的是**退役本身**：排版实现不许偷偷回来、老数据必须被丢弃并计数（不静默保留）。
 const PLACEMENT = read('crates/yekitrim-polish/src/process/placement.rs');
+const LEGACY = read('crates/yekitrim-polish/src/project/legacy.rs');
 check(
-  'Rust 侧有 `Auto` 档（与贴纸同口径：不给纵向带、在整块安全区里挑）',
-  /^    Auto,$/m.test(PLACEMENT),
+  '★ 文字层已退役：Rust 里 `TextAnchor` / `TextLayout` 的定义必须不存在（排版实现不许回来）',
+  !/\benum\s+TextAnchor\b/.test(PLACEMENT) && !/\bstruct\s+TextLayout\b/.test(PLACEMENT),
 );
 check(
-  '★ `TextAnchor::parse` 认不出的兜底是 `Auto`（不是贴底）',
-  /_ => Self::Auto,/.test(PLACEMENT),
+  '★ 老工程里的文字层必须**读时丢弃并计数**（不是静默保留、也不是静默删磁盘）',
+  /text_layer/.test(LEGACY) && /retired\.text_layer > 0/.test(LEGACY),
 );
 check(
-  '`Auto` 走"没偏好"的中线占位（真正落点由 2b2 求解器定）',
-  /TextAnchor::Center \| TextAnchor::Auto =>/.test(PLACEMENT),
+  '退役计数必须在日志里点名（别静默丢用户数据）',
+  /已退役文字层/.test(LEGACY),
 );
 
 // ---------------------------------------------------------------------------
@@ -253,45 +281,22 @@ check(
 if (process.argv.includes('--self-test')) {
   const { strict: assert } = await import('node:assert');
   let self = 0;
-  // ① 退回只按样式分轨 ⇒ 必须红（这是最要命的那个回归）
-  //
-  // ⚠️ 2026-10-13（39 档）：键从两维变成三维 ⇒ 变异体的锚点也要跟着改，
-  //    否则 `.replace` **不命中**、`oneDim === TRANS`，自证①在"变异必须命中"那句就炸
-  //    （实测如此 —— 那说明变异没生效，看着像"抓不住"）。
-  // ⚠️⚠️ **两级化（`df5bf46`）后键是四维** ⇒ 锚点再改一次。
-  //    这条的教训值得记：**判据匹配的是源码字面量，改一次源码就要来看它一眼**。
-  // ⚠ 2026-10-14（三轴）：键变成**五维**（加了 `transitionAnim`）——
-  //   变异的锚点也要跟着变，否则 `.replace` 不命中、变异体原样跑绿。
-  // ⚠ **从真源码里抽**（不手抄 —— 手抄必漂，这条已经绊过三次）。
-  // ⚠ **从真源码里抽**（不手抄）；两段之间的换行与缩进也在里面。
-  // ⚠ **从真源码里现场抽**（不手抄、也不写字面量）——
-  //   这条自证已经因为锚点过时绊过三次（分轨键每改一次就断一次）。
-  //   现在把那两行**原文**拼回来当锚点 ⇒ 改了分轨键它自动跟着变。
-  // ⚠ **从真源码里现场抽**（不手抄、也不写死字面量）——
-  //   这条自证已经因为**锚点过时**绊过三次（分轨键每改一次就断一次）；
-  //   现在把那两行**原文**拼回来当锚点 ⇒ 改了分轨键它自动跟着变。
-  // ⚠ 只认**分轨键那一对**：仓里另有一个 `const key = `…`‘‘`
-  //   （`buildKeepRanges` 里的区间键），只看前缀会抽到 3 行。
+  // ① 分轨键少一维 ⇒ 必须红。⚠️ **从真源码现场抽**（不手抄）——
+  //   分轨键改过五次（两维 → … → 七维），手抄的锚点每改一次就断一次。
   const KEY_LINES = TRANS.split('\n').filter((l) =>
     l.includes('${cue.style.name}|${cue.pos}') ||
-    (l.includes('${cue.effectAnim') && l.includes('${colorKey}`')));
+    l.includes('${colorKey}|${originKey}'));
   assert.equal(KEY_LINES.length, 2, '自证：抽不到分轨键那两行');
-  // ⚠ **逐字拼**：行0 去掉 `      const key = ` 前缀（不能 `trim()` ——
-  //   那会把缩进也吃掉，而源码里它是真的）；行1 去掉行首缩进与末尾 `;`。
-  const FIVE_DIM_KEY = KEY_LINES[0].slice(KEY_LINES[0].indexOf('`')) +
+  const FULL_KEY = KEY_LINES[0].slice(KEY_LINES[0].indexOf('`')) +
     '\n' + KEY_LINES[1].slice(0, -1);
-  // ⚠️ 再补一条：**只砍掉后两维**（退到两维）也必须红 —— 那是"同档位两个动效
-  //    互相覆盖"的回归，比①更隐蔽（纵向档还在键里，肉眼看着"没改坏"）。
-  const twoDim = TRANS.replace(FIVE_DIM_KEY, '`${cue.style.name}|${cue.pos}`');
-  assert.notEqual(twoDim, TRANS, '自证①b：变异必须命中');
-  assert.equal(twoDim.includes('${cue.styleAnim'), false, '自证①b：退到两维必须红');
-  // ⚠️ 再补一条：**只砍掉动效那两维里的一维**（三维）也必须红 ——
-  //    "两轴可叠加"要求两轴**各自**参与分组（只留一条会让
-  //    「竖排 + 抖动」与「纯抖动」撞成一个组合，后写覆盖先写）。
-  const threeDim = TRANS.replace(FIVE_DIM_KEY,
-    '`${cue.style.name}|${cue.pos}|${cue.effectAnim || ' + "''" + '}`');
-  assert.notEqual(threeDim, TRANS, '自证①c：变异必须命中');
-  assert.equal(threeDim.includes('${cue.styleAnim'), false, '自证①c：砍掉样式轴必须红');
+  // ①a 退到两维（只留 style|pos）⇒ 必须红
+  const twoDim = TRANS.replace(FULL_KEY, '`${cue.style.name}|${cue.pos}`');
+  assert.notEqual(twoDim, TRANS, '自证①a：变异必须命中');
+  assert.equal(twoDim.includes('${cue.styleAnim'), false, '自证①a：退到两维必须红');
+  // ①b 砍掉**落点**那一维（origin）⇒ 必须红（2026-10-15 新加的那一维）
+  const noOrigin = TRANS.replace(FULL_KEY, FULL_KEY.replace('|${originKey}', ''));
+  assert.notEqual(noOrigin, TRANS, '自证①b：变异必须命中');
+  assert.equal(noOrigin.includes('${originKey}'), false, '自证①b：砍掉落点维必须红');
   self += 1;
   // ② 算出了锚却不写进轨 ⇒ 必须红
   const notWritten = TRANS.replace(/anchor_bottom:\s*anchorBottomFor\(/, 'anchor_bottom_unused: anchorBottomFor(');
@@ -299,50 +304,46 @@ if (process.argv.includes('--self-test')) {
   assert.equal(/anchor_bottom:\s*anchorBottomFor\(/.test(notWritten), false, '自证②：不写进轨必须红');
   self += 1;
   // ③ 旧警示被加回来 ⇒ 必须红（判据是双向的：既防没接线，也防谎报）
-  // ⚠ 2026-10-14：那一栏的显示名从「样式」改成了「**排版**」（三轴收敛）。
-  //   注入锚点必须跟着改 —— 否则 `.replace` 不命中，变异体与原文
-  //   **逐字符相同**，“变异必须命中”那句直接炸。
+  //   ⚠️ 锚点必须用**模板里真实存在**的一行 —— 文字支已删，旧的 `<label>排版</label>` 不在了。
   const warnBack = TL.replace(
-    '<label>排版</label>',
-    '<div class="hint warn-hint">纵向档位目前只在预览生效，成片会贴底。</div><label>排版</label>',
+    '<label class="pos-lbl">位置</label>',
+    '<div class="hint warn-hint">纵向档位目前只在预览生效，成片会贴底。</div><label class="pos-lbl">位置</label>',
   );
-  assert.notEqual(warnBack, TL, '自证③：变异必须命中');
+  assert.notEqual(warnBack, TL, '自证③：变异必须命中（模板锚点变了就要改自证）');
   assert.equal(/纵向档位目前只在预览生效/.test(warnBack), true, '自证③：警示回来必须被检出');
   self += 1;
   // ④ `safe_width_ratio` 被拿掉 ⇒ 必须红（那等于退回两用途打架的老路）
-  // ⚠️ 这个字面量在源码里出现**多次**（字幕轨一处、文字轨一处）—— 只 δÌ滻Îļþ 一次
-  //    是**不翻面**的（那是变异没生效，看着像抓不住）。要全替换。
   const noSafeW = TRANS.replaceAll('safe_width_ratio: 0.875,', '');
   assert.notEqual(noSafeW, TRANS, '自证④：变异必须命中');
   assert.equal(/safe_width_ratio: 0\.875,/.test(noSafeW), false, '自证④：拿掉安全宽必须红');
   self += 1;
   // ⑤ **「纵向位置」下拉被加回来** ⇒ 必须红（用户要的是贴纸同逻辑：不给选位置）。
-  //    ⚠️ 连 `selItem.pos =` 那半也要覆盖 —— 只藏 label 而逻辑还在写 `pos`
-  //    是"看着撤了、实际还写"，比不撤更坏（界面与落点对不上）。
-  const posBack = TL.replace('<label>排版</label>', '<label>纵向位置</label><select :value="selItem.pos"></select><label>排版</label>');
+  const posBack = TL.replace(
+    '<label class="pos-lbl">位置</label>',
+    '<label>纵向位置</label><select :value="selItem.pos"></select><label class="pos-lbl">位置</label>',
+  );
   assert.notEqual(posBack, TL, '自证⑤：变异必须命中');
   assert.equal(/<label>纵向位置<\/label>/.test(posBack), true, '自证⑤：下拉回来必须被检出');
   self += 1;
-  // ⑥ Rust 兜底退回 `Bottom` ⇒ 必须红（界面已经不写 `pos` 了，
-  //    退回贴底就是"所有没带 pos 的文字统统贴底"，与"自动算"相反且不报错）。
-  const bottomFallback = PLACEMENT.replace('_ => Self::Auto,', '_ => Self::Bottom,');
-  assert.notEqual(bottomFallback, PLACEMENT, '自证⑥：变异必须命中');
-  assert.equal(/_ => Self::Auto,/.test(bottomFallback), false, '自证⑥：退回贴底必须红');
+  // ⑥ Rust 文字排版被加回来（`enum TextAnchor`）⇒ 必须红。
+  //   旧版自证是"兜底退回 Bottom"—— 那段随文字层删了；现在锁的是"排版实现不许回来"。
+  const back = PLACEMENT.replace('// ⚠️ 文字层退役', 'enum TextAnchor { Auto }\n// ⚠️ 文字层退役');
+  assert.notEqual(back, PLACEMENT, '自证⑥：变异必须命中（锚点变了就要改自证）');
+  assert.equal(/\benum\s+TextAnchor\b/.test(back), true, '自证⑥：把 TextAnchor 加回来必须被检出');
   self += 1;
-  console.log(`✓ 文字纵向档位接线自证：${self} 项（一维分轨 / 不写进轨 / 警示回潮 / 拿掉安全宽 / 下拉回潮 / 兜底退回贴底，都必须红）`);
+  console.log('✓ 文字纵向档位接线自证：' + self + ' 项（七维分轨砍维 / 不写进轨 / 警示回潮 / 拿掉安全宽 / 下拉回潮 / 排版实现回潮，都必须红）');
   process.exit(0);
 }
 
 if (failures.length) {
   console.error(`✗ 文字纵向档位的接线断了：${failures.length} 项红（共 ${checks} 项）\n`);
   for (const f of failures) console.error('  - ' + f);
-  console.error('\n  ⇒ 这条判据守的是**用户看得见的那件事**：他在面板上选「上」，');
-  console.error('     成片里就该在上。整条链是 `pos` → 转译器 `anchor_bottom` → 底座 `text_layout`。');
-  console.error('     ⚠️ 分轨必须是**两维**的：`anchor_bottom` 是轨级常量、`pos` 是逐事件的，');
-  console.error('        只按样式分轨时同一样式的两个档位会共用一个常量（后写覆盖先写，');
-  console.error('        而报告里一行差异都没有）。接口见 docs/plan/dhampir-elements-request.md。');
+  console.error('\n  ⇒ 转译器那半守的是**老工程进底座时的位置正确性**：`pos` → `anchor_bottom`，');
+  console.error('     且分轨键必须覆盖全部轨级参数（样式/档位/三轴动效/颜色/落点）。');
+  console.error('     ⚠️ 文字层面板与 Rust 排版都已在 2026-10-20 退役 —— 那几条判据只锁"不许回来"，');
+  console.error('        别再按"面板上选上、成片在上"的旧口径理解它们。');
   process.exit(1);
 }
 console.log(
-  `✓ 文字纵向档位已接通成片：${checks} 项（转译器两维分轨 / 界面无旧警示 / 文档已更新 / ASS 前提成立）`,
+  `✓ 文字纵向档位接线守卫：${checks} 项（转译器七维分轨 / 界面无旧下拉与旧警示 / 文档已更新 / ASS 前提成立 / 文字层退役守卫）`,
 );

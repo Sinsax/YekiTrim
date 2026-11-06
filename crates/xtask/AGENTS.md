@@ -77,7 +77,7 @@
 - `smoke_test`：起打包好的 exe（端口 `18000 + 纳秒%1000`，Windows 上 `CREATE_NO_WINDOW`），
   最多 20 次 × 500ms 轮询 `/api/health`（含 `"ok"` + `true`）与 `/`（` 200 ` + `<div id="app">`），
   然后 kill 并**清掉首次运行生成的运行态** —— ⚠️ **2026-10-09 起素材库落在 `resources/` 下**：
-  清理名单是 `.yekitrim/` + `resources/stickers/` + `resources/videos/`，而 **`resources/fonts/`
+  清理名单是 `.yekitrim/` + `global/` + `users/` + `resources/stickers/` + `resources/videos/`，而 **`resources/fonts/`
   只清子项、保留组装阶段写的 `放这里.txt`**（`resources/` 与 `runtime/` 本身是随包发的，
   **不能整个删**）。老位置 `<程序目录>/stickers/` 仍在名单里（老包形态）。
 

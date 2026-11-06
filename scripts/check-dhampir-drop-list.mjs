@@ -19,7 +19,7 @@
 // （不需要底座二进制、ffmpeg、Chrome、GPU —— 那些是对拍工具的要求，不是这一条）。
 import { strict as assert } from 'node:assert';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -27,6 +27,15 @@ import { fileURLToPath } from 'node:url';
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const CLIP = join(repo, 'docs', 'wgpu-effect-reference', 'demo');
 const TRANSLATOR = join(repo, 'tools', 'polish-to-dhampir.mjs');
+
+// 样本的 `clip.mp4` 被 `.gitignore` 排除（`*.mp4`）⇒ 干净检出上它不存在。
+// 缺它时转译器探不到源尺寸，会多报一条 CLAMP `stage` —— 那是样本缺失，不是防线变化。
+// 按仓库惯例：**缺依赖就 SKIP 并明说**，不写成通过、也不拿它去改基线。
+if (!existsSync(join(CLIP, 'clip.mp4'))) {
+  console.log('· SKIP：缺 docs/wgpu-effect-reference/demo/clip.mp4（.gitignore 排除的媒体样本）',
+    '—— 本判据要在带样本的机器上跑');
+  process.exit(0);
+}
 
 // ---------------------------------------------------------------------------
 // 基线：**每一条都要写清"为什么它还在"**。改了清单就改这里，并在提交说明里说清为什么。

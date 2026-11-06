@@ -209,9 +209,11 @@ const problems = []
       if (!clicked) { problems.push('素材库没有「' + sheet + '」页签'); continue }
       await sleep(1800)
       const alive = await ev(
-        "(function(){return {nav:!!document.querySelector('.ml-nav'),grid:!!document.querySelector('.ml-grid'),cells:document.querySelectorAll('.ml-cell').length}})()",
+        "(function(){return {nav:!!document.querySelector('.ml-nav'),grid:!!document.querySelector('.ml-grid'),empty:!!document.querySelector('.ml-main p.empty'),cells:document.querySelectorAll('.ml-cell').length}})()",
       )
-      if (!alive || !alive.nav || !alive.grid) {
+      // 空库（本机没有视频/贴纸/字体）时渲染的是 `.empty` 而不是 `.ml-grid` —— 那**不是**"整块没了"。
+      // 只有 nav 也没有、或既没 grid 也没 empty 才算组件被卸掉。
+      if (!alive || !alive.nav || !(alive.grid || alive.empty)) {
         problems.push('切到「' + sheet + '」后素材库整块没了（nav=' + (alive && alive.nav) + ' grid=' + (alive && alive.grid) + ' cells=' + (alive && alive.cells) + '）')
       }
       const fresh = exceptions.slice(mark).concat(consoleErrors.slice(mark))

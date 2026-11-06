@@ -39,6 +39,8 @@ base64 = "0.22"
 flate2 = "1"
 subtle = "2"
 tokio = { version = "1", features = ["full"] }
+# 出片回传：调 biliLive-tools 的 HTTP API（preset / upload / task）。
+reqwest = { version = "0.12", features = ["json"] }
 
 [dev-dependencies]
 tempfile = "3"

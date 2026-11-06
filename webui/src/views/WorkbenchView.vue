@@ -6,6 +6,12 @@
         <div class="sub">把录像变成项目</div>
       </div>
       <div class="actions">
+        <!-- 运行状况有问题时只在这里放一枚短提示（点开跳到卡片并展开）——
+             别再把整张 300px 的卡片 order:-1 冒到页标题之上（首屏主功能会被挤出屏幕）。 -->
+        <button v-if="doctorProblem" class="mini-btn doctor-chip" :title="doctorIssues.join('；')"
+                @click="openDoctor">
+          <Icon name="alert" :size="13" /> 运行状况：{{ doctorIssues.length }} 项待处理
+        </button>
         <button class="btn" @click="refresh"><Icon name="refresh" :size="14" /> 刷新</button>
       </div>
     </div>
@@ -128,8 +134,22 @@
 
       <!-- ② 录播姬录制：待处理的会话 + 扫描 -->
       <div v-if="source === 'recorder'" class="src-body">
-        <!-- 用户唯一要做的：填直播间。未对接录播姬时整块置灰，且**不给管理员向的配置指引** -->
-        <div class="room-add" :class="{ off: roomsAvailable === false }">
+        <!-- 录播姬不可用（`available === false`）时只留一句可操作提示：其余控件
+             （输入框 / 已登记房间 / 扫描 / 测试连接 / 全部记录）**整块不渲染** ——
+             不可用还给一排点了必然失败的按钮，用户只会以为界面坏了。
+             读失败（roomsError）不是"未接入"：单独出错误条 + 重试。 -->
+        <div v-if="roomsError" class="error-banner mt-8">
+          <Icon name="alert" :size="15" /> {{ roomsError }}
+          <button class="mini-btn flex-none" :disabled="roomsLoading" @click="loadRooms">重试</button>
+        </div>
+        <div v-else-if="roomsAvailable === false" class="room-down">
+          <span class="flex-1">录播姬未接入，暂时不能添加直播间</span>
+          <router-link v-if="isAdmin" class="mini-btn" to="/settings/integrations">去设置</router-link>
+        </div>
+
+        <template v-else>
+        <!-- 用户唯一要做的：填直播间。还没问到可用位（null）时输入先禁用，不先闪"未接入" -->
+        <div class="room-add">
           <div class="row">
             <input
               v-model="roomInput"
@@ -142,10 +162,7 @@
               <span v-if="roomBusy" class="spinner"></span> 添加
             </button>
           </div>
-          <div v-if="roomsAvailable !== null" class="hint mt-4">
-            <template v-if="roomsAvailable">开播自动录制并入库到你的项目</template>
-            <template v-else>录播姬未接入，暂时不能添加</template>
-          </div>
+          <div v-if="roomsAvailable === true" class="hint mt-4">开播自动录制并入库到你的项目</div>
         </div>
 
         <!-- 我登记的直播间：每行可展开看该房间录了哪些文件（单个导入） -->
@@ -196,12 +213,13 @@
             </div>
           </div>
         </div>
-        <div v-else-if="!roomsLoading" class="muted small mt-8">
+        <div v-else-if="!roomsLoading && roomsAvailable === true" class="muted small mt-8">
           还没有登记直播间，填一个房间号即可
         </div>
 
-        <!-- 管理员：待分配兜底 + 扫描 + 接入状态；普通用户完全不显示这一块 -->
-        <template v-if="isAdmin">
+        <!-- 管理员：待分配兜底 + 扫描 + 接入状态；普通用户完全不显示这一块。
+             ⚠️ 录播姬不可用时这一块也不渲染（见上面的 room-down 分支）。 -->
+        <template v-if="isAdmin && roomsAvailable === true">
           <div class="row mt-12">
             <button class="btn" :disabled="scanning" @click="scanNow">
               <span v-if="scanning" class="spinner"></span> 扫描录制目录
@@ -218,6 +236,7 @@
             <span class="mono">[ingest.recorder] root</span>）。
             未归属或入库失败的录像在 <router-link to="/ingest">全部记录与导入规则</router-link> 里处理。
           </div>
+        </template>
         </template>
       </div>
 
@@ -355,29 +374,6 @@
       </div>
     </div>
 
-    <!-- ⚠️ 位置由 `doctorProblem` 决定：**正常排最底部、有问题排最上面**（用户口径）——
-         靠 flex `order` 换位，而不是把这段 markup 抄两份。 ═════ -->
-    <!-- ═════ 运行状况：这台机器上「干活要用的东西」齐不齐 ═════
-         ffmpeg / ffprobe 是剪切与出片的外部依赖，ASR 模型是转写的前提，两者都是
-         **全机共享的程序级资产**（跟"谁在登录"无关）—— 所以它们不该住在账号页。
-         数据来自 `GET /api/doctor`（外部命令是否可用 + 模型清单）与 `GET /api/models`
-         （装在哪一份、多大、怎么下）。写操作（下载）仅管理员，由 ModelList 自己门控。 -->
-    <div class="card card-blk mb-12" :style="{ order: doctorProblem ? -1 : 99 }">
-      <div class="row spread mb-8">
-        <b class="t" style="margin:0">运行状况</b>
-        <span class="muted small" title="由服务端在当前进程里实测，不是缓存的旧值">
-          {{ doctor ? '已实测' : '读取中…' }}
-        </span>
-      </div>
-      <div v-if="doctor" class="row mb-8">
-        <span class="chip" :class="doctor.ffmpeg ? 'g' : 'n'">ffmpeg {{ doctor.ffmpeg ? '就绪' : '缺失' }}</span>
-        <span class="chip" :class="doctor.ffprobe ? 'g' : 'n'">ffprobe {{ doctor.ffprobe ? '就绪' : '缺失' }}</span>
-        <span class="muted small" :title="doctor.models_dir">模型目录</span>
-      </div>
-      <div v-if="doctorError" class="error-banner mb-8">{{ doctorError }}</div>
-      <ModelList :models="models" @changed="loadDoctor" />
-    </div>
-
     <!-- 素材库 = **视频 / 贴纸 / 字体 三合一**，**文件夹管理器**布局（左侧选类型、右侧网格）。
          用户 2026-10-09：「素材库ui改成文件夹管理器类似的感觉，左侧选择类型视频，贴纸，字体」
          +「统一一下导入方式，都需要预览效果」。
@@ -385,6 +381,36 @@
          （`is-admin` 保留只为兼容传参，界面本身不再按它门控）。
          ⚠️ **别再退回"三块各自实现"** —— 那正是用户要改掉的（同一个动作三种手感）。 -->
     <MediaLibrary :is-admin="isAdmin" />
+
+    <!-- ═════ 运行状况：这台机器上「干活要用的东西」齐不齐 ═════
+         ffmpeg / ffprobe 是剪切与出片的外部依赖，ASR 模型是转写的前提，两者都是
+         **全机共享的程序级资产**（跟"谁在登录"无关）—— 所以它们不该住在账号页。
+         数据来自 `GET /api/doctor`（外部命令是否可用 + 模型清单）与 `GET /api/models`
+         （装在哪一份、多大、怎么下）。写操作（下载）仅管理员，由 ModelList 自己门控。
+         ⚠️ **默认折叠成一行**：以前"有问题就 order:-1 冒到页标题之上"，一个可选模型
+         没下载就让 300px 的卡片占满首屏、主功能被压到第二屏（用户截图实测）。 -->
+    <div id="doctor-card" ref="doctorCard" class="card card-blk doctor-card">
+      <button class="doctor-head" :aria-expanded="doctorOpen ? 'true' : 'false'" @click="doctorOpen = !doctorOpen">
+        <Icon name="cpu" :size="15" />
+        <b class="t" style="margin:0">运行状况</b>
+        <span v-if="doctorIssues.length" class="chip a">{{ doctorIssues.length }} 项待处理</span>
+        <span v-else-if="doctor" class="chip g">一切就绪</span>
+        <span v-else class="muted small">读取中…</span>
+        <span v-if="doctor" class="muted small" title="由服务端在当前进程里实测，不是缓存的旧值">已实测</span>
+        <span class="flex-1"></span>
+        <span class="muted small">{{ doctorOpen ? '收起' : '展开' }}</span>
+        <Icon :name="doctorOpen ? 'chevron-down' : 'chevron-right'" :size="13" />
+      </button>
+      <div v-show="doctorOpen" class="mt-8">
+        <div v-if="doctor" class="row mb-8">
+          <span class="chip" :class="doctor.ffmpeg ? 'g' : 'n'">ffmpeg {{ doctor.ffmpeg ? '就绪' : '缺失' }}</span>
+          <span class="chip" :class="doctor.ffprobe ? 'g' : 'n'">ffprobe {{ doctor.ffprobe ? '就绪' : '缺失' }}</span>
+          <span class="muted small" :title="doctor.models_dir">模型目录</span>
+        </div>
+        <div v-if="doctorError" class="error-banner mb-8">{{ doctorError }}</div>
+        <ModelList :models="models" @changed="loadDoctor" />
+      </div>
+    </div>
 
   </div>
 </template>
@@ -416,7 +442,7 @@ const isVideoName = (n) => VIDEO_EXTS.includes(String(n || '').split('.').pop().
 import { toast } from '../stores/toast'
 import { confirmDialog } from '../stores/dialog'
 import { ingestApi } from '../api/ingest'
-import { fmtBytes, fmtTime, ingestState, setReady } from '../stores/ingest'
+import { fmtBytes, fmtTime, ingestState, loadRecords, setReady } from '../stores/ingest'
 import { fmtClock, fmtCount } from '../utils'
 import { loadProjects, wb } from '../stores/workbench'
 import { api } from '../api/client'
@@ -472,19 +498,23 @@ const roomInput = ref('')
 const roomBusy = ref(false)
 const recorderTesting = ref(false)
 const recorderInfo = ref('')
+/** 直播间读取失败（与"录播姬没接入"分开：读失败不许伪装成未接入） */
+const roomsError = ref('')
 
 /** 我的直播间 + 录播姬可用位。普通用户的响应里没有 `reason`（不暴露管理配置）。 */
 async function loadRooms() {
   roomsLoading.value = true
+  roomsError.value = ''
   try {
     const d = await api('/api/rooms')
     rooms.value = d?.rooms || []
     roomsAvailable.value = d?.available === true
     if (isAdmin.value && d?.reason) recorderInfo.value = d.reason
   } catch (e) {
-    rooms.value = []
-    roomsAvailable.value = false
-    if (isAdmin.value) recorderInfo.value = '读取直播间失败：' + (e?.message || '')
+    // ⚠️ 读失败 ≠ 录播姬未接入：置 null（"还不知道"）并单独出错误条 + 重试，
+    // 别让一次网络抖动把整块换成"录播姬未接入，暂时不能添加"。
+    roomsAvailable.value = null
+    roomsError.value = '直播间读取失败：' + (e?.message || '')
   } finally {
     roomsLoading.value = false
   }
@@ -912,18 +942,30 @@ const models = ref([])
 const doctorError = ref('')
 
 /**
- * 运行状况"有没有问题"—— 决定它在首页的位置（用户口径：**正常沉底、有问题冒头**）。
- *
- * 判据 = 外部命令缺失 · 读取失败 · **有模型没装**。三者都会让"跑一遍管线"走不通，
- * 所以都算问题。⚠️ 还没读到时**不算问题**（`doctor` 为 null）—— 否则首帧会先冒头再沉下去。
+ * 运行状况待处理项（页头短提示与卡片 title 共用；空 = 一切就绪）。
+ * 判据 = 外部命令缺失 · 读取失败 · **有模型没装**。
+ * ⚠️ 还没读到时**不算问题**（`doctor` 为 null）—— 否则首帧会先冒一条再消失。
  */
-const doctorProblem = computed(() => {
-  if (doctorError.value) return true
+const doctorIssues = computed(() => {
+  const out = []
+  if (doctorError.value) out.push('运行状况读取失败')
   const d = doctor.value
-  if (!d) return false
-  if (!d.ffmpeg || !d.ffprobe) return true
-  return models.value.some((m) => !m.installed)
+  if (d) {
+    if (!d.ffmpeg) out.push('缺 ffmpeg')
+    if (!d.ffprobe) out.push('缺 ffprobe')
+  }
+  const missing = models.value.filter((m) => !m.installed)
+  if (missing.length) out.push('模型未下载：' + missing.map((m) => m.name).join('、'))
+  return out
 })
+const doctorProblem = computed(() => doctorIssues.value.length > 0)
+/** 卡片**默认折叠**成一行状态条；页头那枚提示点开时再展开并滚过去。 */
+const doctorOpen = ref(false)
+const doctorCard = ref(null)
+function openDoctor() {
+  doctorOpen.value = true
+  requestAnimationFrame(() => doctorCard.value?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }))
+}
 
 async function loadDoctor() {
   try {
@@ -983,8 +1025,14 @@ watch(() => route.fullPath, (to, from) => {
 .src-side .create-bar { display:block; }
 /* 首页根：flex 列只为让「运行状况」用 order 换位（正常沉底、有问题冒头） */
 .wb-root { display:flex; flex-direction:column; }
-/* 「配置直播间」：录播姬不可用时整块置灰（用户只看到"暂时不能添加"，看不到管理配置） */
-.room-add.off { opacity:.55; }
+/* 录播姬不可用：只留一行提示 + 「去设置」（因不可用而整块不渲染时，这一行是唯一入口） */
+.room-down { display:flex; align-items:center; gap:10px; padding:9px 12px; flex-wrap:wrap;
+  border:1px dashed var(--line-soft); border-radius:8px; background:var(--bg-soft); font-size:13px; }
+/* 运行状况：折叠成一行状态条；展开才显示模型清单（默认不占首屏） */
+.doctor-card { margin-top:4px; }
+.doctor-head { display:flex; align-items:center; gap:8px; width:100%; padding:0;
+  background:none; border:none; text-align:left; cursor:pointer; color:inherit; }
+.doctor-head:hover .t { color:var(--main-deep); }
 .room-list { margin-top:10px; }
 .room-item { border-bottom:1px dashed var(--line-soft); }
 .room-item:last-child { border-bottom:none; }

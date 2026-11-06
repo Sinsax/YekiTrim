@@ -181,6 +181,11 @@
              这一行就是"看到的和成片可能不一样"的告知 —— 收敛之后新效果只在底座那条腿上实现。 -->
         <span v-if="dhampirError" class="err">（当前是近似预览）</span>
       </span>
+      <!-- 底座版本与期望不一致时的**常驻**标注（热重载后也跟着更新）：行内一句、详情进 title。
+           没有它的话，v6 底座跑出来的画面看起来和 v7 一模一样 —— 差异只会在成片里出现。 -->
+      <span v-if="dhampirMode && dhampirVersionNote" class="muted small" :title="dhampirVersionTitle">
+        · {{ dhampirVersionNote }}
+      </span>
       <span v-if="dhampirMode" class="muted small mono">
         {{ dhampirMeasuredFps }}/{{ dhampirFps }}fps · {{ dhampirLatencyMs }}ms · 丢 {{ dhampirDroppedShown }}
         <button class="mini-btn" style="padding:0 4px" @click="dhampirDetailOpen = !dhampirDetailOpen"
@@ -297,6 +302,16 @@ const emit = defineEmits(['time', 'update:selectRect', 'update:point', 'playing'
 const dhampirMode = ref(false)
 const dhampirStatus = ref('')
 /**
+ * **底座 wasm API 与本仓期望不一致时的常驻说明**（2026-10-30）。
+ *
+ * 口径：版本不等**不再拦预览**（理由见 `startDhampir` 里那段注释 —— 版本号只表示形状
+ * 变过、不含方向，而预览真正读的那几个键在这种一版之差里都在）。但要**如实说出来**：
+ * 「预览为近似」是用户唯一能自己判断'看到的和成片像不像'的线索，藏起来就等于没说。
+ * 行内只放一行短句（仓里的文案预算 ≤20 字），完整口径与怎么修挂 `title` + 日志面板。
+ */
+const dhampirVersionNote = ref('')
+const dhampirVersionTitle = ref('')
+/**
  * **首次加载 Dhampir 的门帘**（2026-10-02）——`startDhampir` 跑着的那段就是 `true`。
  *
  * 为什么要有它：引擎起来、贴纸动图 `dhampirLoadAnimations`、字幕 `dhampirApplySubtitles`
@@ -322,7 +337,6 @@ const dhampirHostRef = ref(null)
     实时预览该不该用，唯一诚实的判据就是"它现在跑多少帧"。 */
 const dhampirMeasuredFps = ref(0)
 const dhampirPrepMs = ref(0)
-const dhampirBreakdown = ref('')
 const dhampirDrawMs = ref(0)
 const dhampirSlowSeeks = ref(0)
 // **工具条主行三组数字**（用户要求：实际fps/60fps · 总帧延迟 · 丢失帧）✓
@@ -939,7 +953,18 @@ async function toggleDhampir() {
     // 只在成功末尾 `dhampirMarkReport()` 的话，一次失败只剩下一个孤零零的报错信息
     // 与一堆 minify 后的变量名（实测「F i not iterable」就是这么来的）。
     const lastStep = dhampirLoadMarks.length ? dhampirLoadMarks[dhampirLoadMarks.length - 1].label : '(还没开始)'
-    console.error('[dhampir] 起引擎失败（最后一步：' + lastStep + '）：' + ((e && e.stack) || e))
+    // ⚠️ **没有 WebGPU 适配器不是"产品坏了"**：headless / 无 GPU 的机器上底座本来起不来，
+    //    页面已退回 DOM 近似预览并在工具栏写明。以前这里一律 console.error ⇒ 看起来像故障，
+    //    也会让「精修页能不能打开」那条 headless 判据把**环境限制**记成 error。
+    const why = String((e && e.message) || e)
+    const noGpu = /GPU|adapter|WebGPU/i.test(why)
+    if (noGpu) {
+      // 用户可见文案只留「是什么」；wgpu 那一长串 backends 调试信息进控制台/日志面板。
+      dhampirError.value = '本机没有可用的 WebGPU 适配器'
+      console.warn('[dhampir] 起引擎失败（无 GPU 适配器，退回近似预览）：' + why)
+    } else {
+      console.error('[dhampir] 起引擎失败（最后一步：' + lastStep + '）：' + ((e && e.stack) || e))
+    }
     dhampirMark('失败')
     dhampirMarkReport()
     dhampirMode.value = false
@@ -1559,12 +1584,36 @@ async function startDhampir() {
   dhampirPkgNs = pkgNs          // 动图加载要用它（包装对象上没有那两条导出）
   const hostApi =
     typeof pkgNs.dhampir_host_api_version === 'function' ? pkgNs.dhampir_host_api_version() : null
-  if (hostApi !== DHAMPIR_HOST_API) {
+  // ⚠️⚠️ **版本不等不再挡路**（2026-10-30 按现场实测改）：原先这里只做**严格相等**，不等就抛 ⇒
+  // 只要底座落后一版，整条真渲染预览就没了，用户被退回 DOM 近似层（比'差一点点'更差）。
+  // 版本号的语义只是'返回体形状变过'，**不含方向**：
+  //   · 底座比我们**新** ⇒ 多出来的字段我们根本不读（无影响）；
+  //   · 底座比我们**旧** ⇒ 少掉的那几键多半是我们没用到的（v6→v7 只多了文字纵向锚
+  //     `anchor_bottom`，而预览按 `process` 写回的 x/y 摆字，**不读它**）；
+  //   · **连导出都没有**（v4 之前）⇒ overlay 形状更旧、真会读空，照旧挡（文案给可操作指引）。
+  // ⇒ 问得到版本就**照常起引擎**，把差异如实标成「预览为近似」+ 更新底座的指引（见模板里那行）。
+  if (hostApi === null) {
     throw new Error(
-      "底座 wasm API 版本不匹配：期望 " + DHAMPIR_HOST_API + "，实得 " +
-        (hostApi === null ? "(没有 dhampir_host_api_version 这个导出)" : hostApi) +
-        " —— 这是**形状变更**（字段增减），请换一个匹配的底座产物（`yekitrim polish doctor` 会打印当前用的那份）",
+      '底座 wasm 太旧（没有 dhampir_host_api_version 这个导出）：v4 之前的返回体不保证 overlay 形状，'
+        + '读不到弹幕/字幕层。请更新底座产物（`yekitrim polish doctor` 会打印当前用的那份）；'
+        + '现在看到的是近似预览。',
     )
+  }
+  if (Number(hostApi) !== DHAMPIR_HOST_API) {
+    const older = Number(hostApi) < DHAMPIR_HOST_API
+    dhampirVersionNote.value = older
+      ? '预览为近似（底座 v' + hostApi + ' < 期望 v' + DHAMPIR_HOST_API + '）'
+      : '底座较新（v' + hostApi + ' > 期望 v' + DHAMPIR_HOST_API + '）'
+    dhampirVersionTitle.value = older
+      ? '底座 wasm API 是 v' + hostApi + '，本仓按 v' + DHAMPIR_HOST_API + ' 写。后加的那几个字段它不认，'
+        + '个别效果（如文字的纵向锚点）可能与成片有细差。要完全对齐就更新底座产物 —— '
+        + '`yekitrim polish doctor` 会打印当前用的那一份；预览仍可正常使用。'
+      : '底座比本仓期望的新：多出来的返回体字段本仓不读 ⇒ 预览不受影响。'
+        + '要跟上新能力，先升 DHAMPIR_HOST_API 与读它的地方。'
+    addClient(older ? 'warn' : 'info', '[dhampir] ' + dhampirVersionNote.value + '：' + dhampirVersionTitle.value, 'dhampir')
+  } else {
+    dhampirVersionNote.value = ''
+    dhampirVersionTitle.value = ''
   }
   // **打开底座的细粒度计时**：`prepareMs` 含「seek 视频 + 文字栅格化」，
   // `drawMs` 是 GPU 提交。底座说得很对 ——「只知道一帧要 200ms，该改哪里只能靠猜」。

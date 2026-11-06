@@ -143,6 +143,8 @@ const LAST = (p) => {
   // 先去掉尾部单位分隔符：盘根 "F:\" 去掉后是 "F:"，否则"取最后一段"会得到空串，
   // 回退成整条路径 —— 节点名会变成一整条路径，链上按名字匹配子节点也就永远匹配不上。
   while (s.length > 1 && (s.endsWith("/") || s.endsWith(BS))) s = s.slice(0, -1)
+  // POSIX 根 `/` 没有"最后一段"，但不能取成空串 —— 否则 Linux 上面包屑/树根是空白按钮。
+  if (s === "/" || s === BS) return s
   const sep = Math.max(s.lastIndexOf("/"), s.lastIndexOf(BS))
   return sep >= 0 ? s.slice(sep + 1) : s
 }

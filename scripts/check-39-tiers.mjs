@@ -76,6 +76,11 @@ const translatorKeys = [...tBlock[1].matchAll(/^    ([a-z_0-9]+): \{/gm)].map((m
 /** ③ 下拉里的档位。 */
 const vueSrc = readFileSync(join(ROOT, 'webui/src/components/TimelineEditor.vue'), 'utf8');
 const dropdownKeys = [...vueSrc.matchAll(/\{ value: '([a-z_0-9]+)', label: '[^']+' \}/g)].map((m) => m[1]);
+// ⚠️ `legacy: true` 的老档（`perchar_big` / `perchar_small`）**有意不进下拉**：它们只为
+//    "认得出老工程"而留着（删了会让 `effect_anim` 变成认不出的档、一保存就丢）。
+//    ②「界面能选」对它们不成立是**设计**，不是断链 —— 从判据里排除，别再把设计报成缺陷。
+const legacyDropdownKeys = [...vueSrc.matchAll(/\{ value: '([a-z_0-9]+)', label: '[^']+', legacy: true \}/g)]
+  .map((m) => m[1]);
 
 console.log('39 档 × 四标准验收表');
 console.log('='.repeat(72));
@@ -154,8 +159,10 @@ for (const tier of engineKeys) {
   row.c1 = translatorSet.has(tier);
   ok(row.c1, `① ${tier}：转译器不认得这个名字（用户写了会报"认不出的档"）`);
 
-  // ---- ② 界面能选：下拉里有 ----
-  row.c2 = dropdownSet.has(tier);
+  // ---- ② 界面能选：下拉里有（`legacy: true` 的老档例外，见上面的说明） ----
+  const isLegacy = legacyDropdownKeys.includes(tier);
+  row.c2 = dropdownSet.has(tier) || isLegacy;
+  if (isLegacy) row.note = '老档别名：只为识别老工程，有意不进下拉';
   ok(row.c2, `② ${tier}：**下拉里没有这一项** —— 配置写得出来、成片也出得来，`
     + `但用户根本选不到（最冤的一种断法）`);
 

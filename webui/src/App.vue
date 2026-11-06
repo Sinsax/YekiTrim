@@ -100,7 +100,11 @@ const pwdBusy = ref(false)
 const pwdError = ref('')
 const showChangePassword = ref(false)
 
-const isLogin = computed(() => route.name === 'login')
+// 登录 / 注册都是**壳外页面**（不套侧栏）。
+// ⚠️ 曾经只认 'login'：注册页因此套在壳里，而 onMounted 的 loadProjects() 在未登录时
+// 必然 401 → 统一跳登录 —— 直接打开 #/register（或从登录页点过来后刷新）会被顶回登录页，
+// 邀请码注册整条路走不通。两个入口必须同一判据。
+const isLogin = computed(() => route.name === 'login' || route.name === 'register')
 const currentProject = computed(() => projectById(route.params.pid))
 const stepName = computed(() => STEPS.find((s) => s.key === routeStep.value)?.name || '')
 const routeStep = computed(() => {

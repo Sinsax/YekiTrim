@@ -92,12 +92,20 @@ const VAD_MODEL_FILES: &[(&str, &str)] = &[(
 
 /// 下载 silero VAD 权重到 `<models_dir>/silero-vad/`（已有则跳过）。
 pub async fn download_vad_model(models_dir: &Path) -> Result<()> {
-    let dir = models_dir.join(crate::asr::vad::MODEL_DIR_NAME);
-    if crate::asr::vad::find_vad_model(&dir).is_some() {
+    download_vad_into(&models_dir.join(crate::asr::vad::MODEL_DIR_NAME)).await
+}
+
+/// 把 VAD 权重下到**给定目录**（调用方按 `resolve_model_dir` 算出来的那一处）。
+///
+/// ⚠️ 单独一个函数是为了 `ensure_vad_model`：运行时读取的目录由 `resolve_model_dir` 决定，
+/// 它**不一定**是 `<models 根>/silero-vad` —— `[asr] local_model_dir` 指向 models 根、
+/// 而 `silero-vad/` 还没下载时，resolver 会回落到**根目录本身**。
+async fn download_vad_into(dir: &Path) -> Result<()> {
+    if crate::asr::vad::find_vad_model(dir).is_some() {
         tracing::info!("silero VAD 模型已存在，跳过下载");
         return Ok(());
     }
-    tokio::fs::create_dir_all(&dir)
+    tokio::fs::create_dir_all(dir)
         .await
         .context("创建 VAD 模型目录失败")?;
     for (name, url) in VAD_MODEL_FILES {
@@ -361,9 +369,22 @@ pub async fn ensure_models(asr: &AsrConfig) -> Result<()> {
     Ok(())
 }
 
+/// VAD 权重的下载目标 = **运行时读取的那一处**（`resolve_model_dir` 是唯一真源）。
+///
+/// ⚠️ **别在调用方用 `dir.parent()` 反推"models 根"**：`[asr] local_model_dir` 指向
+/// models 根、而 `silero-vad/` 还没下载时，resolver 会回落成**根目录本身** —— 那 `parent()`
+/// 就是 models 根外面（配置目录是相对路径时甚至是空路径）。权重会下到别处、
+/// `find_vad_model(dir)` 永远找不到，VAD 静默失效，还往数据目录外留一个 `silero-vad/`。
+fn vad_download_dir_in(
+    cfg: &AsrConfig,
+    exe_home: &Path,
+) -> (PathBuf, crate::asr::local::ModelDirSource) {
+    crate::asr::local::resolve_model_dir_in(cfg, crate::asr::vad::MODEL_DIR_NAME, exe_home)
+}
+
 /// 确保 VAD 权重落在**运行时真正会读的**目录里（与 `vad_model_path` 同一套查找顺序）。
 async fn ensure_vad_model(asr: &AsrConfig) -> Result<()> {
-    let (dir, source) = crate::asr::local::resolve_model_dir(asr, crate::asr::vad::MODEL_DIR_NAME);
+    let (dir, source) = vad_download_dir_in(asr, &crate::path::yekitrim_home());
     if crate::asr::vad::find_vad_model(&dir).is_some() {
         tracing::info!("silero VAD 已就绪（{}）", dir.display());
         return Ok(());
@@ -374,7 +395,8 @@ async fn ensure_vad_model(asr: &AsrConfig) -> Result<()> {
         dir.display(),
         source.label()
     );
-    download_vad_model(dir.parent().unwrap_or(&dir)).await?;
+    // 落点就是上面 resolve 出来的 `dir` —— 与运行时 `vad_model_path` 逐字节同一处。
+    download_vad_into(&dir).await?;
     if crate::asr::vad::find_vad_model(&dir).is_none() {
         bail!("VAD 模型下载后仍未找到（{}）", dir.display());
     }
@@ -503,6 +525,38 @@ mod model_install_tests {
         // 未知模型 → 不 panic、判未安装
         assert!(!model_install(&cfg, "firered-zh").installed);
         assert!(!model_names().contains(&"firered-zh"));
+    }
+
+    /// VAD 权重的落点必须 = **运行时读取的那一处**（`resolve_model_dir` 的口径）。
+    ///
+    /// 回归：`ensure_vad_model` 曾用 `dir.parent()` 反推 models 根 —— `[asr] local_model_dir`
+    /// 指向 models 根、而 `silero-vad/` 还没下载时，resolver 回落到**根目录本身**，
+    /// parent 就跑到 models 根外面去了：权重下错地方、`find_vad_model(dir)` 永远找不到，
+    /// VAD 静默失效（还往数据目录外写了一个目录）。
+    #[test]
+    fn vad_download_target_is_the_runtime_read_dir() {
+        let t = TmpDir::new("vad-target");
+        let home = t.path().join("state");
+        let models = home.join("models");
+        std::fs::create_dir_all(&models).unwrap();
+
+        // ① 默认布局：<state>/models/silero-vad
+        assert_eq!(
+            vad_download_dir_in(&AsrConfig::default(), &home).0,
+            models.join(crate::asr::vad::MODEL_DIR_NAME)
+        );
+
+        // ② 配置指向 models 根、silero-vad 还没下 ⇒ resolver 回落成根目录本身；
+        //    落点必须是根目录，**不是它的父目录**（旧实现显式取 parent）。
+        let cfg = cfg_with(&models);
+        let (dir, _) = vad_download_dir_in(&cfg, &home);
+        assert_eq!(dir, models);
+        assert_ne!(dir, models.parent().unwrap().to_path_buf());
+
+        // ③ 配置直接指向一个 VAD 目录 ⇒ 落点就是它
+        let vad_dir = t.path().join("custom-vad");
+        std::fs::create_dir_all(&vad_dir).unwrap();
+        assert_eq!(vad_download_dir_in(&cfg_with(&vad_dir), &home).0, vad_dir);
     }
 
     /// 转写前要确保的模型随 `[asr] mode` 变：hybrid 缺 qwen3-asr 就是「打轴跑完才失败」。

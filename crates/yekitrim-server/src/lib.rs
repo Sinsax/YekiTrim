@@ -33,6 +33,7 @@ pub mod media;
 pub mod model;
 pub mod persist;
 pub mod pipeline_boot;
+pub mod publish;
 pub mod ratelimit;
 pub mod render_proc;
 pub mod scope;

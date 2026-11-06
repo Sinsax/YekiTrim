@@ -60,7 +60,7 @@ yekitrim-render-core ←── yekitrim-polish ──┐
 | `output/events.json` 或 `events_file` 非空 | Stage 3 |
 | `output/clips/clips_order.txt` 存在 | Stage 4 |
 
-状态机规则：`stage > current + 1` → 拒绝；`stage <= current` → 可重跑；`process` 无视检查全部重跑。
+状态机规则：`stage > current + 1` → 拒绝；`stage <= current` → 可重跑；`process` 无门槛，已有产物跳过（重跑用单级）。
 
 ### CLI（命令表面）
 

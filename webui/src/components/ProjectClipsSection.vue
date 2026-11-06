@@ -31,6 +31,9 @@
           @click="pickFilter(f)"
         >{{ f.label }}</button>
         <span v-if="f.key === 'cut' && filterKey === 'cut'" class="subfilters">
+          <!-- 二级三个钮的语义是「已剪切里再筛」，但其中也有一个叫「全部」——
+               紧邻一级「全部」时用户分不清是哪一级（用户截图实测）。加一个前缀把归属说死。 -->
+          <span class="sub-label">已剪切 ·</span>
           <button
             v-for="s in SUB_FILTERS"
             :key="s.key"
@@ -44,6 +47,10 @@
       <span class="muted small sort-count">
         {{ shownTotal }}<template v-if="filterKey !== 'all'">/{{ poolTotal }}</template> 个片段<template v-if="uncutEvents.length"> · 未剪切 {{ uncutEvents.length }}</template>
       </span>
+      <span class="v-sep"></span>
+      <button v-if="publishConfigured && isAdmin()" class="mini-btn" :disabled="!publishableClips.length || publishAllBusy"
+              title="把当前所有已剪片段提交到 biliLive-tools 的 B站投稿队列"
+              @click="publishAll">{{ publishAllBusy ? '提交中…' : '发布全部' }}</button>
     </div>
 
     <!-- 已剪切片段与未剪切事件**同在一面卡片墙**上（用户要求合并），按同一个排序键**混排**：
@@ -107,7 +114,10 @@
               title="重新检测后已经没有和它对应的事件了：这里按剪出时的信息显示，删掉重切才会重新关联"
             >独立</span>
             <span v-if="isExported(it.view.c)" class="tag g">已导出</span>
-            <span v-else-if="polishMap[it.view.c.dir]?.polish_ready" class="tag b">精修中</span>
+            <!-- ⚠️ 文案是「未导出」不是「精修中」：判据只是**没出过片/封面**（isExported 的反面），
+                 并不表示有一条精修任务正在跑（用户截图实测会误读）。 -->
+            <span v-else-if="polishMap[it.view.c.dir]?.polish_ready" class="tag b"
+                  title="已剪出，但还没导出成片或封面（与二级筛选「精修中」同口径）">未导出</span>
           </div>
           <!-- **复合片段**：各段源区间（按时间）—— 只有多段才渲染，普通片段一个像素都不动。
                段号 `segMark` + 颜色 `segColor`（与预处理页提段时同一套调色板）；
@@ -130,6 +140,8 @@
             <button v-if="it.view.ev" class="mini-btn" :disabled="!!outBusy"
                     :title="outBusy ? '该项目正在' + kindText(outBusy.kind) : ''"
                     @click.stop="editEvent(it.view.ev)">编辑</button>
+            <button v-if="publishConfigured && isAdmin()" class="mini-btn" :disabled="publishing.has(it.view.c.name) || publishActive(it.view.c)"
+                    :title="publishTitle(it.view.c)" @click.stop="publishClip(it.view.c)">{{ publishLabel(it.view.c) }}</button>
             <button class="mini-btn" :disabled="!!clipBusyOf(it.view.c.name) || polishOpening === it.view.c.dir"
                     :title="polishOpening === it.view.c.dir
                       ? '正在初始化精修工程…'
@@ -334,10 +346,12 @@ import { ref, computed, watch, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../api/client'
 import { projectData } from '../api/projectData'
+import { publishApi } from '../api/publish'
 import { initPolish, polishPost, runRender } from '../api/polish'
 import { watchJob, busyOn, clipKey, idxKey, outKey, kindText, QUEUED_HINT, isActive } from '../api/jobs'
 import { useJobs } from '../composables/useJobs'
 import { toast } from '../stores/toast'
+import { isAdmin } from '../stores/auth'
 import { confirmDialog, promptDialog } from '../stores/dialog'
 import Icon from './Icon.vue'
 import AppModal from './AppModal.vue'
@@ -434,6 +448,12 @@ const polishOpening = ref('')
 const jobClosers = []
 const showAdd = ref(false)
 const playing = ref(null)
+// 出片回传（biliLive-tools）：配置存在时才显示发布按钮
+const publishConfigured = ref(false)
+const publishState = ref({})
+const publishing = ref(new Set())
+const publishAllBusy = ref(false)
+const publishableClips = computed(() => clips.value.filter((c) => c.video_exists !== false))
 // 区间预览（未剪切事件播原片时）：
 // `rangeRef` = 那个 <video>；`loopRange` = 到出点是循环还是停住；`clampBusy` 防回写 currentTime 时的重入。
 const rangeRef = ref(null)
@@ -1256,6 +1276,7 @@ async function load() {
     clips.value = props.projectData.clips || []
     polishMap.value = props.projectData.polishMap || {}
     applyDefaultFilter()
+    void loadPublishState()
     return
   }
   loading.value = true
@@ -1272,10 +1293,113 @@ async function load() {
     ;(pl || []).forEach(p => { m[p.dir] = p })
     polishMap.value = m
     applyDefaultFilter()
+    void loadPublishState()
   } catch (e) {
     loadError.value = '片段数据加载失败：' + e.message
   } finally {
     loading.value = false
+  }
+}
+
+/** 发布状态（biliLive-tools `/task` 回填；无记录 = 还没提交）。 */
+function publishEntry(c) {
+  return publishState.value[c?.name] || null
+}
+/** 正在投稿中（或已排进 biliLive-tools 队列）——这些状态下按钮不该再点。 */
+function publishActive(c) {
+  const st = publishEntry(c)?.status
+  return ['submitted', 'running', 'pending', 'queued'].includes(st)
+}
+function publishLabel(c) {
+  const st = publishEntry(c)?.status
+  if (st === 'completed') return '已投稿'
+  if (st === 'paused') return '已暂停'
+  if (st === 'cancelled') return '已取消'
+  if (['submitted', 'running', 'pending', 'queued'].includes(st)) return '已提交'
+  if (st === 'error') return '重试发布'
+  return '发布'
+}
+/** 投稿任务完成后刷新状态（否则界面永远停在「已提交」，只能 F5）。 */
+let publishPollTimer = 0
+function hasPublishActive() {
+  return Object.values(publishState.value || {}).some((e) =>
+    ['submitted', 'running', 'pending', 'queued'].includes(e?.status))
+}
+function schedulePublishPoll() {
+  if (publishPollTimer) return
+  publishPollTimer = setTimeout(async () => {
+    publishPollTimer = 0
+    await loadPublishState()
+    if (hasPublishActive()) schedulePublishPoll()
+  }, 8000)
+}
+function publishTitle(c) {
+  const e = publishEntry(c)
+  if (e?.error) return e.error
+  if (e?.status) return '投稿任务状态: ' + e.status
+  return '提交到 biliLive-tools 的 B站投稿队列（分区/标签/封面用它的上传预设）'
+}
+async function loadPublishState() {
+  if (!pid.value) return
+  try {
+    const d = await publishApi.state(pid.value)
+    publishConfigured.value = d?.configured !== false
+    publishState.value = d?.clips || {}
+  } catch {
+    // 读失败 ≠ 未配置：保留上一次状态与按钮（点发布时服务端还会再校验一次），
+    // 别因为一次网络抖动就把整排发布入口藏起来。
+  }
+}
+async function publishClip(c) {
+  const name = c?.name
+  if (!name || publishing.value.has(name)) return
+  const entry = publishEntry(c)
+  const again = entry?.status === 'completed'
+  const ok = await confirmDialog(
+    again
+      ? `这条已经投过稿了，确定再投一次？（会产生一条新的投稿任务）`
+      : `把「${c.title || name}」提交到 B站投稿队列？分区/标签/封面用 biliLive-tools 的上传预设。`,
+    { title: again ? '重复发布确认' : '发布到 B站' }
+  )
+  if (!ok) return
+  publishing.value = new Set(publishing.value).add(name)
+  try {
+    // POST 只建**后台任务**（复制 + 预检 + 投稿是分钟级）；等它到终态再读状态。
+    const d = await publishApi.publish(pid.value, [name])
+    await waitJobDone(d?.id)
+    await loadPublishState()
+    toast('已提交到投稿队列')
+    if (hasPublishActive()) schedulePublishPoll()
+  } catch (e) {
+    // 任务失败时部分切片可能已经提交成功 —— 先把落盘状态读回来再报错。
+    await loadPublishState()
+    toast('发布失败：' + e.message, 'err')
+  } finally {
+    const s = new Set(publishing.value)
+    s.delete(name)
+    publishing.value = s
+  }
+}
+async function publishAll() {
+  const names = publishableClips.value.map((c) => c.name).filter(Boolean)
+  if (!names.length || publishAllBusy.value) return
+  const ok = await confirmDialog(
+    `把当前 ${names.length} 条已剪片段全部提交到 B站投稿队列？`,
+    { title: '发布全部' }
+  )
+  if (!ok) return
+  publishAllBusy.value = true
+  try {
+    const d = await publishApi.publish(pid.value, names)
+    await waitJobDone(d?.id)
+    await loadPublishState()
+    toast(`已提交 ${names.length} 条到投稿队列`)
+    if (hasPublishActive()) schedulePublishPoll()
+  } catch (e) {
+    await loadPublishState()
+    toast('发布失败：' + e.message, 'err')
+  } finally {
+    publishAllBusy.value = false
   }
 }
 
@@ -1565,6 +1689,7 @@ onUnmounted(() => {
   stopRangeClock()
   stopRangeDrag()
   window.removeEventListener('keydown', onRangeKey)
+  if (publishPollTimer) { clearTimeout(publishPollTimer); publishPollTimer = 0 }
   // 等 init 的订阅若还开着（用户中途走了），卸载时关掉；`watchJob` 在终态里也会自己关
   while (jobClosers.length) {
     try { jobClosers.pop()() } catch { /* 已关过就忽略 */ }
@@ -1577,12 +1702,19 @@ onUnmounted(() => {
 .sort-bar .sort-count { margin-left:auto; }
 /* 删除（破坏性）推到卡片右下角，离「精修」远一点，别误点 */
 .clip-card .clip-del { margin-left:auto; }
+/* ⚠️ 卡片脚现在最多**四颗**按钮（编辑 / 发布 / 精修 / 删除），而卡片内宽只有 ~230px：
+   实测「删除」被卡片右缘硬裁掉半个字（发布按钮是 2026-10-30 新加的）。
+   收窄水平 padding + 允许换行（「重试发布」这类长文案换行而不是溢出）。 */
+.clip-card .foot { gap:6px; flex-wrap:wrap; row-gap:6px; }
+.clip-card .foot .mini-btn { padding-left:8px; padding-right:8px; }
 .v-sep { width:1px; height:14px; background:var(--line); margin:0 4px; flex:none; }
 /* 二级筛选（精修中 / 已导出）：做成挂在「已剪切」旁边的一个**内嵌分组**——
    虚线边 + 略浅的底 + 更小的字号，一眼看出它从属于左边那颗一级按钮，不是并列的第五档。
    组内选中的那颗用卡片白底「抬起」，与一级 `.mini-btn.selected` 的绿色块区分开。 */
 .subfilters { display:inline-flex; align-items:center; gap:2px; padding:2px; margin:0 2px; flex:none;
   border:1px dashed var(--line); border-radius:var(--r-full); background:var(--bg-soft); }
+/* 组前缀「已剪切 ·」：把二级与旁边的一级「全部」区分开（行内 4 字，不占宽度） */
+.subfilters .sub-label { flex:none; font-size:11px; color:var(--ink-faint); padding:0 2px 0 6px; white-space:nowrap; }
 .subfilters .sub-btn { display:inline-flex; align-items:center; padding:3px 10px; font-size:11px; line-height:1.5;
   border:0; border-radius:var(--r-full); background:transparent; color:var(--ink-dim);
   white-space:nowrap; cursor:pointer; transition:.15s; }

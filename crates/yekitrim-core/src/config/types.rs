@@ -214,6 +214,9 @@ pub struct Config {
     /// 多用户服务 P3：采集（录播姬 webhook + 兜底扫描）
     #[serde(default)]
     pub ingest: IngestConfig,
+    /// 出片回传：把成片交给 biliLive-tools 投稿（YekiTrim 自己不做 B站上传）。
+    #[serde(default)]
+    pub publish: PublishConfig,
     /// 自助注册（邀请码）
     #[serde(default)]
     pub auth: AuthConfig,
@@ -251,6 +254,9 @@ pub struct IngestConfig {
     pub allow_ips: Vec<String>,
     #[serde(default)]
     pub recorder: RecorderConfig,
+    /// 通用 webhook（任意录制软件把"录制完成"推过来，不要求它长得像录播姬）。
+    #[serde(default)]
+    pub webhook: WebhookConfig,
     /// **B站链接通道（P4）**：下载器引擎。
     ///
     /// `"yt-dlp"` = 内置引擎（版本 + sha256 钉死在 `yekitrim_service::downloader::registry`，
@@ -311,6 +317,7 @@ impl Default for IngestConfig {
             token_hash: String::new(),
             allow_ips: Vec::new(),
             recorder: RecorderConfig::default(),
+            webhook: WebhookConfig::default(),
             downloader: default_downloader(),
             ytdlp_path: String::new(),
             max_quality: default_max_quality(),
@@ -399,6 +406,106 @@ impl Default for RecorderConfig {
             concat_files: true,
             extensions: default_recorder_extensions(),
             auto_pipeline: default_auto_pipeline(),
+        }
+    }
+}
+
+/// `[ingest.webhook]` — **通用**"录制完成"入口（任意录制软件都能推）。
+///
+/// 与 `[ingest.recorder]` 的区别：录播姬那条有会话/分片/空闲窗口语义；这里只认
+/// "一个已经写完的文件 + 可选的同名弹幕"，直接建一个项目。录制软件只要能发一条
+/// JSON（或它自带 webhook，经 §4.1 的字段适配）就能接进来。
+///
+/// ⚠️ 项目**建在录像原目录**（不搬不删源文件）：biliLive-tools/录播姬的录制历史
+/// 还引用原路径，且两个盘经常不是同一个文件系统（硬链接不可用）。代价是 YekiTrim
+/// 的 `output/` 也写在那个目录里 —— 磁盘水位要自己盯。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebhookConfig {
+    /// 录像根目录（宿主机绝对路径）。**空 = 未启用**。
+    #[serde(default)]
+    pub root: String,
+    /// 事件里路径的容器前缀（例 `/app/video`）：非空时先剥掉，再按 [`Self::root`] 解析。
+    /// 空 = 事件里直接给宿主机路径（或相对 [`Self::root`] 的路径）。
+    #[serde(default)]
+    pub container_root: String,
+    /// 建项目后自动执行到哪一步：none | transcribe | detect | cut。
+    /// 默认 **none**：通用入口不知道来源会不会很贵，先建项目、让用户自己点。
+    #[serde(default = "default_webhook_auto_pipeline")]
+    pub auto_pipeline: String,
+}
+
+fn default_webhook_auto_pipeline() -> String {
+    "none".into()
+}
+
+impl Default for WebhookConfig {
+    fn default() -> Self {
+        Self {
+            root: String::new(),
+            container_root: String::new(),
+            auto_pipeline: default_webhook_auto_pipeline(),
+        }
+    }
+}
+
+/// `[publish.bililive_tools]` — 出片回传给 biliLive-tools 投稿。
+///
+/// YekiTrim 只负责"把成片放到 biliLive-tools 容器看得见的目录 + 调它的投稿 API"，
+/// B站登录/分区/标签/封面/重试/分P 全部由 biliLive-tools 自己管。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublishConfig {
+    #[serde(default)]
+    pub bililive_tools: BiliLivePublishConfig,
+}
+
+impl Default for PublishConfig {
+    fn default() -> Self {
+        Self {
+            bililive_tools: BiliLivePublishConfig::default(),
+        }
+    }
+}
+
+/// ⚠️ **只从全局 `config.toml` 读**（`load_global_config()`，server 的发布接口还要求 admin）：
+/// 不参与项目级 `merge()`，`staging_dir` / `passkey_file` 也**不在** `api/config.rs::PROJECT_PATH_KEYS`
+/// 的 jail 名单里 —— 这两个键是**宿主机任意路径**（写文件 / 读凭证），将来若要改成项目级配置，
+/// 必须先给它们补路径面防线②，否则普通账号就能让服务端到处写文件、或把别的文件当 passkey 读走。
+/// 同理：新建工程配置时 `[publish]` 整段被 `project_config_body` 剥掉（含路径），见 config 卡。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BiliLivePublishConfig {
+    /// API 地址（例 `http://127.0.0.1:18010`）；空 = 未启用
+    #[serde(default)]
+    pub base_url: String,
+    /// 600 权限文件，内容是一行 `BILILIVE_TOOLS_PASSKEY`；空 = 未启用
+    #[serde(default)]
+    pub passkey_file: String,
+    /// biliLive-tools 的上传预设 id（在它的 UI 里维护分区/标签/合集等）
+    #[serde(default = "default_upload_preset")]
+    pub upload_preset_id: String,
+    /// 成片暂存目录（**宿主机**路径；会被 biliLive-tools 看到）
+    #[serde(default)]
+    pub staging_dir: String,
+    /// 暂存目录在 biliLive-tools **容器内**的对应路径（例 `/app/video/_yekitrim_publish`）
+    #[serde(default)]
+    pub container_staging_root: String,
+    /// B站账号 uid（0 = 自动取 `/user/list` 的第一个）
+    #[serde(default)]
+    pub uid: u64,
+}
+
+fn default_upload_preset() -> String {
+    "default".into()
+}
+
+impl Default for BiliLivePublishConfig {
+    fn default() -> Self {
+        Self {
+            base_url: String::new(),
+            passkey_file: String::new(),
+            upload_preset_id: default_upload_preset(),
+            staging_dir: String::new(),
+            container_staging_root: String::new(),
+            uid: 0,
         }
     }
 }

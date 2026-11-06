@@ -126,7 +126,7 @@ const USAGE = `用法：node scripts/yekitrim-compare.mjs --clip <clip 目录> [
   --dhampir <路径>      Dhampir 可执行（默认找同层 Dhampir/target/{debug,release}；
                         也可用环境变量 VTEDIT_DHAMPIR）
   --yekitrim <路径>        yekitrim 可执行（默认自动找）
-  --font-file <路径>    字幕字体（默认 C:/Windows/Fonts/msyh.ttc）
+  --font-file <路径>    字幕字体（默认按平台找系统中文字体；也可用 YEKITRIM_FONT_FILE）
   --baseline-pixel-max <n>  覆盖"基线像素差"阈值（调参 / 自证断言会红）
   --no-mask-danmaku     不屏蔽弹幕带（默认屏蔽左带 + 上带，理由见文件头"弹幕按设计"）
   --capture-golden <目录>  跑常规回路并**冻结**基线采样帧（<目录>/<样本>/ref-<t>.jpg + golden.json）；
@@ -861,7 +861,24 @@ function main() {
     join(REPO_ROOT, '..', 'Dhampir', 'target', 'release', `dhampir${EXE}`),
   ].filter(Boolean).map((p) => resolve(p));
   const dhampir = dhampirCandidates.find((p) => existsSync(p));
-  const fontFile = args.fontFile || 'C:/Windows/Fonts/msyh.ttc';
+  // 字幕字体：**别写死 Windows 路径**（Linux 上必然不存在，底座会直接报 --font-file 指不到）。
+  // 优先显式参数 → 环境变量 → 平台候选；一个都没有就明确报错并给出怎么传。
+  const fontCandidates = process.platform === 'win32'
+    ? ['C:/Windows/Fonts/msyh.ttc', 'C:/Windows/Fonts/msyhbd.ttc']
+    : [
+        process.env.YEKITRIM_FONT_FILE,
+        '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
+        '/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc',
+        '/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc',
+        '/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc',
+      ].filter(Boolean);
+  const fontFile = args.fontFile || fontCandidates.find((p) => existsSync(p));
+  if (!fontFile) {
+    throw new Error(
+      '找不到可用的中文字体：传 --font-file <ttf/ttc>，或设 YEKITRIM_FONT_FILE。' +
+        '（底座出片必须有字体文件；预览那侧的字体栈不能拿来喂它）'
+    );
+  }
   // yekitrim 可执行：按**候选列表**找，而不是猜一个相对路径。
   //
   // 我第一版按 `clip/../../../../..` 往上找五层 —— 那依赖片段在磁盘上的深度，
