@@ -69,11 +69,9 @@
           </div>
         </div>
 
-        <!-- 同一行：字幕轨（2/3）+ 手动切片（1/3）；两者默认展开 -->
-        <div class="edit-row">
         <!-- 字幕轨道：默认展开（用户口径）；收起后只留标题行，要拖块/改字再展开。
              展开状态首帧同步读 localStorage（`useDisclosure`）—— 别改成 v-show，轨道挂载时要量宽度。 -->
-        <div class="card">
+        <div class="card mt-12">
           <div class="row spread mb-6">
             <b class="t m-0">字幕 {{ segments.length }} 条</b>
             <span class="row" style="gap:8px">
@@ -99,116 +97,9 @@
             @seek="seekTo"
           />
         </div>
-        <div class="card">
-          <!-- 手动切片：整块原样保留（判据 ⑳/㉔/㉕/㉙ 以这里的结构与缩进为锚，别重排）。 -->
-          <details class="adv-blk manual-blk" :open="manualOpen" @toggle="syncManual">
-            <summary data-cap="prepare.manual-slice" title="自己标入点/出点：多组 = 分段剪、合并输出">手动切片</summary>
-          <!-- 多段（粗剪拓展 2026-10-06）：一组入点/出点 = 一条片段；**多组 = 分段剪、合并输出**。
-               段间空隙里"有内容"的部分会被丢掉，无字幕的保留（交给后处理「去静音」变屏蔽区间）。
-               点一行选中它，「标记入点/出点」落到选中那一行；单行时与老行为完全等价。 -->
-          <div class="slice-rows mt-6">
-            <!-- ⚠️ **整行都可点选**（含输入框）：点/聚焦任一格都把它设为"正在编辑的那一段"。
-                 以前输入框上挂了 `@click.stop`，于是"改完数字再点标记入点"落到**别人**身上 ——
-                 用户报的「多段切片没法回过头来处理」就是这个（判据 ㉔ 的变异钉着它）。
-                 ⚠️ **还没标记的行不是错误态**（用户 2026-10-30 报「红框空白条目 0 0 0.0s ×」）：
-                 空行的入/出点留空（占位符）、时长「—」、段号按钮中性色；段落色（`segColor`）
-                 表达的是"这一段在字幕轨上占哪儿"，没有区间时不该有颜色。 -->
-            <div v-for="(r, i) in sliceRows" :key="i" class="slice-row" :class="{ on: i === activeRow }"
-                 :title="'编辑第 ' + (i + 1) + ' 段（入点/出点只作用于选中的这段）'"
-                 @click="activeRow = i">
-              <button class="seg-pick" :class="{ on: i === activeRow }" :title="'选这一段来标记入点/出点'"
-                      :style="{ borderColor: segColor(i).line, color: segColor(i).line,
-                                background: i === activeRow ? segColor(i).fill : 'transparent' }"
-                      @click.stop="activeRow = i">{{ i + 1 }}</button>
-              <!-- ⚠️ 属性顺序**别动**：`v-model.number="r.start"` 必须在行尾、下一行紧接 `:title=`
-                   （判据 ㉔ 的变异台就锚在这个形状上 —— 把 placeholder 插到中间会让"挂回 @click.stop"
-                   那条变异抓不住）。 -->
-              <input class="fld-input slice-time" type="number" step="0.1" min="0" placeholder="入点"
-                     v-model.number="r.start"
-                     :title="'第 ' + (i + 1) + ' 段入点（秒）'" @focus="activeRow = i">
-              <input class="fld-input slice-time" type="number" step="0.1" min="0" placeholder="出点"
-                     v-model.number="r.end"
-                     :title="'第 ' + (i + 1) + ' 段出点（秒）'" @focus="activeRow = i">
-              <span class="mono small flex-none">{{ hasSpan(r) ? fmtDur(Number(r.end) - Number(r.start)) : '—' }}</span>
-              <button class="mini-btn flex-none" :disabled="sliceRows.length <= 1" title="删掉这一段"
-                      @click.stop="removeSliceRow(i)">×</button>
-            </div>
-          </div>
-          <div class="row mt-6" style="gap:6px">
-            <button class="mini-btn flex-1 jc-center" :title="markHint('in')" @click="mark('in')">标记入点</button>
-            <button class="mini-btn flex-1 jc-center" :title="markHint('out')" @click="mark('out')">标记出点</button>
-            <button class="mini-btn flex-none" title="再加一段（与已有的合成同一条片段，加完自动转到新段）" @click="addSliceRow">＋ 一段</button>
-          </div>
-          <div class="row spread small mt-4">
-            <span class="muted">
-              {{ sliceRows.length }} 段<template v-if="sliceRows.length > 1">
-                · 编辑中 <b class="seg-cur-num">{{ activeRow + 1 }}</b></template>
-            </span>
-            <span
-              v-if="sliceOverlaps.length"
-              class="seg-overlap"
-              :title="'第 ' + sliceOverlaps.join('、') + ' 段压在前一段上：同一段内容会被剪两遍，落盘时会自动并成一段'"
-            >⚠️ 第 {{ sliceOverlaps.join('、') }} 段重叠</span>
-            <span class="mono">{{ fmtDur(sliceTotal) }}</span>
-          </div>
-          <input
-            v-model="label"
-            class="fld-input mt-6"
-            placeholder="片段标题"
-            title="标题只用于人工查看（events.json / clip.json / 卡片展示）"
-            @keyup.enter="sliceNow"
-          >
-          <div class="row" style="gap:6px;margin-top:8px">
-            <button class="btn btn-primary flex-1 jc-center"
-                    :disabled="!canSlice || busy"
-                    :title="canSlice ? '按标记的起止建事件并立即开始剪切' : '每一段都要有入点和出点（出点大于入点）'"
-                    @click="sliceNow">切片</button>
-            <button class="mini-btn" :disabled="!canSlice" title="补类型 / 详情（标题已填则直接切）" @click="openAdd">更多设置</button>
-          </div>
-          </details>
-        </div>
-        </div>
-      </div>
-
-      <!-- 右：识别（一块卡，高级项默认折叠）。主按钮紧跟状态 chips，其余收进「处理选项」。 -->
-      <div class="side-col">
-        <div class="card card-blk">
-          <b class="t">识别</b>
-          <div class="row" style="gap:6px;flex-wrap:wrap;margin:8px 0 10px">
-            <span class="chip" :class="chipClass('transcribe')" :title="transcribeChipTitle">识别声音 {{ chipText('transcribe') }}</span>
-            <span class="chip" :class="chipClass('detect')">找亮点 {{ chipText('detect') }}</span>
-            <span v-if="autoCut" class="chip" :class="chipClass('cut')" title="剪出片段（「处理选项」里可关自动剪出）">剪出片段 {{ chipText('cut') }}</span>
-          </div>
-
-          <!-- 主按钮（状态机见 primaryLabel / onPrimary）：没有事件时 = 一键处理，
-               已有事件 = 去挑片段；运行中禁用，进度与「停止」在下面的任务盒。 -->
-          <button
-            class="btn btn-primary run-btn"
-            data-cap="prepare.run-all"
-            :disabled="primaryDisabled"
-            :title="primaryTitle"
-            @click="onPrimary"
-          >
-            <span v-if="jobRunning" class="spinner"></span>
-            {{ primaryLabel }}
-          </button>
-          <div v-if="job.id" class="job-box mt-12">
-            <div class="row spread small">
-              <b>{{ kindText(job.kind) }}</b>
-              <span class="chip" :class="statusClass(job.status)">{{ statusText(job.status) }}</span>
-            </div>
-            <div class="muted small mt-2">{{ job.message || '运行中' }}</div>
-            <div v-if="job.total > 0" class="progress mt-6"><div :style="{ width: jobPct + '%' }"></div></div>
-            <div class="row mt-6" style="gap:6px">
-              <button class="mini-btn flex-none" @click="openJobs()">查看任务</button>
-              <button v-if="jobRunning" class="mini-btn danger flex-none" :disabled="canceling" @click="cancelJob">
-                <Icon name="x" :size="10" /> 停止
-              </button>
-            </div>
-          </div>
-
+        <div class="card mt-12">
           <!-- 处理选项：ASR 模式 / 主播名 / 分步处理 / 弹幕与字幕清单 / 重新处理。默认收起。 -->
-          <details class="adv-blk" :open="materialsOpen" @toggle="syncMaterials">
+          <details class="adv-blk materials-blk" :open="materialsOpen" @toggle="syncMaterials">
             <summary data-cap="prepare.materials" title="ASR 模式、主播名、分步处理、弹幕/字幕清单与重新处理">处理选项</summary>
 
             <!-- 自动剪出：开 = 主按钮一次跑完（识别 → 找亮点 → 剪出片段）；
@@ -309,6 +200,113 @@
               @click="onRedetect"
             >重新找亮点</button>
           </details>
+        </div>
+      </div>
+
+      <!-- 右：识别（一块卡，高级项默认折叠）。主按钮紧跟状态 chips，其余收进「处理选项」。 -->
+      <div class="side-col">
+        <div class="card card-blk">
+          <b class="t">识别</b>
+          <div class="row" style="gap:6px;flex-wrap:wrap;margin:8px 0 10px">
+            <span class="chip" :class="chipClass('transcribe')" :title="transcribeChipTitle">识别声音 {{ chipText('transcribe') }}</span>
+            <span class="chip" :class="chipClass('detect')">找亮点 {{ chipText('detect') }}</span>
+            <span v-if="autoCut" class="chip" :class="chipClass('cut')" title="剪出片段（「处理选项」里可关自动剪出）">剪出片段 {{ chipText('cut') }}</span>
+          </div>
+
+          <!-- 主按钮（状态机见 primaryLabel / onPrimary）：没有事件时 = 一键处理，
+               已有事件 = 去挑片段；运行中禁用，进度与「停止」在下面的任务盒。 -->
+          <button
+            class="btn btn-primary run-btn"
+            data-cap="prepare.run-all"
+            :disabled="primaryDisabled"
+            :title="primaryTitle"
+            @click="onPrimary"
+          >
+            <span v-if="jobRunning" class="spinner"></span>
+            {{ primaryLabel }}
+          </button>
+          <div v-if="job.id" class="job-box mt-12">
+            <div class="row spread small">
+              <b>{{ kindText(job.kind) }}</b>
+              <span class="chip" :class="statusClass(job.status)">{{ statusText(job.status) }}</span>
+            </div>
+            <div class="muted small mt-2">{{ job.message || '运行中' }}</div>
+            <div v-if="job.total > 0" class="progress mt-6"><div :style="{ width: jobPct + '%' }"></div></div>
+            <div class="row mt-6" style="gap:6px">
+              <button class="mini-btn flex-none" @click="openJobs()">查看任务</button>
+              <button v-if="jobRunning" class="mini-btn danger flex-none" :disabled="canceling" @click="cancelJob">
+                <Icon name="x" :size="10" /> 停止
+              </button>
+            </div>
+          </div>
+
+          <!-- 手动切片：整块原样保留（判据 ⑳/㉔/㉕/㉙ 以这里的结构与缩进为锚，别重排）。 -->
+          <details class="adv-blk" :open="manualOpen" @toggle="syncManual">
+            <summary data-cap="prepare.manual-slice" title="自己标入点/出点：多组 = 分段剪、合并输出">手动切片</summary>
+          <!-- 多段（粗剪拓展 2026-10-06）：一组入点/出点 = 一条片段；**多组 = 分段剪、合并输出**。
+               段间空隙里"有内容"的部分会被丢掉，无字幕的保留（交给后处理「去静音」变屏蔽区间）。
+               点一行选中它，「标记入点/出点」落到选中那一行；单行时与老行为完全等价。 -->
+          <div class="slice-rows mt-6">
+            <!-- ⚠️ **整行都可点选**（含输入框）：点/聚焦任一格都把它设为"正在编辑的那一段"。
+                 以前输入框上挂了 `@click.stop`，于是"改完数字再点标记入点"落到**别人**身上 ——
+                 用户报的「多段切片没法回过头来处理」就是这个（判据 ㉔ 的变异钉着它）。
+                 ⚠️ **还没标记的行不是错误态**（用户 2026-10-30 报「红框空白条目 0 0 0.0s ×」）：
+                 空行的入/出点留空（占位符）、时长「—」、段号按钮中性色；段落色（`segColor`）
+                 表达的是"这一段在字幕轨上占哪儿"，没有区间时不该有颜色。 -->
+            <div v-for="(r, i) in sliceRows" :key="i" class="slice-row" :class="{ on: i === activeRow }"
+                 :title="'编辑第 ' + (i + 1) + ' 段（入点/出点只作用于选中的这段）'"
+                 @click="activeRow = i">
+              <button class="seg-pick" :class="{ on: i === activeRow }" :title="'选这一段来标记入点/出点'"
+                      :style="{ borderColor: segColor(i).line, color: segColor(i).line,
+                                background: i === activeRow ? segColor(i).fill : 'transparent' }"
+                      @click.stop="activeRow = i">{{ i + 1 }}</button>
+              <!-- ⚠️ 属性顺序**别动**：`v-model.number="r.start"` 必须在行尾、下一行紧接 `:title=`
+                   （判据 ㉔ 的变异台就锚在这个形状上 —— 把 placeholder 插到中间会让"挂回 @click.stop"
+                   那条变异抓不住）。 -->
+              <input class="fld-input slice-time" type="number" step="0.1" min="0" placeholder="入点"
+                     v-model.number="r.start"
+                     :title="'第 ' + (i + 1) + ' 段入点（秒）'" @focus="activeRow = i">
+              <input class="fld-input slice-time" type="number" step="0.1" min="0" placeholder="出点"
+                     v-model.number="r.end"
+                     :title="'第 ' + (i + 1) + ' 段出点（秒）'" @focus="activeRow = i">
+              <span class="mono small flex-none">{{ hasSpan(r) ? fmtDur(Number(r.end) - Number(r.start)) : '—' }}</span>
+              <button class="mini-btn flex-none" :disabled="sliceRows.length <= 1" title="删掉这一段"
+                      @click.stop="removeSliceRow(i)">×</button>
+            </div>
+          </div>
+          <div class="row mt-6" style="gap:6px">
+            <button class="mini-btn flex-1 jc-center" :title="markHint('in')" @click="mark('in')">标记入点</button>
+            <button class="mini-btn flex-1 jc-center" :title="markHint('out')" @click="mark('out')">标记出点</button>
+            <button class="mini-btn flex-none" title="再加一段（与已有的合成同一条片段，加完自动转到新段）" @click="addSliceRow">＋ 一段</button>
+          </div>
+          <div class="row spread small mt-4">
+            <span class="muted">
+              {{ sliceRows.length }} 段<template v-if="sliceRows.length > 1">
+                · 编辑中 <b class="seg-cur-num">{{ activeRow + 1 }}</b></template>
+            </span>
+            <span
+              v-if="sliceOverlaps.length"
+              class="seg-overlap"
+              :title="'第 ' + sliceOverlaps.join('、') + ' 段压在前一段上：同一段内容会被剪两遍，落盘时会自动并成一段'"
+            >⚠️ 第 {{ sliceOverlaps.join('、') }} 段重叠</span>
+            <span class="mono">{{ fmtDur(sliceTotal) }}</span>
+          </div>
+          <input
+            v-model="label"
+            class="fld-input mt-6"
+            placeholder="片段标题"
+            title="标题只用于人工查看（events.json / clip.json / 卡片展示）"
+            @keyup.enter="sliceNow"
+          >
+          <div class="row" style="gap:6px;margin-top:8px">
+            <button class="btn btn-primary flex-1 jc-center"
+                    :disabled="!canSlice || busy"
+                    :title="canSlice ? '按标记的起止建事件并立即开始剪切' : '每一段都要有入点和出点（出点大于入点）'"
+                    @click="sliceNow">切片</button>
+            <button class="mini-btn" :disabled="!canSlice" title="补类型 / 详情（标题已填则直接切）" @click="openAdd">更多设置</button>
+          </div>
+          </details>
+
 
         </div>
       </div>
@@ -1417,13 +1415,9 @@ onUnmounted(() => {
 .job-box { padding:10px; border:1px dashed var(--line); border-radius:var(--r-sm); background:var(--bg-soft); }
 /* ---- 简化后的披露区 / 横幅（右列只剩一块卡：主按钮 + 两个 <details>） ---- */
 /* 「处理选项」默认收起、「手动切片」默认展开；观感与设置页 `.form-adv` 同一套。 */
-/* 字幕轨 + 手动切片：同一行；字幕 2/3、手动切片至少 300px，窄屏再上下叠。 */
-.edit-row { display:grid; grid-template-columns:minmax(0,2fr) minmax(300px,1fr);
-  gap:12px; align-items:start; margin-top:12px; }
-@media (max-width: 1100px) { .edit-row { grid-template-columns:1fr; } }
 .adv-blk { margin-top:12px; border-top:1px dashed var(--line-soft); padding-top:6px; }
-/* 手动切片在自己的卡片里：不再重复顶部分隔线 / 上边距。 */
-.manual-blk { margin-top:0; border-top:none; padding-top:0; }
+/* 处理选项挪到左栏字幕下面：卡片自带边框，不再重复顶部分隔线 / 上边距。 */
+.materials-blk { margin-top:0; border-top:none; padding-top:0; }
 .adv-blk > summary { cursor:pointer; font-weight:700; font-size:13px; color:var(--ink-dim);
   display:flex; align-items:center; gap:8px; padding:4px 0; list-style:none; }
 .adv-blk > summary::-webkit-details-marker { display:none; }
