@@ -260,13 +260,13 @@
             >
           </div>
 
-          <!-- 分步：只找亮点（只跑检测、不剪片段）。「只识别」在上面 ASR 那一行（只转写）。 -->
+          <!-- 分步：事件检测（只跑检测、不剪片段）。「只识别」在上面 ASR 那一行（只转写）。 -->
           <button
             class="mini-btn block-btn mt-8"
             :disabled="!hasTranscript || !hasVideo || busy"
-            title="只找亮点：只跑事件检测，不剪片段"
+            title="只跑事件检测，不剪片段"
             @click="runDetectOnly"
-          >只找亮点</button>
+          >事件检测</button>
 
           <!-- 输入素材：弹幕 / 字幕都是**随时可换的输入**（生效值写进 yekitrim.toml），不是产物。
                清单式（两块的显示与交互完全一致）：
@@ -1055,7 +1055,7 @@ async function saveAsrMode() {
 /** 「只识别」：**只转写**（不接检测）—— 换模式再出一份字幕的入口。
  *
  *  跑完产物登记进字幕列表并置为生效值（服务端 `assets::bind_asr_artifact`），
- *  要不要接着检测由用户决定（主按钮 / 只找亮点）。
+ *  要不要接着检测由用户决定（主按钮 / 事件检测）。
  *  同一模式跑过就不再跑（`canRunAsr`，服务端对 `stage=transcribe` 也按模式 409 兜底）。 */
 async function runAsr() {
   if (busy.value) { toast('该项目正在' + busyText.value + '，请稍候'); return }
@@ -1068,7 +1068,7 @@ async function runAsr() {
   await startStage('transcribe')
 }
 
-/** 「只找亮点」：只跑事件检测（不剪片段）—— 有字幕就能随时重跑，已剪片段不受影响。 */
+/** 「事件检测」：只跑事件检测（不剪片段）—— 有字幕就能随时重跑，已剪片段不受影响。 */
 async function runDetectOnly() {
   if (busy.value) { toast('该项目正在' + busyText.value + '，请稍候'); return }
   if (!hasTranscript.value) { toast('还没有字幕，先「只识别」或选一份字幕'); return }
@@ -1198,7 +1198,7 @@ function attachJob(id, kind, queued = false) {
       // "素材已切换"那句提示只在**检测真的跑了**之后才过期：单独跑一次「只识别」
       // （不接检测）没有消费用户切过的弹幕/字幕，提示要留着。
       if (s.status === 'succeeded' && (chained || kind === 'stage_detect')) assetDirty.value = false
-      // 成功 → 取结果数字给「下一步」条；分步跑（只识别/只找亮点）不报片段数
+      // 成功 → 取结果数字给「下一步」条；分步跑（只识别/事件检测）不报片段数
       if (s.status === 'succeeded' && kind === 'stage_process') await captureResult(true)
       else if (s.status === 'succeeded' && !chained && kind === 'stage_detect') await captureResult(false)
       if (chained) {

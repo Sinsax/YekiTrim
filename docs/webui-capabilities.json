@@ -114,7 +114,7 @@
       "id": "prepare.run-step",
       "phase": "P1",
       "surface": "prepare",
-      "label": "分步处理（只识别/只找亮点）",
+      "label": "分步处理（只识别/事件检测）",
       "files": ["webui/src/views/PrepareView.vue"],
       "anchor": "data-cap=\"prepare.run-step\"",
       "advancedOnly": true,
