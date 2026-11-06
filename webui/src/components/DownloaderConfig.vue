@@ -1,8 +1,14 @@
 <template>
   <div>
+    <!-- 头部常驻：状态 chip 一眼可见；正文按「未安装 / 读失败 ⇒ 展开，已就绪 ⇒ 收起」折叠 -->
     <div class="row spread mb-8">
-      <b class="t m-0"><Icon name="link" :size="15" /> B站链接下载（P4）</b>
-      <span class="chip" :class="stateChip.cls">{{ stateChip.text }}</span>
+      <div class="row" style="gap:8px;min-width:0">
+        <span class="chip" :class="stateChip.cls">{{ stateChip.text }}</span>
+        <span class="muted small" title="下载器安装 / 引擎 / 存放位置 / 下载参数">下载器与存放位置</span>
+      </div>
+      <button class="mini-btn flex-none" :aria-expanded="bodyOpen ? 'true' : 'false'"
+              :title="bodyOpen ? '收起下载器设置' : '展开下载器设置'"
+              @click="onToggleBody">{{ bodyOpen ? '收起' : '展开' }}</button>
     </div>
 
     <!-- 读失败照实说 + 重试（以前只 toast，页面永远停在「读取中…」） -->
@@ -12,7 +18,7 @@
     </div>
     <div v-else-if="!loaded" class="row muted small"><span class="spinner"></span> 读取中…</div>
 
-    <template v-else>
+    <div v-if="bodyOpen && loaded">
       <!-- ═══ 下载器本体：装没装 / 装哪儿 / 是不是钉死的那一份 ═══ -->
       <div class="dl-box">
         <div class="row items-start">
@@ -166,7 +172,7 @@
       <p class="muted small mt-8">
         只支持单个视频与它的分P；选集/课程等不支持
       </p>
-    </template>
+    </div>
 
     <ServerDirPicker
       v-if="showPicker"
@@ -187,6 +193,24 @@ import Icon from './Icon.vue'
 import ServerDirPicker from './ServerDirPicker.vue'
 import { ingestApi } from '../api/ingest'
 import { toast } from '../stores/toast'
+import { useDisclosure } from '../composables/useDisclosure'
+
+/** 正文折叠（设置页 P3）：状态 chip 常驻，正文默认「未安装 / 读失败 ⇒ 展开，已就绪 ⇒ 收起」。 */
+const { open: bodyOpen, toggle: toggleBody, storageKey: bodyStorageKey } = useDisclosure('settings.downloader', false)
+/** 用户点过折叠按钮之后，自动默认态就不再覆盖他的选择。 */
+const bodyTouched = ref(false)
+function onToggleBody() {
+  bodyTouched.value = true
+  toggleBody()
+}
+/** 首次读到配置后落默认展开态：用户点过、或 localStorage 里已有显式选择，就不动。 */
+function settleBody(isConfigured) {
+  if (bodyTouched.value) return
+  let stored = null
+  try { stored = localStorage.getItem(bodyStorageKey) } catch {}
+  if (stored !== null) return
+  bodyOpen.value = !isConfigured
+}
 
 const QUALITIES = [
   { value: '1080p', label: '1080p（推荐）' },
@@ -227,6 +251,8 @@ const form = ref({
 })
 
 const stateChip = computed(() => {
+  if (!loaded.value && !loadError.value) return { cls: 'n', text: '读取中…' }
+  if (loadError.value) return { cls: 'n', text: '读取失败' }
   if (status.value.ready === null) return { cls: 'n', text: '状态未知' }
   return status.value.ready ? { cls: 'g', text: '下载器已就绪' } : { cls: 'a', text: '未安装下载器' }
 })
@@ -271,8 +297,11 @@ async function load() {
     applyView(await ingestApi.config())
     await loadStatus()
     loaded.value = true
+    // 已就绪 ⇒ 收起；未安装/状态未知 ⇒ 展开（用户显式选择过就不覆盖）
+    settleBody(status.value.ready === true)
   } catch (e) {
     loadError.value = '下载配置读取失败：' + (e?.message || '')
+    settleBody(false)
   }
 }
 

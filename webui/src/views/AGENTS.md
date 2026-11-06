@@ -18,6 +18,12 @@
 
 ## 边界
 
+**简化 / 每页一个主行动**
+- 一级 CTA 唯一；空态用 `components/AppEmptyState.vue`，完成后的下一步用 `components/NextStepBar.vue`。
+- 能力入口带 `data-cap`（清单 `docs/webui-capabilities.json`）；高级项默认折叠、保留可达。
+- 出片页 `快速出片 / 精修`：默认 quick（`ui.polishMode`），`?mode=pro` 一次性覆盖；快速只换右栏/隐藏
+  时间轴与封面，pro 子树源码字符串不删。识别页主按钮状态机见 `docs/plan/webui-simplification-2026-11.md`。
+
 **读失败 / 静默刷新（全页面通用）**
 
 - ⚠ **「读取失败」不许伪装成正常状态，也不许在基线不可信时写盘**（2026-09-16"静默丢改动"根因）。

@@ -17,6 +17,13 @@
 - 其余组件逐个的职责与规则见「边界 · 其他组件」。
 
 ## 边界
+
+**简化基础件**
+- 页面级空态/下一步/首启检查：`AppEmptyState.vue` / `NextStepBar.vue` / `SetupChecklist.vue`。
+- LLM 快配：`components/llm/LlmQuickSetup.vue` + `presets.js`（只给 base_url/模型提示，不是能力表）；
+  详细多接口编辑仍在 `LlmProviders.vue` 的「高级配置」里。
+- 新控件带 `data-cap`；高级项用 `useDisclosure`/`<details>` 默认折叠，隐藏 ≠ 删除。
+
 > 组件逐个的详细清单、实测数字、几何/常量表与推导见 **`docs/webui-components.md`**，按组件分节：
 > ① 时间轴编辑器 ② 精修预览 ③ 封面设计器 ④ 运镜 ⑤ 贴纸落点与区域编辑 ⑥ 其他组件逐个。
 > 各节内部自带子目录（布局几何 / 安全区几何 / 两种「隐身」根因等）。

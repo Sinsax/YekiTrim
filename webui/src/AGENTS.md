@@ -25,7 +25,9 @@ Vue3 工作台的全部前端：壳 + 面包屑、hash 路由、首页 `#/workbe
 **简化 / 披露**
 - 一级文案在 `utils.js::STEPS`（`name` 白话 / `tech` 技术名）与 `api/jobs.js::KIND_ZH`；别处不抄第二份。
 - 每个能力入口带 `data-cap`，清单 `docs/webui-capabilities.json`；高级项用 `useDisclosure`/`<details>` 默认折叠，
-  **隐藏 ≠ 删除**。门禁：`node webui/scripts/check-simplify.mjs --phase=P1`。
+  **隐藏 ≠ 删除**。门禁：`node webui/scripts/check-simplify.mjs --phase=P3`。
+- 出片模式：`stores/ui.js::ui.polishMode`（localStorage `yekitrim.polish.mode`，默认 `quick`）；
+  `?mode=pro` 是一次性覆盖、不写盘；快速/专业只切右栏/时间轴/封面，`PolishPreview` 不重挂。
 - `stores/health.js` 是 `/api/health` 的唯一缓存（`local_no_auth` 仍只认那个字段）；首页 checklist 与出片
   `dhampirStatus` 都读它，别各拉一次。
 

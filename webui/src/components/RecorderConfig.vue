@@ -1,14 +1,31 @@
 <template>
   <div>
-    <!-- 总闸 + 状态 + 动作 -->
+    <!-- 头部常驻：状态 chip 一眼可见；正文按「未配置 / 读失败 ⇒ 展开，已配置 ⇒ 收起」折叠 -->
     <div class="row spread mb-8">
-      <div class="row">
+      <div class="row" style="gap:8px;min-width:0">
         <span class="chip" :class="stateChip.cls">{{ stateChip.text }}</span>
-        <label class="row" style="gap:6px;cursor:pointer;margin:0">
-          <input v-model="enabled" type="checkbox" style="width:auto" :disabled="busy || !loaded" @change="toggleEnabled">
-          <span>启用采集（录播姬 / 通用 Webhook）</span>
-        </label>
+        <span class="muted small" :title="headHintTitle">{{ headHint }}</span>
       </div>
+      <button class="mini-btn flex-none" :aria-expanded="bodyOpen ? 'true' : 'false'"
+              :title="bodyOpen ? '收起连接与入库设置' : '展开连接与入库设置'"
+              @click="onToggleBody">{{ bodyOpen ? '收起' : '展开' }}</button>
+    </div>
+
+    <!-- 读失败**照实说 + 重试**：错误条放在折叠外，收起时也能看到并重试
+         （以前只 toast 一下，页面永远停在「配置读取中…」且保存禁用） -->
+    <div v-if="loadError" class="error-banner">
+      <Icon name="alert" :size="15" /> {{ loadError }}
+      <button class="mini-btn flex-none" :disabled="busy" @click="load">重试</button>
+    </div>
+    <div v-else-if="!loaded" class="row muted small"><span class="spinner"></span> 配置读取中…</div>
+
+    <div v-if="bodyOpen && loaded">
+    <!-- 总闸 + 动作 -->
+    <div class="row spread mb-8">
+      <label class="row" style="gap:6px;cursor:pointer;margin:0">
+        <input v-model="enabled" type="checkbox" style="width:auto" :disabled="busy || !loaded" @change="toggleEnabled">
+        <span>启用采集（录播姬 / 通用 Webhook）</span>
+      </label>
       <div class="row">
         <button class="mini-btn primary" :disabled="busy || !loaded" @click="save">保存</button>
         <button class="mini-btn" :disabled="busy || !loaded || dirty || !recorderTestable"
@@ -26,14 +43,6 @@
       <span v-if="dirty" class="warn-text"> · 有未保存修改（测试/发布前先保存）</span>
     </div>
 
-    <!-- 读失败**照实说 + 重试**：以前只 toast 一下，页面永远停在「配置读取中…」且保存禁用 -->
-    <div v-if="loadError" class="error-banner">
-      <Icon name="alert" :size="15" /> {{ loadError }}
-      <button class="mini-btn flex-none" :disabled="busy" @click="load">重试</button>
-    </div>
-    <div v-else-if="!loaded" class="row muted small"><span class="spinner"></span> 配置读取中…</div>
-
-    <template v-else>
       <!-- 关闭时只留开关与一句说明（用户要求：开启后才展开表单） -->
       <div v-if="!enabled" class="hint" title="兜底扫描也不跑；打开上面的开关即可填入连接信息">
         已关闭：webhook 一律拒收
@@ -184,7 +193,7 @@
         </div>
         </div>
       </template>
-    </template>
+    </div>
 
     <AppModal :show="showPicker" title="选择录像目录（录播姬的输出目录）" @close="showPicker = false">
       <ServerDirPicker mode="dir" :start-dir="form.root" @pick-dir="pickDir" />
@@ -208,9 +217,27 @@ import { api } from '../api/client'
 import { ingestApi, PIPELINES } from '../api/ingest'
 import { toast } from '../stores/toast'
 import { confirmDialog } from '../stores/dialog'
+import { useDisclosure } from '../composables/useDisclosure'
 import AppModal from './AppModal.vue'
 import Icon from './Icon.vue'
 import ServerDirPicker from './ServerDirPicker.vue'
+
+/** 正文折叠（设置页 P3）：状态 chip 常驻，正文默认「未配置 / 读失败 ⇒ 展开，已配置 ⇒ 收起」。 */
+const { open: bodyOpen, toggle: toggleBody, storageKey: bodyStorageKey } = useDisclosure('settings.recorder', false)
+/** 用户点过折叠按钮之后，自动默认态就不再覆盖他的选择。 */
+const bodyTouched = ref(false)
+function onToggleBody() {
+  bodyTouched.value = true
+  toggleBody()
+}
+/** 首次读到配置后落默认展开态：用户点过、或 localStorage 里已有显式选择，就不动。 */
+function settleBody(isConfigured) {
+  if (bodyTouched.value) return
+  let stored = null
+  try { stored = localStorage.getItem(bodyStorageKey) } catch {}
+  if (stored !== null) return
+  bodyOpen.value = !isConfigured
+}
 
 const loaded = ref(false)
 /** 配置读失败（与「正在读」分开：以前两者都渲染成「配置读取中…」） */
@@ -279,12 +306,30 @@ function snapshot() {
 }
 const dirty = computed(() => !!savedSnapshot.value && snapshot() !== savedSnapshot.value)
 
+/** 是否已配置（决定正文默认展开还是收起）：开着且有任意一条通道的录像目录。 */
+const configured = computed(() => enabled.value && (!!form.value.root || !!form.value.webhook_root))
+
+/** 头部那行小字（收起时也能一眼看出这卡是什么状态）。
+ *  ⚠️ 关闭态别再说「采集已关闭」——那和左边的状态 chip 一字不差，等于同一件事说两遍；
+ *  这里改成"下一步该点哪儿"。 */
+const headHint = computed(() => {
+  if (!loaded.value && !loadError.value) return '连接与入库设置'
+  if (dirty.value) return '有未保存修改'
+  if (enabled.value) return '录完自动入库'
+  return bodyOpen.value ? '点下方开关启用' : '点「展开」启用'
+})
+const headHintTitle = computed(() => (dirty.value
+  ? '有未保存修改，测试/发布前先保存'
+  : '录播姬 / 通用 Webhook（biliLive-tools 等）录完自动入库；改动立即生效'))
+
 /** 状态 chip：**按通道分开说**。
  *  · 录播姬 = 开关开着且有 recorder.root（与服务端 /api/health.ingest_ready 同判据）；
  *  · 通用 Webhook = 服务端算的 webhook.enabled（还要 token）。
  *  ⚠️ 以前写成「root 或 webhook.root 任一」就报「采集已就绪」：只配了通用 Webhook 时这里说就绪，
  *  而首页 / 入库页按 ingest_ready 说「录播姬未接入」，同一屏两个结论（用户截图实测）。 */
 const stateChip = computed(() => {
+  if (!loaded.value && !loadError.value) return { cls: 'n', text: '读取中…' }
+  if (loadError.value) return { cls: 'n', text: '读取失败' }
   if (!enabled.value) return { cls: 'n', text: '采集已关闭' }
   // 没 token 时两个入口都收不了：别再说「已就绪」
   if (!tokenConfigured.value) return { cls: 'a', text: '已启用 · 缺 token' }
@@ -320,8 +365,10 @@ async function load() {
   try {
     applyView(await ingestApi.config())
     loaded.value = true
+    settleBody(configured.value)
   } catch (e) {
     loadError.value = '采集配置读取失败：' + (e?.message || '')
+    settleBody(false)
   }
 }
 

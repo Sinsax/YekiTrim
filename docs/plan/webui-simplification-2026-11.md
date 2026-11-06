@@ -1,6 +1,6 @@
 # WebUI 门槛简化方案（分层版 · 2026-11）
 
-> 状态：已批准，按 P0→P1→P2→P3 分批实施。
+> 状态：P0+P1（ec86dbd）、P2/P3/P4 已实现（本地待提交）；按 P0→P1→P2→P3→P4 分批。
 > 范围：`webui/src`（零后端改动）。能力清单：`docs/webui-capabilities.json`；门禁：`webui/scripts/check-simplify.mjs`。
 > 原则：**隐藏 ≠ 删除**；每页一个主行动；高级项默认折叠、保留可达；一级文案白话化，技术名留副标题/tooltip。
 
@@ -147,9 +147,16 @@
 ```bash
 npm --prefix webui run build
 for f in webui/scripts/check-*.mjs scripts/check-preview-audio.mjs; do node "$f" || exit 1; done
-node webui/scripts/check-simplify.mjs --phase=P1
+node webui/scripts/check-simplify.mjs --phase=P3
 python3 scripts/check_module_map.py
 python3 scripts/check_module_boundaries.py
 ```
 
 已知既有红（不在本方案修）：`scripts/check-dhampir-wiring.mjs`（兄弟仓 wasm 版本漂移）、`check-emoji-decode --mutate`（变异锚点命中 3 次）。
+
+## 8. 落地结果（2026-11）
+
+- **P0/P1**：`ec86dbd` — 首页首启/继续/来源/折叠；识别页一块卡 + `stage:"process"` 一键处理 + 两处披露 + 字幕折叠 + 404；挑片段主按钮/NextStepBar；出片自动选片/渲染置灰；术语白话化；`docs/webui-capabilities.json` + `check-simplify.mjs`。
+- **P2**：`ui.polishMode`（`yekitrim.polish.mode`，默认 quick）；快速卡（智能剪辑 / 画面 / 导出 / 封面 / 任务条）；pro 子树原样保留；`?mode=pro` 首次与同页切换都生效、手动切模式清掉查询；`check-polish-page-loads.mjs` 覆盖 quick + pro。
+- **P3**：`LlmQuickSetup` + 静态 presets（服务商/地址/密钥/模型/获取模型/保存并测试）；高级配置 `<details>`；config 首屏只留模式/主播名/输出目录/覆盖；集成两张卡折叠；日志懒挂载。
+- **P4**：`check-simplify` 补出片模式/`?mode=pro`/`?list=1`/retired/页面探针覆盖；全量 18 条静态门禁 + 两条结构门禁 + `VT_BASE` fixture 上的快速/专业页面探针通过；`webui/dist` 重建。

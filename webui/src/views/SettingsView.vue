@@ -14,7 +14,7 @@
     <!-- 程序配置：ASR / 检测 / 剪切 / Chrome（写入 .yekitrim/config.toml） -->
     <template v-if="section === 'config'">
     <!-- 内容列：所有分页共用 .settings-block（min(760px,100%)、左对齐）—— 别在每页各写一份 max-width -->
-    <div class="settings-block">
+    <div class="settings-block" data-cap="settings.config">
     <div class="section-title row spread">
       <span>程序配置 config.toml</span>
       <span class="row">
@@ -57,18 +57,10 @@
               </select>
               <span class="muted small mode-hint">{{ asrModeHint }}</span>
             </div>
-            <div class="check-field span-2">
-              <input id="vadEnabled" v-model="form.asr.vad" type="checkbox">
-              <label for="vadEnabled" title="single 模式快 2~3 倍，hybrid 不受影响">VAD 只解码语音段</label>
-            </div>
-            <div class="check-field span-2">
-              <input id="llmCorrect" v-model="form.asr.llm_correct" type="checkbox">
-              <label for="llmCorrect">LLM 订正转录</label>
-            </div>
           </div>
         </div>
 
-        <!-- ② 检测 -->
+        <!-- ② 检测（首屏只留主播名；LLM 评分权重等调参进「高级参数」） -->
         <div class="form-section">
           <div class="form-section-title">检测</div>
           <div class="form-grid">
@@ -76,9 +68,6 @@
               <label>主播名</label>
               <input v-model="form.detection.vtuber_name" type="text" placeholder="追加到切片标题">
             </div>
-            <SliderField v-model="form.detection.llm_score_weight" class="span-4"
-                         label="LLM 评分权重" :min="0" :max="1" :step="0.05"
-                         hint="0 = 只用弹幕/字幕热度" />
           </div>
         </div>
 
@@ -101,6 +90,25 @@
              摊开只会把常用项淹掉（用户口径："死配置或者最佳配置就隐藏吧"）。 -->
         <details class="form-adv">
           <summary>高级参数<span class="muted small">断句 / 调参</span></summary>
+
+          <!-- 识别与检测的**开关/调参**：首屏只留「模式 / 主播名 / 输出目录 / 覆盖已有文件」，
+               这些默认值已按实测调好的旋钮收进这里（隐藏 ≠ 删除，表单一字未改）。 -->
+          <div class="form-section">
+            <div class="form-section-title">识别与检测<span class="t-sub">默认值已按实测调好</span></div>
+            <div class="form-grid">
+              <div class="check-field span-2">
+                <input id="vadEnabled" v-model="form.asr.vad" type="checkbox">
+                <label for="vadEnabled" title="single 模式快 2~3 倍，hybrid 不受影响">VAD 只解码语音段</label>
+              </div>
+              <div class="check-field span-2">
+                <input id="llmCorrect" v-model="form.asr.llm_correct" type="checkbox">
+                <label for="llmCorrect">LLM 订正转录</label>
+              </div>
+              <SliderField v-model="form.detection.llm_score_weight" class="span-4"
+                           label="LLM 评分权重" :min="0" :max="1" :step="0.05"
+                           hint="0 = 只用弹幕/字幕热度" />
+            </div>
+          </div>
 
           <!-- ⚠️ 「提示词」整组**已搬到 LLM 配置页**（2026-10，用户要求）：参考标题与两个检测
                prompt 都是喂给 LLM 的文本，摆在"程序配置"里要跨页找。**别在这里加回来。** -->
@@ -185,11 +193,34 @@
       <span>LLM 配置 llm.toml</span>
       <span class="row">
         <!-- 「测试连接」已经挪到**每一份配置的行尾**（只测那一份）；这里不再有全局按钮 -->
-        <button class="btn btn-primary" @click="saveLlm" :disabled="!loaded">
+        <button class="btn" @click="saveLlm()" :disabled="!loaded">
           <Icon name="save" :size="13" /> 保存 LLM
         </button>
       </span>
     </div>
+
+    <!-- 快速配置（P3）：四个字段 + [获取模型] + [保存并测试]。
+         ⚠️ 保存仍走本页既有的 saveLlm（buildLlmPatch + PUT + 回读 + 错误横幅）——
+         本卡只负责把「填好的那四个值」交给它，不在组件里另写一套落盘。 -->
+    <div class="card" data-cap="settings.llm-quick">
+      <LlmQuickSetup
+        :loaded="loaded"
+        :provider-mode="llmProviderMode"
+        :providers="form.llm.providers || []"
+        v-model:active-id="form.llm.active"
+        :base-url="form.llm.base_url"
+        :model="form.llm.model"
+        :key-set="quickKeySet"
+        :persist="quickPersist"
+        @update:base-url="form.llm.base_url = $event"
+        @update:model="form.llm.model = $event"
+        @update:api-key="form.llm.api_key = $event"
+      />
+    </div>
+
+    <!-- 详细表单（多接口 / 能力 / 参数 / 提示词）：默认折叠 —— 隐藏 ≠ 删除，所有入口仍可达 -->
+    <details class="form-adv">
+      <summary data-cap="settings.llm-advanced">高级配置（多接口 / 能力 / 参数 / 提示词）</summary>
     <div class="card">
         <!-- ① 接口：填好 key → 取模型 → 选中（模型选择器见 components/llm/LlmModelPicker.vue） -->
         <div class="form-section">
@@ -322,12 +353,13 @@
         </div>
 
     </div>
+    </details>
     </div>
     </template>
 
     <!-- 账号与模型：邀请码/注册 与 ASR 模型清单 -->
     <template v-else-if="section === 'account'">
-    <div class="settings-block">
+    <div class="settings-block" data-cap="settings.account">
     <div class="two-up" :class="{ 'one-up': localNoAuth }">
       <!-- 本地模式（`--local-no-auth`）下**没有登录这回事**：邀请码与注册开关都是给
            多用户部署用的，摆在这里只会让人以为需要它。 -->
@@ -350,7 +382,7 @@
 
     <!-- 系统集成：录播姬采集（webhook / 导入规则）与 B 站链接下载 -->
     <template v-else-if="section === 'integrations'">
-    <div class="settings-block">
+    <div class="settings-block" data-cap="settings.integrations">
     <div class="section-title">采集（录播姬 / 通用 Webhook）</div>
     <div class="card">
       <RecorderConfig />
@@ -365,15 +397,22 @@
 
     <!-- 用量与日志：LLM 账本与运行日志 -->
     <template v-else-if="section === 'monitor'">
-    <div class="settings-block">
+    <div class="settings-block" data-cap="settings.monitor">
     <div class="section-title">LLM 用量</div>
     <div class="card">
       <LlmUsage />
     </div>
 
-    <div class="section-title">运行日志</div>
+    <div class="section-title row spread">
+      <span>运行日志</span>
+      <!-- 日志默认**不挂载**（一进页连 SSE 会一直占着连接）；要看再点开。 -->
+      <button class="mini-btn" :aria-expanded="logsOpen ? 'true' : 'false'"
+              :title="logsOpen ? '断开实时日志（SSE）' : '连接实时日志（SSE）'"
+              @click="toggleLogs">{{ logsOpen ? '隐藏实时日志' : '显示实时日志' }}</button>
+    </div>
     <div class="card">
-      <LogConsole />
+      <LogConsole v-if="logsOpen" />
+      <div v-else class="muted small">默认不连接；点上面的按钮再开始接收</div>
     </div>
     </div>
     </template>
@@ -393,6 +432,7 @@ import SliderField from '../components/SliderField.vue'
 import LlmModelPicker from '../components/llm/LlmModelPicker.vue'
 import LlmParamFields from '../components/llm/LlmParamFields.vue'
 import LlmProviders from '../components/llm/LlmProviders.vue'
+import LlmQuickSetup from '../components/llm/LlmQuickSetup.vue'
 import InviteManager from '../components/InviteManager.vue'
 import UserQuotaManager from '../components/UserQuotaManager.vue'
 import RecorderConfig from '../components/RecorderConfig.vue'
@@ -401,6 +441,7 @@ import LlmUsage from '../components/LlmUsage.vue'
 import LogConsole from '../components/LogConsole.vue'
 import { SETTINGS_SECTIONS, settingsSection } from '../utils'
 import { localNoAuth as localNoAuthFromServer, localNoAuthKnown } from '../stores/health'
+import { useDisclosure } from '../composables/useDisclosure'
 
 // 子页 key 由路由的 props 传进来（config / llm / account / integrations / monitor）。
 // 五块内容都留在这一个组件里：表单状态、/api/config 的加载与保存、源码编辑器都在这一处，
@@ -443,6 +484,8 @@ const localNoAuth = ref(localNoAuthKnown())
 const visibleSections = computed(() =>
   SETTINGS_SECTIONS.filter((s) => !(s.localHidden && localNoAuth.value))
 )
+/** 「运行日志」默认不挂载：一进 monitor 子页就连 SSE 会一直占着连接（P3）。 */
+const { open: logsOpen, toggle: toggleLogs } = useDisclosure('settings.logs', false)
 const editSource = ref(false)
 // 只有成功读到 /api/config 才允许保存：否则表单里的内建默认值会覆盖真实配置
 const loaded = ref(false)
@@ -561,6 +604,14 @@ const activeProvider = computed(() => {
   const list = form.llm.providers
   return list.find((p) => p.id === form.llm.active) || list[0] || null
 })
+/** 快速配置里「API 密钥」的占位符：provider 模式看当前那份，legacy 模式看顶层。 */
+const quickKeySet = computed(() => (llmProviderMode.value
+  ? !!(activeProvider.value && activeProvider.value.api_key_set)
+  : !!form.llm.api_key_set))
+/** 快速配置的「保存并测试」：保存交给本页既有链路（quiet = 只留行内结果，不再弹 toast）。 */
+function quickPersist() {
+  return saveLlm({ quiet: true })
+}
 /** 「生成」组改的是**当前 provider 的参数面**；legacy 模式改 `[llm.params]` */
 const llmParamsTarget = computed(() => (llmProviderMode.value && activeProvider.value && activeProvider.value.params)
   ? activeProvider.value.params
@@ -1153,8 +1204,20 @@ async function verifyLlmSaved(expect) {
   }
 }
 
-async function saveLlm() {
-  if (!loaded.value) { toast('配置未加载成功，已禁止保存', 'err'); return }
+/**
+ * 保存 LLM 配置（llm.toml + 提示词所在的 config.toml）。
+ *
+ * @param {{ quiet?: boolean }} [opts] quiet = 不弹成功/失败 toast（快速配置把结果写在自己的行内），
+ *   错误横幅 `llmSaveError` 与回读校验 `llmSaveWarn` 照旧（**不许静默**）。
+ * @returns {Promise<{ok: boolean, error?: string}>} 快速配置要先保存成功才测连接，所以必须回结果。
+ */
+async function saveLlm(opts = {}) {
+  const quiet = opts && opts.quiet === true
+  if (!loaded.value) {
+    const msg = '配置未加载成功，已禁止保存'
+    if (!quiet) toast(msg, 'err')
+    return { ok: false, error: msg }
+  }
   llmSaveError.value = ''
   llmSaveWarn.value = ''
   try {
@@ -1168,12 +1231,15 @@ async function saveLlm() {
     syncReferenceTitlesFromText()
     await api('/api/config/global', { method: 'PUT', body: JSON.stringify({ patch: buildGlobalPatch() }) })
     await verifyLlmSaved(expect)
-    toast(llmSaveWarn.value ? 'LLM 配置已保存（但回读不一致，见顶部提示）' : 'LLM 配置已保存')
+    if (!quiet) toast(llmSaveWarn.value ? 'LLM 配置已保存（但回读不一致，见顶部提示）' : 'LLM 配置已保存')
     await loadConfig()
+    return { ok: true }
   } catch (e) {
     // **不许静默失败**：把服务端的 error 原文留在页面上
-    llmSaveError.value = '保存失败：' + ((e && e.message) || e)
-    toast(e.message, 'err')
+    const msg = (e && e.message) || String(e)
+    llmSaveError.value = '保存失败：' + msg
+    if (!quiet) toast(e.message, 'err')
+    return { ok: false, error: msg }
   }
 }
 

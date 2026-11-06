@@ -69,6 +69,27 @@ for (const [key, s] of Object.entries(manifest.surfaces || {})) {
 }
 check('/models redirect 到 /workbench', /path:\s*'\/models',\s*redirect:\s*'\/workbench'/.test(router))
 
+// 出片模式 / 列表模式：P2 的默认值与一次性覆盖点（缺失 = 回滚成"只能进编辑器"）。
+const uiSource = read('webui/src/stores/ui.js')
+const polishView = read('webui/src/views/PolishView.vue')
+check('出片模式默认 quick（readPolishMode）', /readPolishMode/.test(uiSource) && /'quick'/.test(uiSource))
+check('出片模式持久化 key', /yekitrim\.polish\.mode/.test(uiSource))
+check('setPolishMode 导出', /export function setPolishMode/.test(uiSource))
+check('?mode=pro 一次性覆盖', /route\.query\.mode\s*===\s*'pro'/.test(polishView))
+check('?mode=pro 同页切换有 watch', /watch\(\(\)\s*=>\s*route\.query\.mode/.test(polishView))
+check('手动切模式会清掉 ?mode=pro', /delete q\.mode/.test(polishView))
+check('?list=1 列表模式', /route\.query\.list\s*===\s*'1'/.test(polishView))
+
+// 运行期页面探针：P2 后默认 quick，必须覆盖 quick/pro 两条路径（否则等于没测）。
+const pageGate = read('webui/scripts/check-polish-page-loads.mjs')
+check('页面探针支持 chromium', /\/usr\/bin\/chromium/.test(pageGate))
+check('页面探针覆盖 quick 与 pro', /quick-col/.test(pageGate) && /mode=pro/.test(pageGate))
+
+// retired[] 审计：退役能力不许还留在能力清单里（否则"删了又登记"看不出来）。
+for (const r of manifest.retired || []) {
+  check('retired 不在能力清单：' + r.id, !ids.has(r.id))
+}
+
 // 读声明文件（按需）
 const fileCache = new Map()
 function sourceOf(p) {
