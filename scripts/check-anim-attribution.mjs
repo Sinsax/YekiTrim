@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // ============================================================================
-// `check-anim-attribution.mjs` —— **三轴归属表守卫**（9 档：排版 / 过渡 / 动效）
+// `check-anim-attribution.mjs` —— **三轴归属表守卫**（10 档：排版 / 过渡 / 动效）
 // ============================================================================
 //
 // 用法：`node scripts/check-anim-attribution.mjs [--mutate]`
+//   `--mutate` = 变异自证：把表里的 `shake` 标成排版轴，② 必须当场红（红了才 exit 0）。
 //
 // # 它存在的理由
 //
@@ -68,6 +69,23 @@ const CONTROL_ONLY = new Set(['arcToDefault'])
 /// ⚠️ 本判据**逐条实名**：`ok(cond, msg)` 每条都记数，最后打印项数。
 const fails = []
 let checks = 0
+// ⚠️⚠️ **预检：现场重测能不能跑起来**（2026-10-30）。
+//
+// `buildAttribution()` 会真跑转译器、按轨 id 找每条档位的轨。**生成器的轨 id 锚点过期**时
+// （2026-10-15 起 id 含落点 `_x..y..`、2026-10-30 起含颜色 `_c..`），
+// 它会抛「轨没生成」—— 而那个堆栈看起来像产品坏了，实际是**判据夹具烂了**。
+// ⇒ 这里先跑一次、失败就**只报这一条并指路**（别让 100 项断言去猜）。
+try {
+  await buildAttribution()
+} catch (err) {
+  console.log('✗ 归属表**现场重测跑不起来**（测量台前置失效，不是产品代码的问题）：')
+  console.log('    ' + String(err.message).split('\n')[0])
+  console.log('  ⇒ 多半是 `scripts/gen-anim-attribution.mjs::measure` 按旧轨 id 找轨：')
+  console.log('     它找 `text_comment_bottom_<档名>`，而现网 id 是')
+  console.log('     `text_comment_bottom_x<..>y<..>_<档名>_c<..>`（落点 2026-10-15、颜色 2026-10-30 进 id）。')
+  console.log('     ⇒ 先修 measure 的轨 id 解析（按 animTag 后缀匹配），再 `node scripts/gen-anim-attribution.mjs`。')
+  process.exit(1)
+}
 const ok = (cond, msg) => { checks++; if (!cond) fails.push(msg) }
 
 // ---- 变异：把表的某个档改到**另一条轴**上（判据必须当场红）----
@@ -196,7 +214,10 @@ try {
   const tally = {}
   for (const n of names) tally[live[n].axis] = (tally[live[n].axis] || 0) + 1
   // ⚠️ **逐轴点名**（不是只看总数）—— 总数对得上、而档跑错了轴，是这条要防的。
-  const EXPECT = { style: 3, transition: 2, effect: 4 }
+  // ⚠️ **2026-10-18 口径**：逐字三档（`perchar` + 两个老别名）从动效轴挪到**过渡**轴
+  //    （用户口径「将逐字变化归类为过渡」）⇒ 过渡 5 档 / 动效 2 档。
+  //    旧值 `{transition:2, effect:4}` 是 9 档两轴时代的，表一重新生成它就会红。
+  const EXPECT = { style: 3, transition: 5, effect: 2 }
   for (const ax of AXES) {
     ok(tally[ax] === EXPECT[ax],
       `⑥ \`${ax}\` 轴应当 ${EXPECT[ax]} 档，实得 ${tally[ax] ?? 0}` +
@@ -215,7 +236,7 @@ try {
   const withFields = names.filter(
     (n) => live[n].form.length > 0 || live[n].motion.length > 0)
   ok(withFields.length >= 5,
-    `⑦ 9 档里只有 ${withFields.length} 档"给了字段" —— 太少，` +
+    `⑦ 10 档里只有 ${withFields.length} 档"给了字段" —— 太少，` +
     `多半是字段那层退化了（\`form\`/\`motion\` 两列整列空掉的样子与"判据全绿"一模一样）`)
   // ⚠️ 三条腿**都要有档**在用（否则某一腿整条没人走 ⇒ 判据对它是空的）。
   ok(names.some((n) => live[n].form.includes(TRANSFORM_MARK)),
@@ -281,6 +302,21 @@ try {
   }
 }
 
+// ⚠️ **`--mutate` 的语义是"自证"**：把表里的 `shake` 标成排版轴后，
+//    ②（表 ↔ `animAxisOf`）**必须**当场红。红了才是判据有牙 —— 这里把"红"翻译成 exit 0，
+//    否则 CI 跑 `--mutate` 会看到"红 = 失败"而误以为门禁坏了。
+//    ⚠️ 如果变异之后**没红**（fails 为空 / 没点到 shake），那是判据空转 ⇒ exit 1。
+if (MUTATE) {
+  const hit = fails.some((f) => f.includes('shake'))
+  if (fails.length > 0 && hit) {
+    console.log(`✓ 变异自证：把 \`shake\` 标成排版轴 ⇒ ② 当场红（共 ${checks} 项判据）`)
+    process.exit(0)
+  }
+  console.log('✗ 变异自证失败：改坏归属表之后判据**没在 ② 上翻红** —— 判据有空转的地方')
+  if (fails.length) for (const f of fails.slice(0, 10)) console.log('    · ' + f)
+  process.exit(1)
+}
+
 if (fails.length) {
   console.log(`✗ 归属表 ${fails.length} 处问题（共 ${checks} 项判据）：`)
   for (const f of fails.slice(0, 25)) console.log('    · ' + f)
@@ -288,6 +324,6 @@ if (fails.length) {
   process.exit(1)
 }
 console.log(
-  '✓ 归属表守卫：9 档 ── 排版 3 · 过渡 2 · 动效 4' +
+  '✓ 归属表守卫：10 档 ── 排版 3 · 过渡 5 · 动效 2' +
   '（表↔`animAxisOf` 一致、表↔**实测产物**一致、声明了就必须写出去、' +
   '三轴档集合两两不相交）；共 ' + checks + ' 项判据')

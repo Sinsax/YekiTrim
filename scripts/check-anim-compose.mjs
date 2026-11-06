@@ -3,7 +3,10 @@
 // `check-anim-compose.mjs` —— **「样式 × 动效」真的可叠加吗**
 // ============================================================================
 //
-// 用法：`node scripts/check-anim-compose.mjs`
+// 用法：`node scripts/check-anim-compose.mjs [--mutate]`
+//
+// `--mutate` = **变异自证**：把归属表 / 面板轴 / 预览谓词各改坏一处，
+// 要求本判据**当场红**（只改临时副本，生产文件一个字节都不动）。
 //
 // # 它存在的理由
 //
@@ -24,20 +27,57 @@
 //     而真值是 11 / 9 —— **判据的工具坏掉时，看起来和"代码坏了"一模一样**。）
 import fs from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
-// ⚠️ **权威归属表**（`scripts/anim-attribution.mjs`，由 `gen-anim-attribution.mjs` 生成）。
-//    第 ⑦ 段拿它跟另外三份实现对拍。
-import { ANIM_ATTRIBUTION } from './anim-attribution.mjs'
+import os from 'node:os'
+import { execFileSync } from 'node:child_process'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+// ⚠️ 预检用：转译器的 `animAxisOf` 是**权威**（真正决定成片走哪条轴）。
+import { loadAuthority } from './gen-anim-attribution.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const VUE = path.join(ROOT, 'webui', 'src', 'components', 'TimelineEditor.vue')
+// ⚠️ 三个输入都允许**环境变量覆盖**（`--mutate` 用临时副本跑，不碰生产文件）——
+//    与 `check-anim-two-axis.mjs` 的 `YK_ANIM3AXIS_TRANSLATOR` 同一个手法。
+const VUE = process.env.YK_ANIM_TIMELINE
+  || path.join(ROOT, 'webui', 'src', 'components', 'TimelineEditor.vue')
+const ENGINE = process.env.YK_ANIM_ENGINE
+  || path.join(ROOT, 'webui', 'src', 'polish', 'engine.js')
+const TABLE = process.env.YK_ANIM_TABLE
+  || path.join(ROOT, 'scripts', 'anim-attribution.mjs')
 const src = fs.readFileSync(VUE, 'utf8')
 
 // 预览那份（第四份实现）—— 它自己导出这两条，直接 import，**不重写**。
-const PREVIEW = await import(
-  'file://' + path.join(ROOT, 'webui', 'src', 'polish', 'engine.js').replace(/\\/g, '/')
-)
+const PREVIEW = await import(pathToFileURL(ENGINE).href)
+// ⚠️ **权威归属表**（`scripts/anim-attribution.mjs`，由 `gen-anim-attribution.mjs` 生成）。
+//    第 ⑦ 段拿它跟另外三份实现对拍。
+const { ANIM_ATTRIBUTION } = await import(pathToFileURL(TABLE).href)
 const ATTRIBUTION = ANIM_ATTRIBUTION
+
+// ============================================================================
+// 0. ⚠️⚠️ **预检：归属表是生成物，先确认它不是过期的**
+// ============================================================================
+//
+// 归属表过期时，下面 68 项会**全部**以"产品错"的样子出现（档集合不对 / 轴对不上），
+// 而真因只是 `node scripts/gen-anim-attribution.mjs` 没重跑。那种报错会把人送去
+// 改**正确的产品代码** —— 比不报还糟。
+// ⇒ 拿转译器的 `animAxisOf`（权威）先对一遍；过期就**只报这一条并指路**。
+{
+  const { bundle } = loadAuthority()
+  const AUTH_AXIS = Object.fromEntries(
+    Object.keys(bundle.ANIM_PRESETS).map((n) => [n, bundle.animAxisOf(n)]))
+  const stale = [...new Set([...Object.keys(ATTRIBUTION), ...Object.keys(AUTH_AXIS)])]
+    .filter((n) => (ATTRIBUTION[n]?.axis ?? '<缺>') !== (AUTH_AXIS[n] ?? '<缺>'))
+  if (stale.length) {
+    console.log('✗ 归属表 scripts/anim-attribution.mjs **过期**（生成物）—— 不是产品代码的问题。')
+    for (const n of stale) {
+      console.log('    · ' + n + ': 表里 ' + (ATTRIBUTION[n]?.axis ?? '<缺>') +
+        ' / 转译器 ' + (AUTH_AXIS[n] ?? '<缺>'))
+    }
+    console.log('  ⇒ 修法：先修 `scripts/gen-anim-attribution.mjs::measure` 的轨 id 解析')
+    console.log('     （现按 `text_comment_bottom_<档名>` 找轨，而 2026-10-15/10-30 起 id 含')
+    console.log('      落点/颜色：`text_comment_bottom_x<..>y<..>_<档名>_c<..>`）')
+    console.log('     再 `node scripts/gen-anim-attribution.mjs` 重新生成表。')
+    process.exit(1)
+  }
+}
 /// 13 个效果族的**前缀**（`none` 不算族）。
 /// ⚠️ `shrink_in` 必须排在 `shrink` 前面（长前缀优先，否则"逐字变小"会被"收缩"抢走）。
 const FAMILIES = ['shrink_in', 'tilt', 'size', 'shrink', 'grow', 'vtext', 'arc',
@@ -430,3 +470,68 @@ if (fails.length) {
 console.log(`✓ 「排版 × 过渡 × 动效」真的可叠加（${checks} 项：` +
   `三栏共存 · 反序不丢 · 各自只写自己那条轴 · 清空落 null · ` +
   `预览与转译器同源）`)
+
+// ============================================================================
+// 变异自证（`--mutate`）：把三个输入各改坏一处，判据**必须当场红**
+// ============================================================================
+//
+// ⚠️ 只改**临时副本**（生产文件一个字节都不动）—— 本仓有过 `git checkout` 还原
+//    变异、把未提交改动整份冲掉的教训，别再来一次。
+if (process.argv.includes('--mutate')) {
+  const MUTS = [
+    {
+      name: '归属表把 `perchar` 标成动效轴（与 2026-10-18 口径相反）',
+      file: TABLE,
+      env: 'YK_ANIM_TABLE',
+      ext: '.mjs',
+      from: "  'perchar': { axis: 'transition',",
+      to: "  'perchar': { axis: 'effect',",
+    },
+    {
+      name: '面板把 `perchar` 那一 kind 摆进动效轴（界面与转译器不同源）',
+      file: VUE,
+      env: 'YK_ANIM_TIMELINE',
+      ext: '.vue',
+      from: "    kind: 'perchar',\n    label: '逐字',\n    axis: 'transition',",
+      to: "    kind: 'perchar',\n    label: '逐字',\n    axis: 'effect',",
+    },
+    {
+      name: '预览 `animHasFormPart` 不再认 `perChar`（逐字档的形态字段静默丢失）',
+      file: ENGINE,
+      env: 'YK_ANIM_ENGINE',
+      ext: '.mjs',
+      from: "  return p.perChar !== undefined\n    || p.tiltDeg !== undefined",
+      to: "  return p.tiltDeg !== undefined",
+    },
+  ]
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'yk-anim-compose-mut-'))
+  let bad = 0
+  try {
+    for (const m of MUTS) {
+      const orig = fs.readFileSync(m.file, 'utf8')
+      if (!orig.includes(m.from)) {
+        console.log(`  ✗ 变异「${m.name}」锚点**找不到了** —— 源码文本变了没同步（变异静默失效）`)
+        bad += 1
+        continue
+      }
+      const copy = path.join(tmp, 'mut-' + bad + '-' + path.basename(m.file) + m.ext)
+      fs.writeFileSync(copy, orig.replace(m.from, m.to))
+      let red = false
+      try {
+        execFileSync(process.execPath, [fileURLToPath(import.meta.url)], {
+          stdio: 'pipe',
+          env: { ...process.env, [m.env]: copy },
+        })
+      } catch {
+        red = true
+      }
+      if (red) console.log(`  ✓ 变异「${m.name}」→ 当场打红`)
+      else { console.log(`  ✗ 变异「${m.name}」**没被打红** —— 判据在这条上有洞`); bad += 1 }
+    }
+  } finally {
+    try { fs.rmSync(tmp, { recursive: true, force: true }) } catch { /* 清不掉就算了 */ }
+  }
+  if (bad) { console.log(`✗ 变异自证：${bad} 处问题`); process.exit(1) }
+  console.log(`✓ 变异自证：${MUTS.length} 处改动**每一处都让判据翻红**（判据不是空转的）`)
+  process.exit(0)
+}

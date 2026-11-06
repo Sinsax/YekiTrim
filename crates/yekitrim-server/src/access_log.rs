@@ -42,16 +42,24 @@ fn is_noisy(path: &str) -> bool {
 /// 入库 webhook 的 token 是**路径段**（录播姬只能填 URL，加不了自定义头），原样记下来
 /// 等于把凭证抄进日志文件与设置页的「运行日志」面板 —— 那两处都可能被备份、分享或被
 /// 别的方式读到。这里只保留路由前缀，token 段一律打成 `***`。
+/// ⚠️ **每条带一次性凭证的路径都要登记在这里**：漏一条 = 凭证被抄进
+/// `<数据目录>/logs/yekitrim-*.log` 与设置页的「运行日志」面板（两处都可能被备份/分享）。
+/// 2026-10-30 加了通用入口 `/api/ingest/webhook/<token>` —— 当时只认录播姬那条，
+/// 于是同一个 token 换个入口就明文落盘。
+const TOKEN_PATH_PREFIXES: [&str; 2] = ["/api/ingest/bililive/", "/api/ingest/webhook/"];
+
 fn redact_path(path: &str) -> String {
-    const PREFIX: &str = "/api/ingest/bililive/";
-    let Some(rest) = path.strip_prefix(PREFIX) else {
-        return path.to_string();
-    };
-    let token = rest.split(['/', '?']).next().unwrap_or("");
-    if token.is_empty() {
-        return path.to_string();
+    for prefix in TOKEN_PATH_PREFIXES {
+        let Some(rest) = path.strip_prefix(prefix) else {
+            continue;
+        };
+        let token = rest.split(['/', '?']).next().unwrap_or("");
+        if token.is_empty() {
+            return path.to_string();
+        }
+        return path.replacen(token, "***", 1);
     }
-    path.replacen(token, "***", 1)
+    path.to_string()
 }
 
 pub async fn access_log(req: Request, next: Next) -> Response {
@@ -140,6 +148,17 @@ mod tests {
             redact_path("/api/ingest/bililive/yekitrim_secret123?x=1"),
             "/api/ingest/bililive/***?x=1"
         );
+        // ⚠️ 通用入口（2026-10-30 新增）**用的是同一个 token**，同样是路径段 ——
+        // 只认录播姬那条就等于"换个入口明文落盘"。
+        assert_eq!(
+            redact_path("/api/ingest/webhook/yekitrim_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789ab"),
+            "/api/ingest/webhook/***"
+        );
+        assert_eq!(
+            redact_path("/api/ingest/webhook/yekitrim_secret123?x=1"),
+            "/api/ingest/webhook/***?x=1"
+        );
+        assert_eq!(redact_path("/api/ingest/webhook/"), "/api/ingest/webhook/");
         // 其它路径一个字符都不动
         assert_eq!(redact_path("/api/projects?x=1"), "/api/projects?x=1");
         assert_eq!(redact_path("/api/ingest/bililive/"), "/api/ingest/bililive/");

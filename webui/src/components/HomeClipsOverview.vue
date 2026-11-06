@@ -32,7 +32,7 @@
         @click="pickOvFilter(f)"
       >{{ f.label }}</button>
       <span class="muted small sort-count">
-        {{ shownClips.length }}<template v-if="ovFilter !== 'all'">/{{ allClips.length }}</template> 个片段
+        {{ cards.length }}<template v-if="ovFilter !== 'all'">/{{ allClips.length }}</template> 个片段
       </span>
       <span class="v-sep"></span>
       <span class="muted small">排序</span>

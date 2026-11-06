@@ -349,6 +349,16 @@ pub struct DensityWindow {
 ///
 /// Returns a vector of density windows sorted by start time.
 pub fn analyze(path: &Path, window_secs: f64, total_duration: f64) -> Result<Vec<DensityWindow>> {
+    // ⚠️ 窗口长来自配置，是**手改得动的**：0 / 负数 / NaN / inf 会让 `total / window` 变成 inf，
+    // `inf.ceil() as usize` 饱和成 `usize::MAX`，紧接着那句 `vec![0u64; usize::MAX]` 触发
+    // **容量溢出（进程 abort）** —— 任务连收尾都来不及。与 `emotion::track` 同口径：
+    // 非法窗口 = 没有热力图（检测侧会记一条 warn 并退回字幕密度），绝不是崩掉。
+    if !(window_secs.is_finite() && window_secs > 0.0) {
+        bail!("弹幕统计窗口必须 > 0 秒（当前 {window_secs}）");
+    }
+    if !total_duration.is_finite() || total_duration <= 0.0 {
+        return Ok(Vec::new());
+    }
     let entries = load_danmaku_auto(path)?;
     if entries.is_empty() {
         return Ok(Vec::new());
@@ -489,6 +499,34 @@ mod tests {
         std::fs::write(&path, "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n").unwrap();
         let result = analyze(&path, 10.0, 100.0).unwrap();
         assert!(result.is_empty());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 窗口长是配置项、**手改得动**：0 / 负数 / NaN / inf 曾让 `ceil() as usize` 饱和成
+    /// `usize::MAX`，紧接着 `vec![0u64; usize::MAX]` 触发容量溢出（进程 abort，连任务收尾
+    /// 都来不及）。现在非法值返回 Err（检测侧 warn + 退回字幕密度），与 `emotion::track` 同口径。
+    #[test]
+    fn analyze_rejects_invalid_window_instead_of_allocating_usize_max() {
+        let path = std::env::temp_dir().join(format!(
+            "yekitrim-analyze-window-{}.ass",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n\
+             Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,x\n",
+        )
+        .unwrap();
+        for bad in [0.0, -10.0, f64::NAN, f64::INFINITY] {
+            let err = analyze(&path, bad, 100.0).unwrap_err().to_string();
+            assert!(err.contains("窗口"), "非法窗口长必须报错而不是分配: {bad} → {err}");
+        }
+        // 时长为 0 / NaN / inf ⇒ 没有窗口数可言 = 空热力图（不是 usize::MAX 个窗口）
+        assert!(analyze(&path, 10.0, 0.0).unwrap().is_empty());
+        assert!(analyze(&path, 10.0, f64::NAN).unwrap().is_empty());
+        assert!(analyze(&path, 10.0, f64::INFINITY).unwrap().is_empty());
+        // 合法值照旧
+        assert_eq!(analyze(&path, 10.0, 100.0).unwrap().len(), 10);
         let _ = std::fs::remove_file(&path);
     }
 

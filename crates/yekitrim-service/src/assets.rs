@@ -821,7 +821,8 @@ pub enum Preload {
 ///   预载成字幕只会让热度排序静默变差（见 `Preload::Subtitle` 的说明）。
 pub fn preload_policy(source_kind: &str) -> Preload {
     match source_kind {
-        "recorder" | "bilibili" => Preload::Danmaku,
+        // webhook 与录播姬同构：建项目时同名 .xml/.ass 已经探测并写进 yekitrim.toml
+        "recorder" | "bilibili" | "webhook" => Preload::Danmaku,
         _ => Preload::None,
     }
 }
@@ -1267,6 +1268,7 @@ mod tests {
         // ⚠️ 防回退：`bilibili` 必须是弹幕。改成 Subtitle 不会报错，
         // 只会让 B站项目的热度排序静默变差（见 `Preload::Subtitle` 的说明）。
         assert_eq!(preload_policy("bilibili"), Preload::Danmaku);
+        assert_eq!(preload_policy("webhook"), Preload::Danmaku);
         assert_eq!(preload_policy("local"), Preload::None);
         assert_eq!(preload_policy("whatever"), Preload::None);
     }

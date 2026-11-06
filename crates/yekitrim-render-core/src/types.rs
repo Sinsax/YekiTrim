@@ -476,10 +476,17 @@ pub enum Event {
         /// 落点档位：`top` / `center` / `bottom`（`text` 用；`sticker` 走 `x`/`y`）。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pos: Option<String>,
-        /// `text` 的**颜色命名预设**（2026-10-13）：
-        /// `white` / `pink` / `red` / `yellow` / `cyan` / `green` / `black`。
+        /// `text` 的**颜色命名预设**（2026-10-13）。
         ///
-        /// # 为什么要有它
+        /// ⚠️⚠️ **颜色链已整条退役**（2026-10-30）。提示词不再教颜色、`ElementColor` 已删除、
+        /// process/渲染/转译器都不再消费这个字段。**它留着只有一个理由**：老 `polish.toml`
+        /// 里可能有这个键，而本枚举是 `deny_unknown_fields` —— 删字段 = 老工程直接打不开（R4 红线）。
+        /// ⇒ **别再给它加消费方**（提示词/面板/转译器解析都不要再读）。判据：
+        /// `scripts/check-element-color.mjs`（退役口径 + 老工程可读）。
+        ///
+        /// 取值：`white` / `pink` / `red` / `yellow` / `cyan` / `green` / `black`。
+        ///
+        /// # 为什么当初要有它（历史，勿据此复活）
         ///
         /// 在此之前文字颜色**只有** `style` 档位那四个写死的常量（`hook`/`chapter`/`count` 白、
         /// `comment` 暖黄）—— **LLM 完全无法表达颜色**，"这句是愤怒的"只能靠换档位近似。

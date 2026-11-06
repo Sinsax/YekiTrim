@@ -106,6 +106,7 @@ fn collect_dir(dir: &Path, artifacts: &mut Artifacts) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 fn main() -> ExitCode {
@@ -1180,9 +1181,13 @@ fn smoke_test_linux(package_dir: &Path) -> Result<(), Box<dyn std::error::Error>
 
     // 首次运行会生成运行态（数据目录、server.toml 含真实绝对路径）—— 一律不许进发布包。
     // ⚠️ **2026-10-09：素材库落点由 `stickers/` 改成 `resources/` 下的子目录**。
+    // ⚠️ **2026-10-30：多用户布局会在包目录下生成 `global/`（内置字体）与 `users/`** ——
+    //    实测它们被原样打进 tar.gz（包从 ~40MB 涨到 57.6MB，且带着烟测的解包字体）。
+    //    `global/` 与 `users/` 都是**运行态**，组装阶段不会创建它们，一律清掉；
+    //    仅保留 `resources/fonts/放这里.txt` 这个随包说明。
     // ⚠️ `resources/` 与 `runtime/` 是**随包发的**，别整个删 —— 只清生成出来的素材库子目录，
-    // 且 `resources/fonts` 只清子项、保留组装阶段写的 `放这里.txt`（与 Linux 通道同一条）。
-    for junk in [".yekitrim", "stickers"] {
+    // 且 `resources/fonts` 只清子项、保留组装阶段写的 `放这里.txt`（与 Windows 通道同一条）。
+    for junk in [".yekitrim", "stickers", "global", "users"] {
         let p = package_dir.join(junk);
         if p.exists() {
             let _ = fs::remove_dir_all(&p);
@@ -1390,8 +1395,11 @@ fn smoke_test(package_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
     // ⚠️ `resources/` 本身是**随包发的**（里面有 `fonts/放这里.txt`），所以**不能整个删**
     // —— 只清首次运行会生成的那几个**素材库**子目录。`runtime/` 也是随包发的，**不清理**。
     // ⚠️ `resources/fonts` **不在这里删**：它的清理在下面，得保留 `放这里.txt`。
-    if package_dir.join(".yekitrim").exists() {
-        fs::remove_dir_all(package_dir.join(".yekitrim"))?;
+    for generated in [".yekitrim", "global", "users"] {
+        let path = package_dir.join(generated);
+        if path.exists() {
+            fs::remove_dir_all(&path)?;
+        }
     }
     for generated in ["resources/stickers", "resources/videos"] {
         let path = package_dir.join(generated);

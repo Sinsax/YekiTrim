@@ -1,28 +1,35 @@
 #!/usr/bin/env node
-// **配色的「四处逐值相等」判据**（2026-10-20，task-40）。
+// **配色的「跨端逐值相等」判据**（2026-10-20 task-40；2026-10-30 缩表）。
 //
-// # 为什么需要它（`check-overlay.mjs` 管不了这件事）
+// # 为什么需要它（check-overlay.mjs 管不了这件事）
 //
-// `check-overlay.mjs` 盯的是**色档算法**（overlayStops / overlayFadeStop / gradientCss /
+// check-overlay.mjs 盯的是**色档算法**（overlayStops / overlayFadeStop / gradientCss /
 // getOverlayState 四份实现同口径），**不比较任何强调色值** —— 实测：把 index.html 里的
-// `#dcbda0` 改成 `#d0b8a0`，它**照样绿**。于是「改配色只改一半」在过去**没有任何护栏**：
+// #dcbda0 改成 #d0b8a0，它**照样绿**。于是「改配色只改一半」在过去**没有任何护栏**：
 // 面板/预览一个色、成片另一个色，两边各自看都正常。
 //
-// ⇒ 本脚本把**同一个颜色在四处出现**的地方逐值对拍：
-//   ① 文字元素预设（真源）：`placement.rs::ElementColor::rgba()`
-//   ② 转译器兜底：`tools/polish-to-dhampir.mjs::TEXT_STYLE_FALLBACK.comment.color`
-//      （必须与 ① 的 Yellow 逐值相等 —— 它俩在注释里就写着「逐值相同」）
-//   ③ 字幕高亮默认：`render-core/src/types.rs::default_highlight_color()`
-//      ↔ `templates/index.html` 的两处兜底 ↔ `commands.rs` 里 `polish init` 模板写出的值
-//      （封面 `hl_color` 直接读 ③，所以改 ③ 两处一起变）
-//   ④ 主题强调色：`tokens.css` 深色 `--red`/`--amber` ↔ 样稿 `sakura-cream.html` 的图例
+// # 退役了什么（2026-10-30 颜色链收尾）
+//
+// 原来的 ① 文字元素颜色预设（placement.rs 的 ElementColor::rgba）与 ② 转译器
+// TEXT_STYLE_FALLBACK.comment.color 的对拍**整条退役**：
+// * ElementColor 没有生产消费者（LLM 写、存盘、出片不看），提示词教学也已删除；
+// * 文字层 2026-10-20 退役，TextStyle / ELEMENT_FONT_PX 随之删除
+//   ⇒ ② 的"Rust 真源 ↔ 转译器兜底"那一半已经不存在。
+// 留着这两条只会恒红（比没有门禁更坏），所以删掉——但**没有放宽任何活着的判据**。
+//
+// # 现在还锁什么
+//
+//   ③ 字幕高亮默认：render-core/src/types.rs 的 default_highlight_color()
+//      ↔ templates/index.html 的两处兜底 ↔ commands.rs 里 polish init 模板写出的值
+//      （封面 hl_color 直接读 ③，所以改 ③ 两处一起变）
+//   ④ 主题强调色：tokens.css 深色 --red/--amber ↔ 样稿 sakura-cream.html 的图例
 //      （卡里写着「特征色取自立绘、样稿与 tokens 必须同源改」）
 //
-// ⚠️ **真源是 ① 与 ④**：判据从它们**取值**再要求其它处相等（不是把 A 套色号写死在这里）
-//   ⇒ 整套换色只要四处一起改，本脚本**不用动**；只改一处 ⇒ 当场红。
+// ⚠️ **真源是 ③ 与 ④**：判据从它们**取值**再要求其它处相等（不是把 A 套色号写死在这里）
+//   ⇒ 整套换色只要同源改，本脚本**不用动**；只改一处 ⇒ 当场红。
 //
-// 运行： `node webui/scripts/check-color-parity.mjs`
-// 自证： `node webui/scripts/check-color-parity.mjs --mutate` —— 逐条真改内存里的源码，
+// 运行： node webui/scripts/check-color-parity.mjs
+// 自证： node webui/scripts/check-color-parity.mjs --mutate —— 逐条真改内存里的源码，
 //        每一处变异都**必须**让对应对拍红；全红才算判据不是空转。
 import fs from 'node:fs'
 import path from 'node:path'
@@ -33,8 +40,6 @@ const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.join(HERE, '..', '..')
 
 const FILES = {
-  placement: 'crates/yekitrim-polish/src/process/placement.rs',
-  tools: 'tools/polish-to-dhampir.mjs',
   types: 'crates/yekitrim-render-core/src/types.rs',
   template: 'crates/yekitrim-polish/templates/index.html',
   commands: 'crates/yekitrim-polish/src/commands.rs',
@@ -50,37 +55,7 @@ const load = () => {
 
 // ---- 解析器（都做成「取不到 ⇒ undefined」，由判据自己报红）--------------------
 
-/// `placement.rs::ElementColor::rgba()` 的五个预设 → { Pink: [217,139,174], … }
-function parseElementColors(src) {
-  const out = {}
-  for (const m of src.matchAll(/Self::(Pink|Red|Yellow|Cyan|Green)\s*=>\s*\[([^\]]+)\]/g)) {
-    const parts = m[2].split(',').map((s) => s.trim()).filter(Boolean)
-    const rgb = parts.slice(0, 3).map((s) => Number(s))
-    if (rgb.length === 3 && rgb.every((n) => Number.isInteger(n) && n >= 0 && n <= 255)) {
-      out[m[1]] = rgb
-    }
-  }
-  return out
-}
-
-/// `TextStyle::color()` 里 `Self::Comment` 那一档（Rust 的「吐槽暖黄」默认）。
-/// ⚠️ 它是**第五处**：与 `ElementColor::Yellow` 必须同值 —— 不等的话「同一句话写不写
-///    `color`」会得到两种黄（`color_presets_round_trip_and_are_all_parseable` 钉的就是它；
-///    2026-10-20 第一轮落地时**正是它先红**，这条判据因此补进来）。
-function parseCommentStyleColor(src) {
-  const m = /Self::Comment\s*=>\s*\[([^\]]+)\]/.exec(src)
-  if (!m) return undefined
-  const parts = m[1].split(',').map((s) => Number(s.trim()))
-  return parts.length >= 3 && parts.slice(0, 3).every((n) => Number.isInteger(n)) ? parts.slice(0, 3) : undefined
-}
-
-/// 转译器兜底里 `comment` 那一档的 color 前三通道。
-function parseToolsComment(src) {
-  const m = /comment:\s*\{[^}]*color:\s*\[([^\]]+)\]/.exec(src)
-  if (!m) return undefined
-  const parts = m[1].split(',').map((s) => Number(s.trim()))
-  return parts.length >= 3 && parts.slice(0, 3).every((n) => Number.isInteger(n)) ? parts.slice(0, 3) : undefined
-}
+// ⚠️ 元素颜色预设 / 转译器 comment 色的解析器已随颜色链退役（见文件头）。
 
 /// `default_highlight_color()` 返回的那个 hex。
 function parseHighlightDefault(src) {
@@ -128,30 +103,12 @@ function parseMockupLegend(src) {
 }
 
 // ---- 判据 -------------------------------------------------------------------
-const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b)
-const hex = (rgb) => rgb ? '#' + rgb.map((n) => n.toString(16).padStart(2, '0')).join('').toUpperCase() : '(取不到)'
-
 function checkAll(src) {
   const fails = []
   let checks = 0
   const ok = (cond, msg) => { checks++; if (!cond) fails.push(msg) }
 
-  // ① 五档都取到了（正则退化会静默全绿，这条是防它）
-  const el = parseElementColors(src.placement)
-  ok(Object.keys(el).length === 5,
-    '① 从 placement.rs 只取到 ' + Object.keys(el).length + ' 档（应为 5）—— 探针正则退化了？')
-
-  // ①② 转译器 comment 兜底 + Rust TextStyle::Comment 都 == Rust Yellow
-  const toolsC = parseToolsComment(src.tools)
-  const styleC = parseCommentStyleColor(src.placement)
-  ok(!!el.Yellow && !!toolsC,
-    '② 取不到 comment.color 或 ElementColor::Yellow（正则退化？）')
-  ok(eq(el.Yellow, toolsC),
-    '② 文字元素黄：Rust ' + hex(el.Yellow) + ' vs 转译器 comment ' + hex(toolsC) +
-    ' —— 改一处不改另一处 ⇒ 老工程与 LLM 元素颜色不一样')
-  ok(eq(el.Yellow, styleC),
-    '② 文字元素黄：ElementColor::Yellow ' + hex(el.Yellow) + ' vs TextStyle::Comment ' + hex(styleC) +
-    ' —— 同一句话写不写 color 会得到两种黄')
+  // ①② 文字元素颜色预设：**已整条退役**（见文件头），这里不再对拍。
 
   // ③ 字幕高亮默认 == index.html 两处兜底 == commands.rs 的 init 模板
   const hl = parseHighlightDefault(src.types)
@@ -176,7 +133,7 @@ function checkAll(src) {
   ok(tok.amber === mock.amber,
     '④ 深色 --amber：tokens ' + tok.amber + ' vs 样稿图例 ' + mock.amber)
 
-  return { fails, checks, el, toolsC, hl, tpl, cmd, tok, mock }
+  return { fails, checks, hl, tpl, cmd, tok, mock }
 }
 
 // ---- 自证：逐处真改一个分量，必须红 -----------------------------------------
@@ -185,19 +142,12 @@ function mutate(base) {
   const clone = () => ({ ...base })
   const add = (name, key, from, to, expectIdx) => cases.push({ name, key, from, to, expectIdx })
   // ⚠️ 从**当前源码的实体**取旧串，避免写死（换色号后自证仍然有效）
-  const toolsOld = /comment:\s*\{[^}]*color:\s*\[[^\]]+\]/.exec(base.tools)?.[0]
+  // ⚠️ 元素颜色那三条变异（ElementColor / TextStyle::Comment / 转译器 comment）已随
+  //    颜色链退役删除 —— 它们连"被对拍的那一侧"都不存在了，留着是空转。
   const tplOld = parseTemplateHighlights(base.template)[0]
   const mockOld = parseMockupLegend(base.mockup).red
-  const elOld = /Self::Yellow\s*=>\s*\[[^\]]+\]/.exec(base.placement)?.[0]
-  add('转译器 comment 色 +1', 'tools', toolsOld,
-    toolsOld?.replace(/(color:\s*\[\s*)(\d+)/, (_, p, n) => p + String(Number(n) + 1)), 1)
   add('index.html 高亮兜底换值', 'template', "'" + tplOld + "'", "'" + (tplOld === '#000000' ? '#010101' : '#000000') + "'", 2)
   add('样稿图例换值', 'mockup', mockOld, mockOld === '#000000' ? '#010101' : '#000000', 4)
-  const styleOld = /Self::Comment\s*=>\s*\[[^\]]+\]/.exec(base.placement)?.[0]
-  add('Rust TextStyle::Comment 换值', 'placement', styleOld,
-    styleOld?.replace(/(\[\s*)(0x[0-9A-Fa-f]+|\d+)/, (_, p, n) => p + (String(n).startsWith('0x') ? '0x' : '') + (Number(n) + 1).toString(String(n).startsWith('0x') ? 16 : 10)), -1)
-  add('Rust 黄档改一个分量', 'placement', elOld,
-    elOld?.replace(/(\[\s*)(0x[0-9A-Fa-f]+|\d+)/, (_, p, n) => p + (String(n).startsWith('0x') ? '0x' : '') + (Number(n) + 1).toString(String(n).startsWith('0x') ? 16 : 10)), 0)
   const out = []
   for (const c of cases) {
     const src = clone()
@@ -227,8 +177,8 @@ if (process.argv.includes('--mutate')) {
 
 const { fails, checks, el, hl, tok } = checkAll(base)
 if (fails.length === 0) {
-  console.log('✓ 配色四处逐值相等（' + checks + ' 项判据）：元素黄 ' + hex(el.Yellow) +
-    ' · 高亮 ' + hl + ' · 深色 red ' + tok.red + ' / amber ' + tok.amber)
+  console.log('✓ 配色跨端逐值相等（' + checks + ' 项判据）：高亮 ' + hl +
+    ' · 深色 red ' + tok.red + ' / amber ' + tok.amber)
   process.exit(0)
 }
 console.log('✗ 配色对拍失败（' + fails.length + ' / ' + checks + '）：')

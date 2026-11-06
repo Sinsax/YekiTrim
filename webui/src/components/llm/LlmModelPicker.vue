@@ -39,7 +39,7 @@ const btnText = computed(() => {
   return sourceShort.value ? '获取模型（' + sourceShort.value + '）' : '获取模型'
 })
 const btnTitle = computed(() =>
-  '按 base_url 取模型清单：内置目录命中就**不联网**；没命中才真发一次 /models')
+  '按 base_url 取模型清单：内置目录命中就不联网；没命中才真发一次 /models')
 const inputTitle = computed(() =>
   '可直接手打模型 id（候选之外的模型也能填）；下拉按输入内容过滤')
 

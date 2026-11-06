@@ -16,13 +16,6 @@ pub mod audit;
 /// 纯函数（扫区间 + 给补位点），**不落盘**；判据在 `process`。
 pub mod pacing;
 mod placement;
-/// 文字颜色的**命名预设**（2026-10-13）。
-///
-/// ⚠️ `placement` 是私有模块（外部一律走 `cmd_process`），但 `ElementColor`
-/// 是**一份要被多处读到的真源**：`llm/segment.rs` 的提示词判据要拿它验
-/// "提示词教的档 = process 认的档"。所以**单独 re-export 这一个类型**，
-/// 不开放整个模块（那会让 `pick_sticker_position` 之类的内部几何外泄）。
-pub use placement::ElementColor;
 /// 爆点判据（总方案 §6）：一个纯函数、一份判据、一处阈值，供 §6/§7/§8 共用。
 pub mod punch;
 /// 节奏调度（§26）：节拍网格 + 三档重音 + 空档补位。
@@ -577,7 +570,7 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
         let fx_only = fx_static_profile(&config.segments, total_duration);
         // **呼吸感 = 疏密对比**（2026-10-20 lead 裁决）：密集段 + 断档 + 最长静止 + 相邻同类，
         // 四条一起成立就够。**不再有百分比门槛** —— `static_ratio` 只作诊断值打印。
-        let adjacent_same = adjacent_same_transient(&config.segments);
+        let adjacent_same = adjacent_same_transient(&config.segments, &config.mute_ranges);
         let breathing_ok = p.dense_3s >= 1
             && p.windows_3_5 >= 2
             && p.max_static <= 8.0
@@ -1005,8 +998,25 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
         // Step 3c2: **运镜与音效同步**（§一④，`[camera] direct = true` 才跑）。
     // ⚠️ **必须排在 Step 3/3b 之后**：规则引擎会删掉「字幕里找不到依据」的独立 sfx，
     //    而这条是运镜驱动的、没有台词依据 —— 排前面会被它当场删掉。
+    // ⚠️ 名字必须走**真 catalog 解析**（见 `camera_transition_sfx`）：写死 whoosh 时
+    //    它根本不在 catalog 里，Step 4 报"找不到"、下一趟被规则引擎清空。
     if config.camera.direct {
-        let n = sync_camera_sfx(&mut config.segments);
+        let mut transition_warned = false;
+        let n = sync_camera_sfx(&mut config.segments, || {
+            match camera_transition_sfx(&sfx_blacklist, &mut used_sfx) {
+                Some(name) => Some(name),
+                None => {
+                    // 「不静默降级」：catalog 缺档 / 两个 tag 全被屏蔽时，说清楚这次没补。
+                    if !transition_warned {
+                        transition_warned = true;
+                        tracing::info!(
+                            "  ⚠ 运镜音效：catalog 里没有可用的转场音（挥砍斩击/戏剧转场 都匹配不到或被屏蔽），本次不补"
+                        );
+                    }
+                    None
+                }
+            }
+        });
         if n > 0 {
             tracing::info!("  🔊 运镜音效同步：cut/snap 起点补 {n} 条 sfx");
         }
@@ -2035,6 +2045,30 @@ fn migrate_camera_zoom(camera: &mut project::CameraStyle) -> Vec<(&'static str, 
     changed
 }
 
+/// 「运镜音效同步」用的**转场音**：从真实 catalog 解析出一个**存在的变体名**。
+///
+/// ⚠️⚠️ **不许写死名字**（2026-10-30 修的真缺陷）：这里原来写 `name: "whoosh"`，而
+/// `assets/sfx_catalog.json` 的 1213 条里**一条 whoosh 都没有** —— 于是：
+/// ① Step 4 每趟报「sfx whoosh: 未在 catalog 中找到」（成片里没有这一声）；
+/// ② 下一趟 Step 3 的规则引擎把这条"解析失败"的 Sfx 清空/删掉 ⇒ **功能活不过一次 process**。
+/// 这是典型的「配了、不报错、没效果」，不是"音效没配好"。
+///
+/// 选 tag 的理由：catalog 没有 whoosh 这一档。先用「挥砍斩击」（wind/swish 一类气流声，
+/// 最接近 whoosh），没有再退「戏剧转场」（场面转换类）；两个 tag 都被屏蔽/缺失时
+/// **不补**（宁缺毋滥）。返回**变体名**：与 `resolve_sfx_tag` 的现有口径一致
+/// （Step 4 能按变体名下载，下一趟 `resolve_sfx_value` 的 `lookup_variant` 也认得它）。
+fn camera_transition_sfx(
+    blacklist: &[String],
+    used: &mut std::collections::HashSet<String>,
+) -> Option<String> {
+    for tag in ["挥砍斩击", "戏剧转场"] {
+        if let Some(name) = resolve_sfx_tag(tag, blacklist, used) {
+            return Some(name);
+        }
+    }
+    None
+}
+
 /// 片头淡入的默认时长（秒）。原内建片头黑场（`intro_black`，固定 0.5s 正弦淡出）退役成普通
 /// overlay 事件后，这个默认观感由 [`ensure_intro_fade_in`] 在**初次** `process` 时补出来；
 /// 渲染侧的语义见 `yekitrim-render-core/src/timeline.rs::get_overlay_state`。
@@ -2114,12 +2148,6 @@ pub fn ensure_intro_fade_in(config: &mut project::ProjectFile) -> bool {
 /// 与贴纸的 keyword→name 同一套约定：锚点是**意图**（LLM 或人写的），每次 process 重算，
 /// 所以改了选框/挪了贴纸不用手改坐标；解析结果才进渲染侧，四条渲染路径都不需要认识锚点。
 /// 认不出的锚点只告警、保留原 `origin`，不让整条管线失败。
-/// 把 [`crate::process::placement::TextStyle`] 写回它**原始的档位名**。
-///
-/// ⚠️ 必须是这四个词本身（`hook`/`chapter`/`comment`/`count`）——
-/// 消费方（转译器）拿它去选轨道的 id 与报告文案，换一个拼法就会分叉。
-
-
 fn resolve_camera_anchors(config: &mut project::ProjectFile, data_dir: &Path) {
     let ctx = AnchorCtx::collect(config, data_dir);
     let mut unknown: Vec<String> = Vec::new();
@@ -2371,69 +2399,12 @@ y = "10%"
         assert_eq!(ev.manual_pos(), Some("70% 30%"), "读回必须原样");
         assert!(toml::to_string(&ev).expect("序列化").contains("manual_pos"));
     }
-    /// ★ **文字元素 `source` 串的字段顺序**（T3 的对外接口）。
-    ///
-    /// ⚠️ 这条判据是**给下游看的契约**：转译器（`tools/polish-to-dhampir.mjs`
-    /// 的 `parseTextStyle`）与预览（`webui/src/polish/engine.js` 的 `parseTextSource`）
-    /// **都按位置**解析这个串。新增字段**只能追加在末尾** ——
-    /// 插在中间会让既有字段静默错位（`backdrop` 被读成 `tilt_deg`、
-    /// 症状是"底衬没了、字歪了"，而**两边单测各自都过**）。
-    ///
-    /// ⇒ 这条断言把**顺序本身**钉住：谁想改顺序，必须先看见这条红了。
-
-    /// 第 10 段是**颜色预设名**，且它真的**改变了填充/描边**（不是只写个名字）。
-    ///
-    /// ⚠️ 两条一起验：只验 `p9 == "pink"` 的话，"把名字写进去但颜色仍用档位默认"
-    /// 这种改动会**全绿** —— 而症状正是"面板上选了粉色、成片是白的"，报告一行差异都没有。
-    /// ⇒ 必须同时验 **p3/p4 真的变了**。
-
-    /// 七档颜色预设的**名字与 RGBA**都必须是可往返的（`parse` ↔ `name` 互逆）。
-    ///
-    /// ⚠️ `ALL` 与 `parse` 的一致性必须机器验：手工维护两张清单，
-    /// 加一档时只改一处 ⇒ 那一档**能被写进提示词、却永远解析不出来**
-    /// （LLM 照着提示词写、process 说"认不出"）—— 两边各自看都正常。
-    #[test]
-    fn color_presets_round_trip_and_are_all_parseable() {
-        use crate::process::placement::{ElementColor as C, TextStyle};
-        assert_eq!(C::ALL.len(), 7, "预设档数变了（提示词/面板/转译器的表都要跟着改）");
-        for c in C::ALL {
-            assert_eq!(
-                C::parse(c.name()),
-                Some(c),
-                "`{}` 认不出来 —— `name()` 与 `parse()` 走岔了",
-                c.name(),
-            );
-            // 两两不同的 RGBA：否则两档名字不同、画出来一样（"档位失去意义"）。
-            for other in C::ALL {
-                if other != c {
-                    assert_ne!(
-                        c.rgba(),
-                        other.rgba(),
-                        "「{}」与「{}」的 RGBA 相同 —— 选哪个都一样",
-                        c.name(),
-                        other.name()
-                    );
-                }
-            }
-        }
-        // 认不出的必须返回 `None`（**不是**某个默认档）—— 调用方据它打警告。
-        for bad in ["", "  ", "#ff0000", "PINKY", "白色", "rgb(1,2,3)"] {
-            assert_eq!(C::parse(bad), None, "`{bad}` 不该被认出来");
-        }
-        // 大小写不敏感（与 `TextStyle::parse` 同口径）。
-        assert_eq!(C::parse(" PINK "), Some(C::Pink));
-        // `yellow` 必须与 `comment` 档的默认色**逐值相同**（不写时的观感可显式复现）。
-        assert_eq!(
-            C::Yellow.rgba(),
-            TextStyle::Comment.color(),
-            "yellow 与 comment 的默认色分叉了 —— 同一句话写不写 color 会得到两种黄"
-        );
-    }
-
-    /// 追加的两个字段取自 [`TextStyle`]，不是写死的常数。
-    ///
-    /// ⚠️ 没有这条，"四档各自的值"与"串里写的值"可能各说各话 ——
-    /// 上面那条只验了 `count` 一档。这里换一档，确认确实**是从枚举读的**。
+    // ⚠️ **颜色链已整条退役**（2026-10-30）：这里原来有 3 条判据（source 串顺序、第 10 段
+    // 颜色名、七档预设往返）。它们的**写入方** `layout_text_elements` 已随文字层退役删除
+    // （2026-10-20），所以这些判据测的是「一段没有生产者的串」—— 空转。
+    // 现在仍被消费的只有**只读兼容**：老工程的 `source` 串（7/9/10 段）还能被转译器 /
+    // 预览按位置解析（`scripts/check-element-color.mjs` 钉住"仍可读、不再消费颜色"）。
+    // ⇒ 别在这里补"写回颜色"或"解析颜色"的单测：没有生产写入方。
 
     fn seg_with(events: Vec<Event>) -> Segment {
         Segment { start: 0.0, end: 10.0, fx: "low".into(), note: String::new(), events, role: String::new(), extra: Default::default() }
@@ -4317,6 +4288,136 @@ y = "10%"
         assert_eq!(sticker_center_pct("auto", "auto", f), None);
         assert_eq!(sticker_center_pct("10%", "auto", f), None);
     }
+
+    /// 「运镜音效」必须用 catalog 里**真实存在**的变体名（旧实现写死 `whoosh` ⇒ 不存在）。
+    ///
+    /// 变异自证：把 `camera_transition_sfx` 改成 `Some("whoosh".into())` ⇒ 本条红。
+    #[test]
+    fn camera_transition_sfx_resolves_to_a_real_catalog_variant() {
+        let mut used = std::collections::HashSet::new();
+        let name = camera_transition_sfx(&[], &mut used)
+            .expect("catalog 里必须有可用的转场音（挥砍斩击 / 戏剧转场 至少一个非空）");
+        assert!(
+            crate::assets::sfx_catalog::lookup_variant(&name).is_some(),
+            "解析出来的 `{name}` 不是一个 catalog 变体 —— Step 4 会报「未在 catalog 中找到」"
+        );
+        // 下一趟 Step 3 的规则引擎会重新 resolve 每一帧 Sfx；它必须**认得**这个名字并保留。
+        let mut ev = Event::Sfx { time: 1.0, name: name.clone(), volume: None, end: None };
+        resolve_event_sfx(&mut ev, &[], &mut std::collections::HashSet::new());
+        assert!(
+            matches!(&ev, Event::Sfx { name, .. } if !name.is_empty()),
+            "第二趟规则引擎把 `{name}` 当解析失败清掉了 —— 运镜音效只活一次"
+        );
+    }
+
+    /// 句读微推 / 段尾收束**不许把机位拽走**（2026-10-30 修）。
+    ///
+    /// 它们原先一律写 `origin="50% 50%"` + `anchor=None`，而 Step 2d 把这对"老工程占位"
+    /// 迁移成 `anchor="liver"`（1f2 在 2d 之前）⇒ 段内一次微推就把焦点从弹幕/贴纸/用户落点
+    /// 拉到主播，画面横跳一下且**不报错**。
+    /// 变异自证：把 `add_micro_push` 里的 `camera_focus_at` 换回 `("50% 50%", None)` ⇒ 本条红。
+    #[test]
+    fn micro_push_keeps_the_segment_focus_after_anchor_resolution() {
+        let cam = |time: f64| Event::Camera {
+            time,
+            end: Some(20.0),
+            zoom: "中".into(),
+            origin: "50% 50%".into(),
+            anchor: Some("danmaku".into()),
+            anchor_to: None,
+            to_origin: None,
+            cut: false,
+            handheld: false,
+            manual: false,
+            speed: None,
+            tilt: None,
+        };
+        let mut cfg = ProjectFile::example();
+        cfg.segments = vec![Segment {
+            start: 0.0,
+            end: 20.0,
+            fx: "low".into(),
+            note: String::new(),
+            role: String::new(),
+            events: vec![cam(0.0)],
+            extra: Default::default(),
+        }];
+        let added = crate::process::fx::add_micro_push(&mut cfg.segments, &[]);
+        assert!(added >= 2, "20s 的段至少要补两拍（实得 {added}）");
+        resolve_camera_anchors(&mut cfg, std::path::Path::new("."));
+        let origins: Vec<String> = cfg.segments[0]
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                Event::Camera { origin, .. } => Some(origin.clone()),
+                _ => None,
+            })
+            .collect();
+        let anchors: Vec<Option<String>> = cfg.segments[0]
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                Event::Camera { anchor, .. } => Some(anchor.clone()),
+                _ => None,
+            })
+            .collect();
+        let base = origins.first().expect("至少一条运镜").clone();
+        assert!(
+            origins.iter().all(|o| *o == base),
+            "微推事件的落点与段基准镜头不一致（焦点被拽走）：{origins:?}"
+        );
+        assert!(
+            anchors.iter().all(|a| a.as_deref() == Some("danmaku")),
+            "微推事件没继承段基准镜头的锚点（被迁移成了 liver）：{anchors:?}"
+        );
+    }
+
+    /// 竖屏纵向运镜必须在 **Step 2d 锚点解析之后**仍然生效（2026-10-30 修）。
+    ///
+    /// 旧实现只改 `origin`、留着 `anchor`；而 2d 对 anchor 是**无条件覆盖 origin** ⇒
+    /// 竖屏纵向位移一次都没落地，日志却照旧报"改了 N 条"。
+    /// 变异自证：去掉 `direct_vertical_portrait` 里清 anchor 的那三行 ⇒ 本条红。
+    #[test]
+    fn vertical_portrait_origin_survives_anchor_resolution() {
+        let mut cfg = ProjectFile::example();
+        cfg.canvas.orientation = "portrait".into();
+        cfg.segments = vec![Segment {
+            start: 0.0,
+            end: 10.0,
+            fx: "low".into(),
+            note: String::new(),
+            role: String::new(),
+            events: vec![Event::Camera {
+                time: 0.0,
+                end: Some(10.0),
+                zoom: "中".into(),
+                origin: "50% 50%".into(),
+                anchor: Some("liver".into()),
+                anchor_to: None,
+                to_origin: None,
+                cut: false,
+                handheld: false,
+                manual: false,
+                speed: None,
+                tilt: None,
+            }],
+            extra: Default::default(),
+        }];
+        assert_eq!(crate::process::fx::direct_vertical_portrait(&mut cfg.segments), 1);
+        resolve_camera_anchors(&mut cfg, std::path::Path::new("."));
+        let origin = cfg.segments[0]
+            .events
+            .iter()
+            .find_map(|e| match e {
+                Event::Camera { origin, .. } => Some(origin.clone()),
+                _ => None,
+            })
+            .expect("运镜还在");
+        assert_eq!(
+            origin, "50% 42%",
+            "Step 2d 按 anchor 把竖屏纵向落点覆盖掉了 —— 竖屏纵向运镜等于没做"
+        );
+    }
 }
 
 /// 真实工程上的回归：跑一遍完整后处理，**手工放的事件（`manual`）一个都不能少**
@@ -4940,7 +5041,7 @@ mod diagnose_overlay_stops {
             last = Some(k);
         }
         let fx_only = super::fx::fx_static_profile(&cfg.segments, total);
-        let adj = super::fx::adjacent_same_transient(&cfg.segments);
+        let adj = super::fx::adjacent_same_transient(&cfg.segments, &cfg.mute_ranges);
         println!("VT_BREATH dense={} windows_3_5={} max_static={:.2} adjacent_same={} diag_ratio={:.4} stacks={}",
             p.dense_3s, p.windows_3_5, p.max_static, adj, p.ratio, p.stacks_under_400ms);
         println!("VT_BREATH[仅特效] ratio={:.4} max_static={:.2} windows_3_5={}",

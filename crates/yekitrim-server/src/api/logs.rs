@@ -120,8 +120,12 @@ mod tests {
 #[tokio::test]
 async fn access_log_records_requests_with_actor_and_error_text() {
     use tracing_subscriber::layer::SubscriberExt;
-    let bus = logbus::bus();
-    let before = bus.snapshot(0, 1).1;
+    // ⚠️ **私有总线**，不是 `logbus::bus()`。这条用例只关心"中间件有没有把这条事件
+    // 交给 LogBusLayer"，而全局总线是进程级单例 + 2000 条环形缓冲：全量并行跑时
+    // 其它用例的日志会同时往里写，`snapshot(before)` 那个窗口里到底剩几条不由本用例
+    // 决定 —— 实测**单独跑绿、全量并行跑红**（无常红、无常绿，最费时间的一类失败）。
+    // 私有 `LogBus` 让层只写自己那份，与并行跑的其他用例彻底隔离。
+    let bus = Arc::new(logbus::LogBus::new());
     // 线程局部订阅者：只有装上 LogBusLayer，tracing 事件才会进总线
     // （测试进程不会跑 main 的 setup_tracing；guard 出作用域即还原）
     let _sub = tracing::subscriber::set_default(
@@ -146,7 +150,7 @@ async fn access_log_records_requests_with_actor_and_error_text() {
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
 
     let all = bus
-        .snapshot(before, usize::MAX)
+        .snapshot(0, usize::MAX)
         .0
         .into_iter()
         .map(|r| format!("[{}] {}", r.level, r.text))
@@ -171,8 +175,8 @@ async fn access_log_records_requests_with_actor_and_error_text() {
 #[tokio::test]
 async fn access_log_keeps_api_prefix_when_nested() {
     use tracing_subscriber::layer::SubscriberExt;
-    let bus = logbus::bus();
-    let before = bus.snapshot(0, 1).1;
+    // 私有总线（理由同上一条）：全局总线在并行跑时会被别的用例写，`before` 窗口不可靠。
+    let bus = Arc::new(logbus::LogBus::new());
     let _sub = tracing::subscriber::set_default(
         tracing_subscriber::registry()
             .with(logbus::LogBusLayer::new(bus.clone())),
@@ -192,7 +196,7 @@ async fn access_log_keeps_api_prefix_when_nested() {
     assert_eq!(res.status(), StatusCode::OK);
 
     let all = bus
-        .snapshot(before, usize::MAX)
+        .snapshot(0, usize::MAX)
         .0
         .into_iter()
         .map(|r| r.text)

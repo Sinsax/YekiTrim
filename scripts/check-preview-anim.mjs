@@ -262,7 +262,15 @@ try {
   //         实测：同一帧里 4 个字的 transform **各不相同**（4/4），而帧与帧之间相同。
   //      ⚠️ 别把它们当“退化”去“修” —— 下面 ④ 会另测
   //         “同一帧内字与字形状不同”，那才是逐字真正的判据。
-  const STATIC_BY_DESIGN = ['fade', 'tilt', 'vtext', 'perchar_big', 'perchar_small'].sort()
+  // ⚠️⚠️ **2026-10-30 更正**：`perchar_big` / `perchar_small` **不再是静态档**。
+  //    它们是 `perchar` 的**老名字别名**（转译器与 engine 的三份参数逐值相同），
+  //    而 `perchar` 自 2026-10-18 起是「入场逐字变大、出场逐字变小」的**过渡动画**
+  //    （`scaleFrom → scaleTo` + `perCharOutFrames: 18`）—— 不再是 `scaleSpread` 那种
+  //    「按序号排开的静态字号阶梯」。这一行原先还是旧模型，所以判据一直在报
+  //    「静态的那一批与登记不符」，而真因是**登记过时**（当时的字幕侧还用不了出场窗口，
+  //    见下面 ⑤-ter 那个 `ReferenceError`），不是哪一档退化了。
+  //    ⇒ 去掉这两个名字 = 要求它们**必须动**（判据变严，不是放宽）。
+  const STATIC_BY_DESIGN = ['fade', 'tilt', 'vtext'].sort()
   const gotStatic = [...staticOnes].sort()
   ok(JSON.stringify(gotStatic) === JSON.stringify(STATIC_BY_DESIGN),
     `② "静态"的那一批与登记不符。
@@ -515,6 +523,34 @@ try {
       '⑤ 认不出的档名**不该**带出 `perChar`（成片也不认它，两边必须一致）')
   }
 
+  // ---- ⑤-ter ⚠️ 字幕 cue 的 `perCharSpanFrames`（2026-10-30 的 `ReferenceError` 事故）----
+  //
+  // 症状：`subAnimFields` 里照抄元素那条路写成 `evDuration(c, 0)` —— 而 `c` 在那个作用域
+  // **根本不存在**（元素那条路才有一份带 time/end 的对象）。于是**任何带任一档动效的字幕**
+  // 在 `subsAt` 里当场抛 `ReferenceError: c is not defined` ⇒ 整层字幕消失、
+  // 精修页预览整个挂掉（静态判据全绿：esbuild/Vue 都不为未定义变量报错）。
+  //
+  // 判据：有 `end` / 没 `end`（老工程或 LLM 漏写）都**不许抛**，且帧数 = **这条 cue 自己的
+  // 时长 × fps**（不是 0、也不是拿元素的 time 算）。缺 `end` 时按 0.1s 兜底（= evDuration 的下限）。
+  {
+    const mk = (sub) => {
+      const idx = E.buildIndex({ config: {}, subtitles: [sub], danmaku: [], duration: 30, fps: 30 })
+      return E.subsAt(idx, 2)[0]
+    }
+    const withEnd = mk({ start: 1, end: 5, text: '逐字', style: { name: 'comment' }, pos: 'bottom', transition_anim: 'perchar' })
+    ok(!!withEnd, '⑤-ter 带动效的字幕在 `subsAt` 里抛了（`perCharSpanFrames` 用了不存在的标识符？）')
+    if (withEnd) {
+      ok(Math.abs(withEnd.perCharSpanFrames - 4 * 30) < 1e-6,
+        '⑤-ter 字幕的 perCharSpanFrames 应当 = (end-start)×fps = 120，实得 ' + withEnd.perCharSpanFrames)
+      ok(Number(withEnd.perCharOutFrames) > 0, '⑤-ter perchar 的出场窗口没带出来（perCharOutFrames=0）')
+    }
+    const noEnd = mk({ start: 1, text: '缺end', style: { name: 'comment' }, pos: 'bottom', effect_anim: 'perchar_big' })
+    ok(!!noEnd, '⑤-ter 缺 end 的字幕在 `subsAt` 里抛了')
+    if (noEnd) {
+      ok(Math.abs(noEnd.perCharSpanFrames - 0.1 * 30) < 1e-6,
+        '⑤-ter 缺 end 时应当按 0.1s 兜底（= 3 帧），实得 ' + noEnd.perCharSpanFrames)
+    }
+  }
   // ---- ⑥ 接线：预览组件真的消费了这两个字段 ----
   //
   // ⚠️ "函数写好、没人调"是本仓的头号事故形态（这次 `charTransformAt`

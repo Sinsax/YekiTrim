@@ -310,11 +310,20 @@ ok(uniq.length === 1, '所有状态整块高度**完全一致**（不同的高�
   // 判据形状：**同一份内容量两遍** —— `is-dense`（现行 app.css 的两列网格）与 `is-legacy`
   // （夹具里复刻的旧规则：标签换行 + 控件独占一行）。"现在多高"是恒真判据；量**新旧之比**
   // 才说得上"排版真的变紧了"，而且它同时钉住"别把两列改回去"。
+  //
+  // ⚠️ **三轴（排版/过渡/动效）+ 角度那四个标签随文字层退役**（2026-10-20，文字元素面板整块删除）。
+  //    现在 `TimelineEditor.vue` 里只剩贴纸/字幕面板的「角度」，所以这里**不再要求 4 个标签**；
+  //    如果哪天文字元素面板回来，`axisLabels.length >= 4` 会重新出现，届时把这条恢复成硬断言。
+  //    ③b 那组通用行形状判据**不依赖文字面板**，继续跑。
   const axisLabels = (() => {
     const found = [...TL.matchAll(/<label>(排版|过渡|动效|角度)<\/label>/g)].map((m) => m[1])
     return [...new Set(found)]
   })()
-  ok(axisLabels.length >= 4, '③ 抽得到三轴 + 角度四个标签（实得 ' + JSON.stringify(axisLabels) + '）')
+  if (axisLabels.length >= 4) {
+    ok(true, '③ 抽得到三轴 + 角度四个标签（实得 ' + JSON.stringify(axisLabels) + '）')
+  } else {
+    console.log('     · ③ 文字元素三轴面板已退役（实得标签 ' + JSON.stringify(axisLabels) + '，只需「角度」）')
+  }
   await cdp.send('Page.navigate', { url: 'http://127.0.0.1:' + port + '/panel-form.html' })
   let formUp = false
   for (let k = 0; k < 120; k++) { if (await ev('!!window.__FORM')) { formUp = true; break } await sleep(120) }
@@ -329,7 +338,12 @@ ok(uniq.length === 1, '所有状态整块高度**完全一致**（不同的高�
     // ⚠️ 阈值取**实测口径**（4 字段 + 1 提示：214 vs 292 ⇒ −27%），不取「应该省一半」的想当然：
     //    两列省下的是**每个字段的标签行**（约 22px），下拉本身的高度与提示行省不掉。
     ok(m.dense.h <= m.legacy.h * 0.75, '③ 两列网格把这块压矮 ≥25%（' + m.dense.h + ' vs ' + m.legacy.h + '）')
-    ok(m.dense.minSel >= 120, '③ 下拉最窄 ≥120px（实得 ' + m.dense.minSel + '）')
+    // 文字面板退役后夹具里可能一个 <select> 都没有（minSel=0）—— 只在三轴面板还在时要求宽度。
+    if (axisLabels.length >= 4) {
+      ok(m.dense.minSel >= 120, '③ 下拉最窄 ≥120px（实得 ' + m.dense.minSel + '）')
+    } else {
+      console.log('     · ③ 下拉宽度跳过：本夹具已无文字面板的三轴下拉（minSel=' + m.dense.minSel + '）')
+    }
     ok(m.dense.scrollW <= m.dense.clientW + 1, '③ 面板没横向溢出（' + m.dense.scrollW + ' vs ' + m.dense.clientW + '）')
     ok(m.dense.labels.every((l) => l.w + 0.5 >= l.need), '③ 标签没被裁（44px 标签列：' + JSON.stringify(m.dense.labels.map((l) => l.t + '=' + l.w + '/' + l.need)) + '）')
     ok(m.dense.w <= 233, '③ 面板仍是 232px 外宽（实得 ' + m.dense.w + '）')

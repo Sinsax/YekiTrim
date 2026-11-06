@@ -126,15 +126,6 @@ pub(crate) fn build_events_system_prompt(
     {{"type":"camera","time":9.0,"end":12.0,"zoom":"中","anchor":"danmaku","anchor_to":"liver"}}
 - sticker: 贴图表情. {{"type":"sticker","time":10.0,"end":12.0,"keyword":"ysyk","sticker_tag":"害怕","x":"auto","y":"auto"}}
   keyword 语言: {}
-  color **颜色(可选)**, 七选一 —— **按这句话的情绪选, 别每句都写**:
-  * `white` 白 —— 中性 / 强调 / 反光
-  * `pink` 粉 —— 可爱 / 调侃 / 萌
-  * `red` 红 —— 愤怒 / 警报 / 反驳 / 危险
-  * `yellow` 黄 —— 吐槽旁白(系统默认就是它)
-  * `cyan` 青 —— 冷静 / 疑问 / 科普
-  * `green` 绿 —— 肯定 / 涨 / 通过
-  * `black` 黑 —— 沉重 / 下坠 / 死亡
-  ⚠ 不写 color = 用默认色（推荐多数情况不写, 全片五颜六色反而没重点）
 - （**没有文字元素这一类型**）系统已删除独立文字层：别再产出 kind=text，
   写了的在读时会被丢弃。要"点名一句话"就用贴纸/特效，那两样是活的。
 
@@ -938,78 +929,35 @@ mod tests {
         );
     }
 
-    /// 提示词必须把**七档颜色预设**全教给 LLM，且**四个消费侧真源**都认这些名字。
+    /// **贴纸不再教颜色**（颜色链 2026-10-30 整条退役）。
     ///
-    /// # 为什么这条判据要跨四处验（2026-10-13）
+    /// 退役判据（不是"暂时没效果"，是**没有消费方**）：
+    /// * `Event::Sticker` / `Event::Element{kind:"sticker"}` **根本没有 color 字段** ——
+    ///   LLM 照着提示词写了也会在 `serde` 反序列化时被静默丢掉；
+    /// * process 里唯一的颜色真源 `ElementColor` 只有它自己的测试在读，没有任何调用点；
+    /// * 文字层已于 2026-10-20 整条退役（读时丢弃），颜色原本服务的那个载体不存在了。
     ///
-    /// 颜色这条链是"一个事实、四处实现"：
-    /// ① 提示词（LLM 照它写）② `placement.rs::ElementColor::parse`（process 解析）
-    /// ③ 转译器 / 预览（读 `process` 写回的第 10 段）。
-    ///
-    /// ⚠️ 漏任何一处的症状都是**"配了、不报错、没效果"**：
-    /// * 提示词少一档 ⇒ LLM 永远不写它 ⇒ **产出恒为 0**（正是 §18-A 那个形状：
-    ///   `zoom="特写"` 连着三次真实 LLM 命中 0/0/0，而模型明明在写 zoom）；
-    /// * `parse` 少一档 ⇒ LLM 照着提示词写、`process` 说"认不出"并**静默退回默认色**。
-    ///
-    /// ⚠️ 判据**从提示词里抠出颜色名**再去问 `ElementColor::parse`，**不写第二份字面量清单** ——
-    /// 两边各写一份字面量的判据拦不住漂移（这与上面 `zoom="特写"` 那条同一手法）。
+    /// ⇒ 提示词里再出现 `color` / 七个档名，就是**教 LLM 写一个必然被丢掉的东西**。
+    /// 变异自证：把任意一行色档贴回 sticker 段 ⇒ 本条红。
     #[test]
-fn prompt_teaches_every_color_preset_the_parser_accepts() {
-        use crate::process::ElementColor;
+    fn sticker_prompt_does_not_teach_color() {
         let prompt = build_events_system_prompt(&[], &[], "");
-
-        // ⚠️⚠️ **必须只扫「color 那一段」的档名，而且不许用 `parse` 过滤** ——
-        //    第一版写的是"扫描全部 `* \`xxx\` …` 行、再用 `parse().is_some()` 过滤"，
-        //    结果**变异自证当场抓住它**：往提示词里加一档 `magenta`（parse 不认）时，
-        //    那一行被 `filter` 直接丢掉 ⇒ 计数仍是 7 ⇒ **判据照样绿**。
-        //    而"提示词教了一档 process 不认的颜色"正是本判据要拦的两个方向之一。
-        //    ⇒ 现在按**区块**取（`color` 那行之后、到 `⚠️` 那批注解之前），
-        //      取到的每个名字都拿 `parse` 验，**认不出就红**。
-        //
-        //    ⚠️ 终止条件用 `⚠`（color 块后面紧跟的就是那批注解），**不是 `pos `** ——
-        //       第一版写 `pos ` 是因为我以为 color 排在 pos 前面；实际顺序是 **pos 在前、
-        //       color 在后** ⇒ `take_while` 一路吃到 shake 那一段里的
-        //       `"anchor":"cold_open"` 才停，把 JSON 的字段名当成了颜色档名
-        //       （**变异自证当场抓出来**：那次"复原后仍红"就是这么来的）。
-        //       ⇒ **区块边界必须照提示词的真实结构写，不能凭记忆。**
+        // 只取 sticker 那一段 —— 从 `- sticker:` 到下一个顶层 `- ` 条目之前。
+        // ⚠️ 别在全篇找 `color`：overlay 那一段**合法**地教 `color`/`colors`。
         let block: Vec<&str> = prompt
             .lines()
-            .skip_while(|l| !l.trim_start().starts_with("color "))
-            .take_while(|l| !l.trim_start().starts_with('⚠'))
+            .skip_while(|l| !l.trim_start().starts_with("- sticker:"))
+            .skip(1)
+            .take_while(|l| !l.trim_start().starts_with("- "))
             .collect();
-        assert!(
-            !block.is_empty(),
-            "提示词里找不到 `color` 那一段（提示词改结构了？这条判据会空转）"
-        );
-        let names: Vec<&str> = block
-            .iter()
-            .filter(|l| l.trim_start().starts_with("* `"))
-            .filter_map(|l| l.split('`').nth(1))
-            .collect();
-
-        for c in ElementColor::ALL {
+        assert!(!block.is_empty(), "提示词里找不到 sticker 段（结构变了？本条会空转）");
+        for needle in ["color", "`white`", "`pink`", "`red`", "`yellow`"] {
             assert!(
-                names.contains(&c.name()),
-                "提示词里没有教颜色档 `{}` —— LLM 永远写不出它，产出恒为 0（且全链路零报错）",
-                c.name()
+                !block.iter().any(|l| l.contains(needle)),
+                "sticker 段又在教 `{needle}` —— 颜色链已退役（没有消费方，写了必被丢弃）:\n{}",
+                block.join("\n")
             );
         }
-        // 反向：提示词里出现的**每一个**名字，`parse` 都必须认。
-        for n in &names {
-            assert!(
-                ElementColor::parse(n).is_some(),
-                "提示词教了颜色档 `{n}`，而 `parse` 不认它 —— \
-                 LLM 照着提示词写，process 会判「认不出」并**静默退回默认色**"
-            );
-        }
-        // 档数也要对上（两个方向都堵住）。
-        assert_eq!(
-            names.len(),
-            ElementColor::ALL.len(),
-            "提示词里教了 {} 档颜色，而真源有 {} 档 —— 多出来的那些 LLM 会照写、process 会报认不出：{names:?}",
-            names.len(),
-            ElementColor::ALL.len()
-        );
     }
 
     /// 提示词必须把**特写**这一档教给 LLM，且教的那个词在**消费侧真源**里是独立一档。

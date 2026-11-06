@@ -25,6 +25,12 @@
  *      **不许再出现 `both`** —— 那个类别已经被删掉了；
  *   ⑤ ★ 逐字那一路**真的有内容**（`preset.perChar` 存在），
  *      否则页面上的逐字演示是空转的。
+ *
+ * # 自证（`--self-test`，2026-10-30 补）
+ *
+ *   ③④⑤ 抽成**纯函数** `validateSnapshot(snap, presets)`，主流程与自证跑**同一份**。
+ *   自证喂三份改坏的快照（删一档 / 轴写 `both` / 逐字档丢 `perChar`），
+ *   每一种都必须被点名报红 —— 判据写错的表现是"永远绿"，比报错难发现。
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -33,8 +39,10 @@ import { execFileSync } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const SNAP = path.join(ROOT, 'docs/anim/anim-kinds.json')
+// ⚠️ 允许环境变量覆盖（自证/变异用；默认就是入库那份）。
+const SNAP = process.env.YK_ANIM_SNAP || path.join(ROOT, 'docs/anim/anim-kinds.json')
 const GEN = path.join(ROOT, 'docs/anim/gen-kinds.mjs')
+const ENGINE = process.env.YK_ANIM_ENGINE || path.join(ROOT, 'webui/src/polish/engine.js')
 
 const fails = []
 let checks = 0
@@ -45,6 +53,35 @@ const ok = (name, pass, detail = '') => {
     console.log(`  FAIL ${name}${detail ? `\n         ${detail}` : ''}`)
     fails.push(name)
   }
+}
+
+/** ③④⑤ 的**纯谓词**（主流程与 `--self-test` 跑同一份）。 */
+function validateSnapshot(snap, presets) {
+  const out = []
+  const presetKeys = Object.keys(presets).sort()
+  const snapTiers = [...new Set(snap.map((r) => r.value).filter(Boolean))].sort()
+  if (JSON.stringify(snapTiers) !== JSON.stringify(presetKeys)) {
+    out.push({ name: '快照的档位集合 == `ANIM_PRESETS` 的键（少一档 = 页面少一张卡）',
+      detail: `快照 ${JSON.stringify(snapTiers)}\n         engine ${JSON.stringify(presetKeys)}` })
+  }
+  const AXES = new Set(['none', 'style', 'transition', 'effect'])
+  const badAxis = snap.filter((r) => !AXES.has(r.axis))
+  if (badAxis.length) {
+    out.push({ name: '每条快照记录的轴归属都是 `none`/`style`/`transition`/`effect` 之一',
+      detail: JSON.stringify(badAxis.map((r) => [r.value, r.axis])) })
+  }
+  if (snap.some((r) => r.axis === 'both')) {
+    out.push({ name: '⚠️ 快照里**不许再出现 `both`**（那个类别已随三轴收敛删除）', detail: '' })
+  }
+  // ★ 逐字那一路：engine 里有 perChar 的档，快照里必须真的带 perChar。
+  const perCharTiers = presetKeys.filter((t) => presets[t]?.perChar)
+  const snapPerChar = snap.filter((r) => r.preset?.perChar).map((r) => r.value)
+  if (!(perCharTiers.length > 0 && perCharTiers.every((t) => snapPerChar.includes(t)))) {
+    out.push({ name: '★ 有逐字档，且**快照里带着 `perChar`**（否则页面上的逐字演示是空转的）',
+      detail: `engine 里有 perChar 的档 ${JSON.stringify(perCharTiers)}；` +
+        `快照里带的 ${JSON.stringify(snapPerChar)}` })
+  }
+  return out
 }
 
 console.log('docs/anim 快照与真源码一致')
@@ -58,8 +95,45 @@ if (!fs.existsSync(GEN)) {
   process.exit(1)
 }
 
-// ---- ② 重跑生成器，逐字节比对 ----
+const { ANIM_PRESETS } = await import(pathToFileURL(ENGINE).href)
 const committed = fs.readFileSync(SNAP, 'utf8')
+
+// ---- 自证：③④⑤ 的纯谓词必须对三种改坏的快照都翻红 ----
+if (process.argv.includes('--self-test') || process.argv.includes('--mutate')) {
+  const { strict: assert } = await import('node:assert')
+  const base = JSON.parse(committed)
+  let self = 0
+  const cases = [
+    {
+      name: '删掉一档（perchar）',
+      snap: base.filter((r) => r.value !== 'perchar'),
+      needle: '档位集合',
+    },
+    {
+      name: '轴名写成 `both`（旧类别回潮）',
+      snap: base.map((r) => (r.value === 'perchar' ? { ...r, axis: 'both' } : r)),
+      needle: 'both',
+    },
+    {
+      name: '逐字档丢了 `perChar`（页面演示空转）',
+      snap: base.map((r) => (r.value === 'perchar'
+        ? { ...r, preset: { ...(r.preset || {}), perChar: undefined } } : r)),
+      needle: 'perChar',
+    },
+  ]
+  for (const c of cases) {
+    const got = validateSnapshot(c.snap, ANIM_PRESETS)
+    assert.ok(got.length > 0, `自证「${c.name}」必须红`)
+    assert.ok(got.some((f) => f.name.includes(c.needle) || (f.detail || '').includes(c.needle)),
+      '自证「' + c.name + '」报红要点名 `' + c.needle + '`')
+    console.log(`  ✓ 自证「${c.name}」→ 判据翻红并点名`)
+    self += 1
+  }
+  console.log(`✓ docs/anim 快照守卫自证：${self} 项（删档 / both 回潮 / 逐字丢 perChar，都必须红）`)
+  process.exit(0)
+}
+
+// ---- ② 重跑生成器，逐字节比对 ----
 let regenerated = null
 try {
   execFileSync(process.execPath, [GEN], { cwd: ROOT, stdio: 'pipe' })
@@ -74,33 +148,15 @@ if (regenerated !== null) {
       '跑 `node docs/anim/gen-kinds.mjs` 重新生成并一起提交')
 }
 
+// ---- ③④⑤ 快照内容（纯谓词） ----
 const snap = JSON.parse(committed)
-
-// ---- ③ 档位集合与 ANIM_PRESETS 一致 ----
-const { ANIM_PRESETS } = await import(
-  pathToFileURL(path.join(ROOT, 'webui/src/polish/engine.js')).href)
-const presetKeys = Object.keys(ANIM_PRESETS).sort()
-const snapTiers = [...new Set(snap.map((r) => r.value).filter(Boolean))].sort()
-ok('快照的档位集合 == `ANIM_PRESETS` 的键（少一档 = 页面少一张卡）',
-  JSON.stringify(snapTiers) === JSON.stringify(presetKeys),
-  `快照 ${JSON.stringify(snapTiers)}\n         engine ${JSON.stringify(presetKeys)}`)
-
-// ---- ④ 轴归属合法，且不许再有 `both` ----
-const AXES = new Set(['none', 'style', 'transition', 'effect'])
-const badAxis = snap.filter((r) => !AXES.has(r.axis))
-ok('每条快照记录的轴归属都是 `none`/`style`/`transition`/`effect` 之一',
-  badAxis.length === 0,
-  badAxis.length ? JSON.stringify(badAxis.map((r) => [r.value, r.axis])) : '')
-ok('⚠️ 快照里**不许再出现 `both`**（那个类别已随三轴收敛删除）',
-  !snap.some((r) => r.axis === 'both'))
-
-// ---- ⑤ ★ 逐字那一路真的有内容 ----
-const perCharTiers = snapTiers.filter((t) => ANIM_PRESETS[t]?.perChar)
-const snapPerChar = snap.filter((r) => r.preset?.perChar).map((r) => r.value)
-ok('★ 有逐字档，且**快照里带着 `perChar`**（否则页面上的逐字演示是空转的）',
-  perCharTiers.length > 0 && perCharTiers.every((t) => snapPerChar.includes(t)),
-  `engine 里有 perChar 的档 ${JSON.stringify(perCharTiers)}；` +
-  `快照里带的 ${JSON.stringify(snapPerChar)}`)
+for (const f of validateSnapshot(snap, ANIM_PRESETS)) ok(f.name, false, f.detail)
+if (validateSnapshot(snap, ANIM_PRESETS).length === 0) {
+  ok('快照的档位集合 == `ANIM_PRESETS` 的键（少一档 = 页面少一张卡）', true)
+  ok('每条快照记录的轴归属都是 `none`/`style`/`transition`/`effect` 之一', true)
+  ok('⚠️ 快照里**不许再出现 `both`**（那个类别已随三轴收敛删除）', true)
+  ok('★ 有逐字档，且**快照里带着 `perChar`**（否则页面上的逐字演示是空转的）', true)
+}
 
 // ---- ⑥ 修完必须把文件恢复原样 ----
 if (regenerated !== null) {
@@ -118,4 +174,5 @@ if (fails.length) {
   console.error('     2026-10-14 实测就是：页面画着 39 档，而实际只有 9 档。')
   process.exit(1)
 }
-console.log(`✓ docs/anim 快照与真源码一致（${checks} 项判据 · ${snapTiers.length} 档）`)
+const tierCount = new Set(snap.map((r) => r.value).filter(Boolean)).size
+console.log(`✓ docs/anim 快照与真源码一致（${checks} 项判据 · ${tierCount} 档）`)

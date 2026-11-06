@@ -12,7 +12,8 @@
     >
       <img v-if="r.thumb" :src="r.thumb" class="frag-thumb" alt="" @error="$event.target.style.display = 'none'">
       <div v-else class="frag-thumb frag-thumb-empty">无缩略图</div>
-      <span class="chip frag-state" :class="r.chip">{{ r.state }}</span>
+      <!-- ⚠️ **空状态不挂 chip**：`''` 时留一枚空胶囊会占位、还会被读成"某种状态"。 -->
+      <span v-if="r.state" class="chip frag-state" :class="r.chip">{{ r.state }}</span>
       <span
         v-if="r.segments > 1"
         class="chip frag-seg"
@@ -43,7 +44,8 @@ const emit = defineEmits(['goto', 'init'])
 
 <style scoped>
 /* 「N 段」标记（多段片段）：贴着状态 chip 排在它右边 */
-.frag-seg { position:absolute; top:6px; left:34px; background:var(--pink-bg); color:var(--pink-text); }
+/* ⚠️ `--pink-bg` 在 tokens.css 里**不存在**（写它=静默丢弃整条 background）⇒ 用 `--main-soft`。 */
+.frag-seg { position:absolute; top:6px; left:34px; background:var(--main-soft); color:var(--pink-text); }
 .frag-cards { display:grid; grid-auto-flow:column; gap:8px; overflow-x:auto; padding:2px;
   /* 列方向排列时，缺省 justify-content:normal(=stretch) 会把 auto 宽的列**撑满整行** ——
      只有两张卡时它们会被推到两端，看着"隔了老远"。夹到左端、列宽取内容宽。 */

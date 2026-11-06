@@ -5,7 +5,12 @@
       <span class="chip" :class="stateChip.cls">{{ stateChip.text }}</span>
     </div>
 
-    <div v-if="!loaded" class="row muted small"><span class="spinner"></span> 读取中…</div>
+    <!-- 读失败照实说 + 重试（以前只 toast，页面永远停在「读取中…」） -->
+    <div v-if="loadError" class="error-banner">
+      <Icon name="alert" :size="15" /> {{ loadError }}
+      <button class="mini-btn flex-none" :disabled="busy" @click="load">重试</button>
+    </div>
+    <div v-else-if="!loaded" class="row muted small"><span class="spinner"></span> 读取中…</div>
 
     <template v-else>
       <!-- ═══ 下载器本体：装没装 / 装哪儿 / 是不是钉死的那一份 ═══ -->
@@ -16,8 +21,7 @@
             <b class="small">{{ status.kind || 'yt-dlp' }}</b>
             <div class="muted small mt-4">
               <template v-if="status.ready">
-                已就绪 · <span class="mono">{{ status.source }}</span>
-                <template v-if="status.verified"> · sha256 校验通过</template>
+                已就绪<template v-if="status.verified"> · sha256 校验通过</template>
                 <template v-else> · <span class="warn-t">未走托管校验</span>（配置指定或 PATH 里的副本）</template>
               </template>
               <template v-else>
@@ -193,6 +197,8 @@ const QUALITIES = [
 ]
 
 const loaded = ref(false)
+/** 配置读失败（与「正在读」分开：以前两者都渲染成「读取中…」） */
+const loadError = ref('')
 const busy = ref(false)
 const installBusy = ref(false)
 const warnings = ref([])
@@ -201,8 +207,9 @@ const pickTarget = ref('exe')
 /// 选择器当前所在目录（用户在里面翻目录时要留住，否则每点一次都跳回根）
 const pickDir = ref('')
 
-/// 下载器就绪位（独立端点，**响应里不含路径**）
-const status = ref({ ready: null, verified: false, kind: '', pinned_version: '', license: '', source: '' })
+/// 下载器就绪位（独立端点，**响应里不含路径**，也没有「副本来源」这个字段 ——
+/// 别在界面上渲染一个恒空的 source，那只会留下「已就绪 · 」这样的悬空分隔符）
+const status = ref({ ready: null, verified: false, kind: '', pinned_version: '', license: '' })
 
 /// 项目存放位置**解析后**的真实落点（服务端算好回传；留空时是程序目录下的 .yekitrim/projects）。
 /// 前端不自己拼这个路径 —— 它会随程序目录变化，拼出来必然和实际不一致。
@@ -251,8 +258,7 @@ async function loadStatus() {
       verified: d?.verified === true,
       kind: d?.kind || '',
       pinned_version: d?.pinned_version || '',
-      license: d?.license || '',
-      source: ''
+      license: d?.license || ''
     }
   } catch {
     status.value.ready = null
@@ -260,12 +266,13 @@ async function loadStatus() {
 }
 
 async function load() {
+  loadError.value = ''
   try {
     applyView(await ingestApi.config())
     await loadStatus()
     loaded.value = true
   } catch (e) {
-    toast('下载配置读取失败：' + e.message, 'err')
+    loadError.value = '下载配置读取失败：' + (e?.message || '')
   }
 }
 

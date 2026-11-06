@@ -18,7 +18,6 @@ use crate::{
     media,
 };
 use super::*;
-use crate::auth::owner_of;
 use super::{config::*, pipeline::*, polish::*, projects::*};
 
 // ---- 项目数据（P2：作用域 = 本人项目 id，`?config=` 仅作过渡期反查） ----
@@ -1444,7 +1443,13 @@ pub(super) async fn fs_list(
         return Err(err(StatusCode::FORBIDDEN, "仅管理员可浏览服务器文件"));
     }
     // 允许的根 = 租户根 + [storage] local_roots（这些只是"快捷入口"；管理员可用任意绝对路径）
-    let tenant = yekitrim_core::owner::owner_root(owner_of(&user));
+    //
+    // ⚠️ 这里的"租户根"是**项目托管根** `<projects_root>/users/<uid>`（= `local_roots[0]`），
+    // 不是按账号分的素材/配置根 `<data>/users/<uid>`（`owner::owner_root`）—— 两者是不同目录。
+    // 用后者去建目录会把**默认浏览根**留在不存在的位置：`dir=""` 时 `pick_local_root` 取前者，
+    // 随后 `!target.is_dir()` 直接回 400「只能浏览目录」。全新部署（还没有任何项目）必现，
+    // 2026-10 的"服务器文件 / 浏览录像打不开"就是这么来的。
+    let tenant = yekitrim_service::projects::tenant_root(user.id);
     std::fs::create_dir_all(&tenant)
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("创建租户目录失败: {e}")))?;
     let roots = yekitrim_service::projects::local_roots(user.id);

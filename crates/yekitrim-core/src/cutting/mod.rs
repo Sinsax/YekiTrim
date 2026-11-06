@@ -191,17 +191,26 @@ impl Stage for Cutter {
             tracing::warn!("刷新片段索引失败: {e:#}");
         }
 
-        let publish = PublishConfig::new(video, &clip_infos);
-        let json = serde_json::to_string_pretty(&publish)?;
+        // ⚠️ **不能只写这一批**：单条重切 / 一键全切是逐事件跑 Cutter 的（一个事件一次），
+        //    直接 `PublishConfig::new(本次 clip_infos)` 会把另外两条片段从索引里**抹掉** ——
+        //    实测一键全切之后 publish_config.json 只剩最后一条、clips_order.txt 也只剩一行。
+        //    以磁盘上的旧索引为底：保留仍存在的老条目、用本次结果覆盖同名目录、丢掉文件已没了的。
         let publish_path = ctx.output_dir.join("publish_config.json");
+        let publish = PublishConfig::merge_from_disk(&publish_path, video, &clip_infos);
+        let json = serde_json::to_string_pretty(&publish)?;
         std::fs::write(&publish_path, &json).context("写入 publish_config.json 失败")?;
         tracing::info!("发布配置已保存: {}", publish_path.display());
 
+        // 播放顺序同样从**合并后的全量**算（按弹幕热度降序），否则增量剪切会把它洗成一条。
         let order_path = clips_dir.join("clips_order.txt");
-        let mut order_events: Vec<_> = ctx.events.iter().collect();
-        order_events.sort_by(|a, b| b.popularity.partial_cmp(&a.popularity).unwrap());
-        let order_lines: Vec<String> = order_events.iter().map(|ev| {
-            format!("{} / {}", clip_dir_name_for_event(ev), ev.label)
+        let mut order_entries: Vec<&ClipEntry> = publish.clips.iter().collect();
+        order_entries.sort_by(|a, b| {
+            b.danmaku_popularity
+                .partial_cmp(&a.danmaku_popularity)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let order_lines: Vec<String> = order_entries.iter().map(|c| {
+            format!("{} / {}", c.directory, c.title)
         }).collect();
         std::fs::write(&order_path, order_lines.join("\n"))
             .context("写入 clips_order.txt 失败")?;
@@ -852,45 +861,66 @@ fn foreign_clip_conflict(
     ))
 }
 
+/// 工程配置里的相对路径 → 绝对路径：基准 = **工程根**（`output_dir` 的父目录）。
+///
+/// 与 `ProjectConfig::current_stage` / `pipeline::runner::resolve_danmaku` 同一条口径 ——
+/// `transcript_file` / `danmaku_file` 都是**相对工程根**写进 yekitrim.toml 的
+/// （`yekitrim init` 的 `path_to_rel`）。
+fn resolve_project_path(ctx: &PipelineContext, path: PathBuf) -> PathBuf {
+    if path.is_absolute() {
+        return path;
+    }
+    match ctx.output_dir.parent() {
+        Some(root) => root.join(path),
+        None => path,
+    }
+}
+
+/// 读一份转写文件（按扩展名分派 JSON / SRT）；读不了或解析不了 ⇒ `None`。
+fn load_transcript_file(path: &Path) -> Option<crate::types::Transcript> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let ext = path
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    if ext == "json" {
+        serde_json::from_str(&content).ok()
+    } else {
+        crate::srt::parse_srt(&content).ok()
+    }
+}
+
 fn load_transcript(ctx: &PipelineContext) -> Option<crate::types::Transcript> {
     // 1. 优先用 pipeline context 中的 transcript（已被 Transcriber 或 LLM 订正填充）
     if let Some(ref t) = ctx.transcript {
         return Some(t.clone());
     }
 
-    // 2. 按 config 中 transcript_file 路径加载
+    // 2. 按 config 中 transcript_file 路径加载。
+    //    ⚠️ 相对路径的基准是**工程根**，不是进程 CWD：裸 `PathBuf::from(p).exists()` 在
+    //    `yekitrim server` 这种长驻进程里恒为假（CWD 与项目无关）⇒ 选中的外部/订正字幕
+    //    静默退化成 `output/transcript.json` / `output/video.srt`，成片字幕"有、但是错的"。
     let cfg_path = ctx.config.project.transcript_file
         .as_ref()
         .filter(|p| !p.is_empty())
         .map(PathBuf::from)
+        .map(|p| resolve_project_path(ctx, p))
         .filter(|p| p.exists());
     if let Some(path) = cfg_path {
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            let ext = path.extension()
-                .map(|e| e.to_string_lossy().to_lowercase())
-                .unwrap_or_default();
-            let transcript = if ext == "json" {
-                serde_json::from_str(&content).ok()
-            } else {
-                crate::srt::parse_srt(&content).ok()
-            };
-            if transcript.is_some() {
-                return transcript;
-            }
+        if let Some(t) = load_transcript_file(&path) {
+            return Some(t);
         }
     }
 
-    // 3. 兜底 output/video.srt
-    let fallback = ctx.output_dir.join("video.srt");
-    if fallback.exists() {
-        if let Ok(content) = std::fs::read_to_string(&fallback) {
-            if let Ok(t) = crate::srt::parse_srt(&content) {
-                return Some(t);
-            }
-        }
+    // 3. 兜底：**与 service 的 `Workspace::transcript_path` 同一顺序**
+    //    （transcript_file → `output/transcript.json` → `output/video.srt`）。
+    //    ⚠️ 只认 `video.srt` 会漏掉最常见的一种形态：ASR 产物在 `output/transcript.json`、
+    //    工程没有 transcript_file、也没有 video.srt（单条剪切 / 一键全切实测：clip-01 只有
+    //    `clip.dm.srt`、没有 `clip.srt` —— 片段无字幕）。
+    if let Some(t) = load_transcript_file(&ctx.output_dir.join("transcript.json")) {
+        return Some(t);
     }
-
-    None
+    load_transcript_file(&ctx.output_dir.join("video.srt"))
 }
 
 #[derive(serde::Serialize)]
@@ -915,26 +945,39 @@ where
     s.serialize_f64(ts.to_seconds())
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 struct PublishConfig {
+    #[serde(default)]
     video_source: String,
+    #[serde(default)]
     clips: Vec<ClipEntry>,
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 struct ClipEntry {
+    #[serde(default)]
     file: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     subtitle: String,
+    #[serde(default)]
     danmaku: Option<String>,
+    #[serde(default)]
     title: String,
+    #[serde(default)]
     summary: String,
+    #[serde(default)]
     event_type: String,
+    #[serde(default)]
     danmaku_popularity: f64,
+    #[serde(default)]
     rank: u32,
+    #[serde(default)]
     start: f64,
+    #[serde(default)]
     end: f64,
+    #[serde(default)]
     duration: f64,
+    #[serde(default)]
     directory: String,
 }
 
@@ -975,6 +1018,42 @@ impl PublishConfig {
             clips,
         }
     }
+
+    /// 以磁盘上的旧索引为底合并本次剪切的片段（见 `Cutter::run` 里的说明）。
+    ///
+    /// 保留规则：① 本次剪出的同名目录**覆盖**老条目；② 老条目的 `file` 仍存在才保留
+    /// （片段被删/被移走后不许再指向不存在的文件）；③ `video_source` 优先保留老值
+    /// （单条重切拿的是同一份源视频，老值更完整）。最后按 `rank` 排序，结果稳定。
+    fn merge_from_disk(path: &Path, video_source: &Path, clips: &[ClipInfo]) -> Self {
+        let fresh = Self::new(video_source, clips);
+        let old = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<Self>(&raw).ok());
+        let (video, mut merged) = match old {
+            Some(o) => {
+                let video = if o.video_source.trim().is_empty() {
+                    fresh.video_source.clone()
+                } else {
+                    o.video_source
+                };
+                (video, o.clips)
+            }
+            None => (fresh.video_source.clone(), Vec::new()),
+        };
+        let out_dir = path.parent().unwrap_or_else(|| Path::new("."));
+        merged.retain(|c| {
+            if c.file.trim().is_empty() {
+                return false;
+            }
+            if fresh.clips.iter().any(|n| n.directory == c.directory) {
+                return false;
+            }
+            out_dir.join(&c.file).is_file()
+        });
+        merged.extend(fresh.clips);
+        merged.sort_by_key(|c| c.rank);
+        Self { video_source: video, clips: merged }
+    }
 }
 
 #[cfg(test)]
@@ -1013,6 +1092,50 @@ mod tests {
         crate::types::Timestamp::from_seconds(sec)
     }
 
+    /// **增量剪切不许洗掉发布索引**（2026-10-30 实测）：一键全切逐事件跑 Cutter，
+    /// 每跑一次都会写 `publish_config.json`；旧实现只写本次那一条 ⇒ 全切完只剩最后一条。
+    /// 这条钉住：老条目保留、同名覆盖、文件已没了的丢掉、`video_source` 不被重切冲掉。
+    #[test]
+    fn publish_index_merges_incremental_cuts_and_drops_missing_files() {
+        let t = TmpDir::new("publish-merge");
+        let out = t.0.join("output");
+        std::fs::create_dir_all(out.join("clips/clip-01")).unwrap();
+        std::fs::create_dir_all(out.join("clips/clip-02")).unwrap();
+        std::fs::write(out.join("clips/clip-01/clip.mp4"), b"x").unwrap();
+        std::fs::write(out.join("clips/clip-02/clip.mp4"), b"x").unwrap();
+        let old = serde_json::json!({
+            "video_source": "/old/video.mp4",
+            "clips": [
+                {"file":"clips/clip-01/clip.mp4","subtitle":"clips/clip-01/clip.srt","danmaku":null,
+                 "title":"一","summary":"","event_type":"other","danmaku_popularity":1.0,
+                 "rank":1,"start":0.0,"end":1.0,"duration":1.0,"directory":"clip-01"},
+                {"file":"clips/gone/clip.mp4","subtitle":"","danmaku":null,
+                 "title":"没了","summary":"","event_type":"other","danmaku_popularity":2.0,
+                 "rank":2,"start":1.0,"end":2.0,"duration":1.0,"directory":"gone"}
+            ]
+        });
+        std::fs::write(out.join("publish_config.json"), serde_json::to_string(&old).unwrap()).unwrap();
+
+        let info = ClipInfo {
+            dir_name: "clip-02".into(),
+            title: "二".into(),
+            summary: String::new(),
+            event_type: crate::types::EventType::Other,
+            popularity: 3.0,
+            rank: 2,
+            start: ts(2.0),
+            end: ts(4.0),
+            has_danmaku: false,
+        };
+        let p = PublishConfig::merge_from_disk(
+            &out.join("publish_config.json"),
+            Path::new("/new/video.mp4"),
+            &[info],
+        );
+        assert_eq!(p.video_source, "/old/video.mp4", "单条重切不许改写 video_source");
+        let dirs: Vec<&str> = p.clips.iter().map(|c| c.directory.as_str()).collect();
+        assert_eq!(dirs, vec!["clip-01", "clip-02"], "老条目要保留、被删文件的条目要丢、新条目要进");
+    }
     /// 重新检测后新事件撞上老片段的序号：标题/区间都对不上就不能覆盖（成片要保住）。
     #[test]
     fn foreign_clip_conflict_blocks_unrelated_clip() {
@@ -1076,6 +1199,109 @@ mod tests {
 
     fn transcript_of(segs: Vec<crate::types::TranscriptSegment>) -> crate::types::Transcript {
         crate::types::Transcript { segments: segs, language: "zh".into(), asr_metadata: None }
+    }
+
+    /// `transcript_file` 是**相对工程根**存的：外部/订正字幕必须按工程根找。
+    ///
+    /// 回归（2026-10-30）：`load_transcript` 曾用裸 `PathBuf::from(p).exists()` —— 那是
+    /// "相对进程 CWD"。`yekitrim server` 的 CWD 与项目无关 ⇒ 选中的订正稿读不到，
+    /// 静默退回 `output/video.srt`（旧 ASR 稿），成片字幕"有、但是错的"。
+    #[test]
+    fn load_transcript_resolves_relative_transcript_file_against_project_root() {
+        let t = TmpDir::new("tr-base");
+        let root = t.0.join("proj");
+        let output = root.join("output");
+        std::fs::create_dir_all(&output).unwrap();
+
+        // 工程根下的订正稿（相对路径写作 "subs/fixed.srt"）
+        std::fs::create_dir_all(root.join("subs")).unwrap();
+        std::fs::write(
+            root.join("subs/fixed.srt"),
+            "1\n00:00:00,000 --> 00:00:01,000\n订正稿\n",
+        )
+        .unwrap();
+        // 兜底的旧 ASR 稿：基准错了就会被静默选中
+        std::fs::write(
+            output.join("video.srt"),
+            "1\n00:00:00,000 --> 00:00:01,000\n旧ASR稿\n",
+        )
+        .unwrap();
+
+        let mut config = crate::config::Config::default();
+        config.project.transcript_file = Some("subs/fixed.srt".into());
+        let mut ctx = PipelineContext::new(root.join("video.mp4"), output);
+        ctx.config = Arc::new(config);
+
+        let tr = load_transcript(&ctx).expect("相对工程根的字幕必须能读到");
+        assert_eq!(
+            tr.segments[0].text, "订正稿",
+            "必须按工程根解析，不能退回 output/video.srt"
+        );
+    }
+
+    /// **只有 `output/transcript.json`**（无 transcript_file、无 video.srt）也必须剪出 `clip.srt`。
+    ///
+    /// 回归（2026-10-30 真实 server 实测）：Cutter 的兜底只认 `output/video.srt`，而 ASR 产物 /
+    /// 用户只保留的那份是 `output/transcript.json` ⇒ `load_transcript` 返回 None，片段照剪但
+    /// **没有 `clip.srt`**（demo 工程 cut-all：clip-01 只有 clip.dm.srt）。兜底顺序必须与
+    /// service 的 `Workspace::transcript_path` 一致：transcript_file → transcript.json → video.srt。
+    #[test]
+    fn cut_falls_back_to_output_transcript_json_and_emits_clip_srt() {
+        let t = TmpDir::new("tr-json-fallback");
+        let root = t.0.join("proj");
+        let output = root.join("output");
+        std::fs::create_dir_all(output.join("clips")).unwrap();
+
+        // 工程只有 output/transcript.json（transcript_file 为空、video.srt 不存在）
+        let tr = transcript_of(vec![seg(1.0, 3.0, "只有JSON的工程")]);
+        std::fs::write(
+            output.join("transcript.json"),
+            serde_json::to_string(&tr).unwrap(),
+        )
+        .unwrap();
+
+        let ctx = PipelineContext::new(root.join("video.mp4"), output.clone());
+        let loaded = load_transcript(&ctx).expect("只有 output/transcript.json 时必须能读到转写");
+        assert_eq!(loaded.segments[0].text, "只有JSON的工程");
+
+        // 片段里要真的有 clip.srt 且内容正确（`Cutter` 只在 transcript 为 Some 时才写它）
+        let clip_dir = output.join("clips/clip-01");
+        std::fs::create_dir_all(&clip_dir).unwrap();
+        generate_clip_subtitle(&loaded, 1.0, 3.0, &clip_dir.join("clip.srt")).unwrap();
+        let body = std::fs::read_to_string(clip_dir.join("clip.srt")).expect("必须写出 clip.srt");
+        assert!(body.contains("只有JSON的工程"), "字幕内容不对: {body}");
+    }
+
+    /// 外部 `transcript_file` 指向 JSON 时**仍然优先**（不被新增的 `output/transcript.json`
+    /// 兜底抢走），且相对基准仍是工程根 —— 上一轮修的路径口径不能被这次改动破坏。
+    #[test]
+    fn external_json_transcript_file_still_wins_over_output_fallback() {
+        let t = TmpDir::new("tr-ext-json");
+        let root = t.0.join("proj");
+        let output = root.join("output");
+        std::fs::create_dir_all(root.join("subs")).unwrap();
+        std::fs::create_dir_all(&output).unwrap();
+
+        let external = transcript_of(vec![seg(0.0, 1.0, "外部订正稿")]);
+        std::fs::write(
+            root.join("subs/fixed.json"),
+            serde_json::to_string(&external).unwrap(),
+        )
+        .unwrap();
+        let fallback = transcript_of(vec![seg(0.0, 1.0, "output兜底稿")]);
+        std::fs::write(
+            output.join("transcript.json"),
+            serde_json::to_string(&fallback).unwrap(),
+        )
+        .unwrap();
+
+        let mut config = crate::config::Config::default();
+        config.project.transcript_file = Some("subs/fixed.json".into());
+        let mut ctx = PipelineContext::new(root.join("video.mp4"), output);
+        ctx.config = Arc::new(config);
+
+        let tr = load_transcript(&ctx).expect("外部 JSON 必须能按工程根读到");
+        assert_eq!(tr.segments[0].text, "外部订正稿", "外部 transcript_file 优先于 output 兜底");
     }
 
     /// 真实踩到的形态：转写段 end 略大于事件 end（毫秒舍入误差）。

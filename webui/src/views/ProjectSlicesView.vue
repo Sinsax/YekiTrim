@@ -91,10 +91,16 @@ async function doLoad({ silent = false } = {}) {
     if (!projectById(pid)) await loadProjects()
     project.value = projectById(pid)
     if (!project.value) throw new Error('项目不存在或无权访问')
+    // ⚠️ **事件 / 切片 / 精修状态读失败 ⇒ 整页走错误条，不许兜成空数组**（2026-10-30 修）：
+    //    这里原来各有 `.catch(() => 空)`，于是接口一挂，卡片墙就显示「还没有片段 / 全部未剪切」——
+    //    和"真的没剪过"长得一模一样，用户会以为切片丢了、或者再去剪一遍。
+    //    现在让 Promise.all 直接 reject ⇒ 下面 catch 置 `loadError`，**上一次的数据原样留着** + 错误条。
+    //    ⚠️ 状态（原片地址）是附带的：它挂了只影响「预览整场录播」那颗按钮，
+    //    不值得把整面墙判成失败；而且 `api()` 自己已经把失败写进控制台与运行日志了。
     const [ev, cl, pl, st] = await Promise.all([
-      projectData.events(pid, '读取事件列表').catch(() => ({ events: [] })),
-      projectData.clips(pid, '读取切片列表').catch(() => []),
-      projectData.polishMap(pid, '读取精修状态').catch(() => []),
+      projectData.events(pid, '读取事件列表'),
+      projectData.clips(pid, '读取切片列表'),
+      projectData.polishMap(pid, '读取精修状态'),
       projectData.status(pid, '读取项目状态').catch(() => null)
     ])
     const m = {}

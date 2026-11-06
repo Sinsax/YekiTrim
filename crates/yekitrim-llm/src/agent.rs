@@ -578,6 +578,10 @@ fn save_checkpoint<A, O>(
 }
 
 /// 从 LLM 输出中提取 JSON（支持 markdown code fence）。
+///
+/// ⚠️ **括号顺序反了时原样返回**，交给调用方的 `serde_json` 去报错：旧实现直接
+/// `&text[start..end]`，而 `start` 取的是**第一个**开括号、`end` 取的是**最后一个**
+/// 闭括号 —— 先闭后开（`结论] … {`）时 `start > end`，切片直接 panic。
 pub fn extract_json(text: &str) -> &str {
     let text = text.trim();
     let text = if let Some(pos) = text.find("```json") {
@@ -592,29 +596,48 @@ pub fn extract_json(text: &str) -> &str {
     let text = text.trim();
     let start = text.find(['{', '[']).unwrap_or(0);
     let end = text.rfind(['}', ']']).map(|i| i + 1).unwrap_or(text.len());
+    if start >= end {
+        return text;
+    }
     &text[start..end]
+}
+
+/// 错误消息里引用 LLM 原文时的截断：取前 `max_bytes` 字节，**在字符边界上收口**。
+///
+/// ⚠️ 不能直接 `&s[..n]`：LLM 的失败回答常常是中文，第 `n` 个字节很容易落在
+/// 三字节汉字中间 —— 那会在**报错路径**上 panic，把"模型没吐 JSON"升级成整个任务崩掉。
+fn head_bytes(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut cut = max_bytes;
+    while cut > 0 && !s.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    &s[..cut]
 }
 
 /// 从 LLM 输出中提取 JSON 数组（支持 markdown code fence）。
 pub fn extract_json_array(text: &str) -> anyhow::Result<String> {
     let trimmed = text.trim();
+    // `rfind` 可能落在 `find` **之前**（先闭后开）—— 那时 `start..=end` 会 panic，要当没找到。
     if let Some(start) = trimmed.find('[') {
-        if let Some(end) = trimmed.rfind(']') {
+        if let Some(end) = trimmed.rfind(']').filter(|end| *end > start) {
             return Ok(trimmed[start..=end].to_string());
         }
     }
-    anyhow::bail!("No JSON array found:\n{}", &trimmed[..200.min(trimmed.len())])
+    anyhow::bail!("No JSON array found:\n{}", head_bytes(trimmed, 200))
 }
 
 /// 从 LLM 输出中提取 JSON 对象（支持 markdown code fence）。
 pub fn extract_json_object(text: &str) -> anyhow::Result<String> {
     let trimmed = text.trim();
     if let Some(start) = trimmed.find('{') {
-        if let Some(end) = trimmed.rfind('}') {
+        if let Some(end) = trimmed.rfind('}').filter(|end| *end > start) {
             return Ok(trimmed[start..=end].to_string());
         }
     }
-    anyhow::bail!("No JSON object found:\n{}", &trimmed[..200.min(trimmed.len())])
+    anyhow::bail!("No JSON object found:\n{}", head_bytes(trimmed, 200))
 }
 
 /// 将条目列表序列化为 JSON 数组（供 user prompt 使用）。
@@ -673,6 +696,33 @@ mod tests {
     #[test]
     fn extract_json_strips_code_fence() {
         assert_eq!(extract_json("```json\n{\"1\":\"你好\"}\n```"), "{\"1\":\"你好\"}");
+    }
+
+    /// **解析失败不许 panic** —— 失败路径上有两个切片点在坏输入下会崩：
+    ///
+    /// ① 错误消息截断 `&trimmed[..200.min(len)]`：中文回答的第 200 字节大概率落在
+    ///    三字节汉字中间 ⇒ `byte index 200 is not a char boundary`。LLM 回一句
+    ///    "抱歉，我无法按这个格式输出" 本应只是一次失败的窗口，却会 panic 掉整个任务。
+    /// ② 先闭后开（`结论] … [`）：`find` 在 `rfind` 之后 ⇒ `start > end`，`[a..b]` panic。
+    #[test]
+    fn json_extractors_never_panic_on_garbage_or_multibyte_text() {
+        let chinese = "抱歉，我无法按这个格式输出。".repeat(30); // > 200 字节、无括号
+        let arr_err = extract_json_array(&chinese).unwrap_err().to_string();
+        assert!(arr_err.contains("No JSON array found"), "实得: {arr_err}");
+        let obj_err = extract_json_object(&chinese).unwrap_err().to_string();
+        assert!(obj_err.contains("No JSON object found"), "实得: {obj_err}");
+        // 截断后仍是合法 UTF-8，且不会把整段原文都塞进错误里
+        assert!(!arr_err.contains(&"抱歉，我无法按这个格式输出。".repeat(30)));
+        assert!(arr_err.len() < chinese.len());
+
+        // 括号顺序反了：不 panic，交给调用方去报"不是 JSON"
+        assert_eq!(extract_json("先给结论] 再补 JSON {"), "先给结论] 再补 JSON {");
+        assert!(extract_json_array("结论是 no] 重来 [").is_err());
+        assert!(extract_json_object("结论是 no} 重来 {").is_err());
+
+        // 正常提取不受影响（含嵌套/多段）
+        assert_eq!(extract_json_array("x [1,2] y").unwrap(), "[1,2]");
+        assert_eq!(extract_json_object("x {\"a\":1} y").unwrap(), "{\"a\":1}");
     }
 
     /// 取消探针生效：已跑完的窗口算数，剩下的**不再跑**，返回「任务已取消」。

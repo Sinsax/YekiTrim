@@ -232,7 +232,7 @@ Stage 4 — 按事件片段剪切视频 + 生成字幕。
 ### `yekitrim download`
 
 下载全部 ASR 模型到 `<程序>/.yekitrim/models/<model>/`：`sensevoice`（~165MB，single 模式 + hybrid 打轴）、`qwen3-asr`（~879MB，hybrid 填词）。转写时按 `[asr] model` / `[asr] mode` 自动懒加载，缺失才提示下载。
-运行时找模型的顺序是 **配置 `local_model_dir` → 用户目录 `~/.yekitrim/models` → 程序目录 `.yekitrim/models`**（模型管理页显示的就是实际用到的那一份）。
+运行时找模型的顺序只有两档：**配置 `local_model_dir` → `<数据目录>/.yekitrim/models`**（默认数据目录 = exe 同级；模型管理页显示的就是实际用到的那一份）。
 
 返回 LLM 完整 API response body。需要 `.yekitrim/llm.toml` 已配置。
 
@@ -245,8 +245,8 @@ Stage 4 — 按事件片段剪切视频 + 生成字幕。
 当前进度: Stage #2
 
   [✓] AudioExtractor
-  [→] Transcriber
-  [·] EventDetector
+  [✓] Transcriber
+  [→] EventDetector
   [·] Cutter
 ```
 
@@ -474,7 +474,7 @@ Stage 编号连续无跳过。所有 stage 通过 `#[async_trait]` 实现 `Stage
 | `stage > current + 1` → 拒绝 | `detect`(3=2+1) ✅ / `cut`(4>3) ❌ |
 | `stage <= current` → 可重跑 | `transcribe`(2≤2) ✅ |
 | 完成后 stage 自动推进 | `transcribe`(2) → `current_stage=2` |
-| `process` 无视 state, 跑完设 `current_stage=4` | |
+| `process` 绕过状态机门槛，但**已有产物的阶段会跳过**（要重跑用单级命令） | |
 
 ### 单个 Stage 命令运行模式
 
@@ -585,6 +585,8 @@ cargo xtask package --target linux --smoke-test      # 打 Linux x64 发行包�
 
 ### 发布 Linux x64 产物
 
+> Linux 的构建 / 运行 / systemd / 验证口径汇总在 [`docs/linux.md`](docs/linux.md)。
+
 ⚠️ **Linux 产物必须在固定基线的容器里编**，不能拿开发机上的 `cargo build` 直接发布：
 
 ```bash
@@ -592,6 +594,7 @@ docker build --network host -f docker/Dockerfile.linux-x64 -t yekitrim-linux-x64
 docker run --rm --network host \
   -v "$PWD:/src" \
   -v ../sherpa-onnx-prebuilt-no-tts/build/cmake-build/install/lib:/sherpa:ro \
+  -e SHERPA_ONNX_LIB_DIR=/sherpa \
   -w /src yekitrim-linux-x64-builder \
   cargo build --release -p yekitrim-cli --locked
 

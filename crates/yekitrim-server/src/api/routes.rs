@@ -25,9 +25,12 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/auth/login", post(auth_login))
         // 自助注册：邀请码是凭证，注册开关是总闸；两者都由服务端校验（§3.5 之外）
         .route("/auth/register", post(auth_register))
-        // 录播姬 webhook：自带 token 鉴权（录播姬只能填 URL，无法加自定义头），
+        // 采集 webhook：自带 token 鉴权（录制软件只能填 URL，无法加自定义头），
         // 因此它**不能**挂在 require_user 下（§4.1）。
+        // · /ingest/bililive：录播姬原生事件（FileOpening/FileClosed/SessionEnded）
+        // · /ingest/webhook：通用"录制完成"（biliLive-tools 的 externalWebhook / 任意脚本）
         .route("/ingest/bililive/:token", post(crate::ingest::webhook))
+        .route("/ingest/webhook/:token", post(crate::ingest::custom_webhook))
         // 关停控制端点：**自带令牌鉴权**（和 webhook 同理不能挂 require_user ——
         // 它要在"没有会话"的场景下被托盘敲响），另外自己再卡 loopback + 令牌，见 handler。
         .route("/shutdown", post(shutdown));
@@ -248,6 +251,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         // 素材（弹幕 / 字幕）：预处理页随时查看与切换
         .route("/project-data/assets", get(project_data_assets).post(project_data_assets_put))
         .route("/project-data/polish", get(project_data_polish))
+        // 出片回传：把成片交给 biliLive-tools 投稿（YekiTrim 自己不做 B站上传）
+        .route(
+            "/publish/bililive-tools",
+            get(crate::publish::status).post(crate::publish::publish),
+        )
         // 直播间自助登记（用户只填房间号/链接，服务端去录播姬加房间）
         .route("/rooms", get(rooms_list).post(rooms_add))
         .route("/rooms/:room_id", axum::routing::delete(rooms_delete))

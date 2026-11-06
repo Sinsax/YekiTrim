@@ -221,8 +221,26 @@ function orphanNames(site, text) {
       return new Set([...text.matchAll(/function (get[A-Za-z0-9_]+)\(/g)].map((m) => m[1]));
     case 'dhampir_case':
       return new Set([...text.matchAll(/case '([a-z_]+)':/g)].map((m) => m[1]));
-    case 'post_span':
-      return new Set([...text.matchAll(/"([a-z_]+)"\s*=>/g)].map((m) => m[1]));
+    case 'post_span': {
+      // ⚠️⚠️ **只扫两张登记表**（`transient_duration_cap` / `transient_default_duration`）。
+      //
+      // 旧写法扫的是**整份 fx.rs** 的 `"名字" =>` —— 2026-10-20「补位三类型轮换」
+      // （`b720aa6` / `79d9d3d`）给自动补位加了候选别名 `"overlay_hue" => Some("overlay")`
+      // 与 `"overlay_hue" => Event::Overlay{..}`：那是**候选别名**（造出来的是 overlay），
+      // 不是独立效果实现 ⇒ 旧写法把它当孤儿（**假红**）。
+      //
+      // 两张表是"效果 id → 数值"的权威登记：表里出现没人认领的 id 才是真的孤儿
+      // （加了效果却忘了写进词汇表 / 删了效果却没删表项）。
+      const bodies = ['transient_duration_cap', 'transient_default_duration']
+        .map((fn) => {
+          const at = text.indexOf(`fn ${fn}`);
+          if (at < 0) return '';
+          const end = text.indexOf('\n}', at);
+          return end < 0 ? text.slice(at) : text.slice(at, end);
+        })
+        .join('\n');
+      return new Set([...bodies.matchAll(/"([a-z_]+)"\s*=>/g)].map((m) => m[1]));
+    }
     default:
       return new Set();
   }
@@ -846,9 +864,50 @@ function selfTest() {
     eq(checkFields(withBadShape).failures.length > 0, true, '`fields` 形状错（非数组）→ 必须报红');
   }
 
+  // ⑦ **fx.rs 孤儿扫描的口径**（2026-10-30 修假红）。
+  //
+  // 旧写法扫整份 fx.rs 的 `"名字" =>`，于是自动补位的候选别名
+  // `"overlay_hue" => Some("overlay")`（它造出来的是 overlay，不是独立效果）
+  // 被当成"没人认领的实现" ⇒ 判据假红。
+  // 现在只扫两张登记表 ⇒ 两个方向都要钉住：
+  //   ① 表里出现没人认领的 id **必须**被检出（真孤儿）；
+  //   ② 表外的候选别名**不许**被检出（假红不许回来）。
+  {
+    const fakeFx = `
+pub fn transient_duration_cap(event_type: &str) -> f64 {
+    match event_type {
+        "shake" => 0.5,
+        "ghost_effect_xyz" => 0.5,
+        _ => f64::INFINITY,
+    }
+}
+pub fn transient_default_duration(event_type: &str) -> f64 {
+    match event_type {
+        "shake" => 0.3,
+        _ => 0.5,
+    }
+}
+fn auto_fill_category(kind: &str) -> Option<&'static str> {
+    match kind {
+        "blur" => Some("blur"),
+        "overlay_hue" => Some("overlay"),
+        _ => None,
+    }
+}
+fn make_auto_fill(kind: &str) -> u8 {
+    match kind {
+        "overlay_hue" => 1,
+        _ => 0,
+    }
+}`;
+    const orph = orphanNames('post_span', fakeFx);
+    eq(orph.has('ghost_effect_xyz'), true, 'fx.rs 登记表里的真孤儿必须被检出');
+    eq(orph.has('overlay_hue'), false, 'fx.rs 补位候选别名（overlay_hue）不许被当成孤儿（假红）');
+  }
+
   console.log(
     `✓ 词汇表门禁自证：${checks} 项（多一个 / 少一个 / 少了底座锚点 / 锚点不可达 / ` +
-      '字段多声明 / 字段漏声明 / 字段形状错，都必须红且点名）',
+      '字段多声明 / 字段漏声明 / 字段形状错 / fx.rs 孤儿扫描口径，都必须红且点名）',
   );
 }
 

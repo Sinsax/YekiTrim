@@ -175,19 +175,9 @@ time = 5.4
 duration = 0.4
 
 [[segments.events]]
-type = "pulse"
-time = 6.4
-duration = 0.5
-
-[[segments.events]]
 type = "vignette"
 time = 7.0
 duration = 0.6
-
-[[segments.events]]
-type = "hue_shift"
-time = 7.6
-duration = 0.5
 
 [[segments.events]]
 type = "camera"

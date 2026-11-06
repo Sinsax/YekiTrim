@@ -27,6 +27,9 @@ export function sourceBadge(p) {
   if (p?.source?.kind === 'recorder' && p?.room) return `录制 ${p.room}`
   if (p?.source?.kind === 'bilibili') return 'B站'
   if (p?.source?.kind === 'local') return '本机'
+  // 通用 webhook（biliLive-tools / 任意录制软件）：label 是「Webhook · platform · 房间 N」，
+  // 整串挂进 9px 的药丸会把侧栏项目名挤成省略号 —— 徽标只放类型，完整标签在 title。
+  if (p?.source?.kind === 'webhook') return 'Webhook'
   return sourceLabel(p)
 }
 

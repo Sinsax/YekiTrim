@@ -16,10 +16,16 @@
 // | 轴（内部名） | 显示名 | 事件字段          | 档位 |
 // |---|---|---|---|
 // | `style`      | 排版   | `style_anim`      | `tilt` · `vtext` · `arc`（空档名 = 默认） |
-// | `transition` | 过渡   | `transition_anim` | `pop` · `fade` |
-// | `effect`     | 动效   | `effect_anim`     | `shake` · `perchar_big` · `perchar_small` · `heartbeat` |
+// | `transition` | 过渡   | `transition_anim` | `pop` · `fade` · `perchar`（+ 老别名 `perchar_big` / `perchar_small`） |
+// | `effect`     | 动效   | `effect_anim`     | `shake` · `heartbeat` |
 //
-// 9 档：`tilt` `arc` `vtext` `pop` `fade` `shake` `perchar_big` `perchar_small` `heartbeat`。
+// 10 档：`tilt` `arc` `vtext` `pop` `fade` `perchar` `perchar_big` `perchar_small` `shake` `heartbeat`。
+//
+// ⚠️ **2026-10-18 口径变化（本文件已按新口径更新，别再改回 9 档表）**：
+//   用户口径「将逐字变化归类为过渡，并固定为入场逐字变大、出场逐字变小」——
+//   逐字三档（`perchar` 新入口 + 两个老别名）从**动效**轴挪到**过渡**轴；
+//   动效轴只剩 `shake` / `heartbeat`。旧断言（`perchar_*` → effect）会**永久红**，
+//   而且会让人以为是代码坏了。
 //
 // # 它存在的理由（这是真事故换来的，别删）
 //
@@ -35,7 +41,7 @@
 //   ③ **R4 对拍本身是空转的** —— 第一版拿 `docs/wgpu-effect-reference/demo`
 //      去比，而那份工程**一个 `anim` 都没有** ⇒ 前后恒等 ⇒ "通过"是假的。
 //
-// ⚠️⚠️ 所以本判据**自己造夹具**（9 档 + 叠加组合），不依赖任何现成工程 ——
+// ⚠️⚠️ 所以本判据**自己造夹具**（全部档位 + 叠加组合），不依赖任何现成工程 ——
 //    ③ 那条讲的就是"夹具没用到被改的字段时，R4 是空转的"。
 //
 // # 判据
@@ -122,24 +128,28 @@ const FIELD_OF = { style: 'style_anim', transition: 'transition_anim', effect: '
 }
 
 // ============================================================================
-// ① ★ `animAxisOf` 对 9 个档名**逐个**返回自己那条轴（不是 `''`）
+// ① ★ `animAxisOf` 对每个档名**逐个**返回自己那条轴（不是 `''`）
 // ============================================================================
 //
 // ⚠️⚠️ 这条是**实测踩出来的那条**（见文件头）：`heartbeat` 不带下划线。
 //    它同时是"精确名 + 前缀两条路"这条实现的**唯一**判据 ——
 //    把精确名那条路去掉、只留前缀，本条必须红。
 {
-  const NINE = {
+  const EXPECTED = {
     tilt: 'style', arc: 'style', vtext: 'style',
+    // ⚠️ **逐字变化归过渡轴**（2026-10-18 用户口径）。三个名字是**同一档的三个别名**
+    //    （`perchar` 是界面唯一入口，两个带 `_` 的是老工程兼容名）。
     pop: 'transition', fade: 'transition',
-    shake: 'effect', perchar_big: 'effect', perchar_small: 'effect', heartbeat: 'effect',
+    perchar: 'transition', perchar_big: 'transition', perchar_small: 'transition',
+    // 动效轴收敛成两档。
+    shake: 'effect', heartbeat: 'effect',
   }
-  // ⚠️ 先断言这 9 个名字**就是**预设表的全部 —— 否则下面那圈会"看起来在跑"，
+  // ⚠️ 先断言这些名字**就是**预设表的全部 —— 否则下面那圈会"看起来在跑"，
   //    而实际漏掉了新加的档（表变了、判据没跟上 = 本仓最经典的假绿）。
-  ok(JSON.stringify([...ALL].sort()) === JSON.stringify(Object.keys(NINE).sort()),
+  ok(JSON.stringify([...ALL].sort()) === JSON.stringify(Object.keys(EXPECTED).sort()),
     `① 预设表是 ${JSON.stringify([...ALL].sort())}，判据里写的是 ` +
-    `${JSON.stringify(Object.keys(NINE).sort())} —— 两处不同步（新档漏判 / 旧档没删）`)
-  for (const [n, want] of Object.entries(NINE)) {
+    `${JSON.stringify(Object.keys(EXPECTED).sort())} —— 两处不同步（新档漏判 / 旧档没删）`)
+  for (const [n, want] of Object.entries(EXPECTED)) {
     const got = animAxisOf(n)
     ok(got === want,
       `① \`animAxisOf(${JSON.stringify(n)})\` 实得 ${JSON.stringify(got)}，应当是 ` +
@@ -218,8 +228,12 @@ const FIELD_OF = { style: 'style_anim', transition: 'transition_anim', effect: '
   ///      · 谁赢是**声明的**（有注释、有判据）；
   ///      · 出现**没登记**的重叠 ⇒ 当场红（逼人做决定，而不是让它悄悄赢）。
   const KNOWN_OVERLAP = {
-    per_char_frames: ['style', 'effect'],
-    stagger_frames: ['style', 'effect'],
+    // ⚠️ **2026-10-18 起 perchar 住在过渡轴**（用户口径：逐字 = 入场/出场动画）——
+    //    所以 `per_char_frames` / `stagger_frames` 的重叠从「排版 × 动效」
+    //    变成「排版 × 过渡」（`arc` 在排版、`perchar*` 在过渡）。
+    //    改档位轴时这张表要一起改，否则 ② 会以"登记过期"红。
+    per_char_frames: ['style', 'transition'],
+    stagger_frames: ['style', 'transition'],
     scale_in_from: ['transition', 'effect'],
     scale_in_peak: ['transition', 'effect'],
     scale_in_ms: ['transition', 'effect'],
@@ -272,7 +286,7 @@ const FIELD_OF = { style: 'style_anim', transition: 'transition_anim', effect: '
 }
 
 // ============================================================================
-// ③ 夹具：造一份真的用了全部 9 档的工程（**不依赖任何现成工程**）
+// ③ 夹具：造一份真的用了**全部档位**的工程（**不依赖任何现成工程**）
 // ============================================================================
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'yk-anim3axis-'))
 const tomlPath = path.join(tmp, 'polish.toml')
@@ -355,6 +369,24 @@ function run() {
   return JSON.parse(fs.readFileSync(out, 'utf8'))
 }
 
+/// 从**文字轨 id** 里取出"档位标签"。
+///
+/// 轨 id 形状（2026-10-30 实测）：`text_<style>_<pos>[_x<..>y<..>][_<animTag>][_c<r>_<g>_<b>_<a>]`
+///   * `posTag`（2026-10-15 加）：`origin` 是轨级字段，落点不同必须分轨；
+///   * `colorTag`（2026-10-30 加）：颜色检修，显式颜色也进 id。
+/// ⇒ 旧的 `text_comment_bottom_<档名>` 假设**已经不成立**（本判据曾因此整批报
+///   "轨没生成" —— 那不是产品坏了，是判据的锚点过期）。
+/// 老格式下 `animTag` 就是 `anim` 原值（R4 要求 id 与改造前逐字符相同）；
+/// 新格式下是三路名用 `+` 拼起来的。
+const animTagOf = (id) => String(id)
+  .replace(/^text_comment_bottom/, '')
+  .replace(/^_x[\d.]+y[\d.]+/, '')
+  .replace(/_c\d+_\d+_\d+_\d+$/, '')
+  // ⚠️ 颜色 tag 自带前导 `_c`，而 id 又拼了一个 `_` ⇒ 实测会出现 `_tilt__c255_...`
+  //    这种**双下划线**；剥掉颜色后档名尾巴会剩一个 `_`，一并收掉。
+  .replace(/_+$/, '')
+  .replace(/^_/, '')
+
 /// 产物里某个文字轨。
 const trackOf = (doc, id) => (doc.timeline?.tracks ?? []).find((x) => x.id === id)
 const subOf = (doc, id) => trackOf(doc, id)?.subtitle ?? trackOf(doc, id)?.sub ?? null
@@ -422,7 +454,7 @@ try {
 // ============================================================================
 //
 // 判据怎么立（**不依赖历史二进制**）：
-//   把 9 档**逐个**写成老格式，每档一条事件（各自一条轨），
+//   把**全部档位逐个**写成老格式，每档一条事件（各自一条轨），
 //   然后断言：该轨**这一档该给的字段一个不少**，而且**不该有的一样不多**。
 //
 // ⚠️ **反向那一半不能省** —— 只做单向（"少了就红"）会漏掉一整类**静默的 R4 破**：
@@ -447,10 +479,12 @@ try {
     const MOTION_FIELD_KEYS = [
       'scale_in_from', 'scale_in_peak', 'scale_in_ms', 'shake_px', 'shake_hz',
     ]
+    const allIds = (doc.timeline?.tracks ?? []).map((t) => t.id)
+    const trackFor = (n) => allIds.find((x) => x.startsWith('text_comment_bottom') && animTagOf(x) === n)
     for (let i = 0; i < ALL.length; i++) {
       const n = ALL[i]
-      const id = `text_comment_bottom_${n}`
-      const sub = subOf(doc, id)
+      const id = trackFor(n)
+      const sub = id ? subOf(doc, id) : null
       if (!sub) { missing.push(`${n}: 轨没生成`); continue }
       const p = animPreset(n)
 
@@ -503,7 +537,7 @@ try {
         }
       }
       // ---- 摇摆那条路也要反向核（它是**另一条**路）----
-      // ⚠️ `sway` 那一族**已经删了** ⇒ 当前 9 档**没有**一档会给 `swayDeg`。
+      // ⚠️ `sway` 那一族**已经删了** ⇒ 当前档位表里**没有**一档会给 `swayDeg`。
       //    所以"任何一档都不许长出 `rotation` 关键帧"就是判据 ——
       //    而它抓的正是"全局 `[elements] sway_deg` 漏进了 swayCfg"
       //    （实测踩过：`fade` 静默继承全局摇摆、字自己摆起来）。
@@ -547,8 +581,8 @@ try {
     ok(JSON.stringify(ids1) === JSON.stringify(ids2),
       '④ 同一份工程跑两次，轨 id 序列不同 —— 产物不是确定性的')
     // ⚠️ 老格式下的顺序必须**等于按 `anim` 的字母序**（改造前就是那样）。
-    const names = ids1.filter((x) => x.startsWith('text_comment_bottom_'))
-      .map((x) => x.replace('text_comment_bottom_', ''))
+    const names = ids1.filter((x) => x.startsWith('text_comment_bottom'))
+      .map(animTagOf)
     const sorted = [...names].sort()
     ok(JSON.stringify(names) === JSON.stringify(sorted),
       `④ 老格式下文字轨的顺序**不是**按 \`anim\` 字母序（R4 破）。\n` +
@@ -581,8 +615,8 @@ try {
     const ids2 = (d2.timeline?.tracks ?? []).map((t) => t.id)
     ok(JSON.stringify(ids1) === JSON.stringify(ids2),
       '④-bis 新格式：同一份工程跑两次，轨 id 序列不同 —— 产物不是确定性的')
-    const tail = ids1.filter((x) => x.startsWith('text_comment_bottom_'))
-      .map((x) => x.replace('text_comment_bottom_', ''))
+    const tail = ids1.filter((x) => x.startsWith('text_comment_bottom'))
+      .map(animTagOf)
     // ⚠️ 四条组合 ⇒ 四条轨（**必须都分到不同的轨**，否则就是"后写覆盖先写"）
     ok(tail.length === combos.length,
       `④-bis 新格式：${combos.length} 组不同的「排版 × 过渡 × 动效」组合只生成了 ` +
@@ -712,8 +746,8 @@ if (MUTATE) {
       //   ⚠️ 只删这一项不够 —— 精确名那条路会回落到前缀，而前缀也没有 `heartbeat`
       //      ⇒ 同样返回 `''`。两条路各自单独红，才说明"两条都真的在判"。
       name: '（①）`ANIM_AXIS` 里删掉 `heartbeat` 那一项 ⇒ 认不出来',
-      from: `    shake: 'effect', perchar: 'effect', heartbeat: 'effect',`,
-      to: `    shake: 'effect', perchar: 'effect',`,
+      from: `    heartbeat: 'effect',`,
+      to: ``,
       expect: '①',
     },
     {

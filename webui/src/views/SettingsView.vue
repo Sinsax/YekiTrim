@@ -156,6 +156,16 @@
     <!-- LLM 配置：写入 .yekitrim/llm.toml -->
     <template v-else-if="section === 'llm'">
     <div class="settings-block">
+    <!-- /api/config 读失败：表单里是**默认值**，而「保存」只是变灰、没有任何说明 ——
+         这一页必须和程序配置页一样把原因摆出来（读不到就别让用户以为界面自己变了）。 -->
+    <div v-if="loadFailed" class="error-banner" data-llm-load-error>
+      <Icon name="alert" :size="15" />
+      <div>
+        <b>LLM 配置未加载，显示的是默认值</b>
+        <div class="muted small mt-4">{{ configLoadError || '读取 /api/config 失败' }}；保存已禁用，重试成功后再改</div>
+      </div>
+      <button class="mini-btn flex-none" @click="loadConfig">重试</button>
+    </div>
     <!-- ⚠️ 保存失败**常驻**显示（P0：后端 400 曾被 toast 一闪吞掉，用户以为存上了）；回读不一致也在这里 -->
     <div v-if="llmSaveError" class="error-banner" data-llm-save-error>
       <Icon name="alert" :size="15" />
@@ -341,7 +351,7 @@
     <!-- 系统集成：录播姬采集（webhook / 导入规则）与 B 站链接下载 -->
     <template v-else-if="section === 'integrations'">
     <div class="settings-block">
-    <div class="section-title">录播姬（采集）</div>
+    <div class="section-title">采集（录播姬 / 通用 Webhook）</div>
     <div class="card">
       <RecorderConfig />
     </div>
@@ -436,6 +446,9 @@ const visibleSections = computed(() =>
 const editSource = ref(false)
 // 只有成功读到 /api/config 才允许保存：否则表单里的内建默认值会覆盖真实配置
 const loaded = ref(false)
+/** 读失败（与「正在读」分开）：LLM 页据此出常驻错误条，而不是让「保存」默默变灰 */
+const loadFailed = ref(false)
+const configLoadError = ref('')
 
 const form = reactive({
   asr: {
@@ -1073,7 +1086,13 @@ async function loadConfig() {
       knownLinks,
     }
     loaded.value = true
-  } catch (e) { loaded.value = false }
+    loadFailed.value = false
+    configLoadError.value = ''
+  } catch (e) {
+    loaded.value = false
+    loadFailed.value = true
+    configLoadError.value = (e && e.message) || ''
+  }
 }
 
 

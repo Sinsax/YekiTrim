@@ -285,7 +285,7 @@ export const SETTINGS_SECTIONS = [
   // ⚠️ ASR 模型管理**不在这里**：它搬去首页当「运行状况」面板了（那是全机共享的资源，
   //    跟"谁在登录"无关，摆在账号页只会让人以为它是按用户分的）。
   { key: 'account', label: '账号', sub: '注册与邀请码', localHidden: true },
-  { key: 'integrations', label: '系统集成', sub: '录播姬采集 与 B 站链接下载' },
+  { key: 'integrations', label: '系统集成', sub: '采集（录播姬 / Webhook）与 B 站链接下载' },
   { key: 'monitor', label: '用量与日志', sub: 'LLM 用量账本 与 运行日志' }
 ]
 

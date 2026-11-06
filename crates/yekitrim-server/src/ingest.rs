@@ -10,6 +10,7 @@
 //! payload 字段名按官方文档是 PascalCase，但官方明确"以后可能新增事件类型"，
 //! 这里统一用 [`field`] 做大小写不敏感的多别名取值，避免契约小改动就解析失败。
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use axum::Json;
@@ -17,6 +18,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 
 use yekitrim_service::db::IngestSessionRow;
+use yekitrim_service::ingest::landing;
 
 use super::auth::CurrentUser;
 use super::model::AppState;
@@ -281,19 +283,19 @@ fn token_shape_ok(token: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
-/// `POST /api/ingest/bililive/<token>`：**自带 token 鉴权**，不要求会话。
-pub async fn webhook(
-    State(state): State<Arc<AppState>>,
-    axum::extract::Path(token): axum::extract::Path<String>,
-    ClientIp(ip): ClientIp,
-    Json(body): Json<serde_json::Value>,
-) -> ApiResult {
+/// 验 token + IP 白名单 + 限流。**两条采集 webhook 共用一份**（录播姬 / 通用），
+/// 别各自再抄一遍 —— 认证是未认证入口唯一的门，两份实现迟早分叉。
+async fn authorize_webhook(
+    state: &Arc<AppState>,
+    token: &str,
+    ip: &Option<String>,
+) -> Result<yekitrim_core::config::Config, AppError> {
     // ⚠️ 未认证入口：连"读全局配置"都不该留在 async worker 上（读的是磁盘上的 config.toml）
     let cfg = off(|| Ok(yekitrim_core::config::load_global_config())).await?;
     if !cfg.ingest.webhook_enabled || cfg.ingest.token_hash.trim().is_empty() {
         return Err(err(
             StatusCode::FORBIDDEN,
-            "录播姬 webhook 未启用（`yekitrim ingest token` 生成 token 并开启 [ingest] webhook_enabled）",
+            "采集 webhook 未启用（`yekitrim ingest token` 生成 token 并开启 [ingest] webhook_enabled）",
         ));
     }
     if !cfg.ingest.allow_ips.is_empty() {
@@ -304,7 +306,7 @@ pub async fn webhook(
         if !allowed {
             return Err(err(
                 StatusCode::FORBIDDEN,
-                format!("来源地址不在白名单内: {}", ip.unwrap_or_else(|| "-".into())),
+                format!("来源地址不在白名单内: {}", ip.clone().unwrap_or_else(|| "-".into())),
             ));
         }
     }
@@ -322,13 +324,13 @@ pub async fn webhook(
     // 形状先否掉：一眼不可能成立的字符串没必要付 scrypt 的代价。
     // ⚠️ 这里**不写 audit**：那是 DB 写，会变成另一条"用垃圾请求放大开销"的路子
     // （真正的 token 校验失败仍然照旧审计）。
-    if !token_shape_ok(&token) {
+    if !token_shape_ok(token) {
         return Err(err(StatusCode::UNAUTHORIZED, "token 无效"));
     }
 
     // scrypt 校验是 CPU 密集：放 blocking 线程池，别占住 tokio worker
     let hash = cfg.ingest.token_hash.clone();
-    let token_for_check = token.clone();
+    let token_for_check = token.to_string();
     let verified = tokio::task::spawn_blocking(move || {
         yekitrim_service::auth::verify_password(&hash, &token_for_check).unwrap_or(false)
     })
@@ -345,6 +347,17 @@ pub async fn webhook(
         .await;
         return Err(err(StatusCode::UNAUTHORIZED, "token 无效"));
     }
+    Ok(cfg)
+}
+
+/// `POST /api/ingest/bililive/<token>`：**自带 token 鉴权**，不要求会话。
+pub async fn webhook(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(token): axum::extract::Path<String>,
+    ClientIp(ip): ClientIp,
+    Json(body): Json<serde_json::Value>,
+) -> ApiResult {
+    let _cfg = authorize_webhook(&state, &token, &ip).await?;
 
     // 事件落库全是同步 SQLite 写 → blocking。错误语义保持原样：
     // "落库失败"仍然回 200（payload 重试也不会成功，而官方会对非 2xx 重试 3 次）。
@@ -373,6 +386,474 @@ pub async fn webhook(
         crate::ingest_worker::notify(state.clone(), outcome.session_id.clone());
     }
     ok(serde_json::json!({ "ok": true, "duplicate": outcome.duplicate, "kind": outcome.kind }))
+}
+
+/// 一次"录制完成"事件（两条入口共用的中间结构）。
+#[derive(Debug, Clone)]
+struct WebhookCompletion {
+    file: String,
+    danmaku: Option<String>,
+    room: Option<String>,
+    platform: Option<String>,
+    title: Option<String>,
+}
+
+enum ParsedWebhookEvent {
+    Completion(WebhookCompletion),
+    Ignored(String),
+}
+
+/// 事件类型归一化：`FileClosed` / `file_closed` / `file-closed` / `FILE_CLOSED`
+/// 全部变成 `file_closed`。
+///
+/// 三种来源的写法不一样（biliLive-tools 的 `type` 是 snake_case、录播姬的 `EventType`
+/// 是 PascalCase、手写脚本什么都可能），归一化只做一次、只此一份。
+fn normalize_event_type(raw: &str) -> String {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return String::new();
+    }
+    let mut out = String::with_capacity(raw.len() + 4);
+    let mut prev_lower = false;
+    for ch in raw.chars() {
+        if ch == '-' || ch == ' ' || ch == '.' {
+            push_event_sep(&mut out);
+            prev_lower = false;
+        } else if ch.is_ascii_uppercase() {
+            // `FileClosed` → `file_closed`；`file_closed` / `FILE_CLOSED` 原样保留。
+            if prev_lower {
+                push_event_sep(&mut out);
+            }
+            out.push(ch.to_ascii_lowercase());
+            prev_lower = false;
+        } else {
+            out.push(ch);
+            prev_lower = true;
+        }
+    }
+    out
+}
+
+fn push_event_sep(out: &mut String) {
+    if !out.ends_with('_') {
+        out.push('_');
+    }
+}
+
+/// 解析通用 webhook 的 body。
+///
+/// 兼容三种形状（按优先级）：
+/// 1. biliLive-tools 的 `externalWebhook`：`{type:"file_completed", data:{filePath,roomId,platform}}`；
+/// 2. YekiTrim 自己的规范事件：`{event:"file_completed", file, danmaku?, room_id?, platform?}`；
+/// 3. 录播姬的 `FileClosed`：`{EventType:"FileClosed", EventData:{RelativePath,RoomId}}`
+///    （这条走 `/bililive/<token>` 也可以；这里接住是为了让同一个 URL 兼容更多软件）。
+///
+/// `record_start` / `record_end` / `file_created` / `task` 等**不建项目**的事件
+/// 一律返回 `Ignored`，入口回 200 —— 录制软件那边不需要为"这条不归你管"重试。
+fn parse_webhook_event(body: &serde_json::Value) -> Result<ParsedWebhookEvent, String> {
+    // ⚠️ 只 `to_ascii_lowercase()` 是不够的：录播姬的 `EventType` 是 **PascalCase**
+    // （`FileClosed` → `fileclosed`），那样永远匹配不上 `file_closed` —— 于是上面注释里
+    // "同一个 URL 兼容更多软件"只是愿望，录播姬原样打过来会回 400「不认识的事件类型」。
+    let ty = normalize_event_type(
+        field(
+            body,
+            &["type", "event_type", "event", "EventType", "eventType"],
+        )
+        .unwrap_or_default(),
+    );
+    let data = body
+        .get("data")
+        .or_else(|| body.get("EventData"))
+        .or_else(|| body.get("event_data"))
+        .unwrap_or(body);
+
+    // biliLive-tools 的 type / 录播姬的 EventType 都会被这里归一化成 snake_case。
+    if ty == "file_completed" || ty == "file_closed" {
+        let file = field(
+            data,
+            &[
+                "filePath",
+                "file_path",
+                "file",
+                "path",
+                "RelativePath",
+                "relative_path",
+            ],
+        )
+        .or_else(|| field(body, &["filePath", "file_path", "file"]))
+        .ok_or_else(|| "file_completed 缺少 filePath/file".to_string())?;
+        return Ok(ParsedWebhookEvent::Completion(WebhookCompletion {
+            file: file.to_string(),
+            danmaku: field(data, &["danmaku", "danmaku_path", "danmakuPath"]).map(str::to_string),
+            room: field_text(data, &["roomId", "room_id", "RoomId", "room"]),
+            platform: field(data, &["platform", "Platform"]).map(str::to_string),
+            title: field(data, &["title", "Title"]).map(str::to_string),
+        }));
+    }
+
+    // 没有 type 但直接给了文件：按"录制完成"处理（手写脚本最省事）。
+    if ty.is_empty() {
+        if let Some(file) = field(body, &["file", "filePath", "file_path"]) {
+            return Ok(ParsedWebhookEvent::Completion(WebhookCompletion {
+                file: file.to_string(),
+                danmaku: field(body, &["danmaku", "danmaku_path"]).map(str::to_string),
+                room: field_text(body, &["room_id", "roomId"]),
+                platform: field(body, &["platform"]).map(str::to_string),
+                title: field(body, &["title"]).map(str::to_string),
+            }));
+        }
+    }
+
+    if matches!(
+        ty.as_str(),
+        "record_start"
+            | "record_end"
+            | "file_created"
+            | "task"
+            | "session_started"
+            | "session_ended"
+            | "stream_started"
+            | "stream_ended"
+    ) {
+        return Ok(ParsedWebhookEvent::Ignored(ty));
+    }
+    Err(format!(
+        "不认识的事件类型: {ty}（支持 file_completed / file_closed，或 biliLive-tools 的 type=file_completed）"
+    ))
+}
+
+/// 一条已经落地的"录像 + 弹幕"。
+#[derive(Debug, Clone)]
+struct ResolvedWebhook {
+    project_root: PathBuf,
+    input_name: String,
+    danmaku_name: Option<String>,
+    title: String,
+    room: Option<String>,
+    platform: Option<String>,
+    video_display: String,
+}
+
+impl ResolvedWebhook {
+    fn source_label(&self) -> String {
+        let platform = self.platform.as_deref().unwrap_or("custom");
+        match self.room.as_deref().filter(|s| !s.is_empty()) {
+            Some(room) => format!("Webhook · {platform} · 房间 {room}"),
+            None => format!("Webhook · {platform}"),
+        }
+    }
+}
+
+/// 通用 webhook 接受的录像容器（小写、不含点）。
+///
+/// 录播姬/B站下载落盘的都是这几个；`-后处理.mp4` 优先之后仍然是 mp4。
+/// 其余扩展名一律 400（见 `resolve_webhook_completion`）。
+const WEBHOOK_VIDEO_EXTS: &[&str] = &[
+    "mp4", "flv", "mkv", "ts", "mov", "webm", "avi", "m4v", "wmv", "mpg", "mpeg",
+];
+
+/// 把事件里的路径解析成项目内的真实文件。
+///
+/// - `container_root` 非空且命中时先剥前缀（biliLive-tools 的 `/app/video/...`）；
+/// - 其余相对/绝对路径都走 `tenant::ensure_within` —— **唯一**的越界判据；
+/// - 同目录的 `-后处理.mp4` 优先（ffmpeg 转封装后的版本更通用）。
+fn resolve_webhook_completion(
+    cfg: &yekitrim_core::config::Config,
+    c: &WebhookCompletion,
+) -> Result<ResolvedWebhook, String> {
+    let root = cfg.ingest.webhook.root.trim();
+    if root.is_empty() {
+        return Err("通用 webhook 未配置 [ingest.webhook].root".into());
+    }
+    let root_path = PathBuf::from(root);
+    if !root_path.is_dir() {
+        return Err(format!("[ingest.webhook].root 不是目录: {}", root_path.display()));
+    }
+    let container = cfg.ingest.webhook.container_root.trim();
+    let original = map_webhook_path(&root_path, container, &c.file)?;
+    let video = prefer_postprocessed(&original);
+    // ⚠️ 只接受**录像容器**：事件里的路径是一个已存在的普通文件就建工程的话，
+    // 把 `.xml` / `.jpg` / `.txt` 推过来会建出一个坏工程（后续转写/剪切报错，还可能白烧 ASR 额度）。
+    let ext = video
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if !WEBHOOK_VIDEO_EXTS.contains(&ext.as_str()) {
+        return Err(format!(
+            "不像录像文件（扩展名 {:?}）：只接受 {}",
+            ext,
+            WEBHOOK_VIDEO_EXTS.join(" / ")
+        ));
+    }
+
+    let danmaku = match c
+        .danmaku
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(d) => Some(map_webhook_path(&root_path, container, d)?),
+        // 弹幕按**原始文件名**找：`-后处理.mp4` 的 stem 多了后缀，拿它找 `rec.xml` 会落空。
+        None => find_danmaku(&original).or_else(|| find_danmaku(&video)),
+    };
+    if let Some(dm) = &danmaku {
+        if dm.parent() != video.parent() {
+            return Err(format!(
+                "弹幕必须与视频同目录（或省略 danmaku 让服务端自动找同名）：{}",
+                dm.display()
+            ));
+        }
+    }
+
+    let parent = video
+        .parent()
+        .ok_or_else(|| "无法确定项目目录".to_string())?;
+    let input_name = file_name(&video)?;
+    let danmaku_name = danmaku.as_ref().map(|d| file_name(d)).transpose()?;
+    let title = c
+        .title
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            parent
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+        })
+        .or_else(|| video.file_stem().map(|n| n.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "Webhook 录像".to_string());
+    Ok(ResolvedWebhook {
+        project_root: parent.to_path_buf(),
+        input_name,
+        danmaku_name,
+        title: sanitize_title(&title),
+        room: c.room.clone().filter(|s| !s.trim().is_empty()),
+        platform: c.platform.clone().filter(|s| !s.trim().is_empty()),
+        video_display: video.display().to_string(),
+    })
+}
+
+fn map_webhook_path(root: &Path, container_root: &str, raw: &str) -> Result<PathBuf, String> {
+    let raw = raw.trim();
+    if raw.is_empty() || raw.contains('\0') {
+        return Err("路径为空或含非法字符".into());
+    }
+    let mut candidate = raw.to_string();
+    if !container_root.is_empty() {
+        if let Some(rest) = raw.strip_prefix(container_root) {
+            if rest.is_empty() {
+                return Err("容器路径只有前缀，没有文件名".into());
+            }
+            if !(rest.starts_with('/') || rest.starts_with('\\')) {
+                return Err(format!("容器路径前缀边界不匹配: {raw}"));
+            }
+            candidate = rest.trim_start_matches(['/', '\\']).to_string();
+        }
+    }
+    let abs = yekitrim_core::tenant::ensure_within(root, Path::new(&candidate))
+        .map_err(|e| format!("路径不在 webhook.root 内: {e:#}"))?;
+    if !abs.is_file() {
+        return Err(format!("文件不存在或不是普通文件: {}", abs.display()));
+    }
+    Ok(abs)
+}
+
+fn prefer_postprocessed(video: &Path) -> PathBuf {
+    let Some(stem) = video.file_stem().map(|s| s.to_string_lossy().into_owned()) else {
+        return video.to_path_buf();
+    };
+    let Some(parent) = video.parent() else {
+        return video.to_path_buf();
+    };
+    let candidate = parent.join(format!("{stem}-后处理.mp4"));
+    if candidate.is_file() {
+        candidate
+    } else {
+        video.to_path_buf()
+    }
+}
+
+fn find_danmaku(video: &Path) -> Option<PathBuf> {
+    let stem = video.file_stem()?.to_string_lossy().into_owned();
+    let dir = video.parent()?;
+    for ext in ["xml", "ass", "srt"] {
+        let cand = dir.join(format!("{stem}.{ext}"));
+        if cand.is_file() {
+            return Some(cand);
+        }
+    }
+    None
+}
+
+fn file_name(p: &Path) -> Result<String, String> {
+    p.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .ok_or_else(|| format!("文件没有文件名: {}", p.display()))
+}
+
+fn sanitize_title(raw: &str) -> String {
+    let cleaned: String = raw
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect::<String>()
+        .trim()
+        .to_string();
+    let out: String = cleaned.chars().take(80).collect();
+    if out.is_empty() {
+        "Webhook 录像".to_string()
+    } else {
+        out
+    }
+}
+
+struct PreparedWebhook {
+    project_id: i64,
+    config_path: PathBuf,
+    duplicate: bool,
+    owner: i64,
+    pipeline: String,
+}
+
+/// 建项目 + 登记（同步部分；调用方已经在 blocking 池里）。
+fn prepare_webhook_project(
+    db: &yekitrim_service::db::Db,
+    cfg: &yekitrim_core::config::Config,
+    r: &ResolvedWebhook,
+) -> Result<PreparedWebhook, AppError> {
+    let config_path = r.project_root.join(yekitrim_core::path::PROJECT_CONFIG_FILE);
+    if let Some(p) = db
+        .project_by_config(&config_path)
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("查询项目失败: {e:#}")))?
+    {
+        return Ok(PreparedWebhook {
+            project_id: p.id,
+            config_path,
+            duplicate: true,
+            owner: p.owner_id,
+            pipeline: "none".into(),
+        });
+    }
+    if config_path.is_file() {
+        return Err(err(
+            StatusCode::CONFLICT,
+            format!(
+                "目录已有 {} 但不是已登记项目；请用「添加项目」入口，别让 webhook 覆盖它",
+                yekitrim_core::path::PROJECT_CONFIG_FILE
+            ),
+        ));
+    }
+    let owner = first_admin(db)?;
+    let label = r.source_label();
+    let landed = landing::land_project(
+        db,
+        &landing::ProjectLanding {
+            owner_id: owner,
+            name: r.title.clone(),
+            source_kind: "webhook",
+            source_label: Some(label.as_str()),
+            room: r.room.as_deref(),
+            project_root: &r.project_root,
+            input_file: &r.input_name,
+            danmaku_file: r.danmaku_name.as_deref(),
+            session_id: None,
+        },
+    )
+    .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("创建项目失败: {e:#}")))?;
+    Ok(PreparedWebhook {
+        project_id: landed.project_id,
+        config_path: landed.config_path,
+        duplicate: !landed.created,
+        owner,
+        pipeline: cfg.ingest.webhook.auto_pipeline.clone(),
+    })
+}
+
+fn first_admin(db: &yekitrim_service::db::Db) -> Result<i64, AppError> {
+    let users = db
+        .list_users()
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取账号失败: {e:#}")))?;
+    users
+        .into_iter()
+        .filter(|u| u.role == "admin" && !u.disabled)
+        .min_by_key(|u| u.id)
+        .map(|u| u.id)
+        .ok_or_else(|| err(StatusCode::INTERNAL_SERVER_ERROR, "账号账本里没有管理员"))
+}
+
+/// `POST /api/ingest/webhook/<token>`：**通用**录制完成入口（biliLive-tools / 任意脚本）。
+///
+/// 只做"验 token → 解析路径 → 建项目 → 起管线"，不搬源文件（项目就建在录像目录）。
+/// **列在 `Ignored` 里的**事件（`record_start` / `file_created` / `session_ended` …）回
+/// 200 + `ignored: true`，避免录制软件把"不归你管"的事件重试三天；**真认不出的** `type`
+/// 仍然回 400 —— 那通常意味着 URL 填错了软件或脚本写错了字段，静默 200 只会让人以为接通了。
+pub async fn custom_webhook(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(token): axum::extract::Path<String>,
+    ClientIp(ip): ClientIp,
+    Json(body): Json<serde_json::Value>,
+) -> ApiResult {
+    let cfg = authorize_webhook(&state, &token, &ip).await?;
+    if cfg.ingest.webhook.root.trim().is_empty() {
+        return Err(err(
+            StatusCode::FORBIDDEN,
+            "通用 webhook 未配置 [ingest.webhook].root",
+        ));
+    }
+    let parsed = parse_webhook_event(&body).map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
+    let completion = match parsed {
+        ParsedWebhookEvent::Ignored(ty) => {
+            return ok(serde_json::json!({ "ok": true, "ignored": true, "type": ty }))
+        }
+        ParsedWebhookEvent::Completion(c) => c,
+    };
+    // ⚠️ `resolve_webhook_completion` 里全是**同步**文件访问（`is_dir` / `is_file` /
+    // 找同名弹幕），而工程目录很可能在网络盘上 —— 留在 async worker 上就是
+    // 「剪切时整个服务器连不上」那类事故（见 api 卡「同步 IO 纪律」）。
+    let cfg_for_resolve = cfg.clone();
+    let completion_for_resolve = completion.clone();
+    let resolved = match off(move || {
+        Ok(resolve_webhook_completion(&cfg_for_resolve, &completion_for_resolve))
+    })
+    .await?
+    {
+        Ok(r) => r,
+        Err(e) => return Err(err(StatusCode::BAD_REQUEST, e)),
+    };
+
+    let db = state.auth.db_arc();
+    let cfg_for_block = cfg.clone();
+    let resolved_for_block = resolved.clone();
+    let prepared = off(move || prepare_webhook_project(&db, &cfg_for_block, &resolved_for_block)).await?;
+
+    if !prepared.duplicate {
+        let pipeline = crate::pipeline_boot::Pipeline::parse(&prepared.pipeline);
+        if pipeline != crate::pipeline_boot::Pipeline::None {
+            crate::pipeline_boot::spawn_pipeline(
+                &state,
+                prepared.owner,
+                prepared.project_id,
+                prepared.config_path.clone(),
+                pipeline,
+                "Webhook 入库后自动处理",
+            )
+            .await;
+        }
+    }
+    tracing::info!(
+        "通用 webhook: project={} duplicate={} file={} pipeline={}",
+        prepared.project_id,
+        prepared.duplicate,
+        resolved.video_display,
+        prepared.pipeline
+    );
+    ok(serde_json::json!({
+        "ok": true,
+        "project_id": prepared.project_id,
+        "duplicate": prepared.duplicate,
+        "input": resolved.input_name,
+        "danmaku": resolved.danmaku_name,
+        "pipeline": prepared.pipeline,
+    }))
 }
 
 /// 会话状态中文标签（前端徽标与记录列表共用）。
@@ -820,6 +1301,8 @@ fn config_view_json() -> serde_json::Value {
     let cfg = yekitrim_core::config::load_global_config();
     serde_json::json!({
         "ok": true,
+        // 设置页「通用 Webhook」地址用：Docker/另一台机器不能用 127.0.0.1
+        "lan_ip": local_lan_ip(),
         "webhook_enabled": cfg.ingest.webhook_enabled,
         "token_configured": !cfg.ingest.token_hash.trim().is_empty(),
         "allow_ips": cfg.ingest.allow_ips,
@@ -834,6 +1317,16 @@ fn config_view_json() -> serde_json::Value {
             "concat_files": cfg.ingest.recorder.concat_files,
             "extensions": cfg.ingest.recorder.extensions,
             "auto_pipeline": cfg.ingest.recorder.auto_pipeline,
+        },
+        // 通用 webhook（任意录制软件）：与 [ingest] 共用 token / allow_ips。
+        "webhook": {
+            "root": cfg.ingest.webhook.root,
+            "container_root": cfg.ingest.webhook.container_root,
+            "auto_pipeline": cfg.ingest.webhook.auto_pipeline,
+            "path": "/api/ingest/webhook/<token>",
+            "enabled": cfg.ingest.webhook_enabled
+                && !cfg.ingest.token_hash.trim().is_empty()
+                && !cfg.ingest.webhook.root.trim().is_empty(),
         },
         // B站下载通道（P4）。前端表单只要这几项；`cookie_file` 是**路径**，
         // 但它是本机配置项（不是会话 cookie 内容），且这个接口本身仅 admin 可读。
@@ -865,6 +1358,21 @@ fn config_view_json() -> serde_json::Value {
             ),
         },
     })
+}
+
+/// 本机默认出口 IP（给设置页拼「局域网 Webhook 地址」用）。
+///
+/// UDP `connect` 只选路由、不发包；不依赖外部服务。无默认路由/只有回环时返回 None，
+/// 前端会退回 `location.origin` 并提示用户手填。
+fn local_lan_ip() -> Option<String> {
+    let sock = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    sock.connect("8.8.8.8:80").ok()?;
+    let ip = sock.local_addr().ok()?.ip();
+    if ip.is_loopback() || ip.is_unspecified() {
+        None
+    } else {
+        Some(ip.to_string())
+    }
 }
 
 /// `GET /api/admin/ingest`：录播姬配置概览（不含 token 明文，只报是否已配置）。
@@ -995,6 +1503,64 @@ fn build_ingest_patch(
         }
 
         ingest.insert("recorder".into(), serde_json::Value::Object(out));
+    }
+
+    // 通用 webhook（`[ingest.webhook]` 子表）：root / container_root / auto_pipeline。
+    // ⚠️ 它**必须**是子表（`IngestConfig::webhook`），与 downloader 那个字符串键相反。
+    if let Some(wh) = body.get("webhook") {
+        let wh = wh
+            .as_object()
+            .ok_or_else(|| err(StatusCode::BAD_REQUEST, "webhook 必须是对象"))?;
+        let mut out = serde_json::Map::new();
+        for key in ["root", "container_root"] {
+            if let Some(v) = wh.get(key) {
+                let s = v
+                    .as_str()
+                    .ok_or_else(|| err(StatusCode::BAD_REQUEST, format!("webhook.{key} 必须是字符串")))?
+                    .trim();
+                out.insert(key.into(), serde_json::json!(s));
+            }
+        }
+        if let Some(v) = wh.get("auto_pipeline") {
+            let s = v
+                .as_str()
+                .ok_or_else(|| err(StatusCode::BAD_REQUEST, "webhook.auto_pipeline 必须是字符串"))?;
+            if !AUTO_PIPELINES.contains(&s) {
+                return Err(err(
+                    StatusCode::BAD_REQUEST,
+                    format!("webhook.auto_pipeline 只能是 {} 之一：{s}", AUTO_PIPELINES.join(" / ")),
+                ));
+            }
+            out.insert("auto_pipeline".into(), serde_json::json!(s));
+        }
+        let root = out.get("root").and_then(|v| v.as_str()).unwrap_or("");
+        let container = out
+            .get("container_root")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if !root.is_empty() && !std::path::Path::new(root).is_dir() {
+            warnings.push(format!(
+                "通用 webhook 的录像目录当前不可访问（{root}）：事件里的路径会解析失败。若在网络盘/另一台机器上，请确认 YekiTrim 进程也读得到。"
+            ));
+        }
+        // 相对路径会按**服务进程的 CWD**解析（`resolve_webhook_completion` 里就是
+        // `Path::is_dir()` + 相对 root join）—— 换个启动方式/换个工作目录就静默失效，
+        // 而配置里那句「宿主机绝对路径」只有人读得懂。
+        if !root.is_empty() && !std::path::Path::new(root).is_absolute() {
+            warnings.push(
+                "通用 webhook 的录像目录要填**绝对路径**：相对路径按服务进程的当前工作目录解析，换个启动方式就会失效。"
+                    .into(),
+            );
+        }
+        if root.is_empty() && !container.is_empty() {
+            warnings.push(
+                "通用 webhook 填了 container_root 但 root 为空 —— 入口不会启用（root 是宿主机上的落点）。"
+                    .into(),
+            );
+        }
+        if !out.is_empty() {
+            ingest.insert("webhook".into(), serde_json::Value::Object(out));
+        }
     }
 
     // B站下载通道（P4）。⚠️ 这里必须**平铺**成 `[ingest]` 的扁平键，不能嵌套成子表：
@@ -1648,6 +2214,39 @@ mod tests {
     }
 
     #[test]
+    fn webhook_rejects_non_video_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("rec.xml");
+        std::fs::write(&file, b"<i/>").unwrap();
+        let mut cfg = yekitrim_core::config::Config::default();
+        cfg.ingest.webhook.root = dir.path().to_string_lossy().into_owned();
+        let err = resolve_webhook_completion(
+            &cfg,
+            &WebhookCompletion {
+                file: file.to_string_lossy().into_owned(),
+                danmaku: None,
+                room: None,
+                platform: None,
+                title: None,
+            },
+        )
+        .unwrap_err();
+        assert!(err.contains("不像录像文件"), "{err}");
+        // 同一目录下的真录像仍然能过（路径/弹幕解析不受影响）
+        std::fs::write(dir.path().join("rec.mp4"), b"fake").unwrap();
+        assert!(resolve_webhook_completion(
+            &cfg,
+            &WebhookCompletion {
+                file: dir.path().join("rec.mp4").to_string_lossy().into_owned(),
+                danmaku: None,
+                room: None,
+                platform: None,
+                title: None,
+            },
+        )
+        .is_ok());
+    }
+    #[test]
     fn field_lookup_is_case_insensitive_with_aliases() {
         let v = serde_json::json!({ "session_id": "abc", "FileSize": 42 });
         assert_eq!(field(&v, &["SessionId", "session_id"]), Some("abc"));
@@ -2037,6 +2636,64 @@ vtuber_name = \"主播\"
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// 通用 webhook 的补丁必须落成 **`[ingest.webhook]` 子表**，且不碰 `[ingest]` 兄弟键。
+    ///
+    /// ⚠️ 与 downloader 那条**相反**：`[ingest] downloader` 本身是字符串键，所以必须平铺；
+    /// 而 `webhook` 是子表（`IngestConfig::webhook`），提交成 inline table / 顶层键都不会报错，
+    /// 只会在**下次读配置时静默变成默认值**（表单显示空白，用户以为没保存）。
+    #[tokio::test]
+    async fn webhook_patch_writes_a_subtable_and_keeps_siblings() {
+        let dir = std::env::temp_dir().join(format!("yekitrim-ingest-wh-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "[ingest]\nwebhook_enabled = true\ntoken_hash = \"scrypt$keepme\"\n").unwrap();
+
+        let (ingest, _, warnings) = build_ingest_patch(&serde_json::json!({
+            "webhook": {
+                "root": "/srv/rec",
+                "container_root": "/app/video",
+                "auto_pipeline": "detect"
+            }
+        }))
+        .unwrap();
+        write_global_config_at(&path, config_patch(ingest, serde_json::Map::new()))
+            .await
+            .unwrap();
+
+        let out = std::fs::read_to_string(&path).unwrap();
+        let section = out
+            .split("[ingest.webhook]")
+            .nth(1)
+            .unwrap_or_else(|| panic!("必须有 [ingest.webhook] 表头：\n{out}"));
+        for key in [
+            "root = \"/srv/rec\"",
+            "container_root = \"/app/video\"",
+            "auto_pipeline = \"detect\"",
+        ] {
+            assert!(section.contains(key), "{key} 不在 [ingest.webhook] 里：\n{out}");
+        }
+        assert!(!out.contains("webhook = {"), "不能退化成 inline table：\n{out}");
+        assert!(
+            out.contains("token_hash = \"scrypt$keepme\"") && out.contains("webhook_enabled = true"),
+            "[ingest] 的兄弟键被冲掉了：\n{out}"
+        );
+        // root 不可达**只告警不拒绝**（网络盘可能只是暂时没挂上）
+        assert!(
+            warnings.iter().any(|w| w.contains("/srv/rec")),
+            "不可达的 root 要给出警告：{warnings:?}"
+        );
+        // 相对 root 要单独点名（它按进程 CWD 解析，换启动方式就静默失效）
+        let (_, _, warnings) =
+            build_ingest_patch(&serde_json::json!({"webhook": {"root": "relative/rec"}})).unwrap();
+        assert!(
+            warnings.iter().any(|w| w.contains("绝对路径")),
+            "相对 root 必须给出警告：{warnings:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// 读接口**绝不**回 `token_hash` 或 `api_pass` 明文（表单要的是 `api_pass_set` 布尔）。
     #[test]
     fn config_view_never_leaks_secrets() {
@@ -2094,5 +2751,130 @@ vtuber_name = \"主播\"
         // `[storage]` 走同一个函数，但必须带自己的 section 前缀（否则审计里看不出改的是哪一段）
         let st = audit_keys("storage", &serde_json::json!({"projects_root": "F:/x"}).as_object().unwrap().clone());
         assert_eq!(st, vec!["storage.projects_root".to_string()]);
+    }
+
+    #[test]
+    fn webhook_parses_bililive_tools_completion() {
+        let body = serde_json::json!({
+            "id": "evt-1",
+            "version": 1,
+            "type": "file_completed",
+            "data": {
+                "filePath": "/app/video/Bilibili/a/[2026-10-29 16-00-00-000][t]/rec.flv",
+                "roomId": 123456,
+                "platform": "Bilibili"
+            }
+        });
+        match parse_webhook_event(&body).unwrap() {
+            ParsedWebhookEvent::Completion(c) => {
+                assert!(c.file.ends_with("rec.flv"));
+                assert_eq!(c.room.as_deref(), Some("123456"));
+                assert_eq!(c.platform.as_deref(), Some("Bilibili"));
+            }
+            _ => panic!("file_completed 必须解析成 Completion"),
+        }
+    }
+
+    #[test]
+    fn webhook_parses_canonical_and_ignores_non_completion() {
+        let body = serde_json::json!({
+            "event": "file_completed",
+            "file": "Bilibili/a/rec.mp4",
+            "room_id": "42",
+            "title": "测试"
+        });
+        match parse_webhook_event(&body).unwrap() {
+            ParsedWebhookEvent::Completion(c) => {
+                assert_eq!(c.file, "Bilibili/a/rec.mp4");
+                assert_eq!(c.room.as_deref(), Some("42"));
+                assert_eq!(c.title.as_deref(), Some("测试"));
+            }
+            _ => panic!("规范事件必须解析成 Completion"),
+        }
+        assert!(matches!(
+            parse_webhook_event(&serde_json::json!({"type": "record_start"})).unwrap(),
+            ParsedWebhookEvent::Ignored(_)
+        ));
+        assert!(parse_webhook_event(&serde_json::json!({"type": "unknown"})).is_err());
+    }
+
+    /// 录播姬原样打过来的形状（`EventType` + `EventData`，**PascalCase**）必须认。
+    ///
+    /// 这条曾经回 400：`parse_webhook_event` 只 `to_ascii_lowercase()`，`FileClosed`
+    /// 变成 `fileclosed`，永远匹配不上 `file_closed` —— 于是「同一个 URL 兼容更多软件」
+    /// 只是注释里的愿望，而录制软件会把 4xx 当成"没送到"反复重试。
+    #[test]
+    fn webhook_accepts_recorder_pascal_case_event_type() {
+        let body = serde_json::json!({
+            "EventType": "FileClosed",
+            "EventData": {
+                "RelativePath": "26320007-主播/2026-10-29 16-00-00/rec.flv",
+                "RoomId": 26320007
+            }
+        });
+        match parse_webhook_event(&body).unwrap() {
+            ParsedWebhookEvent::Completion(c) => {
+                assert_eq!(c.file, "26320007-主播/2026-10-29 16-00-00/rec.flv");
+                assert_eq!(c.room.as_deref(), Some("26320007"));
+            }
+            _ => panic!("录播姬 FileClosed 必须解析成 Completion"),
+        }
+        // 不建项目的事件（PascalCase 写法）同样要认，否则 400 会让录制软件重试。
+        assert!(matches!(
+            parse_webhook_event(&serde_json::json!({"EventType": "SessionEnded"})).unwrap(),
+            ParsedWebhookEvent::Ignored(_)
+        ));
+        // 三种来源三种写法都归一（归一化只此一份，别在解析处再写一遍匹配）。
+        assert_eq!(normalize_event_type("FileClosed"), "file_closed");
+        assert_eq!(normalize_event_type("file_closed"), "file_closed");
+        assert_eq!(normalize_event_type("file-closed"), "file_closed");
+        assert_eq!(normalize_event_type("FILE_CLOSED"), "file_closed");
+        assert_eq!(normalize_event_type("  FileClosed  "), "file_closed");
+        assert_eq!(normalize_event_type(""), "");
+    }
+
+    #[test]
+    fn webhook_maps_container_path_and_prefers_postprocessed() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let session = root.join("Bilibili").join("a").join("[2026-10-29 16-00-00-000][t]");
+        std::fs::create_dir_all(&session).unwrap();
+        std::fs::write(session.join("rec.flv"), b"flv").unwrap();
+        std::fs::write(session.join("rec-后处理.mp4"), b"mp4").unwrap();
+        std::fs::write(session.join("rec.xml"), b"<i/>").unwrap();
+
+        let mut cfg = yekitrim_core::config::Config::default();
+        cfg.ingest.webhook.root = root.to_string_lossy().into_owned();
+        cfg.ingest.webhook.container_root = "/app/video".into();
+        let completion = WebhookCompletion {
+            file: "/app/video/Bilibili/a/[2026-10-29 16-00-00-000][t]/rec.flv".into(),
+            danmaku: None,
+            room: Some("123456".into()),
+            platform: Some("Bilibili".into()),
+            title: None,
+        };
+        let r = resolve_webhook_completion(&cfg, &completion).unwrap();
+        assert_eq!(r.project_root, session);
+        assert_eq!(r.input_name, "rec-后处理.mp4");
+        assert_eq!(r.danmaku_name.as_deref(), Some("rec.xml"));
+        assert!(r.source_label().contains("123456"));
+    }
+
+    #[test]
+    fn webhook_rejects_path_escape() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("Bilibili")).unwrap();
+        let mut cfg = yekitrim_core::config::Config::default();
+        cfg.ingest.webhook.root = root.to_string_lossy().into_owned();
+        cfg.ingest.webhook.container_root = "/app/video".into();
+        let completion = WebhookCompletion {
+            file: "/app/video/../outside.mp4".into(),
+            danmaku: None,
+            room: None,
+            platform: None,
+            title: None,
+        };
+        assert!(resolve_webhook_completion(&cfg, &completion).is_err());
     }
 }

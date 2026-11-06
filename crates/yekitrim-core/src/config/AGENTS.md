@@ -229,6 +229,17 @@ reasoning = "off"          # 精修默认关思考（链路代码默认给的就
 ### 写入纪律
 
 `yekitrim init` 生成 `yekitrim.toml`（项目字段：input/danmaku/转写/剪切参数）。
+
+⚠️ **工程配置只允许带「按工程变化」的段**（`write_project_config` 的唯一口径）：`[asr]` /
+`[detection]` / `[cutting]` / `[sfx]`。`[llm]` / `[correct]` / `[auth]` / `[publish]` / `[storage]` /
+`[ingest]`（含子表）**一律不许抄进工程文件** —— 工程目录会被共享、搬到 NAS、发给别人（webhook
+模式下甚至直接建在录像目录里）：把 `token_hash` / `api_pass` / `passkey_file` 抄进去就是泄漏；
+而且 `merge()` 把项目段当覆盖值 ⇒ 管理员改了全局口令、老工程拿旧副本顶回去。实现在
+`config::project_config_body`，判据 `config::project_template_tests`。
+⚠️ **存量工程不自动剥离**（R4：已有文件不无提示重写）：老工程里已经抄进去的段会留着；要清就用户
+自己删（或重建工程）。别在 `patch_config_file` / `merge` 的读路径上顺手剥离 —— 那会静默改用户文件，
+也分不清「我们抄的」与「用户自己写的工程级覆盖」。
+
 `yekitrim config init` 生成 `.yekitrim/config.toml`（`[asr]` + `[detection]` + `[correct]` + `[sfx]`）和 `.yekitrim/llm.toml`（`[llm]`，覆盖写）。
 `yekitrim server` 启动时若程序配置缺失会自动补齐（`yekitrim_service::ensure_global_config`）：只创建缺失文件；
 已存在但 TOML 语法错误的会备份为 `*.toml.broken` 后重建（坏文件会让整份配置被忽略）。

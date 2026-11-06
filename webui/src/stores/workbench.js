@@ -8,6 +8,9 @@
 import { computed, reactive } from 'vue'
 import { api } from '../api/client'
 import { projectData } from '../api/projectData'
+// 事件↔片段对应关系**只有一份判据**（utils.js::clipMatchesEvent = Rust cutting::foreign_clip_conflict）。
+// ⚠️ 方向只能是 stores → utils（utils 不许 import stores）。
+import { uncutEventsOf as uncutEventsBetween } from '../utils'
 
 const LS_LAST = 'yekitrim.wb.last'
 const LS_EXPANDED = 'yekitrim.wb.expanded'
@@ -59,8 +62,9 @@ export function loadProjects() {
     })
     .catch((e) => {
       wb.error = e?.message || '读取项目列表失败'
-      wb.projects = []
-      return []
+      // ⚠️ **保留上一份快照**：读失败 ≠ 没有项目。清空会让侧栏与首页一起退化成
+      // 「还没有项目：去首页「新增项目」」的假空态（首次就读失败时本来就是 []）。
+      return wb.projects
     })
     .finally(() => {
       wb.loading = false
@@ -159,18 +163,26 @@ export async function loadProjectData(pid, { force = false } = {}) {
   c.loading = true
   c.stale = false
   c.error = ''
+  // 四条各自记录失败原因；**失败的那一条不覆盖已有数据**（读失败 ≠ 空态）。
+  // 以前 events/clips/polish 都 .catch(() => []) —— 读失败被静默写成空数组，
+  // 侧栏「已切 N · 待切 M」与首页切片总览会一起显示成 0，看起来像产物丢了。
+  let failed = ''
+  const noteFail = (what, e) => { failed = failed || (what + '：' + (e?.message || '读取失败')) }
   const [status, events, clips, polish] = await Promise.all([
-    projectData.status(pid, '读取项目状态').catch((e) => { c.error = e?.message || ''; return null }),
-    projectData.events(pid, '读取事件列表').catch(() => ({ events: [] })),
-    projectData.clips(pid, '读取切片列表').catch(() => []),
-    projectData.polishMap(pid, '读取精修状态').catch(() => [])
+    projectData.status(pid, '读取项目状态').catch((e) => { noteFail('状态', e); return null }),
+    projectData.events(pid, '读取事件列表').catch((e) => { noteFail('事件', e); return null }),
+    projectData.clips(pid, '读取切片列表').catch((e) => { noteFail('片段', e); return null }),
+    projectData.polishMap(pid, '读取精修状态').catch((e) => { noteFail('精修', e); return null })
   ])
-  c.status = status
-  c.events = (events && events.events) || []
-  c.clips = Array.isArray(clips) ? clips : []
-  const m = {}
-  ;(polish || []).forEach((p) => { m[p.dir] = p })
-  c.polishMap = m
+  if (status) c.status = status
+  if (events) c.events = events.events || []
+  if (clips) c.clips = Array.isArray(clips) ? clips : []
+  if (polish) {
+    const m = {}
+    polish.forEach((p) => { m[p.dir] = p })
+    c.polishMap = m
+  }
+  c.error = failed
   c.loading = false
   // 期间被 invalidate 过 → 这一份已经过期，立刻再拉一轮（避免"刷新了但界面还是旧的"）
   if (c.stale) {
@@ -193,11 +205,19 @@ export function invalidate(pid, ...keys) {
   }
 }
 
-/** 未剪切事件（events 里没有对应 clip.mp4 的）。 */
+/**
+ * 未剪切事件 = 缓存里**没有"属于自己的"片段**的事件。
+ *
+ * ⚠️ 判据**只有一份**：`utils.js::uncutEventsOf(events, clips)`（= 服务端
+ * `cutting::foreign_clip_conflict` 的前端口径，认 `ev.clip_dir` / 标题 / 原片区间 IoU）。
+ * 这里以前自己按 `clip-<rank>` 拼目录名猜归属 —— 只要目录名不是 rank（新的稳定 `clip_dir`）
+ * 或重新检测后序号错位，侧栏「待切 N」就会把**已经剪完**的事件继续算成未切。
+ * 回归断言（node，demo 数据）：clip_dir 与 rank 不同的片段必须判为已剪；
+ * 委托 utils 版后两条路径（侧栏 / 切片页）逐条一致。
+ */
 export function uncutEventsOf(pid) {
   const c = cacheOf(pid)
-  const clipNames = new Set((c.clips || []).map((x) => x.name))
-  return (c.events || []).filter((ev) => !clipNames.has('clip-' + String(ev.rank).padStart(2, '0')))
+  return uncutEventsBetween(c.events || [], c.clips || [])
 }
 
 /** 已出片（`rendered`）的片段数 —— 喂给侧栏/阶段徽标的「精修 N/M」。

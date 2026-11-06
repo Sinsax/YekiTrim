@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use anyhow::{bail, Result};
 
-use super::stage::Stage;
+use super::stage::{Stage, STAGE_AUDIO, STAGE_DETECT, STAGE_TRANSCRIBE};
 use crate::config::Config;
 use crate::progress::ProgressReporter;
 use crate::types::PipelineContext;
@@ -85,11 +85,30 @@ impl PipelineRunner {
         }
     }
 
+    /// `PipelineContext` 里**已经装好**的输入能证明的最高阶段。
+    ///
+    /// 服务层在调 `run()` 之前会把 `-t` / `-e` 覆盖或用户选中的素材读进 ctx
+    /// （`ctx.transcript` / `ctx.events`）。那些文件**不一定在 `output/` 下**
+    /// （外部字幕、外部 events），只按 `current_stage(&output_dir)` 的文件判据会把它判成
+    /// stage 0，于是 `detect`(3) / `cut`(4) 被自己的状态机拒掉 —— 用户明明已经把输入递进来了。
+    fn ctx_stage_floor(ctx: &PipelineContext) -> u32 {
+        if !ctx.events.is_empty() {
+            STAGE_DETECT
+        } else if ctx.transcript.is_some() {
+            STAGE_TRANSCRIBE
+        } else if ctx.audio_path.is_some() {
+            STAGE_AUDIO
+        } else {
+            0
+        }
+    }
+
     /// 受 state 约束的运行，单 stage 命令使用
     pub async fn run(&self, ctx: &mut PipelineContext) -> Result<()> {
         inject_config(ctx, &self.config);
         self.inject_progress(ctx);
-        let current = self.config.project.current_stage(&ctx.output_dir);
+        let mut current = self.config.project.current_stage(&ctx.output_dir);
+        current = current.max(Self::ctx_stage_floor(ctx));
 
         for stage in &self.stages {
             let num = stage.stage_number();
@@ -111,6 +130,9 @@ impl PipelineRunner {
             stage.run(ctx).await?;
             tracing::info!("[{}] completed", name);
             ctx.progress.stage_completed(name);
+            // 「完成后 stage 自动推进」：同一个 runner 里的下一个 stage 不该再拿旧基准判门槛，
+            // 否则多 stage 链（`run_until(ctx, 4)`）在空工程上跑到第 2 个就被自己拦下。
+            current = current.max(num);
         }
 
         Ok(())
@@ -140,7 +162,8 @@ impl PipelineRunner {
     pub async fn run_until(&self, ctx: &mut PipelineContext, max_stage: u32) -> Result<()> {
         inject_config(ctx, &self.config);
         self.inject_progress(ctx);
-        let current = self.config.project.current_stage(&ctx.output_dir);
+        let mut current = self.config.project.current_stage(&ctx.output_dir);
+        current = current.max(Self::ctx_stage_floor(ctx));
 
         for stage in &self.stages {
             let num = stage.stage_number();
@@ -166,6 +189,8 @@ impl PipelineRunner {
             stage.run(ctx).await?;
             tracing::info!("[{}] completed", name);
             ctx.progress.stage_completed(name);
+            // 同 `run()`：跑完就推进基准，下一阶段的门槛按「前面已经完成」来算。
+            current = current.max(num);
         }
 
         Ok(())
@@ -285,5 +310,107 @@ mod tests {
             peak
         );
         assert!(!windows.is_empty(), "修复后热力图不该为空");
+    }
+
+    /// 记录被调用过的 stage 编号。
+    struct FakeStage {
+        num: u32,
+        ran: std::sync::Arc<std::sync::Mutex<Vec<u32>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Stage for FakeStage {
+        fn name(&self) -> &'static str {
+            "fake"
+        }
+        fn stage_number(&self) -> u32 {
+            self.num
+        }
+        async fn run(&self, _ctx: &mut PipelineContext) -> Result<()> {
+            self.ran.lock().unwrap().push(self.num);
+            Ok(())
+        }
+    }
+
+    /// `run_until(max)` 的契约是「跑到指定 stage 为止」，可基准以前只在进入循环前算一次：
+    /// 空工程上 stage 1 跑完，stage 2 仍按 `current = 0` 判 `0 + 1 < 2` ⇒ 直接 bail。
+    /// 这条钉住「跑完一个 stage 基准就推进」。
+    #[tokio::test]
+    async fn run_until_advances_the_state_machine_between_stages() {
+        let dir = std::env::temp_dir().join(format!("yekitrim-runner-chain-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("output")).unwrap();
+
+        let ran = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut runner = PipelineRunner::new(Config::default());
+        for num in 1..=4u32 {
+            runner.add_stage(Box::new(FakeStage { num, ran: ran.clone() }));
+        }
+        let mut ctx = PipelineContext::new(dir.join("video.mp4"), dir.join("output"));
+        runner
+            .run_until(&mut ctx, 4)
+            .await
+            .expect("空工程上 run_until(4) 应跑完 1..=4（基准必须随完成阶段推进）");
+        assert_eq!(*ran.lock().unwrap(), vec![1, 2, 3, 4]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `-t` / `-e` 把输入读进 ctx 之后，状态机不该再按 `output/` 下的文件判成 stage 0：
+    /// 服务层 `detect -t <外部转录>` 在 output 还空着时会被自己拒掉（"需要先完成前面的阶段"）。
+    #[tokio::test]
+    async fn preloaded_context_input_satisfies_the_stage_gate() {
+        let ran = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        // 外部转录已读进 ctx ⇒ detect(3) 可跑
+        let mut ctx = PipelineContext::new(
+            PathBuf::from("/nonexistent/video.mp4"),
+            PathBuf::from("/nonexistent/yekitrim-output"),
+        );
+        ctx.transcript = Some(crate::types::Transcript {
+            segments: vec![crate::types::TranscriptSegment {
+                start: 0.0,
+                end: 1.0,
+                text: "你好".into(),
+                confidence: 1.0,
+            }],
+            language: "zh".into(),
+            asr_metadata: None,
+        });
+        let mut runner = PipelineRunner::new(Config::default());
+        runner.add_stage(Box::new(FakeStage { num: 3, ran: ran.clone() }));
+        runner
+            .run(&mut ctx)
+            .await
+            .expect("ctx.transcript 已就位，detect 不该被门槛拦下");
+        assert_eq!(*ran.lock().unwrap(), vec![3]);
+
+        // 外部 events 已读进 ctx ⇒ cut(4) 可跑
+        let ran_cut = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut ctx = PipelineContext::new(
+            PathBuf::from("/nonexistent/video.mp4"),
+            PathBuf::from("/nonexistent/yekitrim-output"),
+        );
+        ctx.events = vec![crate::types::Event {
+            start: crate::types::Timestamp::from_seconds(0.0),
+            end: crate::types::Timestamp::from_seconds(10.0),
+            label: "t".into(),
+            summary: String::new(),
+            event_type: crate::types::EventType::Other,
+            source: crate::types::EventSource::LLM,
+            confidence: 1.0,
+            popularity: 0.0,
+            rank: 0,
+            clip_dir: None,
+            enabled: true,
+            ranges: Vec::new(),
+            topic: None,
+        }];
+        let mut runner = PipelineRunner::new(Config::default());
+        runner.add_stage(Box::new(FakeStage { num: 4, ran: ran_cut.clone() }));
+        runner
+            .run(&mut ctx)
+            .await
+            .expect("ctx.events 已就位，cut 不该被门槛拦下");
+        assert_eq!(*ran_cut.lock().unwrap(), vec![4]);
     }
 }

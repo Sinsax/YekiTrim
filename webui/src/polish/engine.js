@@ -1781,17 +1781,11 @@ function parseTextSource(src) {
     // ⚠️ 缺省必须是 (0, 1) 这一对**恒等值**：给错（比如 tilt 缺省非 0）会让
     //    **所有存量工程的字突然歪掉**，而那个歪从界面上看不出是从哪来的。
     tiltDeg: num(p[7], 0),
-    squashY: num(p[8], 1),
-    // ---- 第 10 段：颜色预设名（2026-10-13）----
-    //
-    // ⚠️⚠️ **只带出来给人看 / 给判据用，绝不拿它去查表覆盖 `fill`/`stroke`**：
-    //    那两个 RGBA 已由 `process` 算好写在第 4/5 段里（**含 `black` 那条
-    //    "描边成对翻白"**）。这里再查一次表就是第二份颜色来源 ——
-    //    预览与成片必然在 `black` 上分叉（预览糊成一团、成片正常），而两边都不报错。
-    //
-    //    ⚠️ 老工程（7 段）与 T3 工程（9 段）没有这一段 ⇒ `undefined` ⇒ 空串，
-    //       与改动前逐像素一致（R4）。
-    colorName: String(p[9] ?? '').trim().toLowerCase()
+    squashY: num(p[8], 1)
+    // ⚠️ **第 10 段（颜色预设名）不再解析**：颜色链已于 2026-10-30 整条退役
+    //    （Rust 侧的命名色枚举没有生产调用点，文字层也早在 2026-10-20 退役）。
+    //    老工程的 10 段串仍然可读 —— 这里只按位置取 7/9 段，多出来的第 10 段直接忽略；
+    //    填充/描边 RGBA 一直来自第 4/5 段（`process` 算好的那份）。
   }
 }
 
@@ -2404,7 +2398,13 @@ function subAnimFields(idx, s, t) {
     perCharOutFrames: animPerCharOut(styleAnimName)
       || animPerCharOut(effectAnimName)
       || animPerCharOut(transitionAnimName) || 0,
-    perCharSpanFrames: evDuration(c, 0) * idx.fps
+    // ⚠️⚠️ **字幕 cue 没有 `time`**（只有 start/end —— 元素那条路才有 time/end，所以那边能写
+    //    `evDuration(e, 0)`）。这里原先抄过去写成 `evDuration(c, 0)`：`c` 在 `subAnimFields`
+    //    的作用域里**根本不存在** ⇒ 只要这条字幕带了任一档动效，`subsAt` 就抛
+    //    `ReferenceError: c is not defined`、整层字幕当场消失（精修页整个预览挂掉）。
+    //    正确口径 = **这条 cue 自己的时长**（帧）：与 `subsAt` 的 `[start, end)` 窗口同一个来源，
+    //    缺 `end` 时按 0.1s 兜底（= `evDuration` 的下限，别用 0 当 start）。
+    perCharSpanFrames: Math.max(0.1, Number(s.end ?? 0) - Number(s.start ?? 0)) * idx.fps
   }
 }
 

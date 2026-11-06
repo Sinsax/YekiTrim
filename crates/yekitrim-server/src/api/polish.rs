@@ -3503,7 +3503,7 @@ fn elements_put_落盘且清空不留空段头() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **文字元素的 `color` 必须能经 PUT 存-读往返**（2026-10-13）。
+/// **元素的 `color` 必须能经 PUT 存-读往返**（2026-10-13；2026-10-30 换夹具）。
 ///
 /// # 为什么补这条
 ///
@@ -3518,6 +3518,15 @@ fn elements_put_落盘且清空不留空段头() {
 /// ⚠️ 判据必须**读回磁盘上的 `polish.toml`**（不只是内存里的 `ProjectFile`）——
 /// 只验内存的话，`skip_serializing_if` 写错（比如漏了 `color`）照样绿，
 /// 而症状是"这次会话里是对的、重启之后颜色没了"。
+///
+/// ⚠️ **夹具用 `kind = "sticker"`，不是 `kind = "text"`**（2026-10-30）：文字层已于
+/// 2026-10-20 整条退役，`yekitrim_polish::project::legacy` 在**读盘那一刻**就把
+/// `type="element"` + `kind="text"` 的事件丢掉了（见 `legacy.rs` 的 `RetiredCounts::text_layer`）。
+/// 原夹具写 `text` ⇒ PUT 之后读回来事件已经不存在 ⇒ 这条用例测的不再是 `color` 的往返，
+/// 而是"退役是否生效"。判据本身与 kind 无关（`color` 是 `Event::Element` 上的字段），
+/// 所以改用仍然存活的 `sticker`：往返通路一样、`color` 的 serde 属性一样被钉住。
+/// ⚠️ `sticker` 只有 `time` + `text` 是必填，其余（含 `color`）都走 `#[serde(default)]`。
+/// 文字层/`color` 链路本身的存废由精修侧决定，本用例只负责"字段能往返"。
 #[test]
 fn element_color_round_trips_through_put() {
     let dir = std::env::temp_dir().join(format!("yekitrim-elem-color-{}", std::process::id()));
@@ -3526,13 +3535,14 @@ fn element_color_round_trips_through_put() {
     let cfg = yekitrim_polish::project::ProjectFile::example();
     std::fs::write(dir.join("polish.toml"), cfg.to_toml_commented().unwrap()).unwrap();
 
-    // 造一条带 `color` 的文字元素（字段名逐字照 `Event::Element`）。
+    // 造一条带 `color` 的元素（字段名逐字照 `Event::Element`）。
+    // ⚠️ kind 必须是 `sticker` —— `text` 会在读盘时被退役逻辑丢掉（见上方说明）。
     let body = serde_json::json!({ "segments": [{
         "start": 0.0,
         "end": 5.0,
         "events": [{
             "type": "element",
-            "kind": "text",
+            "kind": "sticker",
             "time": 0.5,
             "end": 3.0,
             "text": "愤怒",
@@ -3581,7 +3591,7 @@ fn element_color_round_trips_through_put() {
         "end": 5.0,
         "events": [{
             "type": "element",
-            "kind": "text",
+            "kind": "sticker",
             "time": 0.5,
             "end": 3.0,
             "text": "普通",

@@ -376,13 +376,26 @@ mod tests {
         assert!(!d.to_string_lossy().contains("/.yekitrim"));
     }
 
-    /// ⚠️ 状态目录就一个名字：`.yekitrim`。**旧 `.yekitrim` 一律不再被创建**（无兼容期）。
+    /// ⚠️ 状态目录就一个名字：`.yekitrim`。**旧 `.vtrim` 一律不再被创建**（无兼容期）。
+    ///
+    /// 2026-10-30 修：这条用例曾被"vtrim → yekitrim"的机械改名连带改坏 —— 负向断言里的
+    /// **旧名**也被一起换成了 `.yekitrim`，于是"断言它 `== /install/.yekitrim`"与
+    /// "断言它**不含** `/.yekitrim`"直接打架，基线一直红。负向断言只能钉**旧名**：
+    /// 新名本身必然包含 `/.yekitrim`，那不是判据。
     #[test]
     fn state_dir_uses_the_new_name() {
         assert_eq!(STATE_DIR_NAME, ".yekitrim");
+        // 全局与工程级两个拼接点刻意同名，但挂的根不同（data_dir vs 工程根）
+        assert_eq!(PROJECT_STATE_DIR_NAME, ".yekitrim");
         let exe = Path::new("/install");
-        assert_eq!(yekitrim_home_at(exe), Path::new("/install/.yekitrim"));
-        // 判据是"不再写旧目录"（不是"路径里出现过 `yekitrim` 这个子串" —— 新名里本来就没有它）
-        assert!(!yekitrim_home_at(exe).to_string_lossy().contains("/.yekitrim"));
+        let home = yekitrim_home_at(exe);
+        // 正向：它就是 `<数据目录>/.yekitrim`（全仓唯一的全局拼接点）
+        assert_eq!(home, Path::new("/install/.yekitrim"));
+        // 负向：不再写旧目录 `.vtrim`（判据是旧目录名，不是"路径里出现过 yekitrim 子串"）
+        assert!(
+            !home.to_string_lossy().contains("/.vtrim"),
+            "状态目录不得回到旧名 `.vtrim`: {}",
+            home.display()
+        );
     }
 }

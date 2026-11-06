@@ -304,6 +304,14 @@ pub(super) async fn run_polish_child(
     let mut tcmd = tokio::process::Command::new(&exe);
     // tokio 的 Command 借 as_std_mut 复用同一条"没有控制台就别新开窗口"的逻辑
     yekitrim_core::process::hide_console_window(tcmd.as_std_mut());
+    // ⚠️ **Unix：让子进程自成进程组**（pgid == 它自己的 pid）。
+    //    `kill_tree` 靠 `kill -9 -<pid>` 才能一次收掉它拉起的 ffmpeg / 底座孙进程；
+    //    不设的话孙进程留在原组里，取消渲染后继续烧 CPU、占着正在写的文件（实测）。
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        tcmd.as_std_mut().process_group(0);
+    }
     let mut child = tcmd
         .args(&args)
         .env("NO_COLOR", "1")

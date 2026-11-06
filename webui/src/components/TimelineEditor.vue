@@ -1347,29 +1347,11 @@ const ANIM_KIND_OF = new Map(
   ANIM_KINDS.flatMap((k) => k.variants.map((v) => [v.value, k.kind]))
 )
 
-/** **文字颜色的命名预设**（`Event::Element.color`，2026-10-13）。
- *
- *  ⚠️⚠️ **权威是 Rust `placement.rs::ElementColor`**（名字 ↔ RGBA 都在那边，
- *  因为出片那条腿走 `process` 算好的 RGBA）。这里只是**下拉的展示清单**，
- *  两边同值由 `scripts/check-element-color.mjs` 钉着（它从 Rust 源码里读真源再逐个比）。
- *
- *  ⚠️ 前端**不参与颜色换算**：预览读的是 `process` 写回串里的 RGBA
- *  （`engine.js::parseTextSource` 的 `p[3]`/`p[4]`），这个下拉只写**名字**。
- *  在这里再写一份 RGBA 表 = 第二份颜色来源，`black` 那条"描边成对翻白"必然漏掉。
- *
- *  ⚠️ `label` 里的情绪词与 `llm/segment.rs` 的提示词**同源同义** ——
- *  面板上写的用途要让用户能预期 LLM 会怎么用它（两处措辞漂了不报错，但用户会困惑
- *  "为什么 LLM 老用红色"）。 */
-const ELEMENT_COLORS = [
-  { value: 'white', label: '白 · 默认' },
-  { value: 'pink', label: '粉 · 可爱调侃' },
-  { value: 'red', label: '红 · 愤怒警报' },
-  { value: 'yellow', label: '黄 · 吐槽旁白' },
-  { value: 'cyan', label: '青 · 冷静疑问' },
-  { value: 'green', label: '绿 · 肯定通过' },
-  { value: 'black', label: '黑 · 仅浅底衬' }
-]
-const ELEMENT_COLOR_VALUES = ELEMENT_COLORS.map((c) => c.value)
+// ⚠️ **文字颜色的下拉已删**（2026-10-30）：它是「文字层」属性面板里那个颜色下拉的
+//    展示清单，随文字层整条退役（2026-10-20「算了，删除文字层吧」）一起失去全部消费方。
+//    2026-10-30 颜色链**整条退役**：Rust 侧的命名色枚举也删了（没有生产调用点），
+//    所以现在**两端都没有颜色预设**。要再做「逐条文字色」是**新功能**，先设计
+//    Event 字段 → process 折算 → 转译器/预览读取整条链，别只手抄一份前端表。
 
 // ============================================================================
 // 两个**独立且可叠加**的设置：样式（形态）× 动效（时间）
@@ -1890,7 +1872,8 @@ const ELEMENT_DEDICATED = [
   'sticker_tag',     // StickerPicker 的「分类」那一级
   'name',            // ↑
   'source',          // ↑
-  'color',           // 文字颜色下拉
+  // ⚠️ 'color' 不在这张表里（2026-10-30）：它是文字层那个颜色下拉声明的字段，随文字层一起
+  //    失去控件；而它在全局 DEDICATED_FIELDS 里本来就被挡着 —— 留着等于声明一个不存在的控件。
   'style_anim',      // 「排版」下拉
   'transition_anim', // 「过渡」下拉
   'effect_anim',     // 「动效」下拉
@@ -2599,14 +2582,17 @@ function normalizeLocal() {
   }
 }
 
-async function flushSave() {
+/** 落盘。`dirOverride` = **落到哪个片段**：换片段时已经拿到旧目录，必须带上它
+ *  （那时 props.dir 已经是新片段，不带就是跨片段串写 —— 见 props.dir 那个 watcher）。 */
+async function flushSave(dirOverride) {
+  const saveDir = dirOverride || props.dir
   // ⚠️ 定时器已经触发，必须把句柄清掉：`reload()` 用 `saveTimer` 判断"还有没有待落的改动"，
   // 留着这个（已失效的）句柄会让它**永远提前返回** —— 后处理改写完事件后编辑器就再也不会同步。
   saveTimer = null
   // 读失败时基线不可信：数组可能是空的、也可能是上一个片段的残留，写下去就是把真数据抹掉。
   // 脏标记**留着**，等重试读到数据后由 `reload()` 先落盘再重载。
   if (loadError.value) return
-  if (saving) { scheduleSaveRetry(); return }
+  if (saving) { scheduleSaveRetry(saveDir); return }
   const segs = dirty.segments ? segments.value : null
   const mutes = dirty.mute ? muteRanges.value : null
   const subs = dirty.subtitles ? subtitles.value : null
@@ -2627,10 +2613,10 @@ async function flushSave() {
       // `skip_serializing_if = "Edl::is_empty"` 会让它**一个字节都不写**（R4）。
       // 前端**不做**这层过滤：序列化口径只有后端一处，前端再滤一遍就是第二个真源。
       if (edls) patch.edl = edls
-      await saveProjectPatch(props.pid, props.dir, patch)
+      await saveProjectPatch(props.pid, saveDir, patch)
     }
     if (subs) {
-      await saveSubtitles(props.pid, props.dir, subs)
+      await saveSubtitles(props.pid, saveDir, subs)
     }
     dirty.segments = dirty.subtitles = dirty.mute = dirty.edl = false
     saveAttempts = 0
@@ -2644,7 +2630,8 @@ async function flushSave() {
     toast('时间轴保存失败：' + e.message, 'err')
     // 失败后自己退避重试（最多 3 次）。以前只有"下一次编辑"才会重试 ——
     // 网络盘抖一下那次改动就一直挂在 dirty 上，界面写着"保存失败"却再也不动了。
-    if (++saveAttempts <= 3) { clearTimeout(saveTimer); saveTimer = setTimeout(flushSave, 3000) }
+    // ⚠️ 退避重试也要带**同一个目录**：换片段后 props.dir 已经是新片段，裸重试会写错地方
+    if (++saveAttempts <= 3) { clearTimeout(saveTimer); saveTimer = setTimeout(() => flushSave(saveDir), 3000) }
   } finally {
     saving = false
     drainQueuedReload()
@@ -2653,9 +2640,9 @@ async function flushSave() {
     if (!dirty.segments && !dirty.subtitles && !dirty.mute && !dirty.edl && !loadError.value) fireSavedHook()
   }
 }
-function scheduleSaveRetry() {
+function scheduleSaveRetry(dirOverride) {
   clearTimeout(saveTimer)
-  saveTimer = setTimeout(flushSave, 400)
+  saveTimer = setTimeout(() => flushSave(dirOverride), 400)
 }
 
 /**
@@ -2740,7 +2727,10 @@ function resetTimelineState() {
   heatDanmaku.value = []
   heatHoverT.value = null
   duration.value = 60
-  dirty.segments = dirty.subtitles = dirty.mute = false
+  // ⚠️ **dirty.edl 也必须清**（2026-10-30 补）：上面清了三个、漏了成片轨 ⇒ 换片段以后这个标记
+  //    一直亮着——下一次 flushSave 会把**新片段**的 edl.clips 原样 PUT 回去（normalizeLocal 还会
+  //    按新片段时长夹一遍），而 reload() 每次都会误判「还有没落盘的改动」（多一次 PUT + 一条假告警）。
+  dirty.segments = dirty.subtitles = dirty.mute = dirty.edl = false
   saveState.value = ''
   saveErr.value = ''
   saveAttempts = 0
@@ -3593,6 +3583,15 @@ watch(() => props.currentTime, (t) => {
 defineExpose({ reload, save: flushSave, segments, subtitles, muteRanges, edlClips })
 
 watch(() => props.dir, async (_now, before) => {
+  // ⚠️⚠️ **先把欠的那批改动落到「旧片段」上**（2026-10-30 修）：落盘有 250ms 防抖，在这个窗口里
+  //    点下一个片段，那一批改动就会跟着下面那次 flushSave 走 —— 而它此时 props.dir **已经是新片段**
+  //    ⇒ 写进新片段（跨片段串写）；若干脆不落盘，最后一批编辑就**静默丢失**（两种都不报错）。
+  //    所以这里显式带旧目录落一次盘：清掉仍在排队的定时器，用 before 当目标。
+  const hasPending = !!saveTimer || dirty.segments || dirty.subtitles || dirty.mute || dirty.edl
+  if (before && before !== props.dir && hasPending) {
+    if (saveTimer) { clearTimeout(saveTimer); saveTimer = null }
+    await flushSave(before)
+  }
   // 换片段＝这一轮编辑结束：先按**旧目录**把欠的那次后处理交代出去，再加载新片段的数据
   // （props.dir 此时已经是新值，所以必须显式传 before，否则会跑到刚切过去的片段上）
   commitEdit('切换片段', before)

@@ -38,8 +38,14 @@ const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const read = (rel) => readFileSync(join(repo, rel), 'utf8');
 
 /// Dhampir 仓与本仓是**平级目录**（都在 `F:/para/Code/` 下）。
-/// ⚠️ 找不到时**跳过并说明**，不报红 —— 那是"没 checkout 另一个仓"，
-///    不是"代码漂了"。CI 里两个仓都在，这条就真的会跑。
+///
+/// ⚠️⚠️ **2026-10-30 实测更正**：本地 `../Dhampir` 是 `v0.1.0+6`（host_api **6**），
+///    `crates/dhampir-timeline/src/text_motion.rs` **整个文件都不存在**
+///    （YekiTrim 这边要的是 host_api **7** 的底座）。于是 Rust 侧那几条会**全红**，
+///    而那不是本仓产品漂移 —— 是**版本缺口（ENV）**。
+///    ⇒ 现在：Rust 侧只在**文件真的存在**时对拍；缺文件时汇总成**一条 ENV 红**
+///      （点名"需要 host_api 7 的 Dhampir 检出"），不再报 9 条像代码坏了的假红。
+///    ⚠️ **别把这条改成"缺文件就静默 exit 0"** —— 那会把真回归一起放过。
 const DHAMPIR = resolve(repo, '..', 'Dhampir');
 function readDhampir(rel) {
   try {
@@ -66,13 +72,16 @@ const check = (what, got, want) => {
   // Rust: `const S: f32 = 3.0;` 且 `u * u * ((S + 1.0) * u + S) + 1.0`
   const rustS = rust && rust.match(/fn back_out3[\s\S]{0,200}?const S: f32 = ([\d.]+);/);
   const rustBody = rust && rust.match(/fn back_out3[\s\S]{0,300}?\n\}/);
-  check('Rust back_out3 里找得到 S', !!rustS, true);
-  check('Rust back_out3 的 S', rustS ? rustS[1] : '缺失', '3.0');
-  check(
-    'Rust back_out3 的式子（u*u*((S+1)*u+S)+1）',
-    !!(rustBody && /u\s*\*\s*u\s*\*\s*\(\s*\(S\s*\+\s*1\.0\)\s*\*\s*u\s*\+\s*S\s*\)\s*\+\s*1\.0/.test(rustBody[0])),
-    true,
-  );
+  // ⚠️ 缺 `text_motion.rs`（本地底座 v6）⇒ **Rust 侧跳过**，由末尾那条 ENV 红说明。
+  if (rust) {
+    check('Rust back_out3 里找得到 S', !!rustS, true);
+    check('Rust back_out3 的 S', rustS ? rustS[1] : '缺失', '3.0');
+    check(
+      'Rust back_out3 的式子（u*u*((S+1)*u+S)+1）',
+      !!(rustBody && /u\s*\*\s*u\s*\*\s*\(\s*\(S\s*\+\s*1\.0\)\s*\*\s*u\s*\+\s*S\s*\)\s*\+\s*1\.0/.test(rustBody[0])),
+      true,
+    );
+  }
 
   // JS: `return u * u * (4 * u + 3) + 1`（4 = S+1、3 = S 已折叠）
   const jsBody = js.match(/function backOut3[\s\S]{0,400}?\n\}/);
@@ -128,14 +137,16 @@ const check = (what, got, want) => {
   for (const [what, re] of Object.entries(nums)) check(`JS shake 常数 ${what}`, re.test(body), true);
 
   // 与 Rust 对照同一组数
-  for (const [what, re] of Object.entries({
-    'Rust 0.62': /0\.62/,
-    'Rust 0.38': /0\.38/,
-    'Rust 2.7': /2\.7/,
-    'Rust 1.3': /1\.3/,
-    'Rust 3.1': /3\.1/,
-  }))
-    check(`text_motion.rs ${what}`, !!(rust && re.test(rust)), true);
+  if (rust) {
+    for (const [what, re] of Object.entries({
+      'Rust 0.62': /0\.62/,
+      'Rust 0.38': /0\.38/,
+      'Rust 2.7': /2\.7/,
+      'Rust 1.3': /1\.3/,
+      'Rust 3.1': /3\.1/,
+    }))
+      check(`text_motion.rs ${what}`, re.test(rust), true);
+  }
 
   // ★ 三条"关"的分支都要显式挡（README 里专门写了为什么）
   check('JS shake 挡 px<=0', /!\s*\(shakePx\s*>\s*0\)/.test(body), true);
@@ -180,7 +191,7 @@ const check = (what, got, want) => {
   check('textMotionCfg: shake_px 缺省 0', /shakePx:\s*num\(e\.shake_px,\s*0\)/.test(body), true);
   check('textMotionCfg: shake_hz 缺省 18', /shakeHz:\s*num\(e\.shake_hz,\s*18(\.0)?\)/.test(body), true);
   check('textMotionCfg: plate_pad_px 缺省 12', /platePadPx:\s*num\(e\.plate_pad_px,\s*12(\.0)?\)/.test(body), true);
-  check('Rust DEFAULT_SHAKE_HZ = 18.0', !!(rust && /DEFAULT_SHAKE_HZ[^=]*=\s*18\.0/.test(rust)), true);
+  if (rust) check('Rust DEFAULT_SHAKE_HZ = 18.0', /DEFAULT_SHAKE_HZ[^=]*=\s*18\.0/.test(rust), true);
   // ⚠️ T1 三个字段里**只有 scale_in_ms 决定开不开**
   check(
     'JS: 只有 scaleInMs>0 才弹（from/peak 只是端点）',
@@ -239,6 +250,16 @@ if (process.argv.includes('--self-test')) {
   self += 1;
   console.log(`✓ 文字动效对拍自证：${self} 项（改式子 / 拿掉调用，都必须红）`);
   process.exit(0);
+}
+
+// ⚠️ **ENV**：本地 `../Dhampir` 是 v6、没有 host_api 7 的 text_motion.rs
+//    ⇒ Rust 侧没对拍。**这不是"全部通过"**，显式记一条红并点名缺什么。
+if (!readDhampir('crates/dhampir-timeline/src/text_motion.rs')) {
+  failures.push(
+    'ENV: 本地 ../Dhampir 是 v0.1.0+6（host_api 6），没有 ' +
+    'crates/dhampir-timeline/src/text_motion.rs —— Rust 侧常数/式子**未对拍**' +
+    '（本仓 JS 侧已对拍）。要跑全量请换 host_api 7 的 Dhampir 检出。',
+  );
 }
 
 if (failures.length) {

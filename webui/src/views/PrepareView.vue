@@ -125,7 +125,7 @@
               :items="txItems"
               kind="transcript"
               :busy="busy"
-              empty-text="还没有字幕 —— 用上面的「跑 ASR」生成，或自己选一份字幕文件（srt / json）"
+              :empty-text="txEmptyText"
               @pick="openPicker('transcript')"
               @activate="activate('transcript', $event)"
               @remove="removeItem('transcript', $event)"
@@ -172,7 +172,10 @@
           <div class="slice-rows mt-6">
             <!-- ⚠️ **整行都可点选**（含输入框）：点/聚焦任一格都把它设为"正在编辑的那一段"。
                  以前输入框上挂了 `@click.stop`，于是"改完数字再点标记入点"落到**别人**身上 ——
-                 用户报的「多段切片没法回过头来处理」就是这个（判据 ㉔ 的变异钉着它）。 -->
+                 用户报的「多段切片没法回过头来处理」就是这个（判据 ㉔ 的变异钉着它）。
+                 ⚠️ **还没标记的行不是错误态**（用户 2026-10-30 报「红框空白条目 0 0 0.0s ×」）：
+                 空行的入/出点留空（占位符）、时长「—」、段号按钮中性色；段落色（`segColor`）
+                 表达的是"这一段在字幕轨上占哪儿"，没有区间时不该有颜色。 -->
             <div v-for="(r, i) in sliceRows" :key="i" class="slice-row" :class="{ on: i === activeRow }"
                  :title="'编辑第 ' + (i + 1) + ' 段（入点/出点只作用于选中的这段）'"
                  @click="activeRow = i">
@@ -180,11 +183,16 @@
                       :style="{ borderColor: segColor(i).line, color: segColor(i).line,
                                 background: i === activeRow ? segColor(i).fill : 'transparent' }"
                       @click.stop="activeRow = i">{{ i + 1 }}</button>
-              <input class="fld-input slice-time" type="number" step="0.1" min="0" v-model.number="r.start"
+              <!-- ⚠️ 属性顺序**别动**：`v-model.number="r.start"` 必须在行尾、下一行紧接 `:title=`
+                   （判据 ㉔ 的变异台就锚在这个形状上 —— 把 placeholder 插到中间会让"挂回 @click.stop"
+                   那条变异抓不住）。 -->
+              <input class="fld-input slice-time" type="number" step="0.1" min="0" placeholder="入点"
+                     v-model.number="r.start"
                      :title="'第 ' + (i + 1) + ' 段入点（秒）'" @focus="activeRow = i">
-              <input class="fld-input slice-time" type="number" step="0.1" min="0" v-model.number="r.end"
+              <input class="fld-input slice-time" type="number" step="0.1" min="0" placeholder="出点"
+                     v-model.number="r.end"
                      :title="'第 ' + (i + 1) + ' 段出点（秒）'" @focus="activeRow = i">
-              <span class="mono small flex-none">{{ fmtDur(Number(r.end) - Number(r.start)) }}</span>
+              <span class="mono small flex-none">{{ hasSpan(r) ? fmtDur(Number(r.end) - Number(r.start)) : '—' }}</span>
               <button class="mini-btn flex-none" :disabled="sliceRows.length <= 1" title="删掉这一段"
                       @click.stop="removeSliceRow(i)">×</button>
             </div>
@@ -348,7 +356,10 @@ const markOut = ref(0)
 /** **多段切片列表**（粗剪拓展 2026-10-06）：每行一组入点/出点，剪出来是**一条**片段。
  *  多行 = 分段剪、合并输出（段间"有内容"的空隙丢掉，无字幕的保留给「去静音」）。
  *  ⚠️ 只有一行时载荷与老的「标记入点/出点」**完全一致**（不带 `ranges`）——服务端与老路径零差异。 */
-const sliceRows = ref([{ start: 0, end: 0 }])
+/** ⚠️ 初值是 **null**，不是 0：`0` 会让"还没标记"渲染成「0 / 0 / 0.0s」——
+ *  看着像一条坏掉的草稿、还带着段落色（用户 2026-10-30 报「红框空白条目」）。
+ *  输入框在 null 时是空的、显示占位符，时长显示「—」，段号用中性色。 */
+const sliceRows = ref([{ start: null, end: null }])
 /** 「标记入点/出点」落到哪一行（点行选中）。 */
 const activeRow = ref(0)
 /** 列表总时长（各段内容之和；多段成片就是这个长度）。
@@ -427,6 +438,13 @@ const busyText = computed(() => (jobRunning.value ? kindText(job.kind) : scopeBu
 const hasTranscript = computed(
   () => segments.value.length > 0 || (status.value?.files || []).some((f) => String(f).startsWith('字幕'))
 )
+/** 字幕清单为空时那句话。**必须区分"清单没登记"与"真的没有"**（2026-10-30 实测报的）：
+ *  左栏字幕轨明明读到了 6 段、右边却写「还没有字幕」—— 因为生效值是 `output/transcript.json`
+ *  而清单（`[project.materials].transcript`）里一条都没登记。两句话指向的下一步完全不同：
+ *  前者"重新检测照常生效"，后者才需要去跑 ASR / 选文件。 */
+const txEmptyText = computed(() => (segments.value.length > 0
+  ? `清单里没登记 —— 当前用 transcript.json（${segments.value.length} 段）`
+  : '还没有字幕 —— 用上面的「跑 ASR」生成，或自己选一份字幕文件（srt / json）'))
 /** 已有检测结果（`status.files` 里带「事件」那一项）→ 重新检测要二次确认 */
 const hasEvents = computed(() => hasFile('事件'))
 /** 转写成功后自动接着跑检测（两段之间不留手动步骤） */
@@ -614,7 +632,13 @@ async function load() {
   try {
     const d = await projectData.transcript(pid.value, '读取字幕')
     segments.value = (d.segments || []).slice().sort((a, b) => (Number(a.start) || 0) - (Number(b.start) || 0))
-  } catch {}
+  } catch (e) {
+    // ⚠️ **404 = 还没有转写**（服务端 `data_transcript_impl` 在没有转过写时就是 404），那是正常空态 ——
+    // 但其它错误（500 / 解析失败）**不许**伪装成"没有字幕"：那会把"读取失败"显示成干净的空轨道，
+    // 用户唯一的下一步就是点「开始预处理」重跑一遍转写（可能覆盖掉盘上真实存在的那份）。
+    segments.value = []
+    if (e?.status !== 404) loadError.value = '字幕读取失败：' + (e?.message || e)
+  }
   saveState.value = ''
   await loadAssets()
 }
@@ -769,9 +793,17 @@ function markHint(which) {
 /** 加一段（起止先取当前播放位置：标好出点才算数）。**加完自动转到最新段**（用户口径）。 */
 function addSliceRow() {
   const t = Math.round((videoRef.value?.currentTime || currentTime.value || 0) * 10) / 10
-  sliceRows.value.push({ start: t, end: t })
+  // 入点预填当前播放位置、出点留空（出点没标之前这一段本来就无效，别写成 0 假充数据）
+  sliceRows.value.push({ start: t, end: null })
   activeRow.value = sliceRows.value.length - 1
 }
+
+/** 这一段是否已经是一个**有效区间**（出点 > 入点）。
+ *  ⚠️ 空行（`start/end` 为 null）与"标反了"都算没有区间 —— 它们都不该显示段落色/时长。 */
+function hasSpan(r) {
+  return Number(r?.end) > Number(r?.start)
+}
+
 
 /** 删一段；只剩一段时不给删（那会变成"没有要切的东西"）。 */
 function removeSliceRow(i) {
@@ -1031,6 +1063,10 @@ onUnmounted(() => {
 .cur-secs { color:var(--ink-dim); }
 .slice-time { flex:1 1 0; width:auto; min-width:0; padding:4px 8px; font-size:12px; text-align:center; }
 /* 多段列表：一行一组入点/出点；点一行 = 选中它（「标记入点/出点」落到选中行） */
+/* ⚠️ `--chip-bg` 在 tokens.css 里**不存在**（全仓只有这一处用它）⇒ 写 `var(--chip-bg)` 的
+   `background` 会被浏览器整条丢弃，选中行的高亮从来没亮过（不报错，只有截图才看得出来）。
+   在容器上补一个指向真 token 的别名：`.slice-row.on` 的写法与判据 ㉔ 的锚点都不动。 */
+.slice-rows { --chip-bg: var(--main-soft); }
 .slice-row { display:flex; align-items:center; gap:6px; padding:2px 4px; border-radius:6px;
   border-left:3px solid transparent; cursor:pointer; }
 /* 选中的那段：底色 + **左侧色条**（光靠底色在多段时看不出"现在编辑的是哪一段"） */
@@ -1040,7 +1076,7 @@ onUnmounted(() => {
 .seg-pick { flex:none; width:20px; height:20px; padding:0; border-radius:var(--r-full);
   border:1px solid var(--line); background:var(--card); color:var(--ink-dim);
   font-size:10.5px; line-height:1; cursor:pointer; }
-.seg-pick.on { border-color:var(--pink-text); background:var(--pink-bg); color:var(--pink-text); font-weight:700; }
+.seg-pick.on { border-color:var(--pink-text); background:var(--main-soft); color:var(--pink-text); font-weight:700; }
 .seg-cur-num { color:var(--pink-text); }
 /* 重叠警告：这一段压在前一段上 ⇒ 同一段内容会被剪两遍（落盘时会并成一段，见
    `merge_overlapping_ranges`）—— 琥珀色，只在真重叠时出现，别做成常驻 */

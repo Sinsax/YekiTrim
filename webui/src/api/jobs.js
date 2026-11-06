@@ -21,6 +21,7 @@ export const KIND_ZH = {
   polish_render: '渲染导出',
   polish_cover: '封面生成',
   ingest_pipeline: '入库后自动处理',
+  publish: '出片发布',
   ingest_none: '入库',
   ingest_transcribe: '入库后转写',
   ingest_detect: '入库后检测',

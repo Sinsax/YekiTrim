@@ -1,32 +1,38 @@
 #!/usr/bin/env node
-// **前端编辑器的「文字 / 贴纸」必须分成两条泳道**（2026-10-14）。
+// **前端编辑器的「文字 / 贴纸」泳道纪律**（2026-10-14；2026-10-20 文字层退役后改口径）。
 //
-// # 背景（用户口径：「前端编辑器也要分离」）
+// # 背景
 //
 // 磁盘上 `element` 与 `sticker` 是**同一条轨**（`Lane::Sticker` ⇒ `"sticker"`，
 // 四处 `LANE_OF_TYPE` 镜像都这么映射）—— 那个**不能改**（改了就要求数据迁移，
 // 而老工程里全是 `type:"sticker"`）。
 //
-// 但**界面上**它们该是两条轨：载荷、属性面板、能选的东西完全不同
-// （文字有排版/描边/逐字，贴纸只有图和落点）。
-// 混在一条轨上的代价是"＋"必须弹「文字 / 贴纸」二选一菜单 ——
-// 而用户本来就是在**某一条轨**上点的加号，那个选择是多余的。
+// 2026-10-14 用户口径「前端编辑器也要分离」⇒ 界面上拆成「文字」+「贴纸」两条泳道，
+// 两条的 `lane` 都是 `'sticker'`（界面分家、磁盘不分家）。
 //
-// # 它判什么（每一条都做变异自证）
+// ⚠️⚠️ **2026-10-20 用户口径「算了，删除文字层吧」⇒ 文字层整条退役**
+//    （读时丢弃 + 计数，见 `project/legacy.rs::RetiredCounts.text_layer`），
+//    **「文字」泳道与它的 ＋ 一起删掉了**。于是本判据的旧断言（"必须有 id:'text' 的泳道 /
+//    两条泳道的 lane 都是 sticker / 文字轨的 ＋ 调 addElementAt('text')"）
+//    **永久红**，而且红的时候指错了地方（产品是**按新口径删干净了**，不是坏了）。
+//    旧断言已退役，换成下面这套**存续口径**。
 //
-// ① 泳道表里**有两条**（`kinds` 分别是文字 / 贴纸），但 `lane` **都是 `'sticker'`**
-//    —— 界面分家、磁盘不分家。⚠️ 这条是本次改动的**定义**。
+// # 它判什么（保留的旧判据 + 新的退役守卫）
+//
+// ① 泳道表里**只剩「贴纸」一条内容轨**，`lane: 'sticker'`、`kinds: ['sticker']`；
+//    **「文字」泳道不许回来**（`id: 'text'` / `kinds` 含 `'text'` 都算回潮）。
+// ①b 每条有轨道名的泳道都有**能点的眼睛**（不再有 `sharedEye` 占位机制）。
 // ② `laneKey` 与 `laneTypeOf` **是两个不同的东西**：
 //    `laneKey`（界面 id）用于 `v-for :key` 与选中判等；`laneTypeOf`（轨道名）用于 `emit`。
-//    ⚠️ 混用的两种症状都是**静默**的：
-//      * `emit` 发 `laneKey` ⇒ `PolishView` 查不到 `laneGroupEls.text` ⇒ **点轨道名没反应**；
-//      * `:key` 用 `laneTypeOf` ⇒ 两条泳道**共用同一个 key** ⇒ Vue 复用错节点。
 // ③ 模板里 `:key` **不许**用 `laneTypeOf`、`emit('lane-open')` **不许**用 `laneKey`。
-// ④ 两个 ＋ 各自**直接**建对应 kind 的元素（不再有"二选一菜单"）。
-// ⑤ ⚠️ **反例**：`elementKindOf` 认不出时必须是 `'unknown'`，**不许默认成 `'text'`**
-//    （默认成文字 = 把坏数据伪装成正常元素）。
+// ④ 贴纸轨的 ＋ **直接**建 `sticker`（不再有"二选一菜单"）；**文字轨的 ＋ 不许回来**。
+// ⑤ ⚠️ **反例**：`elementKindOf` 认不出时必须是 `'unknown'`，**不许默认成别的**
+//    （把坏数据伪装成正常元素）。
 // ⑥ 界面上**不许再出现「元素」这个类别名** —— 含 ASCII 的**磁盘载体名 `element`**
 //    （用户原话：「因为元素(原文字+贴纸)已分离，请查找元素相关文案进行修改」）。
+//
+// 反向/变异判据：⑥ 那两段自证（塞回 `element ·` / 塞回「元素」label）仍跑；
+//    ①/④ 的回潮判据用**否定式**（存在即红）—— 把文字泳道加回去，本判据当场红。
 //
 // 用法：node scripts/check-editor-lane-split.mjs   （退出码非 0 即失败）
 
@@ -64,31 +70,36 @@ const code = stripComments(src)
 // ---------------------------------------------------------------------------
 // ① 泳道表：两条，但 `lane` 都是 `'sticker'`
 // ---------------------------------------------------------------------------
-const laneDefs = (() => {
-  const i = src.indexOf('const LANE_DEFS = [')
+/** 从**任意一份源码文本**里抽出泳道表（主流程传真文件；自证传变异体）。
+ * ⚠️ 抽成函数是为了让自证跑的是**同一份判据** —— 只写在顶层的话，
+ *    "文字泳道不许回来"那条根本无法证明自己有牙。 */
+function lanesOf(text) {
+  const i = text.indexOf('const LANE_DEFS = [')
   if (i < 0) return null
   let d = 0
-  for (let j = src.indexOf('[', i); j < src.length; j++) {
-    if (src[j] === '[') d++
-    else if (src[j] === ']') { d--; if (d === 0) return src.slice(i, j + 1) }
+  for (let j = text.indexOf('[', i); j < text.length; j++) {
+    if (text[j] === '[') d++
+    else if (text[j] === ']') { d--; if (d === 0) return text.slice(i, j + 1) }
   }
   return null
-})()
+}
+const laneDefs = lanesOf(src)
 ok(!!laneDefs, '① 找得到 `LANE_DEFS`（结构变了就要改本判据）')
 
 // ⚠️ 按**整条对象**切（泳道定义常跨两行：`id`/`kinds` 在一行、`lane`/`label` 在下一行）。
 //    按行切的话 `lane` 会取到 `undefined`，判据报的是"lane 必须是 sticker、实得 undefined"——
 //    那是**我自己解析错**，不是源码错。按 `{ id:` 起、下一个 `{ id:` 或 `]` 止来切。
-const byId = {}
-{
-  const chunks = laneDefs ? laneDefs.split(/\{\s*(?=id:)/).slice(1) : []
+/** 把泳道表源码文本切成 `{ id → { lane, kinds } }`（主流程与自证共用）。 */
+function laneIndex(defs) {
+  const byIdLocal = {}
+  const chunks = defs ? defs.split(/\{\s*(?=id:)/).slice(1) : []
   for (const chunk of chunks) {
     const body = chunk.split(/\n\s*\{/)[0]
     const id = (body.match(/\bid:\s*'([^']+)'/) || [])[1]
     const lane = (body.match(/\blane:\s*'([^']+)'/) || [])[1]
     const kindsRaw = (body.match(/\bkinds:\s*\[([^\]]*)\]/) || [])[1]
     if (id) {
-      byId[id] = {
+      byIdLocal[id] = {
         lane,
         sharedEye: /\bsharedEye:\s*true/.test(body),
         kinds: kindsRaw === undefined
@@ -97,30 +108,34 @@ const byId = {}
       }
     }
   }
+  return byIdLocal
 }
+const byId = laneIndex(laneDefs)
 
-ok(!!byId.text, '① 有「文字」轨（`id: \'text\'`）')
 ok(!!byId.sticker, '① 有「贴纸」轨（`id: \'sticker\'`）')
 
-// ⚠️ 两条的 `lane` 必须都是 `'sticker'` —— 界面分家 / 磁盘不分家
-for (const id of ['text', 'sticker']) {
-  if (byId[id]) {
-    ok(byId[id].lane === 'sticker',
-      `① 「${id}」轨的 \`lane\` 必须是 \`'sticker'\`（磁盘上与贴纸同轨，不做数据迁移）；实得 ${JSON.stringify(byId[id].lane)}`)
-  }
-}
+// ⚠️ 2026-10-20：文字层退役 ⇒ **「文字」泳道不许回来**。
+//    `id: 'text'` 或任何泳道的 `kinds` 里含 `'text'` 都算回潮
+//    （回潮 = 用户又能创建/编辑文字元素，但后端读时丢弃它 ⇒ 配了不生效、无报错）。
+ok(!byId.text, '① 「文字」泳道**不许回来**（2026-10-20 文字层整条退役）')
+ok(!Object.values(byId).some((l) => (l.kinds || []).includes('text')),
+  '① 任何泳道的 `kinds` **不许再含 `text`**（文字层已退役，那条轨没有消费者）')
 
-// ⚠️ `kinds` 必须把两种分开，且**必须重叠为空**
-if (byId.text && byId.sticker) {
-  ok(byId.text.kinds && byId.text.kinds.includes('text'),
-    '① 文字轨的 `kinds` 必须含 `text`')
-  ok(byId.text.kinds && byId.text.kinds.includes(''),
-    '①⚠️ 文字轨的 `kinds` **必须含空串** —— `kind` 缺失/为空是最常见的存量形状'
-    + '（Rust 侧 `#[serde(default)]` 兜空串、面板新建的也是它），漏了它那些元素会在**两条轨上都看不见**')
-  ok(byId.sticker.kinds && byId.sticker.kinds.includes('sticker') && !byId.sticker.kinds.includes('text'),
-    '① 贴纸轨的 `kinds` 必须只含 `sticker`（不许含 `text` —— 否则两条轨重叠、块画两遍）')
-  const inter = (byId.text.kinds || []).filter((k) => (byId.sticker.kinds || []).includes(k))
-  ok(inter.length === 0, `① 两条轨的 \`kinds\` **不许重叠**（实得重叠 ${JSON.stringify(inter)}）`)
+// ⚠️ 贴纸轨仍是**界面独立、磁盘同轨**：`lane` 必须是 `'sticker'`（不做数据迁移）。
+ok(byId.sticker && byId.sticker.lane === 'sticker',
+  `① 「贴纸」轨的 \`lane\` 必须是 \`'sticker'\`（磁盘上 element/sticker 同一条轨，不做数据迁移）；实得 ${JSON.stringify(byId.sticker?.lane)}`)
+// ⚠️ 贴纸轨的 kinds 必须**只含 sticker**（含 text 就是文字轨的变相回潮）。
+ok(byId.sticker && byId.sticker.kinds && byId.sticker.kinds.includes('sticker') && !byId.sticker.kinds.includes('text'),
+  '① 贴纸轨的 `kinds` 必须只含 `sticker`（不许含 `text`）')
+
+// ---- ① [自证] 把「文字」泳道塞回去 ⇒ 上面那两条回潮判据必须翻面 ----
+// ⚠️ 锚点写错时 `.replace` 是**静默 no-op**，那时"自证"会变成恒过判据。
+{
+  const withText = src.replace("{ id: 'sticker'", "{ id: 'text', type: 'sticker', kinds: ['text'], label: '文字', lane: 'sticker' },\n  { id: 'sticker'")
+  ok(withText !== src, '① [自证] 变异真的改到了泳道表（锚点还在吗）')
+  const m = withText !== src ? lanesOf(withText) : null
+  const mById = laneIndex(m)
+  ok(!!mById.text, '① [自证] 把「文字」泳道塞回去后必须被检出（否则这条判据恒过）')
 }
 
 // ---------------------------------------------------------------------------
@@ -145,9 +160,9 @@ if (byId.text && byId.sticker) {
   // 眼睛分支只按 `lane.lane` 门控（不是"排除某条"）。
   ok(/v-if="lane\.lane"/.test(code),
     '①b 眼睛的 `v-if` 只许按 `lane.lane` 门控（每条有轨道名的轨都画眼睛）')
-  // 两条泳道的 `lane` 都是 `sticker` ⇒ 它们读到的是同一个开关（这是**对的**）。
-  ok(byId.text && byId.text.lane === 'sticker' && byId.sticker && byId.sticker.lane === 'sticker',
-    '①b 文字与贴纸的 `lane` 都必须是 `sticker`（同一条磁盘轨 ⇒ 同一个眼睛开关）')
+  // 每条有轨道名的泳道都必须真的画眼睛（贴纸轨还在；文字轨已删）。
+  ok(byId.sticker && byId.sticker.lane === 'sticker',
+    '①b 贴纸轨的 `lane` 必须是 `sticker`（磁盘轨名，眼睛开关读它）')
 }
 
 // ---------------------------------------------------------------------------
@@ -184,13 +199,26 @@ ok(/const laneTypeOf = \(lane\) => lane\.type/.test(code),
 // ---------------------------------------------------------------------------
 // ④ 两个 ＋ 各自直接建对应 kind（不再有"二选一菜单"）
 // ---------------------------------------------------------------------------
-ok(/if \(laneType === 'text'\) \{ addElementAt\('text'\); return \}/.test(code),
-  '④ 文字轨的 ＋ 必须直接 `addElementAt(\'text\')`')
 ok(/if \(laneType === 'sticker'\) \{ addElementAt\('sticker'\); return \}/.test(code),
   '④ 贴纸轨的 ＋ 必须直接 `addElementAt(\'sticker\')`')
+// ⚠️ 2026-10-20：文字轨的 ＋ 随文字层一起删了 ⇒ **不许回来**
+//    （回来 = 用户能建文字元素，而后端读时丢弃它 ⇒ 配了不生效、报告里无差异）。
+ok(!/if \(laneType === 'text'\)/.test(code) && !/addElementAt\('text'\)/.test(code),
+  '④ 「文字」轨的 ＋ **不许回来**（2026-10-20 文字层退役：`addElementAt(\'text\')` 已无消费者）')
 ok(!/elementMenu|openElementMenu/.test(code),
   '④⚠️ 那个「文字 / 贴纸」二选一菜单**不许回来** —— 轨道已经分开，再问一遍是把已知的事重问'
   + '（删掉的症状是"在文字轨点＋却被问要不要贴纸"）')
+
+// ---- ④ [自证] 把「文字轨的 ＋」塞回去 ⇒ 上面那条回潮判据必须翻面 ----
+{
+  const withTextAdd = code.replace(
+    "if (laneType === 'sticker')",
+    "if (laneType === 'text') { addElementAt('text'); return }\n  if (laneType === 'sticker')",
+  )
+  ok(withTextAdd !== code, '④ [自证] 变异真的改到了 `onLaneAdd`（锚点还在吗）')
+  ok(/if \(laneType === 'text'\)/.test(withTextAdd) && /addElementAt\('text'\)/.test(withTextAdd),
+    '④ [自证] 把文字轨的 ＋ 塞回去后回潮判据必须翻面（否则它抓不到任何东西）')
+}
 
 // ---------------------------------------------------------------------------
 // ⑤ ⚠️ 反例：认不出的 kind 不许默认成 `text`
@@ -208,9 +236,14 @@ ok(!/elementMenu|openElementMenu/.test(code),
   // 面板里三个分支各认各的（不许用 v-else 兜住 unknown）
   ok(/elementKindOf\(selItem\) === 'unknown'/.test(code),
     '⑤ 面板必须有 `unknown` 那一支（照实显示，让用户看见坏数据）')
-  ok(/elementKindOf\(selItem\) === 'text'/.test(code) && /elementKindOf\(selItem\) === 'sticker'/.test(code),
-    '⑤ 文字支与贴纸支必须**各自显式认领**（`=== \'text\'` / `=== \'sticker\'`），'
-    + '不许用 `v-else` 兜 —— 那会把 `unknown` 当成贴纸')
+  // ⚠️ 2026-10-20：**文字支已删**（文字层退役）⇒ 判据从"两支都在"翻成
+  //    "贴纸支显式认领 + 文字**不许有渲染分支**"。
+  //    `elementKindOf(selItem) === 'text'` 仍允许出现在**只读回显**（`type-ro` 那行按 kind 显示
+  //    「文字 / 贴纸」），但**不许**当 `v-if` / `v-else-if` 的渲染分支。
+  ok(/elementKindOf\(selItem\) === 'sticker'/.test(code),
+    '⑤ 贴纸支必须**显式认领**（`=== \'sticker\'`），不许用 `v-else` 兜 —— 那会把 `unknown` 当成贴纸')
+  ok(!/v-(?:if|else-if)="elementKindOf\(selItem\) === 'text'"/.test(code),
+    '⑤ **文字渲染分支不许回来**（文字层已退役；回来 = 用户能建、后端读时丢弃）')
 }
 
 // ---------------------------------------------------------------------------
@@ -333,4 +366,4 @@ if (fail) {
   for (const f of failures) console.log('  ✗ ' + f)
   process.exit(1)
 }
-console.log('✓ 界面上两条泳道、磁盘上仍同一条轨；`:key` 与 `emit` 各用各的键；认不出的 kind 照实报')
+console.log('✓ 贴纸泳道独立、磁盘上仍同一条轨（文字泳道已随文字层退役）；`:key` 与 `emit` 各用各的键；认不出的 kind 照实报')

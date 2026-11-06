@@ -86,12 +86,28 @@ pub fn kill_tree(pid: u32) {
     }
     #[cfg(not(windows))]
     {
-        // 负号 = 进程组；拿不到进程组时退回杀单个（孙进程由子进程退出时自行收尾）
-        let _ = yekitrim_core::process::cmd("kill")
-            .args(["-9", &pid.to_string()])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
+        if pid == 0 {
+            return;
+        }
+        // 我们的渲染子进程在 `run_polish_child` 里 `process_group(0)` 自成一组 ⇒
+        // **负 pid = 整个进程组**（子进程 + 它拉起的 ffmpeg / 底座孙进程）。
+        // 老版本起的子进程没有自成组（负 pid 找不到组）时退回杀单个，不至于一手不伸。
+        let kill = |target: &str| {
+            yekitrim_core::process::cmd("kill")
+                .args(["-9", target])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        };
+        if !kill(&format!("-{pid}"))
+            // 组已经没了（正常竞争）就别再对单个 pid 补刀 —— `kill` 会往 stderr 打一行
+            // "No such process"，污染渲染日志与测试输出。只有 pid 真的还活着才兜底。
+            && yekitrim_service::instancelock::process_alive(pid)
+        {
+            let _ = kill(&pid.to_string());
+        }
     }
 }
 
@@ -237,6 +253,60 @@ mod tests {
         let killed = sweep_orphans(&dir);
         assert!(killed.is_empty(), "不该杀掉不是渲染进程的 pid");
         assert!(!procs_dir(&dir).join("0002-000002.pid").exists(), "登记文件要清掉");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **Unix：取消渲染必须连孙进程一起收**（2026-10-05 移植报告 §3.2）。
+    ///
+    /// 根因：子进程没有自成进程组，而 `kill_tree` 又传的是**正** pid ⇒ 只杀
+    /// `yekitrim polish render` 自己，它拉起的 ffmpeg / 底座孙进程留在原组里继续跑。
+    /// 现在两侧一起改：spawn 时 `process_group(0)`、这里 `kill -9 -<pid>`。
+    /// 变异自证：把 `kill_tree` 改回正 pid ⇒ 本测试红（孙进程仍存活）。
+    #[cfg(unix)]
+    #[test]
+    fn kill_tree_reaps_grandchildren_in_its_process_group() {
+        use std::os::unix::process::CommandExt;
+        use std::time::Duration;
+        let dir = std::env::temp_dir().join(format!("yekitrim-killtree-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let pidfile = dir.join("grandchild.pid");
+        let script = format!("sleep 30 & echo $! > {}; wait", pidfile.display());
+        // 边界门禁：子进程一律走 core 的启动助手（Unix 上是透传，但规则全仓统一）。
+        let mut cmd = yekitrim_core::process::cmd("sh");
+        cmd.arg("-c")
+            .arg(script)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .process_group(0);
+        let mut child = cmd.spawn().expect("起测试父进程");
+        let pid = child.id();
+        let mut grandchild = None;
+        for _ in 0..100 {
+            if let Ok(raw) = std::fs::read_to_string(&pidfile) {
+                if let Ok(n) = raw.trim().parse::<u32>() {
+                    grandchild = Some(n);
+                    break;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let grandchild = grandchild.expect("孙进程应当起来并写出 pid");
+        assert!(
+            yekitrim_service::instancelock::process_alive(grandchild),
+            "孙进程 {grandchild} 没起来"
+        );
+        kill_tree(pid);
+        let _ = child.wait();
+        let mut dead = false;
+        for _ in 0..150 {
+            if !yekitrim_service::instancelock::process_alive(grandchild) {
+                dead = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(dead, "孙进程 {grandchild} 仍存活：kill_tree 没有杀整个进程组");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
