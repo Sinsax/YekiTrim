@@ -69,9 +69,11 @@
           </div>
         </div>
 
+        <!-- 同一行：字幕轨（2/3）+ 手动切片（1/3）；两者默认展开 -->
+        <div class="edit-row">
         <!-- 字幕轨道：默认展开（用户口径）；收起后只留标题行，要拖块/改字再展开。
              展开状态首帧同步读 localStorage（`useDisclosure`）—— 别改成 v-show，轨道挂载时要量宽度。 -->
-        <div class="card mt-12">
+        <div class="card">
           <div class="row spread mb-6">
             <b class="t m-0">字幕 {{ segments.length }} 条</b>
             <span class="row" style="gap:8px">
@@ -97,7 +99,7 @@
             @seek="seekTo"
           />
         </div>
-        <div class="card mt-12">
+        <div class="card">
           <!-- 手动切片：整块原样保留（判据 ⑳/㉔/㉕/㉙ 以这里的结构与缩进为锚，别重排）。 -->
           <details class="adv-blk manual-blk" :open="manualOpen" @toggle="syncManual">
             <summary data-cap="prepare.manual-slice" title="自己标入点/出点：多组 = 分段剪、合并输出">手动切片</summary>
@@ -165,9 +167,10 @@
           </div>
           </details>
         </div>
+        </div>
       </div>
 
-      <!-- 右：识别（一块卡，高级项默认折叠）。主按钮紧跟状态 chips，其余收进「处理选项」/「手动切片」。 -->
+      <!-- 右：识别（一块卡，高级项默认折叠）。主按钮紧跟状态 chips，其余收进「处理选项」。 -->
       <div class="side-col">
         <div class="card card-blk">
           <b class="t">识别</b>
@@ -1414,8 +1417,12 @@ onUnmounted(() => {
 .job-box { padding:10px; border:1px dashed var(--line); border-radius:var(--r-sm); background:var(--bg-soft); }
 /* ---- 简化后的披露区 / 横幅（右列只剩一块卡：主按钮 + 两个 <details>） ---- */
 /* 「处理选项」默认收起、「手动切片」默认展开；观感与设置页 `.form-adv` 同一套。 */
+/* 字幕轨 + 手动切片：同一行；字幕 2/3、手动切片至少 300px，窄屏再上下叠。 */
+.edit-row { display:grid; grid-template-columns:minmax(0,2fr) minmax(300px,1fr);
+  gap:12px; align-items:start; margin-top:12px; }
+@media (max-width: 1100px) { .edit-row { grid-template-columns:1fr; } }
 .adv-blk { margin-top:12px; border-top:1px dashed var(--line-soft); padding-top:6px; }
-/* 手动切片已挪到左栏「字幕」下面，自己带卡片边框 —— 不再重复顶部分隔线 / 上边距。 */
+/* 手动切片在自己的卡片里：不再重复顶部分隔线 / 上边距。 */
 .manual-blk { margin-top:0; border-top:none; padding-top:0; }
 .adv-blk > summary { cursor:pointer; font-weight:700; font-size:13px; color:var(--ink-dim);
   display:flex; align-items:center; gap:8px; padding:4px 0; list-style:none; }
