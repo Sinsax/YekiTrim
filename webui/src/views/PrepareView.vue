@@ -23,7 +23,7 @@
       <!-- LLM 未配置：**不拦路**（检测照跑，退化按弹幕/字幕热度 + 一个整段），只是提前说清结果。 -->
       <div v-if="llmMissing" class="llm-banner" title="在「设置 → AI 模型」里配好接口与密钥后，检测会按话题切成多个亮点">
         <Icon name="alert" :size="14" />
-        <span class="flex-1">未配置 AI 模型：这次只按弹幕/字幕热度找亮点，可能只得到一个整段。</span>
+        <span class="flex-1" title="没配 AI 时只按弹幕/字幕热度找亮点，可能只得到一个整段；配置后可提高分段质量">未配置 AI：只按弹幕/字幕热度找亮点</span>
         <router-link class="mini-btn flex-none" to="/settings/llm">去配置 AI</router-link>
       </div>
 
@@ -69,7 +69,7 @@
           </div>
         </div>
 
-        <!-- 字幕轨道：默认收起（只留一句"有多少条 + 保存状态"），要拖块/改字再展开。
+        <!-- 字幕轨道：默认展开（用户口径）；收起后只留标题行，要拖块/改字再展开。
              展开状态首帧同步读 localStorage（`useDisclosure`）—— 别改成 v-show，轨道挂载时要量宽度。 -->
         <div class="card mt-12">
           <div class="row spread mb-6">
@@ -79,7 +79,7 @@
               <button
                 class="mini-btn flex-none"
                 data-cap="prepare.subtitle-track"
-                :title="subsOpen ? '收起字幕轨道（编辑内容不会丢，已自动保存）' : '展开后能拖块改起止、改文本（改动自动保存）'"
+                :title="subsOpen ? '点块在上方属性条改文本/入点/出点，改动自动保存；收起不会丢内容' : '展开后能拖块改起止、改文本（改动自动保存）'"
                 @click="toggleSubs"
               >{{ subsOpen ? '收起编辑' : '展开编辑' }}</button>
             </span>
@@ -97,157 +97,9 @@
             @seek="seekTo"
           />
         </div>
-      </div>
-
-      <!-- 右：识别（一块卡，高级项默认折叠）。主按钮紧跟状态 chips，其余收进「处理选项」/「手动切片」。 -->
-      <div class="side-col">
-        <div class="card card-blk">
-          <b class="t">识别</b>
-          <div class="row" style="gap:6px;flex-wrap:wrap;margin:8px 0 10px">
-            <span class="chip" :class="chipClass('transcribe')" :title="transcribeChipTitle">识别声音 {{ chipText('transcribe') }}</span>
-            <span class="chip" :class="chipClass('detect')">找亮点 {{ chipText('detect') }}</span>
-            <span v-if="autoCut" class="chip" :class="chipClass('cut')" title="剪出片段（「处理选项」里可关自动剪出）">剪出片段 {{ chipText('cut') }}</span>
-          </div>
-
-          <!-- 主按钮（状态机见 primaryLabel / onPrimary）：没有事件时 = 一键处理，
-               已有事件 = 去挑片段；运行中禁用，进度与「停止」在下面的任务盒。 -->
-          <button
-            class="btn btn-primary run-btn"
-            data-cap="prepare.run-all"
-            :disabled="primaryDisabled"
-            :title="primaryTitle"
-            @click="onPrimary"
-          >
-            <span v-if="jobRunning" class="spinner"></span>
-            {{ primaryLabel }}
-          </button>
-          <div class="hint mt-6" title="hybrid 模式要 qwen3-asr（879 MB），single 只要 SenseVoice（165 MB）；缺模型时会在转写前自动下载，进度见任务">首次会先下载字幕模型（约 879 MB / 165 MB），进度见任务</div>
-
-          <div v-if="job.id" class="job-box mt-12">
-            <div class="row spread small">
-              <b>{{ kindText(job.kind) }}</b>
-              <span class="chip" :class="statusClass(job.status)">{{ statusText(job.status) }}</span>
-            </div>
-            <div class="muted small mt-2">{{ job.message || '运行中' }}</div>
-            <div v-if="job.total > 0" class="progress mt-6"><div :style="{ width: jobPct + '%' }"></div></div>
-            <div class="row mt-6" style="gap:6px">
-              <button class="mini-btn flex-none" @click="openJobs()">查看任务</button>
-              <button v-if="jobRunning" class="mini-btn danger flex-none" :disabled="canceling" @click="cancelJob">
-                <Icon name="x" :size="10" /> 停止
-              </button>
-            </div>
-          </div>
-
-          <!-- 处理选项：ASR 模式 / 主播名 / 分步处理 / 弹幕与字幕清单 / 重新处理。默认收起。 -->
-          <details class="adv-blk" :open="materialsOpen" @toggle="syncMaterials">
-            <summary data-cap="prepare.materials" title="ASR 模式、主播名、分步处理、弹幕/字幕清单与重新处理">处理选项</summary>
-
-            <!-- 自动剪出：开 = 主按钮一次跑完（识别 → 找亮点 → 剪出片段）；
-                 关 = 只到找亮点（主按钮文案变「开始识别」），片段到切片页自己挑。 -->
-            <label class="opt-row mt-6" :class="{ dis: busy }" title="开：一次点击跑完识别 → 找亮点 → 剪出片段；关：只到找亮点">
-              <input type="checkbox" :checked="autoCut" :disabled="busy" @change="setAutoCut($event.target.checked)">
-              <span>自动剪出片段</span>
-            </label>
-
-          <!-- ASR 模式：写进本工程 `yekitrim.toml` 的 `[asr] mode`（merge 时覆盖全局配置，
-               接口走 `PUT /api/project-data/config {patch}` —— 保留注释与其他 section）。
-               **两种模式各只能出一次产物**（用户要求"输出一次绑定一次、只能两次"）：
-               跑过的模式槽就占了（`assets.slots`，与后端 `assets::slot_bound` 同口径），
-               那一格的「跑 ASR」置灰；两格都占满时模式下拉也失去意义（一并置灰）。 -->
-          <div class="asr-row" :title="asrTip">
-            <span class="asr-name">ASR 模式</span>
-            <select
-              v-model="asrMode"
-              class="asr-select"
-              data-cap="prepare.asr-mode"
-              :disabled="!canPickAsr || busy"
-              @change="saveAsrMode"
-            >
-              <option value="hybrid">hybrid · 更准（双模型）</option>
-              <option value="single">single · 更快（单模型）</option>
-            </select>
-            <!-- 只识别 = 只跑 ASR 转写（**不接检测**）：换模式再出一份字幕的入口。
-                 两种模式各一次，跑过的模式槽就占了（`canRunAsr`）。 -->
-            <button
-              class="mini-btn flex-none"
-              data-cap="prepare.run-step"
-              :disabled="!canRunAsr || busy"
-              :title="asrRunTitle"
-              @click="runAsr"
-            >{{ canRunAsr ? '只识别' : '已跑过' }}</button>
-          </div>
-          <div class="hint asr-hint">{{ asrHint }}</div>
-          <!-- 主播名：全局 `[detection] vtuber_name` 只是**默认值**，每个工程可以自己写一份
-               （写进 `yekitrim.toml` 的 `[detection] vtuber_name`，merge 时覆盖全局）。
-               ⚠️ `merge` 对**空串不覆盖** ⇒ 清空就是"恢复跟随全局"，不需要额外的开关。 -->
-          <div class="asr-row">
-            <span class="asr-name">主播名</span>
-            <input
-              v-model="vtuberName"
-              class="fld-input flex-1"
-              placeholder="留空 = 跟随全局"
-              :disabled="busy"
-              @change="saveVtuberName"
-            >
-            <span class="muted small" :title="vtuberHint">生效：{{ effectiveVtuber || '（未设）' }}</span>
-          </div>
-
-          <!-- 分步：只找亮点（只跑检测、不剪片段）。「只识别」在上面 ASR 那一行（只转写）。 -->
-          <div class="asr-row mt-8" title="只跑事件检测：整份覆盖 events.json，已剪片段不受影响">
-            <span class="asr-name">分步</span>
-            <button
-              class="mini-btn flex-1 jc-center"
-              :disabled="!hasTranscript || !hasVideo || busy"
-              title="只找亮点：只跑事件检测，不剪片段"
-              @click="runDetectOnly"
-            >只找亮点</button>
-          </div>
-          <div class="hint mt-6" title="只识别 = 只转写（产物进字幕列表）；只找亮点 = 只跑检测（不剪片段）">只识别 = 只转写；只找亮点 = 只检测</div>
-
-          <!-- 输入素材：弹幕 / 字幕都是**随时可换的输入**（生效值写进 yekitrim.toml），不是产物。
-               清单式（两块的显示与交互完全一致）：
-               - ASR 链路产物带 `ASR·<mode>` 标记、**不可删** —— 它就是那个模式用掉的转写名额；
-               - 用户自己选的（含 admin 浏览服务器选的）可删，选中即加入列表；
-               - 点「切换」立刻改生效值：弹幕决定热度评分与 clip.dm.srt，
-                 字幕是事件检测的输入 —— 都要重新检测才会用上。 -->
-          <div class="assets">
-            <MaterialList
-              :items="dmItems"
-              kind="danmaku"
-              :busy="busy"
-              empty-text="还没选弹幕 —— 热度评分会退化成只用字幕密度，切片也不生成 clip.dm.srt"
-              @pick="openPicker('danmaku')"
-              @activate="activate('danmaku', $event)"
-              @remove="removeItem('danmaku', $event)"
-            />
-            <div class="hint mt-6">{{ dmHint }}</div>
-            <MaterialList
-              class="mt-10"
-              :items="txItems"
-              kind="transcript"
-              :busy="busy"
-              :empty-text="txEmptyText"
-              @pick="openPicker('transcript')"
-              @activate="activate('transcript', $event)"
-              @remove="removeItem('transcript', $event)"
-            />
-            <div class="hint mt-6">{{ assetsHint }}</div>
-          </div>
-
-            <!-- 重新找亮点：只重跑事件检测（整份覆盖 events.json），不重切片段。
-                 已剪片段不受影响；要重切去「挑片段」页点「一键剪出全部」。 -->
-            <button
-              v-if="hasEvents || hasClips"
-              class="btn btn-danger block-btn mt-6"
-              data-cap="prepare.redetect"
-              :disabled="busy || !hasVideo"
-              :title="redetectTitle"
-              @click="onRedetect"
-            >重新找亮点</button>
-          </details>
-
+        <div class="card mt-12">
           <!-- 手动切片：整块原样保留（判据 ⑳/㉔/㉕/㉙ 以这里的结构与缩进为锚，别重排）。 -->
-          <details class="adv-blk" :open="manualOpen" @toggle="syncManual">
+          <details class="adv-blk manual-blk" :open="manualOpen" @toggle="syncManual">
             <summary data-cap="prepare.manual-slice" title="自己标入点/出点：多组 = 分段剪、合并输出">手动切片</summary>
           <!-- 多段（粗剪拓展 2026-10-06）：一组入点/出点 = 一条片段；**多组 = 分段剪、合并输出**。
                段间空隙里"有内容"的部分会被丢掉，无字幕的保留（交给后处理「去静音」变屏蔽区间）。
@@ -311,10 +163,150 @@
                     @click="sliceNow">切片</button>
             <button class="mini-btn" :disabled="!canSlice" title="补类型 / 详情（标题已填则直接切）" @click="openAdd">更多设置</button>
           </div>
-          <div class="hint mt-6" title="标题只用于人工查看，不影响目录与文件名；没填标题会打开表单">
-            标题只用于展示<span class="mono">（clip-NN/clip.mp4）</span>
-          </div>
           </details>
+        </div>
+      </div>
+
+      <!-- 右：识别（一块卡，高级项默认折叠）。主按钮紧跟状态 chips，其余收进「处理选项」/「手动切片」。 -->
+      <div class="side-col">
+        <div class="card card-blk">
+          <b class="t">识别</b>
+          <div class="row" style="gap:6px;flex-wrap:wrap;margin:8px 0 10px">
+            <span class="chip" :class="chipClass('transcribe')" :title="transcribeChipTitle">识别声音 {{ chipText('transcribe') }}</span>
+            <span class="chip" :class="chipClass('detect')">找亮点 {{ chipText('detect') }}</span>
+            <span v-if="autoCut" class="chip" :class="chipClass('cut')" title="剪出片段（「处理选项」里可关自动剪出）">剪出片段 {{ chipText('cut') }}</span>
+          </div>
+
+          <!-- 主按钮（状态机见 primaryLabel / onPrimary）：没有事件时 = 一键处理，
+               已有事件 = 去挑片段；运行中禁用，进度与「停止」在下面的任务盒。 -->
+          <button
+            class="btn btn-primary run-btn"
+            data-cap="prepare.run-all"
+            :disabled="primaryDisabled"
+            :title="primaryTitle"
+            @click="onPrimary"
+          >
+            <span v-if="jobRunning" class="spinner"></span>
+            {{ primaryLabel }}
+          </button>
+          <div v-if="job.id" class="job-box mt-12">
+            <div class="row spread small">
+              <b>{{ kindText(job.kind) }}</b>
+              <span class="chip" :class="statusClass(job.status)">{{ statusText(job.status) }}</span>
+            </div>
+            <div class="muted small mt-2">{{ job.message || '运行中' }}</div>
+            <div v-if="job.total > 0" class="progress mt-6"><div :style="{ width: jobPct + '%' }"></div></div>
+            <div class="row mt-6" style="gap:6px">
+              <button class="mini-btn flex-none" @click="openJobs()">查看任务</button>
+              <button v-if="jobRunning" class="mini-btn danger flex-none" :disabled="canceling" @click="cancelJob">
+                <Icon name="x" :size="10" /> 停止
+              </button>
+            </div>
+          </div>
+
+          <!-- 处理选项：ASR 模式 / 主播名 / 分步处理 / 弹幕与字幕清单 / 重新处理。默认收起。 -->
+          <details class="adv-blk" :open="materialsOpen" @toggle="syncMaterials">
+            <summary data-cap="prepare.materials" title="ASR 模式、主播名、分步处理、弹幕/字幕清单与重新处理">处理选项</summary>
+
+            <!-- 自动剪出：开 = 主按钮一次跑完（识别 → 找亮点 → 剪出片段）；
+                 关 = 只到找亮点（主按钮文案变「开始识别」），片段到切片页自己挑。 -->
+            <label class="opt-row mt-6" :class="{ dis: busy }" title="开：一次点击跑完识别 → 找亮点 → 剪出片段；关：只到找亮点">
+              <input type="checkbox" :checked="autoCut" :disabled="busy" @change="setAutoCut($event.target.checked)">
+              <span>自动剪出片段</span>
+            </label>
+
+          <!-- ASR 模式：写进本工程 `yekitrim.toml` 的 `[asr] mode`（merge 时覆盖全局配置，
+               接口走 `PUT /api/project-data/config {patch}` —— 保留注释与其他 section）。
+               **两种模式各只能出一次产物**（用户要求"输出一次绑定一次、只能两次"）：
+               跑过的模式槽就占了（`assets.slots`，与后端 `assets::slot_bound` 同口径），
+               那一格的「跑 ASR」置灰；两格都占满时模式下拉也失去意义（一并置灰）。 -->
+          <div class="asr-row" :title="asrTip + '。' + asrHint">
+            <span class="asr-name">ASR 模式</span>
+            <select
+              v-model="asrMode"
+              class="asr-select"
+              data-cap="prepare.asr-mode"
+              :disabled="!canPickAsr || busy"
+              @change="saveAsrMode"
+            >
+              <option value="hybrid">hybrid · 更准（双模型）</option>
+              <option value="single">single · 更快（单模型）</option>
+            </select>
+            <!-- 只识别 = 只跑 ASR 转写（**不接检测**）：换模式再出一份字幕的入口。
+                 两种模式各一次，跑过的模式槽就占了（`canRunAsr`）。 -->
+            <button
+              class="mini-btn flex-none"
+              data-cap="prepare.run-step"
+              :disabled="!canRunAsr || busy"
+              :title="asrRunTitle"
+              @click="runAsr"
+            >{{ canRunAsr ? '只识别' : '已跑过' }}</button>
+          </div>
+          <!-- 主播名：全局 `[detection] vtuber_name` 只是**默认值**，每个工程可以自己写一份
+               （写进 `yekitrim.toml` 的 `[detection] vtuber_name`，merge 时覆盖全局）。
+               ⚠️ `merge` 对**空串不覆盖** ⇒ 清空就是"恢复跟随全局"，不需要额外的开关。 -->
+          <div class="asr-row">
+            <span class="asr-name">主播名</span>
+            <input
+              v-model="vtuberName"
+              class="fld-input flex-1"
+              placeholder="留空 = 跟随全局"
+              :title="vtuberHint + ' · 生效：' + (effectiveVtuber || '未设')"
+              :disabled="busy"
+              @change="saveVtuberName"
+            >
+          </div>
+
+          <!-- 分步：只找亮点（只跑检测、不剪片段）。「只识别」在上面 ASR 那一行（只转写）。 -->
+          <button
+            class="mini-btn block-btn mt-8"
+            :disabled="!hasTranscript || !hasVideo || busy"
+            title="只找亮点：只跑事件检测，不剪片段"
+            @click="runDetectOnly"
+          >只找亮点</button>
+
+          <!-- 输入素材：弹幕 / 字幕都是**随时可换的输入**（生效值写进 yekitrim.toml），不是产物。
+               清单式（两块的显示与交互完全一致）：
+               - ASR 链路产物带 `ASR·<mode>` 标记、**不可删** —— 它就是那个模式用掉的转写名额；
+               - 用户自己选的（含 admin 浏览服务器选的）可删，选中即加入列表；
+               - 点「切换」立刻改生效值：弹幕决定热度评分与 clip.dm.srt，
+                 字幕是事件检测的输入 —— 都要重新检测才会用上。 -->
+          <div class="assets">
+            <MaterialList
+              :items="dmItems"
+              kind="danmaku"
+              :busy="busy"
+              :title="dmHint"
+              empty-text="还没选弹幕"
+              @pick="openPicker('danmaku')"
+              @activate="activate('danmaku', $event)"
+              @remove="removeItem('danmaku', $event)"
+            />
+            <MaterialList
+              class="mt-10"
+              :items="txItems"
+              kind="transcript"
+              :busy="busy"
+              :title="assetsHint"
+              :empty-text="txEmptyText"
+              @pick="openPicker('transcript')"
+              @activate="activate('transcript', $event)"
+              @remove="removeItem('transcript', $event)"
+            />
+          </div>
+
+            <!-- 重新找亮点：只重跑事件检测（整份覆盖 events.json），不重切片段。
+                 已剪片段不受影响；要重切去「挑片段」页点「一键剪出全部」。 -->
+            <button
+              v-if="hasEvents || hasClips"
+              class="btn btn-danger block-btn mt-6"
+              data-cap="prepare.redetect"
+              :disabled="busy || !hasVideo"
+              :title="redetectTitle"
+              @click="onRedetect"
+            >重新找亮点</button>
+          </details>
+
         </div>
       </div>
     </div>
@@ -438,10 +430,11 @@ const statusLoading = ref(true)
 const notFound = ref(false)
 /** `/api/health.llm === false`：只多一句提示，**不挡任何操作**（检测会退化成热度 + 一个整段）。 */
 const llmMissing = ref(false)
-/** 三块可折叠区的展开状态：首帧同步读 localStorage（`useDisclosure`），避免先展开再收起闪一下。 */
+/** 三块可折叠区的展开状态：首帧同步读 localStorage（`useDisclosure`），避免先展开再收起闪一下。
+ *  ⚠️ 字幕轨与手动切片**默认展开**（用户口径）；键带 `.v2`，避免旧版默认收起时写下的 '0' 继续压着。 */
 const { open: materialsOpen, set: setMaterialsOpen } = useDisclosure('prepare.materials', false)
-const { open: manualOpen, set: setManualOpen } = useDisclosure('prepare.manualSlice', false)
-const { open: subsOpen, set: setSubsOpen } = useDisclosure('prepare.subtitles', false)
+const { open: manualOpen, set: setManualOpen } = useDisclosure('prepare.manualSlice.v2', true)
+const { open: subsOpen, set: setSubsOpen } = useDisclosure('prepare.subtitles.v2', true)
 /** 自动剪出片段（默认开）：开 = 主按钮一键跑完识别 → 找亮点 → 剪出片段；关 = 只到找亮点。 */
 const AUTO_CUT_KEY = 'yekitrim.ui.prepare.autoCut'
 const autoCut = ref(readAutoCut())
@@ -544,7 +537,7 @@ const saveHint = computed(() => {
   if (saveState.value === 'saving') return '保存中…'
   if (saveState.value === 'error') return '保存失败：' + saveError.value
   if (saveState.value === 'saved') return '已保存 ' + saveAt.value
-  return subsOpen.value ? '点块在上方属性条改文本与入点 / 出点，改动自动保存' : '展开后可拖块改字幕'
+  return subsOpen.value ? '点块编辑' : '展开编辑'
 })
 
 const jobRunning = computed(() => job.status === 'running' || job.status === 'queued')
@@ -578,8 +571,8 @@ const hasTranscript = computed(
  *  而清单（`[project.materials].transcript`）里一条都没登记。两句话指向的下一步完全不同：
  *  前者"重新检测照常生效"，后者才需要去跑 ASR / 选文件。 */
 const txEmptyText = computed(() => (segments.value.length > 0
-  ? `清单里没登记 —— 当前用 transcript.json（${segments.value.length} 段）`
-  : '还没有字幕 —— 用处理选项里的「只识别」生成，或自己选一份字幕文件（srt / json）'))
+  ? `当前 transcript.json（${segments.value.length} 段）`
+  : '还没有字幕'))
 /** 已有检测结果（`status.files` 里带「事件」那一项）→ 主按钮去挑片段 / 重新处理要二次确认 */
 const hasEvents = computed(() => hasFile('事件'))
 /** 已有剪切产物（`clips/clips_order.txt`）→ 重跑全流程前也要确认（片段不会被删，但会被重切） */
@@ -620,8 +613,9 @@ const primaryTitle = computed(() => {
   if (!hasTranscript.value && !canRunAsr.value) {
     return `「${asrMode.value}」模式的 ASR 已经跑过 —— 从处理选项的字幕列表里选一份，或换个模式再跑`
   }
-  if (autoCut.value) return '一次点击跑完：转写 → 找亮点 → 剪出片段（已完成的阶段会跳过）'
-  return '一次点击跑完：转写 → 找亮点（不剪片段，片段到切片页自己挑）'
+  const modelHint = hasTranscript.value ? '' : '；首次会下载模型（hybrid 879 MB / single 165 MB）'
+  if (autoCut.value) return `一次点击跑完：转写 → 找亮点 → 剪出片段（已完成的阶段会跳过）${modelHint}`
+  return `一次点击跑完：转写 → 找亮点（不剪片段，片段到切片页自己挑）${modelHint}`
 })
 /** 一键处理成功后的「下一步」文案：片段数只有在这次真的切了片段时才报（分步跑只报亮点数）。 */
 const completedText = computed(() => {
@@ -1419,8 +1413,10 @@ onUnmounted(() => {
 .hint { font-size:12px; color:var(--ink-dim); }
 .job-box { padding:10px; border:1px dashed var(--line); border-radius:var(--r-sm); background:var(--bg-soft); }
 /* ---- 简化后的披露区 / 横幅（右列只剩一块卡：主按钮 + 两个 <details>） ---- */
-/* 「处理选项」「手动切片」：默认收起；观感与设置页 `.form-adv` 同一套。 */
+/* 「处理选项」默认收起、「手动切片」默认展开；观感与设置页 `.form-adv` 同一套。 */
 .adv-blk { margin-top:12px; border-top:1px dashed var(--line-soft); padding-top:6px; }
+/* 手动切片已挪到左栏「字幕」下面，自己带卡片边框 —— 不再重复顶部分隔线 / 上边距。 */
+.manual-blk { margin-top:0; border-top:none; padding-top:0; }
 .adv-blk > summary { cursor:pointer; font-weight:700; font-size:13px; color:var(--ink-dim);
   display:flex; align-items:center; gap:8px; padding:4px 0; list-style:none; }
 .adv-blk > summary::-webkit-details-marker { display:none; }
