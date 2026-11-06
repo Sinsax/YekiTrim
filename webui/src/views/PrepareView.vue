@@ -36,6 +36,44 @@
       />
       <div v-if="completedHint" class="hint completed-hint" :title="completedHintTitle">{{ completedHint }}</div>
 
+        <div class="card flow-card mb-12">
+          <b class="t">识别</b>
+          <div class="row" style="gap:6px;flex-wrap:wrap;margin:8px 0 10px">
+            <span class="chip" :class="chipClass('transcribe')" :title="transcribeChipTitle">识别声音 {{ chipText('transcribe') }}</span>
+            <span class="chip" :class="chipClass('detect')">找亮点 {{ chipText('detect') }}</span>
+            <span v-if="autoCut" class="chip" :class="chipClass('cut')" title="剪出片段（「处理选项」里可关自动剪出）">剪出片段 {{ chipText('cut') }}</span>
+          </div>
+
+          <!-- 主按钮（状态机见 primaryLabel / onPrimary）：没有事件时 = 一键处理，
+               已有事件 = 去挑片段；运行中禁用，进度与「停止」在下面的任务盒。 -->
+          <button
+            class="btn btn-primary run-btn"
+            data-cap="prepare.run-all"
+            :disabled="primaryDisabled"
+            :title="primaryTitle"
+            @click="onPrimary"
+          >
+            <span v-if="jobRunning" class="spinner"></span>
+            {{ primaryLabel }}
+          </button>
+          <div v-if="job.id" class="job-box mt-12">
+            <div class="row spread small">
+              <b>{{ kindText(job.kind) }}</b>
+              <span class="chip" :class="statusClass(job.status)">{{ statusText(job.status) }}</span>
+            </div>
+            <div class="muted small mt-2">{{ job.message || '运行中' }}</div>
+            <div v-if="job.total > 0" class="progress mt-6"><div :style="{ width: jobPct + '%' }"></div></div>
+            <div class="row mt-6" style="gap:6px">
+              <button class="mini-btn flex-none" @click="openJobs()">查看任务</button>
+              <button v-if="jobRunning" class="mini-btn danger flex-none" :disabled="canceling" @click="cancelJob">
+                <Icon name="x" :size="10" /> 停止
+              </button>
+            </div>
+          </div>
+
+
+
+        </div>
       <div class="grid cols-main">
       <!-- 左：播放器 + 字幕轨道 + 切片标记 -->
       <div>
@@ -97,7 +135,12 @@
             @seek="seekTo"
           />
         </div>
-        <div class="card mt-12">
+
+      </div>
+
+      <!-- 右：识别（一块卡，高级项默认折叠）。主按钮紧跟状态 chips，其余收进「处理选项」。 -->
+      <div class="side-col">
+        <div class="card">
           <!-- 处理选项：ASR 模式 / 主播名 / 分步处理 / 弹幕与字幕清单 / 重新处理。默认收起。 -->
           <details class="adv-blk materials-blk" :open="materialsOpen" @toggle="syncMaterials">
             <summary data-cap="prepare.materials" title="ASR 模式、主播名、分步处理、弹幕/字幕清单与重新处理">处理选项</summary>
@@ -201,47 +244,9 @@
             >重新找亮点</button>
           </details>
         </div>
-      </div>
-
-      <!-- 右：识别（一块卡，高级项默认折叠）。主按钮紧跟状态 chips，其余收进「处理选项」。 -->
-      <div class="side-col">
-        <div class="card card-blk">
-          <b class="t">识别</b>
-          <div class="row" style="gap:6px;flex-wrap:wrap;margin:8px 0 10px">
-            <span class="chip" :class="chipClass('transcribe')" :title="transcribeChipTitle">识别声音 {{ chipText('transcribe') }}</span>
-            <span class="chip" :class="chipClass('detect')">找亮点 {{ chipText('detect') }}</span>
-            <span v-if="autoCut" class="chip" :class="chipClass('cut')" title="剪出片段（「处理选项」里可关自动剪出）">剪出片段 {{ chipText('cut') }}</span>
-          </div>
-
-          <!-- 主按钮（状态机见 primaryLabel / onPrimary）：没有事件时 = 一键处理，
-               已有事件 = 去挑片段；运行中禁用，进度与「停止」在下面的任务盒。 -->
-          <button
-            class="btn btn-primary run-btn"
-            data-cap="prepare.run-all"
-            :disabled="primaryDisabled"
-            :title="primaryTitle"
-            @click="onPrimary"
-          >
-            <span v-if="jobRunning" class="spinner"></span>
-            {{ primaryLabel }}
-          </button>
-          <div v-if="job.id" class="job-box mt-12">
-            <div class="row spread small">
-              <b>{{ kindText(job.kind) }}</b>
-              <span class="chip" :class="statusClass(job.status)">{{ statusText(job.status) }}</span>
-            </div>
-            <div class="muted small mt-2">{{ job.message || '运行中' }}</div>
-            <div v-if="job.total > 0" class="progress mt-6"><div :style="{ width: jobPct + '%' }"></div></div>
-            <div class="row mt-6" style="gap:6px">
-              <button class="mini-btn flex-none" @click="openJobs()">查看任务</button>
-              <button v-if="jobRunning" class="mini-btn danger flex-none" :disabled="canceling" @click="cancelJob">
-                <Icon name="x" :size="10" /> 停止
-              </button>
-            </div>
-          </div>
-
+        <div class="card">
           <!-- 手动切片：整块原样保留（判据 ⑳/㉔/㉕/㉙ 以这里的结构与缩进为锚，别重排）。 -->
-          <details class="adv-blk" :open="manualOpen" @toggle="syncManual">
+          <details class="adv-blk manual-blk" :open="manualOpen" @toggle="syncManual">
             <summary data-cap="prepare.manual-slice" title="自己标入点/出点：多组 = 分段剪、合并输出">手动切片</summary>
           <!-- 多段（粗剪拓展 2026-10-06）：一组入点/出点 = 一条片段；**多组 = 分段剪、合并输出**。
                段间空隙里"有内容"的部分会被丢掉，无字幕的保留（交给后处理「去静音」变屏蔽区间）。
@@ -306,8 +311,6 @@
             <button class="mini-btn" :disabled="!canSlice" title="补类型 / 详情（标题已填则直接切）" @click="openAdd">更多设置</button>
           </div>
           </details>
-
-
         </div>
       </div>
     </div>
@@ -1375,7 +1378,7 @@ onUnmounted(() => {
   -webkit-text-stroke:0.625cqw #403c3b; paint-order:stroke fill; }
 .preview-video { width:100%; max-height:62vh; object-fit:contain; background:#000; border-radius:var(--r-sm); display:block; }
 /* 右列：预处理 + 切片两块上下相邻，顶部对齐（不被左列的视频拉长） */
-.side-col { display:flex; flex-direction:column; align-self:start; min-width:0; }
+.side-col { display:flex; flex-direction:column; gap:12px; align-self:start; min-width:0; }
 /* 切片块里的入点/出点读数：与左侧「标记」按钮同一行，占满剩余宽度。
    注意 flex-basis 必须写成 0 —— 全局 `input { width:100% }` 会让基线是整行宽，
    按钮被挤到上一行（flex-wrap 下就变成两块各占一行）。 */
@@ -1401,6 +1404,12 @@ onUnmounted(() => {
    `merge_overlapping_ranges`）—— 琥珀色，只在真重叠时出现，别做成常驻 */
 .seg-overlap { color:var(--amber-deep); font-size:11px; white-space:nowrap; }
 .run-btn { width:100%; justify-content:center; margin-bottom:8px; }
+/* 识别流程卡在 grid 上方：标题/状态 chips 在左，主按钮在右，任务盒另起一行。 */
+.flow-card { display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; }
+.flow-card > .t { flex:none; }
+.flow-card > .row { flex:1 1 auto; margin:0 !important; }
+.flow-card > .run-btn { width:auto; min-width:180px; margin:0 0 0 auto; }
+.flow-card > .job-box { flex-basis:100%; margin-top:0; }
 /* 输入素材（弹幕 / 字幕）两块清单：每块自带分隔虚线（MaterialList），这里别再画一条，
    否则第一块上面会出现双线。 */
 .assets { margin-bottom:10px; }
@@ -1416,8 +1425,8 @@ onUnmounted(() => {
 /* ---- 简化后的披露区 / 横幅（右列只剩一块卡：主按钮 + 两个 <details>） ---- */
 /* 「处理选项」默认收起、「手动切片」默认展开；观感与设置页 `.form-adv` 同一套。 */
 .adv-blk { margin-top:12px; border-top:1px dashed var(--line-soft); padding-top:6px; }
-/* 处理选项挪到左栏字幕下面：卡片自带边框，不再重复顶部分隔线 / 上边距。 */
-.materials-blk { margin-top:0; border-top:none; padding-top:0; }
+/* 处理选项 / 手动切片各自在右栏卡片里：不再重复顶部分隔线 / 上边距。 */
+.materials-blk, .manual-blk { margin-top:0; border-top:none; padding-top:0; }
 .adv-blk > summary { cursor:pointer; font-weight:700; font-size:13px; color:var(--ink-dim);
   display:flex; align-items:center; gap:8px; padding:4px 0; list-style:none; }
 .adv-blk > summary::-webkit-details-marker { display:none; }
