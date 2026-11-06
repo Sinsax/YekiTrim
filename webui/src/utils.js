@@ -266,27 +266,28 @@ export const STAGE_EVENTS_READY = 3
 // 切片阶段跑完（output/clips/clips_order.txt 存在）的 stage
 export const STAGE_CLIPS_DONE = 4
 
-// 三段流水线（与侧栏/面包屑共用）
+// 三段流水线（与侧栏/面包屑共用）。
+// `name` = 一级界面白话名；`tech` = 副标题/tooltip 里的技术名（路由 key 仍是 prepare/slices/polish）。
 export const STEPS = [
-  { key: 'prepare', name: '预处理' },
-  { key: 'slices', name: '切片' },
-  { key: 'polish', name: '精修' }
+  { key: 'prepare', name: '识别', tech: '预处理（转写 + 事件检测）' },
+  { key: 'slices', name: '挑片段', tech: '切片（按事件剪出 clip-NN）' },
+  { key: 'polish', name: '出片', tech: '精修（分段/运镜/贴纸/封面）' }
 ]
 
 // 设置页的子页（与路由 / 页内标签条 / 面包屑共用）：key 既是路径段也是路由名后缀（settings-<key>）。
 // 顺序 = 标签条顺序；`/settings` 落到第一项。
 export const SETTINGS_SECTIONS = [
-  { key: 'config', label: '程序配置', sub: 'ASR / 检测 / 剪切，写入 .yekitrim/config.toml' },
+  { key: 'config', label: '识别与检测', sub: '转写 / 检测 / 剪切，写入 .yekitrim/config.toml' },
   // ⚠️ 副标题要带上"提示词"：那一组写的是 **config.toml 的 [detection]**（不是 llm.toml），
   //    只是摆在这一页。不写出来，用户会以为这页所有东西都落在 llm.toml 里。
-  { key: 'llm', label: 'LLM 配置', sub: '接口 / 密钥 / 模型 / 并发（llm.toml）· 提示词与参考标题（config.toml）' },
+  { key: 'llm', label: 'AI 模型', sub: '接口 / 密钥 / 模型 / 并发（llm.toml）· 提示词与参考标题（config.toml）' },
   // 本地免登录模式下整页不显示（没有注册/邀请这回事）—— `localHidden` 由
   // SettingsView 的标签过滤与 router 的守卫共同执行，两处都读 `stores/health.js`。
   // ⚠️ ASR 模型管理**不在这里**：它搬去首页当「运行状况」面板了（那是全机共享的资源，
   //    跟"谁在登录"无关，摆在账号页只会让人以为它是按用户分的）。
   { key: 'account', label: '账号', sub: '注册与邀请码', localHidden: true },
-  { key: 'integrations', label: '系统集成', sub: '采集（录播姬 / Webhook）与 B 站链接下载' },
-  { key: 'monitor', label: '用量与日志', sub: 'LLM 用量账本 与 运行日志' }
+  { key: 'integrations', label: '采集与下载', sub: '录播姬 / Webhook 与 B 站链接下载' },
+  { key: 'monitor', label: '用量与诊断', sub: 'LLM 用量账本 与 运行日志' }
 ]
 
 /** 路由名（settings-llm）或子页 key（llm）→ 子页定义；认不出来时回第一项（程序配置）。 */
@@ -318,13 +319,13 @@ export function stageInfo(project, detail) {
   if (slicesDone) progress = 3
 
   const badges = {
-    prepare: prepareDone ? '已预处理' : (stage > 0 ? `处理中 · ${stage}/3` : '待预处理'),
+    prepare: prepareDone ? '已识别' : (stage > 0 ? `处理中 · ${stage}/3` : '待识别'),
     slices: hasDetail
-      ? (hasClips ? (uncut > 0 ? `已切 ${clips} · 待切 ${uncut}` : `已切 ${clips}`) : (prepareDone ? '待切片' : '待预处理'))
-      : (slicesDone ? '已切片' : (prepareDone ? '待切片' : '待预处理')),
+      ? (hasClips ? (uncut > 0 ? `已剪 ${clips} · 待剪 ${uncut}` : `已剪 ${clips}`) : (prepareDone ? '待剪片段' : '待识别'))
+      : (slicesDone ? '已剪片段' : (prepareDone ? '待剪片段' : '待识别')),
     polish: hasDetail
-      ? (hasClips ? `精修 ${polished}/${clips}` : '待切片')
-      : (hasClips || stage >= STAGE_CLIPS_DONE ? '精修 —' : '待切片')
+      ? (hasClips ? `出片 ${polished}/${clips}` : '待剪片段')
+      : (hasClips || stage >= STAGE_CLIPS_DONE ? '出片 —' : '待剪片段')
   }
   const done = { prepare: prepareDone, slices: slicesDone, polish: polishDone }
   return { progress, badges, done, clips, uncut, polished, hasClips, hasDetail }
@@ -333,12 +334,12 @@ export function stageInfo(project, detail) {
 /** 进度位 → 下一步（文案 + 路由 step）。 */
 export function nextStep(project, detail) {
   const { progress } = stageInfo(project, detail)
-  if (progress <= 1) return { label: '打开预处理', step: 'prepare' }
-  if (progress === 2) return { label: '去切片', step: 'slices' }
-  return { label: '去精修', step: 'polish' }
+  if (progress <= 1) return { label: '去识别', step: 'prepare' }
+  if (progress === 2) return { label: '去挑片段', step: 'slices' }
+  return { label: '去出片', step: 'polish' }
 }
 
-/** 项目入口路由：预处理完成 → 切片页，否则 → 预处理页。 */
+/** 项目入口路由：识别完成 → 挑片段页，否则 → 识别页。 */
 export function projectEntryPath(pid, stage) {
   const view = Number(stage || 0) >= STAGE_EVENTS_READY ? 'slices' : 'prepare'
   return `/p/${encodeURIComponent(pid)}/${view}`

@@ -1,0 +1,397 @@
+{
+  "version": 1,
+  "updated": "2026-11-06",
+  "why": "WebUI 简化不允许静默丢入口：每个面向用户的能力登记一行，源码里用 data-cap 锚点标注；check-simplify.mjs 负责双向校验。只登记能力入口，不登记每个装饰按钮，避免维护爆炸。",
+  "surfaces": {
+    "home": { "route": "workbench", "first_screen_budget": 12, "floor": 7 },
+    "prepare": { "route": "project-prepare", "first_screen_budget": 8, "floor": 7 },
+    "slices": { "route": "project-slices", "first_screen_budget": 8, "floor": 4 },
+    "polish": { "route": "project-polish-clip", "first_screen_budget": 10, "floor": 6 },
+    "settings": { "route": "settings-config", "first_screen_budget": 6, "floor": 5 }
+  },
+  "capabilities": [
+    {
+      "id": "home.setup-checklist",
+      "phase": "P1",
+      "surface": "home",
+      "label": "开始使用（运行环境/字幕模型/AI 模型/第一段录像）",
+      "files": ["webui/src/views/WorkbenchView.vue", "webui/src/components/SetupChecklist.vue"],
+      "anchor": "data-cap=\"home.setup-checklist\"",
+      "advancedOnly": false,
+      "firstScreen": true
+    },
+    {
+      "id": "home.continue",
+      "phase": "P1",
+      "surface": "home",
+      "label": "继续上次项目",
+      "files": ["webui/src/views/WorkbenchView.vue"],
+      "anchor": "data-cap=\"home.continue\"",
+      "advancedOnly": false,
+      "firstScreen": true
+    },
+    {
+      "id": "home.add-project",
+      "phase": "P1",
+      "surface": "home",
+      "label": "添加录像（服务器文件/录播姬/B站）",
+      "files": ["webui/src/views/WorkbenchView.vue"],
+      "anchor": "data-cap=\"home.add-project\"",
+      "advancedOnly": false,
+      "firstScreen": true
+    },
+    {
+      "id": "home.source-local",
+      "phase": "P1",
+      "surface": "home",
+      "label": "来源：服务器文件",
+      "files": ["webui/src/views/WorkbenchView.vue"],
+      "anchor": "data-cap=\"home.source-local\"",
+      "advancedOnly": false,
+      "firstScreen": true
+    },
+    {
+      "id": "home.source-recorder",
+      "phase": "P1",
+      "surface": "home",
+      "label": "来源：录播姬录制",
+      "files": ["webui/src/views/WorkbenchView.vue"],
+      "anchor": "data-cap=\"home.source-recorder\"",
+      "advancedOnly": false,
+      "firstScreen": true
+    },
+    {
+      "id": "home.source-bilibili",
+      "phase": "P1",
+      "surface": "home",
+      "label": "来源：B站链接",
+      "files": ["webui/src/views/WorkbenchView.vue"],
+      "anchor": "data-cap=\"home.source-bilibili\"",
+      "advancedOnly": false,
+      "firstScreen": true
+    },
+    {
+      "id": "home.clips-overview",
+      "phase": "P1",
+      "surface": "home",
+      "label": "最近片段（切片总览）",
+      "files": ["webui/src/components/HomeClipsOverview.vue"],
+      "anchor": "data-cap=\"home.clips-overview\"",
+      "advancedOnly": false,
+      "firstScreen": true
+    },
+    {
+      "id": "home.media-library",
+      "phase": "P1",
+      "surface": "home",
+      "label": "素材库（视频/贴纸/字体）",
+      "files": ["webui/src/components/MediaLibrary.vue"],
+      "anchor": "data-cap=\"home.media-library\"",
+      "advancedOnly": false,
+      "firstScreen": true
+    },
+    {
+      "id": "home.doctor",
+      "phase": "P1",
+      "surface": "home",
+      "label": "运行状况（ffmpeg/模型/底座）",
+      "files": ["webui/src/views/WorkbenchView.vue"],
+      "anchor": "data-cap=\"home.doctor\"",
+      "advancedOnly": false,
+      "firstScreen": true
+    },
+    {
+      "id": "prepare.run-all",
+      "phase": "P1",
+      "surface": "prepare",
+      "label": "一键处理（识别+找亮点+剪出片段）",
+      "files": ["webui/src/views/PrepareView.vue"],
+      "anchor": "data-cap=\"prepare.run-all\"",
+      "advancedOnly": false,
+      "firstScreen": true
+    },
+    {
+      "id": "prepare.run-step",
+      "phase": "P1",
+      "surface": "prepare",
+      "label": "分步处理（只识别/只找亮点）",
+      "files": ["webui/src/views/PrepareView.vue"],
+      "anchor": "data-cap=\"prepare.run-step\"",
+      "advancedOnly": true,
+      "firstScreen": false
+    },
+    {
+      "id": "prepare.asr-mode",
+      "phase": "P1",
+      "surface": "prepare",
+      "label": "ASR 模式",
+      "files": ["webui/src/views/PrepareView.vue"],
+      "anchor": "data-cap=\"prepare.asr-mode\"",
+      "advancedOnly": true,
+      "firstScreen": false
+    },
+    {
+      "id": "prepare.materials",
+      "phase": "P1",
+      "surface": "prepare",
+      "label": "处理选项（自动剪出/主播名/素材清单）",
+      "files": ["webui/src/views/PrepareView.vue"],
+      "anchor": "data-cap=\"prepare.materials\"",
+      "advancedOnly": true,
+      "firstScreen": false
+    },
+    {
+      "id": "prepare.subtitle-track",
+      "phase": "P1",
+      "surface": "prepare",
+      "label": "字幕轨道查看/编辑",
+      "files": ["webui/src/views/PrepareView.vue"],
+      "anchor": "data-cap=\"prepare.subtitle-track\"",
+      "advancedOnly": false,
+      "firstScreen": true
+    },
+    {
+      "id": "prepare.manual-slice",
+      "phase": "P1",
+      "surface": "prepare",
+      "label": "手动切片（入点/出点/多段）",
+      "files": ["webui/src/views/PrepareView.vue"],
+      "anchor": "data-cap=\"prepare.manual-slice\"",
+      "advancedOnly": true,
+      "firstScreen": false
+    },
+    {
+      "id": "prepare.redetect",
+      "phase": "P1",
+      "surface": "prepare",
+      "label": "重新处理",
+      "files": ["webui/src/views/PrepareView.vue"],
+      "anchor": "data-cap=\"prepare.redetect\"",
+      "advancedOnly": true,
+      "firstScreen": false
+    },
+    {
+      "id": "slices.cut-all",
+      "phase": "P1",
+      "surface": "slices",
+      "label": "一键剪出全部片段",
+      "files": ["webui/src/views/ProjectSlicesView.vue"],
+      "anchor": "data-cap=\"slices.cut-all\"",
+      "advancedOnly": false,
+      "firstScreen": true
+    },
+    {
+      "id": "slices.go-polish",
+      "phase": "P1",
+      "surface": "slices",
+      "label": "去出片",
+      "files": ["webui/src/views/ProjectSlicesView.vue"],
+      "anchor": "data-cap=\"slices.go-polish\"",
+      "advancedOnly": false,
+      "firstScreen": true
+    },
+    {
+      "id": "slices.redetect",
+      "phase": "P1",
+      "surface": "slices",
+      "label": "重新检测",
+      "files": ["webui/src/views/ProjectSlicesView.vue"],
+      "anchor": "data-cap=\"slices.redetect\"",
+      "advancedOnly": true,
+      "firstScreen": false
+    },
+    {
+      "id": "slices.add-clip",
+      "phase": "P1",
+      "surface": "slices",
+      "label": "添加片段",
+      "files": ["webui/src/views/ProjectSlicesView.vue"],
+      "anchor": "data-cap=\"slices.add-clip\"",
+      "advancedOnly": true,
+      "firstScreen": false
+    },
+    {
+      "id": "polish.llm",
+      "phase": "P1",
+      "surface": "polish",
+      "label": "智能剪辑",
+      "files": ["webui/src/views/PolishView.vue"],
+      "anchor": "data-cap=\"polish.llm\"",
+      "advancedOnly": false,
+      "firstScreen": true
+    },
+    {
+      "id": "polish.export",
+      "phase": "P1",
+      "surface": "polish",
+      "label": "导出成片",
+      "files": ["webui/src/views/PolishView.vue"],
+      "anchor": "data-cap=\"polish.export\"",
+      "advancedOnly": false,
+      "firstScreen": true
+    },
+    {
+      "id": "polish.cover",
+      "phase": "P1",
+      "surface": "polish",
+      "label": "封面生成/设计器",
+      "files": ["webui/src/views/PolishView.vue"],
+      "anchor": "data-cap=\"polish.cover\"",
+      "advancedOnly": false,
+      "firstScreen": true
+    },
+    {
+      "id": "polish.timeline",
+      "phase": "P1",
+      "surface": "polish",
+      "label": "时间轴编辑器",
+      "files": ["webui/src/views/PolishView.vue"],
+      "anchor": "data-cap=\"polish.timeline\"",
+      "advancedOnly": false,
+      "firstScreen": false
+    },
+    {
+      "id": "polish.track-settings",
+      "phase": "P1",
+      "surface": "polish",
+      "label": "轨道设置（项目设置页签）",
+      "files": ["webui/src/views/PolishView.vue"],
+      "anchor": "data-cap=\"polish.track-settings\"",
+      "advancedOnly": false,
+      "firstScreen": true
+    },
+    {
+      "id": "polish.canvas",
+      "phase": "P1",
+      "surface": "polish",
+      "label": "画面尺寸页签",
+      "files": ["webui/src/views/PolishView.vue"],
+      "anchor": "data-cap=\"polish.canvas\"",
+      "advancedOnly": false,
+      "firstScreen": true
+    },
+    {
+      "id": "polish.intro",
+      "phase": "P1",
+      "surface": "polish",
+      "label": "片头片尾页签",
+      "files": ["webui/src/views/PolishView.vue"],
+      "anchor": "data-cap=\"polish.intro\"",
+      "advancedOnly": false,
+      "firstScreen": true
+    },
+    {
+      "id": "polish.artifact",
+      "phase": "P1",
+      "surface": "polish",
+      "label": "产物条（成片/封面）",
+      "files": ["webui/src/views/PolishView.vue"],
+      "anchor": "data-cap=\"polish.artifact\"",
+      "advancedOnly": false,
+      "firstScreen": false
+    },
+    {
+      "id": "polish.quick-mode",
+      "phase": "P2",
+      "surface": "polish",
+      "label": "快速出片/精修切换",
+      "files": ["webui/src/views/PolishView.vue"],
+      "anchor": "data-cap=\"polish.quick-mode\"",
+      "advancedOnly": false,
+      "firstScreen": true
+    },
+    {
+      "id": "polish.quick-llm",
+      "phase": "P2",
+      "surface": "polish",
+      "label": "快速出片：智能剪辑",
+      "files": ["webui/src/views/PolishView.vue"],
+      "anchor": "data-cap=\"polish.quick-llm\"",
+      "advancedOnly": false,
+      "firstScreen": true
+    },
+    {
+      "id": "polish.quick-export",
+      "phase": "P2",
+      "surface": "polish",
+      "label": "快速出片：导出成片",
+      "files": ["webui/src/views/PolishView.vue"],
+      "anchor": "data-cap=\"polish.quick-export\"",
+      "advancedOnly": false,
+      "firstScreen": true
+    },
+    {
+      "id": "polish.quick-cover",
+      "phase": "P2",
+      "surface": "polish",
+      "label": "快速出片：生成封面",
+      "files": ["webui/src/views/PolishView.vue"],
+      "anchor": "data-cap=\"polish.quick-cover\"",
+      "advancedOnly": false,
+      "firstScreen": true
+    },
+    {
+      "id": "settings.config",
+      "phase": "P3",
+      "surface": "settings",
+      "label": "识别与检测配置",
+      "files": ["webui/src/views/SettingsView.vue"],
+      "anchor": "data-cap=\"settings.config\"",
+      "advancedOnly": false,
+      "firstScreen": true
+    },
+    {
+      "id": "settings.llm-quick",
+      "phase": "P3",
+      "surface": "settings",
+      "label": "AI 模型快速配置",
+      "files": ["webui/src/views/SettingsView.vue"],
+      "anchor": "data-cap=\"settings.llm-quick\"",
+      "advancedOnly": false,
+      "firstScreen": true
+    },
+    {
+      "id": "settings.llm-advanced",
+      "phase": "P3",
+      "surface": "settings",
+      "label": "AI 模型高级配置",
+      "files": ["webui/src/views/SettingsView.vue"],
+      "anchor": "data-cap=\"settings.llm-advanced\"",
+      "advancedOnly": true,
+      "firstScreen": false
+    },
+    {
+      "id": "settings.integrations",
+      "phase": "P3",
+      "surface": "settings",
+      "label": "采集与下载",
+      "files": ["webui/src/views/SettingsView.vue"],
+      "anchor": "data-cap=\"settings.integrations\"",
+      "advancedOnly": false,
+      "firstScreen": true
+    },
+    {
+      "id": "settings.monitor",
+      "phase": "P3",
+      "surface": "settings",
+      "label": "用量与诊断",
+      "files": ["webui/src/views/SettingsView.vue"],
+      "anchor": "data-cap=\"settings.monitor\"",
+      "advancedOnly": false,
+      "firstScreen": true
+    },
+    {
+      "id": "settings.account",
+      "phase": "P3",
+      "surface": "settings",
+      "label": "账号",
+      "files": ["webui/src/views/SettingsView.vue"],
+      "anchor": "data-cap=\"settings.account\"",
+      "advancedOnly": false,
+      "firstScreen": true
+    }
+  ],
+  "retired": [
+    { "id": "components.steps", "date": "2026-11", "reason": "死代码（无引用），由 NextStepBar 取代", "replacedBy": "components.NextStepBar" }
+  ]
+}

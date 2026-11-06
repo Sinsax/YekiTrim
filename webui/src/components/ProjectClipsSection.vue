@@ -221,6 +221,8 @@
       <div v-if="!shownTotal && !loading" class="empty">
         <div class="empty-icon"><Icon :name="emptyIcon" :size="24" /></div>
         {{ emptyText }}
+        <!-- 空态只给"下一步"那一条路（P1）：没事件 → 去识别；全剪完 → 去出片；其余筛选空态不给路。 -->
+        <router-link v-if="emptyCta" class="btn btn-primary mt-12" :to="emptyCta.to">{{ emptyCta.label }}</router-link>
       </div>
       <div v-for="i in 3" v-show="loading" :key="'sk' + i" class="skeleton"></div>
     </div>
@@ -796,6 +798,10 @@ const poolTotal = computed(() => {
 })
 
 const emptyText = computed(() => {
+  // P1 口径：一级先回答"这一页到底有没有可剪的东西"，二级筛选空态再细分 ——
+  // 否则用户点开「未剪切」看到「暂无未剪切事件」，还得自己猜"是没检测到还是全剪完了"。
+  if (!events.value.length) return '还没有可剪的片段'
+  if (filterKey.value === 'uncut' && !uncutEvents.value.length) return '全部剪完了'
   if (filterKey.value === 'uncut') return '暂无未剪切事件'
   if (filterKey.value === 'cut') {
     // 二级档位下的空态要能自解释：别让人以为"已剪片段全没了"
@@ -804,6 +810,14 @@ const emptyText = computed(() => {
     return '暂无已剪切片段'
   }
   return '暂无片段'
+})
+/** 空态底下的「下一步」路（与上面的文案同一条判据）：没事件 → 去识别；全剪完 → 去出片。 */
+const emptyCta = computed(() => {
+  const pid = props.project?.id
+  if (!pid) return null
+  if (!events.value.length) return { label: '去识别', to: `/p/${pid}/prepare` }
+  if (filterKey.value === 'uncut' && !uncutEvents.value.length) return { label: '去出片', to: `/p/${pid}/polish` }
+  return null
 })
 const emptyIcon = computed(() => (filterKey.value === 'uncut' ? 'film' : 'scissors'))
 

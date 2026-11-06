@@ -55,6 +55,9 @@ const CHROME_CANDIDATES = [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
   'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
   '/usr/bin/google-chrome',
+  '/usr/bin/chromium',
+  '/usr/bin/chromium-browser',
+  '/snap/bin/chromium',
 ].filter(Boolean)
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
@@ -107,7 +110,7 @@ console.log('目标: ' + target.label)
 const profile = mkdtempSync(join(tmpdir(), 'cdp-polish-page-'))
 const chrome = spawn(chromePath, [
   '--headless=new', '--remote-debugging-port=' + PORT, '--user-data-dir=' + profile,
-  '--no-first-run', '--window-size=1700,1400', 'about:blank',
+  '--no-first-run', '--no-sandbox', '--window-size=1700,1400', 'about:blank',
 ], { stdio: 'ignore' })
 
 let page

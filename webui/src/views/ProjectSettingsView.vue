@@ -18,13 +18,16 @@
       </div>
       <!-- 读到了列表但里面没有这个 id = 已被移除（或别人的项目）：给个明确结论，
            别一直停在"读取项目信息…"（以前这里只有读取中的文案，看起来像卡住了） -->
-      <div v-else-if="listLoaded" class="muted small" title="目录与文件仍在原处，可从首页「服务器文件」重新导入">项目不存在或已被移除</div>
+      <div v-else-if="listLoaded" class="muted small" title="目录与文件仍在原处，可从首页「服务器文件」重新导入">
+        项目不存在或已被移除 · <router-link to="/workbench">回首页</router-link>
+      </div>
       <div v-else class="muted small">读取项目信息…</div>
 
       <div class="row mt-12" style="gap:8px;flex-wrap:wrap">
-        <router-link class="mini-btn" :to="`/p/${pid}/prepare`">打开预处理</router-link>
-        <router-link class="mini-btn" :to="`/p/${pid}/slices`">打开切片</router-link>
-        <router-link class="mini-btn" :to="`/p/${pid}/polish`">打开精修</router-link>
+        <router-link class="mini-btn" :to="`/p/${pid}/prepare`">去识别</router-link>
+        <router-link class="mini-btn" :to="`/p/${pid}/slices`">去挑片段</router-link>
+        <router-link class="mini-btn" :to="`/p/${pid}/polish`">去出片</router-link>
+        <router-link class="mini-btn" to="/workbench">回首页</router-link>
         <span class="flex-1"></span>
         <button
           class="mini-btn danger"
@@ -39,15 +42,17 @@
       </p>
     </div>
 
-    <div class="card">
-      <h2>项目配置 yekitrim.toml</h2>
-      <p class="muted small">保存后阶段推导会立即刷新。</p>
-      <textarea v-model="raw" rows="18" class="mono"></textarea>
-      <div class="row" style="margin-top:10px">
-        <button class="btn btn-primary" @click="save" :disabled="!loaded">保存</button>
-        <button class="btn" @click="load">重新加载</button>
+    <details class="form-adv">
+      <summary>直接编辑 yekitrim.toml<span class="muted small">高级</span></summary>
+      <div class="card mt-8">
+        <p class="muted small">保存后阶段推导会立即刷新。</p>
+        <textarea v-model="raw" rows="18" class="mono"></textarea>
+        <div class="row" style="margin-top:10px">
+          <button class="btn btn-primary" @click="save" :disabled="!loaded">保存</button>
+          <button class="btn" @click="load">重新加载</button>
+        </div>
       </div>
-    </div>
+    </details>
   </div>
 </template>
 
@@ -73,7 +78,7 @@ const listLoaded = ref(false)
 const project = computed(() => projectById(pid))
 const stageText = computed(() => {
   const s = Number(project.value?.stage || 0)
-  return ['未开始', '已提音频', '已转写', '已检测事件', '已切片'][Math.min(s, 4)]
+  return ['未开始', '已提取音频', '已识别声音', '已找到亮点', '已剪出片段'][Math.min(s, 4)]
 })
 
 async function load() {

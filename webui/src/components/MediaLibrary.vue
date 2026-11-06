@@ -1,9 +1,22 @@
 <template>
   <div class="card card-blk mb-12">
+    <!-- 头部（计数 + 刷新）**始终可见**：收起时也能一眼看到库里有多少东西。
+         折叠状态走 useDisclosure（localStorage `yekitrim.ui.home.mediaLibrary`），默认收起。 -->
     <div class="row spread mb-8">
-      <b class="t m-0"><Icon name="image" :size="15" /> 素材库</b>
-      <div class="row" style="flex-wrap:nowrap">
+      <button
+        class="ml-head"
+        type="button"
+        data-cap="home.media-library"
+        :aria-expanded="libOpen ? 'true' : 'false'"
+        @click="toggleLib"
+      >
+        <Icon name="image" :size="15" />
+        <b class="t m-0">素材库</b>
         <span class="muted small">{{ countText }}</span>
+        <span class="muted small ml-open">{{ libOpen ? '收起' : '展开' }}</span>
+        <Icon :name="libOpen ? 'chevron-down' : 'chevron-right'" :size="13" />
+      </button>
+      <div class="row" style="flex-wrap:nowrap">
         <button class="mini-btn" :disabled="loading" @click="load(true)">
           <span v-if="loading" class="spinner"></span> 刷新
         </button>
@@ -14,7 +27,7 @@
          用户口径：「素材库ui改成文件夹管理器类似的感觉，左侧选择类型」「统一一下导入方式，
          都需要预览效果」。三块内容因此共用同一套"网格 + 点击放大 + 拖拽导入"交互 ——
          以前它们各写一套（视频只有一行文字、字体/贴纸各自成卡），同一个动作三种手感。 -->
-    <div class="ml-body">
+    <div v-show="libOpen" class="ml-body">
       <nav class="ml-nav">
         <button
           v-for="t in TABS"
@@ -254,6 +267,8 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import Icon from './Icon.vue'
 import AppModal from './AppModal.vue'
 import { api } from '../api/client'
+// 首页素材库默认**收起**（只留头部一行计数），展开状态持久化。
+import { useDisclosure } from '../composables/useDisclosure'
 // ⚠️ 内建表情的 CDN 地址**只有一份**（engine.js::emojiGifUrl，与出片模板那句逐字同形）——
 //    别在这里再拼一遍 'https://fonts.gstatic.com/...'。
 import { emojiGifUrl } from '../polish/engine'
@@ -277,6 +292,9 @@ import { confirmDialog } from '../stores/dialog'
 import { toast } from '../stores/toast'
 
 defineProps({ isAdmin: { type: Boolean, default: false } })
+
+/** 首页整块折叠（默认收起）。body 用 `v-show`，收起时仍保留已加载状态与选中项。 */
+const { open: libOpen, toggle: toggleLib } = useDisclosure('home.mediaLibrary', false)
 
 const TABS = [
   { key: 'video', label: '视频', icon: 'video', hint: '片头 / 片尾的素材来源' },
@@ -909,6 +927,14 @@ onMounted(() => load())
 </script>
 
 <style scoped>
+/* 头部：整行可点开合；计数一直在（收起时也知道库里有多少东西）。 */
+.ml-head {
+  display:flex; align-items:center; gap:8px; min-width:0;
+  padding:0; border:none; background:none; color:inherit; cursor:pointer; text-align:left;
+}
+.ml-head:hover b { color:var(--main-deep); }
+.ml-head b { white-space:nowrap; }
+.ml-open { flex:none; }
 /* 左导航 + 右内容：导航定宽、内容自适应。窄屏堆成上下两段（见下 media query）。 */
 .ml-body { display:flex; gap:12px; align-items:flex-start; }
 .ml-nav { display:flex; flex-direction:column; gap:4px; flex:none; width:128px; }

@@ -15,7 +15,9 @@ debug 读盘、`--webui-dir`/`YEKITRIM_WEBUI_DIR` 可覆盖（规则与判据在
 
 - 构建：`cd webui && npm install && npm run build`（`build` = `vite build`，`outDir: dist` + `emptyOutDir`）。
   起不了 npm 脚本时直接调 vite：`node webui/node_modules/vite/bin/vite.js build`（**在 `webui/` 下跑**）。
-- `webui/scripts/` **十四个**静态判据脚本（零依赖、不 import 应用模块、不需要起服务）：
+- `webui/scripts/` **十五个**静态判据脚本（零依赖、不 import 应用模块、不需要起服务）：
+  - `check-simplify.mjs` — **简化契约**：`docs/webui-capabilities.json` 的 `data-cap` 入口恰好 1 处、
+    高级项在 `<details>` 内、首屏预算/floor、`/models` redirect；`--mutate` 跑原语自证。
   - `check-overlay.mjs` — 覆盖层色档：`templates/index.html` ↔ `src/polish/engine.js` 逐例对拍。
   - `check-caption-wrap.mjs` — 竖屏折行：`wrapCaptionParts` 两份实现。
   - `check-sticker-anchor.mjs` — 贴纸锚点/尺寸（事件左上角百分比 vs `[sticker] position` 中心百分比）。
