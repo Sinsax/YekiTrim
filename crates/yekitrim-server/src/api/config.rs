@@ -314,9 +314,14 @@ pub(super) fn config_yekitrim_put_impl(ws: &Workspace, body: &serde_json::Value,
     // 前端设置表单用它，避免"读整份 TOML → 正则替换 → 写回"这种易碎做法。
     if let Some(patch) = body.get("patch") {
         check_project_paths(ws, patch, is_admin)?;
-        yekitrim_core::config::patch_config_file(&ws.config_file, patch)
-            .map_err(|e| err(StatusCode::BAD_REQUEST, format!("项目配置保存失败: {e:#}")))?;
-        return ok(serde_json::json!({ "ok": true }));
+        // 与 config.toml 同一条纪律（review B3）：改**临时副本** → 真反序列化验 → rename。
+        // 项目文件在用户手上、还可能被别的工具手改，直接改真文件的代价是"写一半崩掉 = 整份工程配置失效"。
+        let tmp = staged_copy(&ws.config_file)?;
+        if let Err(e) = yekitrim_core::config::patch_config_file(&tmp, patch) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(err(StatusCode::BAD_REQUEST, format!("项目配置保存失败: {e:#}")));
+        }
+        return commit_validated_config(&tmp, &ws.config_file, "yekitrim.toml");
     }
     let raw = body.get("raw").and_then(|v| v.as_str()).or_else(|| body.get("content").and_then(|v| v.as_str()));
     let Some(raw) = raw else { return Err(err(StatusCode::BAD_REQUEST, "缺少 raw 字段")); };
@@ -334,9 +339,10 @@ pub(super) fn config_yekitrim_put_impl(ws: &Workspace, body: &serde_json::Value,
         let as_json = serde_json::to_value(&parsed).unwrap_or(serde_json::Value::Null);
         check_project_paths(ws, &as_json, is_admin)?;
     }
+    let tmp = ws.config_file.with_extension("toml.guard");
     if let Some(parent) = ws.config_file.parent() { std::fs::create_dir_all(parent).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("创建目录失败: {e}")))?; }
-    std::fs::write(&ws.config_file, raw).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("保存失败: {e}")))?;
-    ok(serde_json::json!({ "ok": true }))
+    std::fs::write(&tmp, raw).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("保存失败: {e}")))?;
+    commit_validated_config(&tmp, &ws.config_file, "yekitrim.toml")
 }
 
 /// 保存程序配置。
@@ -357,19 +363,27 @@ pub(super) async fn config_global_put(
 }
 
 pub(super) fn config_global_put_locked(path: &Path, body: &serde_json::Value) -> ApiResult {
+    // ⚠️ **两条分支都必须"临时文件 → 真反序列化验 → rename"**（2026-11-14 后端 review B3）。
+    // 以前 patch 直接改真文件、raw 直接 `fs::write`：语义坏值会让整份配置被忽略，
+    // 而写一半崩掉（非原子）同样让文件截断。守卫与 llm.toml 那条同源。
     if let Some(patch) = body.get("patch") {
-        yekitrim_core::config::patch_config_file(path, patch)
-            .map_err(|e| err(StatusCode::BAD_REQUEST, format!("配置保存失败: {e:#}")))?;
-        return ok(serde_json::json!({ "ok": true }));
+        let tmp = staged_copy(path)?;
+        if let Err(e) = yekitrim_core::config::patch_config_file(&tmp, patch) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(err(StatusCode::BAD_REQUEST, format!("配置保存失败: {e:#}")));
+        }
+        return commit_validated_config(&tmp, path, "config.toml");
     }
     let raw = body.get("raw").and_then(|v| v.as_str()).or_else(|| body.get("content").and_then(|v| v.as_str()));
     let Some(raw) = raw else { return Err(err(StatusCode::BAD_REQUEST, "缺少 raw 或 patch 字段")); };
-    // 语法错误会令整份配置被忽略，这里直接拦下，别让用户存进一个坏文件
+    // 语法错误会更早、更明确地报出来（"第几行不合法"比反序列化的"缺字段"好读），
+    // 语义错误交给下面那道真反序列化
     yekitrim_service::validate_toml(raw)
         .map_err(|e| err(StatusCode::BAD_REQUEST, format!("config.toml 不是合法 TOML，未保存: {e}")))?;
+    let tmp = path.with_extension("toml.guard");
     if let Some(parent) = path.parent() { std::fs::create_dir_all(parent).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("创建目录失败: {e}")))?; }
-    std::fs::write(path, raw).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("保存失败: {e}")))?;
-    ok(serde_json::json!({ "ok": true }))
+    std::fs::write(&tmp, raw).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("保存失败: {e}")))?;
+    commit_validated_config(&tmp, path, "config.toml")
 }
 
 /// 保存 LLM 配置：`raw` 整份覆盖写，`patch` 合并写（保留注释与其他键）。
@@ -379,9 +393,137 @@ pub(super) async fn config_llm_put(
     Json(body): Json<serde_json::Value>,
 ) -> ApiResult {
     let owner = crate::auth::owner_of(&user);
+    let is_admin = user.is_admin();
     let path = yekitrim_core::owner::state_dir(owner).join("llm.toml");
     let _guard = yekitrim_core::filelock::lock_path(&path).await;
-    blocking(move || config_llm_put_locked(&path, &body)).await
+    blocking(move || config_llm_put_locked(&path, &body, is_admin)).await
+}
+
+// ---------------------------------------------------------------------------
+// B8（2026-11-14 后端 review）：普通账号的 LLM `base_url` 禁止指向本机 / 内网。
+//
+// `PUT /api/config/llm`（用户层）+ `POST /api/llm/test` + `GET /api/llm/models`
+// 三处入口**共用下面这一份纯函数判据** —— 保存时拦得住、测试/取模型也绕不过去，
+// 否则"写不进但测得动"就是一条后门。
+//
+// 口径：**判"账号角色"，不判部署形态**。admin 不受限（公网部署的运维要能配内网中转）；
+// 单人形态只有一个 admin 账号，所以本地 Ollama（`http://127.0.0.1:11434`）照常可用。
+// 普通账号（多用户形态的 `role=user`）只许指向公网地址 —— 否则他能让服务器盲探
+// loopback / 私网 / 云元数据（169.254.169.254）端口。
+//
+// 已知限制（如实记录）：**只认字面量**。DNS 主机名不做解析 —— `internal.example.com`
+// 指向 10.x 时这里看不见；要堵那一层得在每次请求前做解析校验，代价与收益不成比例。
+// ---------------------------------------------------------------------------
+
+/// B8 判据：`base_url` 的主机是不是 loopback / 私网 / 链路本地 / 未指定地址。
+///
+/// 主机名 `localhost`（含 `*.localhost`，RFC 6761 恒指 loopback）一并算内网；
+/// 其余主机名不做解析（见上面的"已知限制"）。IPv4-mapped IPv6（`::ffff:10.0.0.5`）
+/// 按映射后的 v4 判 —— 那是绕过 v4 检查的常见写法。
+fn base_url_host_is_local(base_url: &str) -> bool {
+    let raw = base_url.trim();
+    if raw.is_empty() {
+        return false;
+    }
+    // scheme://[user@]host[:port][/path…] —— 没有 scheme 时把整段当 host 部分（老实处理）
+    let rest = match raw.split_once("://") {
+        Some((_, r)) => r,
+        None => raw,
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    // 去 userinfo（`user@host`：rsplit —— userinfo 里也可能有 @）
+    let hostport = match authority.rsplit_once('@') {
+        Some((_, h)) => h,
+        None => authority,
+    };
+    if hostport.is_empty() {
+        return false;
+    }
+    // IPv6 字面量必带方括号（`[::1]:11434`）
+    if let Some(inner) = hostport.strip_prefix('[').and_then(|s| s.split_once(']')) {
+        return ip_is_local_str(inner.0);
+    }
+    // 剥端口：裸 IPv6（多个 ':'、无方括号）不能按"最后一个冒号"剥，整段拿去解析
+    let host = if hostport.matches(':').count() > 1 {
+        hostport
+    } else if let Some((h, _)) = hostport.rsplit_once(':') {
+        h
+    } else {
+        hostport
+    };
+    let lower = host.trim().to_ascii_lowercase();
+    if lower.is_empty() {
+        return false;
+    }
+    if lower == "localhost" || lower.ends_with(".localhost") {
+        return true;
+    }
+    ip_is_local_str(&lower)
+}
+
+fn ip_is_local_str(s: &str) -> bool {
+    match s.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(v4)) => {
+            v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified()
+        }
+        Ok(std::net::IpAddr::V6(v6)) => {
+            if let Some(mapped) = v6.to_ipv4_mapped() {
+                return mapped.is_loopback()
+                    || mapped.is_private()
+                    || mapped.is_link_local()
+                    || mapped.is_unspecified();
+            }
+            v6.is_loopback()
+                || v6.is_unspecified()
+                // unique local fc00::/7 与 link-local fe80::/10（std 没有现成判据）
+                || (v6.segments()[0] & 0xfe00) == 0xfc00
+                || (v6.segments()[0] & 0xffc0) == 0xfe80
+        }
+        Err(_) => false,
+    }
+}
+
+/// B8 入口判据：普通账号的 `base_url` 指向本机/内网 ⇒ **403**（admin 不受限）。
+pub(super) fn assert_base_url_allowed(base_url: &str, is_admin: bool) -> Result<(), AppError> {
+    if is_admin {
+        return Ok(());
+    }
+    let raw = base_url.trim();
+    // 空值放行：必填校验是各入口自己的事（清空 base_url = 用回默认，是合法操作）
+    if raw.is_empty() {
+        return Ok(());
+    }
+    // 解析不出主机：对非 admin 也拦（没法判定 = 不能放行），文案按 400 说清
+    if raw.split_once("://").map(|(scheme, _)| scheme.is_empty()).unwrap_or(false) {
+        return Err(err(StatusCode::BAD_REQUEST, format!("无法识别的 API 地址：{raw}")));
+    }
+    if base_url_host_is_local(raw) {
+        return Err(err(
+            StatusCode::FORBIDDEN,
+            "API 地址不允许指向本机或内网地址（loopback / 私网 / 链路本地）；内网中转请让管理员配置",
+        ));
+    }
+    Ok(())
+}
+
+/// 对**一份将成为 llm.toml 的文本**里的所有 base_url（顶层 + 每条 provider）过 B8 判据。
+///
+/// 在「写盘前的最终文本」上判（patch 镜像 legacy 键、raw 还原 provider key 之后）——
+/// 只判 patch 里显式出现的那几个值会漏掉"顶层写一份、provider 里带另一份"的绕法。
+fn assert_llm_file_bases(text: &str, is_admin: bool) -> Result<(), AppError> {
+    #[derive(serde::Deserialize)]
+    struct LlmFile {
+        #[serde(default)]
+        llm: yekitrim_core::config::LlmConfig,
+    }
+    // 解析不过 = 语法/形状错误，由前序校验（validate_toml / check_provider_*）负责报
+    let Ok(f) = toml::from_str::<LlmFile>(text) else {
+        return Ok(());
+    };
+    for base in std::iter::once(&f.llm.base_url).chain(f.llm.providers.iter().map(|p| &p.base_url)) {
+        assert_base_url_allowed(base, is_admin)?;
+    }
+    Ok(())
 }
 
 /// 从 `llm.toml` 文本里读 `[llm] api_key`（解析不了 / 没这个键都当空）。
@@ -578,7 +720,7 @@ fn check_provider_raw(raw: &str) -> Result<(), AppError> {
 ///    所以守卫必须在"合法 TOML"之上再加一层**真反序列化**，且**失败时一个字节都不许落到原文件上**。
 /// 2. 失败回 **400 + 人话**（哪个字段 / 期望什么 / 实际什么），而那条人话里的 key 已脱敏
 ///    （见 `yekitrim_core::config::redact_secrets`）。
-pub(super) fn config_llm_put_locked(path: &Path, body: &serde_json::Value) -> ApiResult {
+pub(super) fn config_llm_put_locked(path: &Path, body: &serde_json::Value, is_admin: bool) -> ApiResult {
     if let Some(patch) = body.get("patch") {
         let patch = drop_blank_api_key(patch);
         // **数组是整体替换** ⇒ 缺了 api_key 的那条要按 id 把已存的 key 填回去（否则静默丢 key）
@@ -593,6 +735,11 @@ pub(super) fn config_llm_put_locked(path: &Path, body: &serde_json::Value) -> Ap
         if let Err(e) = written {
             let _ = std::fs::remove_file(&tmp);
             return Err(err(StatusCode::BAD_REQUEST, format!("LLM 配置保存失败: {e:#}")));
+        }
+        // B8：对**合并后的最终文本**过一遍内网地址判据（顶层 + 每条 provider 都在文本里，不会漏）
+        if let Err(e) = assert_llm_file_bases(&std::fs::read_to_string(&tmp).unwrap_or_default(), is_admin) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
         }
         return commit_validated(&tmp, path);
     }
@@ -611,6 +758,8 @@ pub(super) fn config_llm_put_locked(path: &Path, body: &serde_json::Value) -> Ap
     let restored = yekitrim_core::config::restore_llm_provider_keys(raw, &stored_text);
     let raw = restored.as_deref().unwrap_or(raw);
     check_provider_raw(raw)?;
+    // B8：源文件模式同样不许普通账号把 base_url 指到本机/内网（判据只有这一份）
+    assert_llm_file_bases(raw, is_admin)?;
     // 仍走"临时文件 → 验 → rename"：raw 这条路以前是直接覆盖原文件的
     let tmp = path.with_extension("toml.guard");
     if let Some(parent) = path.parent() {
@@ -664,6 +813,37 @@ fn commit_validated(tmp: &Path, path: &Path) -> ApiResult {
     ok(serde_json::json!({ "ok": true }))
 }
 
+/// **程序配置（`config.toml` / 项目 `yekitrim.toml`）的写盘前守卫**：与 llm 那份同款，
+/// 但校验器是**真的反序列化到 `Config`**（2026-11-14 后端 review B3）。
+///
+/// 为什么必须是"真反序列化"而不是 `validate_toml`（只验语法）：
+/// `load_config_for` 对解析失败是 **fail-soft**（`if let Ok(Some(overlay))` 才 merge）——
+/// 一个类型写错的值（`num_workers = "4"`）语法完全合法，却会让**整份文件**被忽略、所有键
+/// 一起回退默认值（实测：同文件里 `chunk_duration = 42` 也读回 60）。
+///
+/// 三条硬规矩（与 `commit_validated` 一致）：① 只改临时文件；② 验不过 ⇒ 删临时文件、
+/// **原文件一个字节都不动** + 400；③ 验过 ⇒ 同卷 `rename`（原子替换）。
+fn commit_validated_config(tmp: &Path, path: &Path, what: &str) -> ApiResult {
+    let text = std::fs::read_to_string(tmp)
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读临时文件失败: {e}")))?;
+    // 错误文案先脱敏：TOML 的报错会带出错那一行的原文，而配置文件里可能有 api_key
+    if let Err(bad) = toml::from_str::<yekitrim_core::config::Config>(&text) {
+        let _ = std::fs::remove_file(tmp);
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "这份 {what} 解析不过，**没有保存**（原文件未改动）：{}",
+                yekitrim_core::config::redact_secrets(&bad.to_string())
+            ),
+        ));
+    }
+    std::fs::rename(tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(tmp);
+        err(StatusCode::INTERNAL_SERVER_ERROR, format!("保存失败: {e}"))
+    })?;
+    ok(serde_json::json!({ "ok": true }))
+}
+
 /// `GET /api/llm/models?base_url=…`（**仅 admin**）：填好 base_url + api_key 就能拿到模型清单。
 ///
 /// 三条语义（口径见 `docs/plan/llm-isolation-2026-10-19.md`）：
@@ -685,6 +865,9 @@ pub(super) async fn llm_models(
 ) -> ApiResult {
     let BaseUrlQuery { base_url, api_key, provider } = q;
     let draft_base = base_url.clone().unwrap_or_default().trim().to_string();
+    // B8：草稿地址同样过内网判据（这条接口虽然仅 admin，判据仍与另外两处同源 ——
+    // 万一将来放开到用户层，这里不会成为后门）。
+    assert_base_url_allowed(&draft_base, user.is_admin())?;
 
     // ① 内置表命中：**零网络请求**（连 api_key 都不需要 —— 也不需要读盘）。
     //    直接在表单里填了地址的就是这一档（最常见的路径，别为它去读盘）。
@@ -706,6 +889,8 @@ pub(super) async fn llm_models(
     let owner = crate::auth::owner_of(&user);
     let llm = blocking(move || Ok(yekitrim_core::config::load_llm_config_for(owner))).await?;
     let conn = resolve_llm_conn(&llm, provider.as_deref(), base_url.as_deref(), api_key.as_deref(), true)?;
+    // B8：已存 provider 的地址同样判一遍（与保存时的文本级判据互为兜底）
+    assert_base_url_allowed(&conn.base_url, user.is_admin())?;
     let base = conn.base_url.clone();
     // provider 的地址也先查一次表（省一次网络）
     let known = yekitrim_llm::catalog::models_for(&base);
@@ -794,7 +979,7 @@ fn resolve_llm_conn(
     let Some(p) = chosen else {
         // ── ③ legacy：**原样走老路径**（报错文案、缺省 base_url 都不变）
         let base = if require_key {
-            probe_request(draft_base.unwrap_or(""), llm)?
+            probe_request(draft_base.unwrap_or(""), draft_key, llm)?
         } else {
             let b = draft_base.map(str::to_string).unwrap_or_else(|| llm.base_url.trim().to_string());
             if b.is_empty() {
@@ -852,8 +1037,16 @@ impl IfEmptyElse for str {
     }
 }
 
-fn probe_request(asked: &str, llm: &yekitrim_core::config::LlmConfig) -> Result<String, AppError> {
-    if llm.api_key.trim().is_empty() {
+fn probe_request(
+    asked: &str,
+    draft_key: Option<&str>,
+    llm: &yekitrim_core::config::LlmConfig,
+) -> Result<String, AppError> {
+    // ⚠️ 表单里刚填、**还没保存**的 key 也算数：用户就是在"先填地址+密钥 → 点获取模型 → 选模型 → 保存"
+    // 这条路上踩过「还没配置 API key」——只认已存值等于逼他先保存一次才能选模型。
+    let has_key = draft_key.map(str::trim).is_some_and(|k| !k.is_empty())
+        || !llm.api_key.trim().is_empty();
+    if !has_key {
         return Err(err(
             StatusCode::BAD_REQUEST,
             "还没配置 API key（llm.toml 的 [llm] api_key）—— 填好再取模型",
@@ -996,6 +1189,9 @@ pub(super) async fn llm_test(
     let llm = blocking(move || Ok(yekitrim_core::config::load_llm_config_for(owner))).await?;
     // **用该接口自己的 key**（表单草稿 > provider=<id> > legacy）；报错文案按模式分
     let conn = resolve_llm_conn(&llm, q.provider.as_deref(), None, None, true)?;
+    // B8：普通账号不许让服务器朝本机/内网发请求 —— 保存时拦得住，测试连接这里也拦
+    // （判据与 config_llm_put / llm_models 同一份纯函数）。
+    assert_base_url_allowed(&conn.base_url, user.is_admin())?;
     // 测连接只需要"这一套连接参数"：把解析结果拍成 legacy 形状再交给 test_llm
     //（它内部走 for_link → From<&LlmConfig>，active 分支会去读 provider 自己的字段）
     let mut plain = llm.clone();
@@ -1044,13 +1240,21 @@ pub(super) async fn models_download(
     let queued = handle.queued;
     let jobs = state.jobs.clone();
     let job_id = id.clone();
+    // 取消令牌：下载是分钟级的（qwen3 那个包 838 MB），只在阶段边界查等于"点了取消没反应"
+    let cancel = state.jobs.cancel_token(&id).await;
     // 下载完要解包（tar.bz2，纯同步 IO）→ 任务线程
     spawn_job(jobs.clone(), job_id.clone(), move || async move {
         if handle.wait_start().await.is_err() {
             jobs.complete(&job_id).await;
             return;
         }
-        let result = yekitrim_core::download::download_all(None).await;
+        // 进度桥：整批字节 → 任务的 progress（条）+ 文案（"下载 qwen3-asr"）
+        let progress = crate::api::core::JobDownloadProgress::new(
+            jobs.clone(),
+            job_id.clone(),
+            cancel,
+        );
+        let result = yekitrim_core::download::download_all_with(None, &progress).await;
         if let Err(e) = result {
             jobs.fail(&job_id, format!("{e:#}")).await;
             return;
@@ -1234,7 +1438,7 @@ mod tests {
         let stored = std::fs::read_to_string(&path).unwrap();
         let patch = fill_blank_provider_keys(&drop_blank_api_key(&incoming), &stored);
         assert_eq!(patch["llm"]["providers"][0]["api_key"], "ka", "已存的 key 要按 id 填回去：{patch}");
-        let res = config_llm_put_locked(&path, &serde_json::json!({ "patch": patch }));
+        let res = config_llm_put_locked(&path, &serde_json::json!({ "patch": patch }), true);
         assert!(res.is_ok(), "patch 应当成功");
         let text = std::fs::read_to_string(&path).unwrap();
         println!("PATCHED=\n{text}");
@@ -1382,6 +1586,58 @@ model = "kimi-k3"
             j["error"].as_str().unwrap_or("").contains("gemini-native"),
             "要点名那个认不出的协议（并给可选值）：{j}"
         );
+    }
+
+    /// **`PUT /api/config/global` 的坏值必须 400 且原文件一个字节都不动**（review B3）。
+    ///
+    /// 为什么这条重要：`load_config_for` 对解析失败是 fail-soft（整份文件被忽略）——
+    /// 一个类型写错的值语法完全合法，却会让**所有**键一起回退默认值（实测：同文件里的
+    /// `chunk_duration = 42` 也读回 60）。所以写盘前必须真反序列化到 `Config` 再 rename。
+    ///
+    /// 四条判据：① 语义坏值（`num_workers = "lots"`）→ 400 + 字节不变；② 语法坏值 → 400；
+    /// ③ 合法 patch 生效且保留兄弟键；④ 语义坏的 patch 同样不落盘、不留临时文件。
+    /// 走 `config_global_put_locked`（handler 的内核）而不是打 HTTP：全局配置路径在真实数据目录下，
+    /// 用例必须落在 tempdir 里才不串。
+    #[test]
+    fn global_config_put_rejects_semantic_breakage_and_keeps_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let good = "config_version = 3\n\n[asr]\nnum_workers = 2\nchunk_duration = 42.0\n";
+        std::fs::write(&path, good).unwrap();
+
+        // ① 语义坏值：语法完全合法，但反序列化不过
+        let bad = config_global_put_locked(
+            &path,
+            &serde_json::json!({ "raw": "config_version = 3\n\n[asr]\nnum_workers = \"lots\"\nchunk_duration = 7.0\n" }),
+        );
+        assert_eq!(bad.unwrap_err().0, StatusCode::BAD_REQUEST, "语义坏值必须 400");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), good, "坏值不许落盘（一个字节都不许动）");
+        assert!(!path.with_extension("toml.guard").exists(), "失败后不许留临时文件");
+
+        // ② 语法坏值
+        let bad = config_global_put_locked(&path, &serde_json::json!({ "raw": "[asr\nnum_workers = 2" }));
+        assert_eq!(bad.unwrap_err().0, StatusCode::BAD_REQUEST);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), good);
+
+        // ③ 合法 patch：生效、且不碰兄弟键
+        let _ = config_global_put_locked(
+            &path,
+            &serde_json::json!({ "patch": { "asr": { "chunk_duration": 30.0 } } }),
+        )
+        .expect("合法 patch 应当成功");
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(after.contains("30.0"), "patch 要生效：{after}");
+        assert!(after.contains("num_workers = 2"), "兄弟键不许丢：{after}");
+
+        // ④ 语义坏的 patch：同样 400 且不落盘
+        let before = std::fs::read_to_string(&path).unwrap();
+        let bad = config_global_put_locked(
+            &path,
+            &serde_json::json!({ "patch": { "asr": { "num_workers": "lots" } } }),
+        );
+        assert_eq!(bad.unwrap_err().0, StatusCode::BAD_REQUEST);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before, "坏 patch 不许落盘");
+        assert!(!path.with_extension("toml.guard").exists());
     }
 
 /// **程序配置按账号分开 + 明文 key 一个字都不出接口 + 空值不覆盖真 key**。
@@ -1709,7 +1965,7 @@ fn llm_put_null_patch_removes_override_key() {
     let body = serde_json::json!({
         "patch": {"llm": {"overrides": {"detect": {"max_tokens": null}}}}
     });
-    let _ = config_llm_put_locked(&p, &body).unwrap();
+    let _ = config_llm_put_locked(&p, &body, true).unwrap();
 
     let out = std::fs::read_to_string(&p).unwrap();
     assert!(!out.contains("8192"), "被 null 的覆盖值该删掉：\n{out}");
@@ -1848,7 +2104,7 @@ fn broken_patch_is_rejected_and_the_file_is_untouched() {
     std::fs::write(&path, original).unwrap();
 
     let bad = serde_json::json!({ "patch": { "llm": { "params": { "json_mode": "" } } } });
-    let e = config_llm_put_locked(&path, &bad).expect_err("这种 patch 必须被拦下");
+    let e = config_llm_put_locked(&path, &bad, true).expect_err("这种 patch 必须被拦下");
     assert_eq!(e.0, StatusCode::BAD_REQUEST, "要回 400（不是 200、也不是 500）");
     let msg = e.1 .0["error"].as_str().unwrap_or("").to_string();
     assert!(msg.contains("json_mode"), "要点名哪个字段：{msg}");
@@ -1865,7 +2121,7 @@ fn broken_patch_is_rejected_and_the_file_is_untouched() {
     );
 
     // 合法 patch ⇒ 200，且文件真的能反序列化
-    let _ = config_llm_put_locked(&path, &serde_json::json!({ "patch": { "llm": { "model": "m2" } } }))
+    let _ = config_llm_put_locked(&path, &serde_json::json!({ "patch": { "llm": { "model": "m2" } } }), true)
         .expect("合法 patch 必须能存");
     let text = std::fs::read_to_string(&path).unwrap();
     assert!(text.contains("m2"), "改动生效：\n{text}");
@@ -1963,7 +2219,7 @@ fn raw_保存时空_api_key_不会清掉已存的_key() {
 
     // ① 抹过值的原文原样存回：真 key 必须还在，别的改动照常落地
     let masked = "[llm]\napi_key = \"\"\nmodel = \"m2\"\n";
-    let _ = config_llm_put_locked(&p, &serde_json::json!({ "raw": masked })).unwrap();
+    let _ = config_llm_put_locked(&p, &serde_json::json!({ "raw": masked }), true).unwrap();
     let after = std::fs::read_to_string(&p).unwrap();
     assert!(after.contains("api_key = \"sk-real\""), "空 api_key 不该覆盖真 key：\n{after}");
     assert!(after.contains("model = \"m2\""), "别的键要真的写进去：\n{after}");
@@ -1972,20 +2228,21 @@ fn raw_保存时空_api_key_不会清掉已存的_key() {
     let _ = config_llm_put_locked(
         &p,
         &serde_json::json!({ "raw": "[llm]\napi_key = \"sk-new\"\nmodel = \"m2\"\n" }),
+        true,
     )
     .unwrap();
     let after = std::fs::read_to_string(&p).unwrap();
     assert!(after.contains("api_key = \"sk-new\"") && !after.contains("sk-real"), "\n{after}");
 
     // ③ 源文件里连那一行都没有：也要补回来（走 patch 通道补键，别让"删一行"等于丢 key）
-    let _ = config_llm_put_locked(&p, &serde_json::json!({ "raw": "[llm]\nmodel = \"m3\"\n" })).unwrap();
+    let _ = config_llm_put_locked(&p, &serde_json::json!({ "raw": "[llm]\nmodel = \"m3\"\n" }), true).unwrap();
     let after = std::fs::read_to_string(&p).unwrap();
     assert!(after.contains("api_key = \"sk-new\"") && after.contains("model = \"m3\""), "\n{after}");
 
     // ④ 原本就没 key：不会被补出一个空的 api_key 行
     let q = dir.join("empty.toml");
     std::fs::write(&q, "[llm]\nmodel = \"m\"\n").unwrap();
-    let _ = config_llm_put_locked(&q, &serde_json::json!({ "raw": "[llm]\nmodel = \"m4\"\n" })).unwrap();
+    let _ = config_llm_put_locked(&q, &serde_json::json!({ "raw": "[llm]\nmodel = \"m4\"\n" }), true).unwrap();
     let after = std::fs::read_to_string(&q).unwrap();
     assert!(!after.contains("api_key"), "没配过 key 就别凭空写一行：\n{after}");
 
@@ -1997,16 +2254,22 @@ fn raw_保存时空_api_key_不会清掉已存的_key() {
 fn 探之前先要_key_与_base_url() {
     let mut llm = yekitrim_core::config::LlmConfig::default();
     llm.base_url = "https://stored.example/v1".to_string();
-    let e = probe_request("https://asked.example/v1", &llm).unwrap_err();
+    let e = probe_request("https://asked.example/v1", None, &llm).unwrap_err();
     assert_eq!(e.0, StatusCode::BAD_REQUEST, "没配 key 就别发一个必然 401 的请求");
     let msg = e.1 .0["error"].as_str().unwrap_or("").to_string();
     assert!(msg.contains("API key"), "{msg}");
 
+    // ⚠️ 表单里刚填、还没保存的 key 也算数（否则用户必须先保存一次才能「获取模型」）
+    assert_eq!(
+        probe_request("https://asked.example/v1", Some("sk-draft"), &llm).unwrap(),
+        "https://asked.example/v1"
+    );
+
     llm.api_key = "sk-x".to_string();
-    assert_eq!(probe_request("https://asked.example/v1", &llm).unwrap(), "https://asked.example/v1");
-    assert_eq!(probe_request("  ", &llm).unwrap(), "https://stored.example/v1", "缺省用已存的那条");
+    assert_eq!(probe_request("https://asked.example/v1", None, &llm).unwrap(), "https://asked.example/v1");
+    assert_eq!(probe_request("  ", None, &llm).unwrap(), "https://stored.example/v1", "缺省用已存的那条");
     llm.base_url.clear();
-    assert_eq!(probe_request("", &llm).unwrap_err().0, StatusCode::BAD_REQUEST, "两个都空就没得探");
+    assert_eq!(probe_request("", None, &llm).unwrap_err().0, StatusCode::BAD_REQUEST, "两个都空就没得探");
 }
 
 /// `GET /api/llm/models`：**认识的 route ⇒ 一个网络请求都不发**（回 `source: catalog`）。
@@ -2113,5 +2376,158 @@ async fn llm_model_endpoints_are_admin_only() {
             .await;
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "{uri} 未登录必须 401");
     }
+}
+
+/// B8 判据本体：主机分类逐条钉死（这些就是"绕过 v4 检查"的常见写法）。
+#[test]
+fn base_url_local_host_classification() {
+    // 本机 / 内网 / 链路本地 —— 全部要拦
+    for bad in [
+        "http://127.0.0.1:11434/v1",
+        "http://localhost:11434",
+        "http://LOCALHOST:8080/v1",
+        "http://[::1]:11434/v1",
+        "http://0.0.0.0/v1",
+        "http://10.1.2.3/v1",
+        "http://172.16.0.9:8000/v1",
+        "http://172.31.255.255/v1",
+        "http://192.168.1.10:30000/v1",
+        "http://169.254.169.254/latest/meta-data",
+        "http://[fd00::1]:11434/v1",
+        "http://[fe80::1]:11434/v1",
+        "http://[::ffff:10.0.0.5]:11434/v1",
+        "http://sub.localhost/v1",
+        "http://user@192.168.0.1/v1",
+    ] {
+        assert!(
+            base_url_host_is_local(bad),
+            "{bad} 必须判成内网/本机"
+        );
+        assert!(
+            assert_base_url_allowed(bad, false).is_err(),
+            "普通账号保存 {bad} 必须 403/400"
+        );
+    }
+    // 公网地址 —— 放行
+    for good in [
+        "https://api.deepseek.com/v1",
+        "https://api.openai.com/v1",
+        "http://8.8.8.8/v1",
+        "https://llm.example.com/v1",
+        "http://[2001:db8::1]/v1",
+    ] {
+        assert!(!base_url_host_is_local(good), "{good} 不该被判成内网");
+        assert!(assert_base_url_allowed(good, false).is_ok(), "{good} 普通账号应放行");
+    }
+    // admin 不受限：内网地址照样过（公网部署的运维要能配内网中转）
+    assert!(assert_base_url_allowed("http://127.0.0.1:11434/v1", true).is_ok());
+    // 空值放行（必填校验是各入口自己的事）
+    assert!(assert_base_url_allowed("", false).is_ok());
+    assert!(assert_base_url_allowed("   ", false).is_ok());
+    // 403 的语义要稳：别悄悄变成 500/200
+    let e = assert_base_url_allowed("http://127.0.0.1:11434/v1", false).unwrap_err();
+    assert_eq!(e.0, StatusCode::FORBIDDEN, "{e:?}");
+}
+
+/// B8 @ `config_llm_put_locked`：普通账号**保存**带内网 base_url 的配置必须被拦，
+/// 且**原文件一个字节不动**（守卫语义与 B3/P0 那两条一致）。
+#[test]
+fn llm_put_rejects_private_base_url_for_normal_user() {
+    let dir = std::env::temp_dir().join(format!("yekitrim-b8-put-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = dir.join("llm.toml");
+    let original = "[llm]\napi_key = \"k\"\nmodel = \"m\"\nbase_url = \"https://api.example.com/v1\"\n";
+    std::fs::write(&p, original).unwrap();
+
+    // ① patch 顶层：403，原文件不动，临时文件清掉
+    let e = config_llm_put_locked(
+        &p,
+        &serde_json::json!({ "patch": { "llm": { "base_url": "http://127.0.0.1:11434/v1" } } }),
+        false,
+    )
+    .expect_err("普通账号不许把 base_url 指到本机");
+    assert_eq!(e.0, StatusCode::FORBIDDEN, "{e:?}");
+    assert_eq!(std::fs::read_to_string(&p).unwrap(), original, "原文件一个字节不动");
+    assert!(!p.with_extension("toml.guard").exists(), "失败不留临时文件");
+
+    // ② patch 里的 provider 带内网地址：同样 403（数组整体替换的绕法也要拦）
+    let e = config_llm_put_locked(
+        &p,
+        &serde_json::json!({ "patch": { "llm": { "providers": [
+            { "id": "a", "name": "甲", "api": "openai-chat", "base_url": "http://192.168.1.5:8000/v1" }
+        ] } } }),
+        false,
+    )
+    .expect_err("provider 里的内网地址同样要拦");
+    assert_eq!(e.0, StatusCode::FORBIDDEN, "{e:?}");
+    assert_eq!(std::fs::read_to_string(&p).unwrap(), original);
+
+    // ③ raw 源文件模式：同样 403
+    let e = config_llm_put_locked(
+        &p,
+        &serde_json::json!({ "raw": "[llm]\napi_key = \"k\"\nbase_url = \"http://169.254.169.254/\"\n" }),
+        false,
+    )
+    .expect_err("raw 模式同样要拦");
+    assert_eq!(e.0, StatusCode::FORBIDDEN, "{e:?}");
+    assert_eq!(std::fs::read_to_string(&p).unwrap(), original);
+
+    // ④ 同样的 patch，admin 放行且真的落盘
+    let _ = config_llm_put_locked(
+        &p,
+        &serde_json::json!({ "patch": { "llm": { "base_url": "http://127.0.0.1:11434/v1" } } }),
+        true,
+    )
+    .expect("admin 可以配内网中转");
+    assert!(
+        std::fs::read_to_string(&p).unwrap().contains("127.0.0.1"),
+        "admin 的改动要真的生效"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// B8 @ `POST /api/llm/test`：普通账号用**已存的**内网配置点「测试连接」⇒ 403，
+/// 且**不发出任何网络请求**（判据在 resolve 之后、test_llm 之前）。
+///
+/// 没有第二账号在 HTTP 层实测过"admin 能过"：那要真连一台本机服务才能证明成功，
+/// 夹具环境做不到 —— admin 分支由 [`base_url_local_host_classification`] 在纯函数层钉住。
+#[tokio::test]
+async fn llm_test_rejects_private_base_url_for_normal_user() {
+    let t = test_app().await;
+    let hash = yekitrim_service::auth::hash_password("pass-12345678").unwrap();
+    let uid = t.auth.db().create_user("b8_user", &hash, "user", false, 0).unwrap();
+    let b = t.auth.login("b8_user", "pass-12345678", None, None).unwrap();
+
+    // 直接把"他自己的" llm.toml 写进他账号树的**真实解析位置**（`load_llm_config_for` 走
+    // `owner::state_dir`，测试进程里解析到 exe 旁的程序目录 —— 绕开 PUT：保存那条已被拦）。
+    // ⚠️ 用例结束必须清掉：这是构建产物目录里的账号树，不能留垃圾。
+    let home = yekitrim_core::owner::state_dir(yekitrim_core::owner::Owner::User(uid));
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("llm.toml"),
+        "[llm]\napi_key = \"k\"\nmodel = \"m\"\nbase_url = \"http://127.0.0.1:9/v1\"\n",
+    )
+    .unwrap();
+
+    let res = t
+        .call(t.req_as(&b.session_id, &b.csrf, "POST", "/llm/test").body(Body::empty()).unwrap())
+        .await;
+    assert_eq!(res.status(), StatusCode::FORBIDDEN, "已存的内网地址也不许测：{res:?}");
+
+    // 公网地址的正常账号：判据放行（连不上是 500/502 的事，不是 403 —— 不发真请求没法验成功，
+    // 这里只验"不是 403"，防止判据把公网用户一起拦掉）
+    std::fs::write(
+        home.join("llm.toml"),
+        "[llm]\napi_key = \"k\"\nmodel = \"m\"\nbase_url = \"https://b8.invalid.example/v1\"\n",
+    )
+    .unwrap();
+    let res = t
+        .call(t.req_as(&b.session_id, &b.csrf, "POST", "/llm/test").body(Body::empty()).unwrap())
+        .await;
+    assert_ne!(res.status(), StatusCode::FORBIDDEN, "公网地址不该被 403：{res:?}");
+
+    let _ = std::fs::remove_dir_all(&home);
 }
 }

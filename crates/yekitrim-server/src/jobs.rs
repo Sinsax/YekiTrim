@@ -802,6 +802,19 @@ impl JobManager {
         }
     }
 
+    /// 只改任务提示语（"正在下载 xxx"这类**阶段内的细粒度文案**）。
+    ///
+    /// 不推事件：进度另有 `progress()`（高频），这里换文案的频率是"每个文件一次"。
+    /// 但**要记一次活动时间** —— 否则一份 800 MB 的包下完、解压那一两分钟里
+    /// `updated_at` 不动，界面会误报"已 N 分钟没有新进展"。
+    pub async fn message(&self, id: &str, msg: impl Into<String>) {
+        let mut jobs = self.jobs.write().await;
+        if let Some(job) = jobs.iter_mut().find(|j| j.id == id) {
+            job.message = msg.into();
+            job.updated_secs = epoch_secs();
+        }
+    }
+
     pub async fn progress(&self, id: &str, current: u64, total: u64) {
         let mut jobs = self.jobs.write().await;
         if let Some(job) = jobs.iter_mut().find(|j| j.id == id) {
@@ -836,8 +849,18 @@ impl JobManager {
         let Some(job) = jobs.iter_mut().find(|j| j.id == id) else {
             return;
         };
-        // 已取消的任务不再被迟到的完成回调覆盖为"成功"，但**资源此刻才真正释放**
-        if job.status != JobStatus::Cancelled {
+        // ⚠️ **只有"还没终态"的任务才能被标成成功**（Queued = 放行前就收工那条路）。
+        //
+        // 两条不能覆盖的终态：
+        // ① `Cancelled`：迟到的完成回调不许把它翻成成功；
+        // ② `Failed`：`create()` 的**超配额拒绝**分支写的就是 Failed（活动任务过量 / 建任务过频），
+        //    而 9 个创建点的 `wait_start()` 失败分支都会调 `complete()`（本意只是"释放占位并唤醒
+        //    后面的任务"，见 `api/polish.rs` 那处注释）。覆盖它 ⇒ 用户看到任务"完成"、错误被抹掉，
+        //    实际一个字节都没产出（2026-11-14 后端 review 的 P1）。
+        //
+        // 无论是否迁状态，`worker_done` 都必须置位：拒单/取消的任务也一样要**真正释放资源键**，
+        // 否则同项目/同片段的后续任务会永远排队。
+        if matches!(job.status, JobStatus::Queued | JobStatus::Running) {
             job.status = JobStatus::Succeeded;
             job.message = "完成".into();
             job.error = None;
@@ -1003,6 +1026,21 @@ mod tests {
         jm.create(1, JobSpec::new("test", "test", resources, class)).await
     }
 
+    /// 下载任务的"正在下 xxx"文案：只换文字、不动进度与状态，
+    /// 但**要**刷活动时间 —— 否则解压那一两分钟会被界面误报成"卡住了"。
+    #[tokio::test]
+    async fn message_only_touches_text_and_activity() {
+        let jm = JobManager::new();
+        let h = mk(&jm, keys(&["models"]), JobClass::Medium).await;
+        let before = jm.get(&h.id).await.unwrap();
+        jm.message(&h.id, "下载 qwen3-asr").await;
+        let after = jm.get(&h.id).await.unwrap();
+        assert_eq!(after.message, "下载 qwen3-asr");
+        assert_eq!(after.status, before.status);
+        assert_eq!(after.current, 0, "改文案不该动进度");
+        assert!(after.updated_at >= before.updated_at);
+    }
+
     #[tokio::test]
     async fn disjoint_resources_run_in_parallel() {
         let jm = JobManager::new();
@@ -1050,6 +1088,68 @@ mod tests {
             .create(2, JobSpec::new("t", "t", keys(&["o:out"]), JobClass::Light))
             .await;
         assert!(other.wait_start().await.is_ok(), "别的账号应照常开工");
+    }
+
+    /// **超配额被拒的任务不许被后续的 `complete()` 刷成"完成"**（2026-11-14 后端 review 的 P1）。
+    ///
+    /// 生产路径是这样的：`create()` 记 Failed + 丢掉开跑信号 → 协程 `wait_start()` 拿到 `Err`
+    /// → **每个创建点都会调 `jobs.complete()`**（本意只是释放占位并唤醒后面的任务，见
+    /// `api/polish.rs` / `pipeline.rs` 的失败分支）。曾经的 `complete()` 只排除 `Cancelled`，
+    /// 于是这条失败被覆盖成 `Succeeded`、`error` 被清空 —— 用户看到"完成"，实际一步没跑。
+    ///
+    /// 三条判据一起钉：① 状态仍是 failed；② 失败原因还在；③ 资源键**真的释放**了
+    /// （拒单的任务也必须让出资源，否则同项目后续任务永远排队）。
+    #[tokio::test]
+    async fn quota_rejected_job_is_not_overwritten_by_complete() {
+        let jm = JobManager::new();
+        let mut running = Vec::new();
+        for i in 0..MAX_ACTIVE_PER_OWNER {
+            let h = jm
+                .create(1, JobSpec::new("t", "t", keys(&[&format!("r{i}:out")]), JobClass::Light))
+                .await;
+            running.push(h.id.clone());
+            assert!(h.wait_start().await.is_ok(), "第 {i} 个还没到上限，应立刻开跑");
+        }
+        // 第 N+1 个：撞活动任务上限 ⇒ Failed
+        let over = jm
+            .create(
+                1,
+                JobSpec::new("cut_one", "剪出片段 #9", keys(&["p3:clip:clip-09"]), JobClass::Medium),
+            )
+            .await;
+        let over_id = over.id.clone();
+        assert!(over.wait_start().await.is_err(), "超限任务不该开工");
+        // 复刻创建点的失败分支
+        jm.complete(&over_id).await;
+        let s = jm.get(&over_id).await.expect("任务仍在列表里");
+        assert_eq!(s.status, "failed", "超配额的任务不许被刷成完成：{s:?}");
+        assert!(
+            s.error.as_deref().unwrap_or("").contains("活动任务过多"),
+            "失败原因不许被抹掉：{s:?}"
+        );
+        assert!(
+            jm.busy_with(&keys(&["p3:clip:clip-09"])).await.is_none(),
+            "拒单的任务也必须让出资源键"
+        );
+
+        // ---- 正常路径与取消路径照旧 ----
+        // 放掉一个名额，新任务开跑 → complete() 仍然把 Running 迁到 Succeeded
+        jm.complete(&running[0]).await;
+        let ok = mk(&jm, keys(&["ok:out"]), JobClass::Light).await;
+        let ok_id = ok.id.clone();
+        assert!(ok.wait_start().await.is_ok());
+        assert_eq!(jm.get(&ok_id).await.unwrap().status, "running");
+        jm.complete(&ok_id).await;
+        let done = jm.get(&ok_id).await.unwrap();
+        assert_eq!(done.status, "succeeded", "Running → Succeeded 这条必须不变");
+        assert!(done.error.is_none());
+
+        // 取消过的任务：迟到的 complete() 不许把它翻成成功
+        let canc = mk(&jm, keys(&["c:out"]), JobClass::Light).await;
+        let canc_id = canc.id.clone();
+        assert!(jm.cancel(&canc_id).await);
+        jm.complete(&canc_id).await;
+        assert_eq!(jm.get(&canc_id).await.unwrap().status, "cancelled");
     }
 
     /// 建任务频率上限：每个任务立刻完成（活动数永远不是瓶颈），只剩频率这一道。

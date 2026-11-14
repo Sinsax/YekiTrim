@@ -16,13 +16,67 @@ use super::*;
 
 // ===================== 直播间（录播姬） =====================
 
-/// 当前录播姬对接状态。**给普通用户只说能不能用**（不泄露地址/错误细节）。
-pub(super) fn recorder_client() -> Option<yekitrim_service::recorder::RecorderClient> {
+/// 当前录制软件对接状态。**给普通用户只说能不能用**（不泄露地址/错误细节）。
+pub(super) fn recorder_client() -> Option<yekitrim_service::recorder::RecorderBackend> {
     let cfg = yekitrim_core::config::load_global_config();
-    yekitrim_service::recorder::RecorderClient::from_config(&cfg.ingest.recorder)
+    yekitrim_service::recorder::RecorderBackend::from_config(&cfg.ingest)
 }
 
-/// `GET /api/rooms`：我的直播间 + 录播姬实时状态。
+fn missing_hint(kind: &str) -> String {
+    match kind {
+        "none" => "未接录制软件（设置 → 接入 → 录制软件）".into(),
+        "bililive-tools" => "未配置 biliLive-tools（[ingest.recorder] api_base / api_key 为空）".into(),
+        _ => "未配置录播姬（[ingest.recorder] api_base 为空）".into(),
+    }
+}
+
+/// biliLive-tools：每个房间的"已录 N 个 · 大小"来自它的录像历史（路径里没有房间号可解析）。
+async fn blt_summaries(
+    cfg: &yekitrim_core::config::Config,
+    client: &yekitrim_service::recorder::RecorderBackend,
+    room_ids: &[String],
+    live: &[yekitrim_service::recorder::RecorderRoom],
+) -> std::collections::HashMap<String, crate::ingest_worker::RoomRecordings> {
+    use std::collections::HashMap;
+    let mut out: HashMap<String, crate::ingest_worker::RoomRecordings> = HashMap::new();
+    let root = std::path::PathBuf::from(cfg.ingest.recorder.root.trim());
+    let container_root = cfg.ingest.recorder.container_root.clone();
+    for rid in room_ids {
+        let platform = live
+            .iter()
+            .find(|r| r.room_id.to_string() == *rid)
+            .map(|r| r.platform.clone())
+            .unwrap_or_else(|| "Bilibili".into());
+        let Ok(items) = client.list_history(rid, &platform).await else { continue };
+        let paths: Vec<String> = items.into_iter().map(|i| i.video_file).collect();
+        let root = root.clone();
+        let cr = container_root.clone();
+        let stat = tokio::task::spawn_blocking(move || {
+            let mut s = crate::ingest_worker::RoomRecordings::default();
+            for p in paths {
+                let Ok(abs) = crate::ingest::map_webhook_path(&root, &cr, &p) else { continue };
+                let Ok(md) = std::fs::metadata(&abs) else { continue };
+                s.files += 1;
+                s.bytes += md.len();
+                let mtime = md
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                s.latest = s.latest.max(mtime);
+            }
+            s
+        })
+        .await;
+        if let Ok(s) = stat {
+            out.insert(rid.clone(), s);
+        }
+    }
+    out
+}
+
+/// `GET /api/rooms`：我的直播间 + 录制软件实时状态。
 ///
 /// `available=false`（未对接 / 连不上）时前端把「配置直播间」置灰 —— 用户不该看到
 /// 管理员才懂的那些配置指引。
@@ -34,38 +88,45 @@ pub(super) async fn rooms_list(
     let rows = db
         .rooms_of_user(user.id)
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取直播间失败: {e:#}")))?;
-
+    let cfg = yekitrim_core::config::load_global_config();
     let all_admin = user.is_admin();
-    let (available, reason) = match recorder_client() {
-        None => (
-            false,
-            if all_admin { "未配置录播姬（[ingest.recorder] api_base 为空）" } else { "录播姬未接入" },
-        ),
-        Some(client) => match client.list_rooms().await {
-            Ok(_) => (true, ""),
+    let client = recorder_client();
+
+    let mut live = Vec::new();
+    let (available, reason) = match &client {
+        None => (false, if all_admin { missing_hint(&cfg.ingest.recorder.kind) } else { "录制软件未接入".to_string() }),
+        Some(c) => match c.list_rooms().await {
+            Ok(rooms) => {
+                live = rooms;
+                (true, String::new())
+            }
             Err(e) => {
-                tracing::warn!("读录播姬房间列表失败: {e:#}");
-                (false, if all_admin { "连不上录播姬（检查 api_base / Basic 账号）" } else { "录播姬暂时不可用" })
+                tracing::warn!("读录制软件房间列表失败: {e:#}");
+                let why = if cfg.ingest.recorder.kind.trim() == "bililive-tools" {
+                    "连不上 biliLive-tools（检查 api_base / 密钥）"
+                } else {
+                    "连不上录播姬（检查 api_base / Basic 账号）"
+                };
+                (false, if all_admin { why.to_string() } else { "录制软件暂时不可用".into() })
             }
         },
     };
-    // 在线状态（只有能连上时才查得到；查一次，按 room_id 建索引）
-    let live = if available {
-        match recorder_client() {
-            Some(c) => c.list_rooms().await.unwrap_or_default(),
-            None => Vec::new(),
-        }
-    } else {
-        Vec::new()
-    };
 
     // 录像目录汇总：每行显示"已录 N 个 · 大小"（展开时再列明细，见 /api/rooms/:id/recordings）。
-    // 只读 walk，网络盘上可能要几秒 → blocking 池；失败只 warn，不让用户连房间列表都看不到。
-    let cfg = yekitrim_core::config::load_global_config();
-    let summaries = if cfg.ingest.recorder.root.trim().is_empty() {
+    // biliLive-tools 的路径里没有房间号，必须走它的录像历史；录播姬仍然扫目录。
+    let blt = client.as_ref().is_some_and(|c| c.is_bililive_tools());
+    // ⚠️ 这里曾写成 `if blt { root } else { root }` 的恒等分支（review P3）——
+    // 两种后端的录像根**就是同一份配置**（[`[ingest.recorder] root`]），分支只会误导读者
+    // 以为 blt 有另一个根。真有差异的是 `container_root`（见 recorder_objects）。
+    let rec_root = cfg.ingest.recorder.root.as_str();
+    let summaries = if rec_root.trim().is_empty() {
         None
+    } else if available && blt {
+        let ids: Vec<String> = rows.iter().map(|r| r.room_id.clone()).collect();
+        Some(blt_summaries(&cfg, client.as_ref().unwrap(), &ids, &live).await)
     } else {
-        match tokio::task::spawn_blocking(move || crate::ingest_worker::list_recordings(&cfg)).await {
+        let cfg_scan = cfg.clone();
+        match tokio::task::spawn_blocking(move || crate::ingest_worker::list_recordings(&cfg_scan)).await {
             Ok(Ok(files)) => Some(crate::ingest_worker::room_summaries(&files)),
             Ok(Err(e)) => {
                 tracing::warn!("读录像目录失败: {e:#}");
@@ -92,7 +153,6 @@ pub(super) async fn rooms_list(
                 "streaming": st.map(|x| x.streaming).unwrap_or(false),
                 "recording": st.map(|x| x.recording).unwrap_or(false),
                 "in_recorder": st.is_some(),
-                // 录像目录里属于这个房间的文件（解析得出房间号才算得进来）
                 "recordings": {
                     "files": rec.map(|s| s.files).unwrap_or(0),
                     "bytes": rec.map(|s| s.bytes).unwrap_or(0),
@@ -101,17 +161,18 @@ pub(super) async fn rooms_list(
             })
         })
         .collect();
+    let kind = client.as_ref().map(|c| c.kind()).unwrap_or_else(|| cfg.ingest.recorder.kind.trim());
     if all_admin {
-        ok(serde_json::json!({ "available": available, "reason": reason, "rooms": rooms }))
+        ok(serde_json::json!({ "available": available, "reason": reason, "kind": kind, "rooms": rooms }))
     } else {
-        ok(serde_json::json!({ "available": available, "rooms": rooms }))
+        ok(serde_json::json!({ "available": available, "kind": kind, "rooms": rooms }))
     }
 }
 
-/// `POST /api/rooms {url|room_id}`：把直播间加到录播姬并登记归属本人。
+/// `POST /api/rooms {url|room_id}`：登记直播间。
 ///
-/// 这是用户端唯一的操作：填房间号/链接 → 录播姬开播即录 → 录完 webhook 按 `channel_map`
-/// 归属自动入库成他的项目。
+/// - 录播姬：去它那边加房间（开播即录）；
+/// - biliLive-tools：**只在 YekiTrim 里登记**，不碰它的录制配置（只读适配）。
 pub(super) async fn rooms_add(
     State(state): State<Arc<AppState>>,
     Extension(user): Extension<crate::auth::CurrentUser>,
@@ -127,12 +188,13 @@ pub(super) async fn rooms_add(
         .map_err(|e| err(StatusCode::BAD_REQUEST, format!("{e}")))?;
 
     let Some(client) = recorder_client() else {
+        let kind = yekitrim_core::config::load_global_config().ingest.recorder.kind;
         return Err(err(
             StatusCode::SERVICE_UNAVAILABLE,
             if user.is_admin() {
-                "未配置录播姬：把 [ingest.recorder] api_base 指向录播姬（例 http://127.0.0.1:2356）"
+                format!("{}（设置 → 采集 → 录制软件）", missing_hint(&kind))
             } else {
-                "录播姬未接入，请联系管理员"
+                "录制软件未接入，请联系管理员".into()
             },
         ));
     };
@@ -147,11 +209,27 @@ pub(super) async fn rooms_add(
         }
     }
 
-    let room = client
-        .add_room(room_id)
-        .await
-        .map_err(|e| err(StatusCode::BAD_GATEWAY, format!("{e:#}")))?;
-    let title = if room.title.is_empty() { String::new() } else { room.title.clone() };
+    let title = if client.is_bililive_tools() {
+        // 只读适配：房间必须已经在 biliLive-tools 的录制列表里（我们不去改它的配置）
+        let rooms = client
+            .list_rooms()
+            .await
+            .map_err(|e| err(StatusCode::BAD_GATEWAY, format!("{e:#}")))?;
+        let Some(found) = rooms.iter().find(|r| r.room_id.to_string() == room_id.to_string()) else {
+            return Err(err(
+                StatusCode::NOT_FOUND,
+                "biliLive-tools 的录制列表里没有这个直播间：先在它那边添加（本页只登记，不改它的配置）",
+            ));
+        };
+        found.title.clone()
+    } else {
+        let room = client
+            .add_room(room_id)
+            .await
+            .map_err(|e| err(StatusCode::BAD_GATEWAY, format!("{e:#}")))?;
+        room.title
+    };
+    let title = if title.is_empty() { String::new() } else { title };
     db.room_upsert(&room_id.to_string(), user.id, &title)
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("登记直播间失败: {e:#}")))?;
     let _ = db.audit(Some(user.id), "room_add", &format!("room={room_id}"));
@@ -161,14 +239,12 @@ pub(super) async fn rooms_add(
         "room": {
             "room_id": room_id.to_string(),
             "title": title,
-            "streaming": room.streaming,
-            "recording": room.recording,
             "in_recorder": true,
         }
     }))
 }
 
-/// `DELETE /api/rooms/:room_id`：从录播姬移除 + 注销登记（录像文件保留）。
+/// `DELETE /api/rooms/:room_id`：注销登记（录播姬会顺带从它那边移除；biliLive-tools 不动它的配置）。
 ///
 /// 录播姬那边删失败就**不动登记** —— 否则会留下"还在录但没有归属"的房间。
 pub(super) async fn rooms_delete(
@@ -187,38 +263,328 @@ pub(super) async fn rooms_delete(
     }
 
     if let Some(client) = recorder_client() {
-        let id = yekitrim_service::recorder::parse_room_id(&room_id)
-            .map_err(|e| err(StatusCode::BAD_REQUEST, format!("{e}")))?;
-        client
-            .remove_room(id)
-            .await
-            .map_err(|e| err(StatusCode::BAD_GATEWAY, format!("从录播姬移除失败（登记未改动）：{e:#}")))?;
+        if !client.is_bililive_tools() {
+            let id = yekitrim_service::recorder::parse_room_id(&room_id)
+                .map_err(|e| err(StatusCode::BAD_REQUEST, format!("{e}")))?;
+            client
+                .remove_room(id)
+                .await
+                .map_err(|e| err(StatusCode::BAD_GATEWAY, format!("从录播姬移除失败（登记未改动）：{e:#}")))?;
+        }
     }
     let owner_filter = if user.is_admin() { None } else { Some(user.id) };
-    db.room_delete(&room_id, owner_filter)
+    let removed = db
+        .room_delete(&room_id, owner_filter)
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("注销直播间失败: {e:#}")))?;
+    // **删 0 行 = 没删到东西，必须如实回 404**（2026-11-14 后端 review 的 P1 的余项）。
+    // 上面那次 `channel_for_room` 归属检查与这里不是原子的：中间被别的账号/PUT channel-map
+    // 改走归属时，`DELETE ... WHERE user_id = ?` 会删 0 行，而旧代码照样回 200 `{ok:true}` ——
+    // 界面显示"已移除"，列表里它却被别人占着。
+    if removed == 0 {
+        return Err(err(StatusCode::NOT_FOUND, "直播间未登记（或归属已变更）"));
+    }
     let _ = db.audit(Some(user.id), "room_delete", &format!("room={room_id}"));
     ok(serde_json::json!({ "ok": true }))
 }
 
-/// `POST /api/admin/recorder/test`：对接自检（版本 + 房间数），admin 用来看配置对不对。
-pub(super) async fn admin_recorder_test() -> ApiResult {
+/// `GET /api/recorder/objects`：首页「添加录像」用 —— 当前录制软件的**录制对象 + 目录**。
+///
+/// 只读：biliLive-tools 走它的录像历史；录播姬扫录像目录。`configured=false` 时前端显示
+/// "未接录制软件 → 去设置"。
+///
+/// ⚠️ **归属过滤（2026-11-14 后端 review B2）**：普通用户只看**自己登记过的房间**
+/// （`channel_map` 里 `user_id` 是他的那些）；admin 通吃。旧实现把全平台房间连同
+/// 录像目录绝对路径一起回给任何登录用户。`root`（录像根）也只给 admin ——
+/// 与 `/api/rooms` 的"普通用户不返回管理员指引"同一条口径。
+pub(super) async fn recorder_objects(
+    State(state): State<Arc<AppState>>,
+    Extension(user): Extension<crate::auth::CurrentUser>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> ApiResult {
+    let cfg = yekitrim_core::config::load_global_config();
+    let _ = q; // 兼容旧的 `?kind=`，现在只有一个录播模块（kind 在配置里）
+    let is_admin = user.is_admin();
+    let db = state.auth.db();
+    // 普通用户 = 只看他自己的 channel_map；admin = None（不过滤）
+    let mine: Option<std::collections::HashSet<String>> = if is_admin {
+        None
+    } else {
+        Some(
+            db.rooms_of_user(user.id)
+                .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取直播间失败: {e:#}")))?
+                .into_iter()
+                .map(|r| r.room_id)
+                .collect(),
+        )
+    };
+    let client = recorder_client();
+    let Some(client) = client else {
+        return ok(serde_json::json!({
+            "configured": false,
+            "available": false,
+            "kind": null,
+            "objects": [],
+        }));
+    };
+    let kind = client.kind();
+    let blt = client.is_bililive_tools();
+    // ⚠️ 这里曾写成 `if blt { root } else { root }` 的恒等分支（review P3）——见 rooms_list 同款注释。
+    let root = std::path::PathBuf::from(cfg.ingest.recorder.root.trim());
+    let container_root = if blt {
+        cfg.ingest.recorder.container_root.clone()
+    } else {
+        String::new()
+    };
+
+    let rooms = match client.list_rooms().await {
+        Ok(r) => r,
+        Err(e) => {
+            return ok(serde_json::json!({
+                "configured": true,
+                "available": false,
+                "kind": kind,
+                "error": format!("{e:#}"),
+                "objects": [],
+            }))
+        }
+    };
+
+    // 录播姬：扫一遍目录，按房间号归属；biliLive-tools：逐房间查录像历史
+    let scan = if blt || root.as_os_str().is_empty() {
+        None
+    } else {
+        let cfg_scan = cfg.clone();
+        tokio::task::spawn_blocking(move || crate::ingest_worker::list_recordings(&cfg_scan))
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+    };
+
+    let mut objects = Vec::new();
+    for r in rooms {
+        let rid = r.room_id.to_string();
+        // B2：不在本人 channel_map 里的房间，一个字都不回（不泄露目录在录什么）
+        if !recorder_room_visible(mine.as_ref(), &rid) {
+            continue;
+        }
+        let mut dir = String::new();
+        let mut files = 0usize;
+        let mut bytes = 0u64;
+        let mut latest = 0i64;
+        if blt {
+            if !root.as_os_str().is_empty() {
+                if let Ok(items) = client.list_history(&rid, &r.platform).await {
+                    for it in items {
+                        let Ok(abs) = crate::ingest::map_webhook_path(&root, &container_root, &it.video_file)
+                        else { continue };
+                        if dir.is_empty() {
+                            dir = abs.parent().map(|p| yekitrim_core::path::display(p)).unwrap_or_default();
+                        }
+                        if let Ok(md) = std::fs::metadata(&abs) {
+                            files += 1;
+                            bytes += md.len();
+                            latest = latest.max(
+                                md.modified()
+                                    .ok()
+                                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                                    .map(|d| d.as_secs() as i64)
+                                    .unwrap_or(0),
+                            );
+                        }
+                    }
+                }
+            }
+        } else if let Some(files_ref) = scan.as_ref() {
+            for f in files_ref.iter().filter(|f| f.room.as_deref() == Some(rid.as_str())) {
+                if dir.is_empty() {
+                    dir = root.join(&f.rel).parent().map(|p| yekitrim_core::path::display(p)).unwrap_or_default();
+                }
+                files += 1;
+                bytes += f.size;
+                latest = latest.max(f.mtime);
+            }
+        }
+        objects.push(serde_json::json!({
+            "id": rid,
+            "title": r.title,
+            "platform": r.platform,
+            "dir": dir,
+            "files": files,
+            "bytes": bytes,
+            "latest": latest,
+        }));
+    }
+
+    ok(serde_json::json!({
+        "configured": true,
+        "available": true,
+        "kind": kind,
+        // B2：录像根的绝对路径只给 admin（普通用户的 objects 已经按本人房间过滤）
+        "root": if is_admin { yekitrim_core::path::display(&root) } else { String::new() },
+        "objects": objects,
+    }))
+}
+
+/// B2：这个房间要不要出现在普通用户的录制对象里。
+///
+/// `None`（admin）= 全部可见；`Some(自己的房间)` = 只认本人登记的。抽成纯函数是为了
+/// 能在单测里钉住"admin 通吃 / 普通用户只看自己"这两条，不必真起一个录播姬。
+fn recorder_room_visible(mine: Option<&std::collections::HashSet<String>>, room_id: &str) -> bool {
+    match mine {
+        None => true,
+        Some(set) => set.contains(room_id),
+    }
+}
+
+/// B2：`added` / `project_id` 只反映**调用者自己**的登记（admin 视角 = 全部）。
+///
+/// `project_by_config` 反查的是**任何人**登记的项目 —— 同一个目录被两个账号先后登记时，
+/// 普通用户不该看到别人那条的 id。抽成纯函数是为了两处（blt / 扫描分支）共用 + 单测可钉。
+fn added_project_of(
+    db: &yekitrim_service::db::Db,
+    is_admin: bool,
+    uid: i64,
+    config_file: &std::path::Path,
+) -> (bool, Option<i64>) {
+    let row = if is_admin {
+        db.project_by_config(config_file).ok().flatten()
+    } else {
+        db.project_by_config_for(config_file, uid).ok().flatten()
+    };
+    match row {
+        Some(p) => (true, Some(p.id)),
+        None => (false, None),
+    }
+}
+
+/// `GET /api/recorder/recordings?room_id=`：某房间的录像列表（含 `added`，防重复添加）。
+///
+/// ⚠️ **归属校验（2026-11-14 后端 review B2）**：普通用户只能看**自己登记的**房间 ——
+/// 与 `/api/rooms/:id/recordings` 的 [`crate::ingest::owned_room`] **同一份判据**
+/// （同一语义两个端点一套有一道没有，正是 review 指出的问题）。不可见一律 404。
+/// `added`/`project_id` 也只反映**调用者自己的**登记：别人在同一目录登记的项目，
+/// id 不许回给普通用户（[`added_project_of`]）。
+pub(super) async fn recorder_recordings(
+    State(state): State<Arc<AppState>>,
+    Extension(user): Extension<crate::auth::CurrentUser>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> ApiResult {
+    let room_id = q.get("room_id").map(|s| s.trim().to_string()).unwrap_or_default();
+    if room_id.is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "缺少 room_id"));
+    }
+    let is_admin = user.is_admin();
+    let db = state.auth.db();
+    // 归属校验**先于**一切（没接录制软件也要先 404 —— 不给普通用户"探房间存在性"的口子）
+    if !is_admin {
+        crate::ingest::owned_room(db, &user, &room_id)?;
+    }
+    let cfg = yekitrim_core::config::load_global_config();
     let Some(client) = recorder_client() else {
+        return ok(serde_json::json!({ "configured": false, "recordings": [] }));
+    };
+    let root = std::path::PathBuf::from(cfg.ingest.recorder.root.trim());
+    if root.as_os_str().is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "未配置录像目录"));
+    }
+    let db = state.auth.db();
+    let blt = client.is_bililive_tools();
+    let container_root = cfg.ingest.recorder.container_root.clone();
+
+    let mut rows: Vec<serde_json::Value> = Vec::new();
+    let mut seen_dirs = std::collections::HashSet::new();
+
+    if blt {
+        let rooms = client
+            .list_rooms()
+            .await
+            .map_err(|e| err(StatusCode::BAD_GATEWAY, format!("{e:#}")))?;
+        let Some(st) = rooms.iter().find(|r| r.room_id.to_string() == room_id) else {
+            return Err(err(StatusCode::NOT_FOUND, "biliLive-tools 的录制列表里没有这个直播间"));
+        };
+        let items = client
+            .list_history(&room_id, &st.platform)
+            .await
+            .map_err(|e| err(StatusCode::BAD_GATEWAY, format!("{e:#}")))?;
+        for it in items {
+            let Ok(abs) = crate::ingest::map_webhook_path(&root, &container_root, &it.video_file) else {
+                continue;
+            };
+            let Ok(md) = std::fs::metadata(&abs) else { continue };
+            let Some(dir) = abs.parent() else { continue };
+            if !seen_dirs.insert(dir.to_path_buf()) {
+                continue;
+            }
+            let rel = dir.strip_prefix(&root).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+            let (added, project_id) = added_project_of(db, is_admin, user.id, &dir.join("yekitrim.toml"));
+            rows.push(serde_json::json!({
+                "name": dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+                "dir": yekitrim_core::path::display(dir),
+                "rel": rel,
+                "size": md.len(),
+                "mtime": md.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs() as i64).unwrap_or(0),
+                "added": added,
+                "project_id": project_id,
+            }));
+        }
+    } else {
+        let cfg_scan = cfg.clone();
+        let scanned = tokio::task::spawn_blocking(move || crate::ingest_worker::list_recordings(&cfg_scan))
+            .await
+            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("扫描线程失败: {e}")))?
+            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+        for f in scanned.iter().filter(|f| f.room.as_deref() == Some(room_id.as_str())) {
+            let abs = root.join(&f.rel);
+            let Some(dir) = abs.parent() else { continue };
+            if !seen_dirs.insert(dir.to_path_buf()) {
+                continue;
+            }
+            let (added, project_id) = added_project_of(db, is_admin, user.id, &dir.join("yekitrim.toml"));
+            rows.push(serde_json::json!({
+                "name": dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+                "dir": yekitrim_core::path::display(dir),
+                "rel": f.rel,
+                "size": f.size,
+                "mtime": f.mtime,
+                "added": added,
+                "project_id": project_id,
+            }));
+        }
+    }
+    rows.sort_by_key(|v| -v.get("mtime").and_then(|m| m.as_i64()).unwrap_or(0));
+    ok(serde_json::json!({
+        "configured": true,
+        "available": true,
+        "room_id": room_id,
+        "recordings": rows,
+    }))
+}
+
+/// `POST /api/admin/recorder/test`：对接自检（版本 + 房间数），admin 用来看配置对不对。
+pub(super) async fn admin_recorder_test(
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> ApiResult {
+    let _ = q;
+    let client = recorder_client();
+    let Some(client) = client else {
         return ok(serde_json::json!({
             "ok": false,
             "error": "未配置 [ingest.recorder] api_base",
         }));
     };
+    let kind = client.kind();
     let version = client.version().await.ok();
     match client.list_rooms().await {
         Ok(rooms) => ok(serde_json::json!({
             "ok": true,
+            "kind": kind,
             "base": client.base(),
             "version": version,
             "rooms": rooms.len(),
         })),
         Err(e) => ok(serde_json::json!({
             "ok": false,
+            "kind": kind,
             "base": client.base(),
             "version": version,
             "error": format!("{e:#}"),
@@ -323,5 +689,110 @@ async fn rooms_endpoints_validate_and_report_availability() {
     assert!(j.get("reason").is_none(), "普通用户不显示管理员指引: {j}");
     assert_eq!(j["rooms"].as_array().unwrap().len(), 1, "只看得到自己的房间: {j}");
     assert_eq!(j["rooms"][0]["title"], "他的房间");
+}
+
+/// **B2（2026-11-14 后端 review）：recorder 两个端点的归属过滤（两用户）**。
+///
+/// 归属校验必须**先于**"录制软件可用性"检查 —— 否则普通用户能拿这个接口探
+/// "某个房间号有没有被登记"（401/404/400 的差异就是存在性信号）。
+#[tokio::test]
+async fn recorder_recordings_ownership_gate_is_checked_before_anything_else() {
+    let t = test_app().await;
+    let db = t.auth.db();
+    let hash = yekitrim_service::auth::hash_password("pass-12345678").unwrap();
+    let a = db.create_user("room_a", &hash, "user", false, 0).unwrap();
+    db.room_upsert("23058", a, "甲的房间").unwrap();
+    let b = db.create_user("room_b", &hash, "user", false, 0).unwrap();
+    let _ = b;
+    let ba = t.auth.login("room_a", "pass-12345678", None, None).unwrap();
+    let bb = t.auth.login("room_b", "pass-12345678", None, None).unwrap();
+
+    // ① B 看 A 的房间：404（与 /api/rooms/:id/recordings 的 owned_room 同口径）
+    let res = t
+        .call(
+            t.req_as(&bb.session_id, &bb.csrf, "GET", "/recorder/recordings?room_id=23058")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(res.status(), StatusCode::NOT_FOUND, "别人的房间不许看");
+
+    // ② 没登记过的房间：普通用户同样 404（不许探存在性）
+    let res = t
+        .call(
+            t.req_as(&bb.session_id, &bb.csrf, "GET", "/recorder/recordings?room_id=99999")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+
+    // ③ 自己的房间：放行（测试环境没接录制软件 ⇒ 走到 configured:false 分支）
+    let res = t
+        .call(
+            t.req_as(&ba.session_id, &ba.csrf, "GET", "/recorder/recordings?room_id=23058")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(res.status(), StatusCode::OK, "自己的房间要能看");
+    let j = body_json(res).await;
+    assert_eq!(j["configured"], false, "测试环境没有录制软件：{j}");
+
+    // ④ admin：没登记的房间也放行（通吃，走到 configured:false）
+    let res = t
+        .call(t.req("GET", "/recorder/recordings?room_id=99999").body(Body::empty()).unwrap())
+        .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let j = body_json(res).await;
+    assert_eq!(j["configured"], false, "{j}");
+
+    // ⑤ 普通用户 objects：可用位照回、objects 恒空（没有录制软件）且**不回 root 路径**
+    let res = t
+        .call(t.req_as(&bb.session_id, &bb.csrf, "GET", "/recorder/objects").body(Body::empty()).unwrap())
+        .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let j = body_json(res).await;
+    assert_eq!(j["configured"], false, "{j}");
+}
+
+/// B2 的纯函数判据：admin 通吃 / 普通用户只看自己登记的房间；
+/// `added`/`project_id` 只回**本人**项目 —— 别人登记的 id 一个字都不回。
+#[test]
+fn recorder_visibility_and_project_id_are_owner_scoped() {
+    use std::collections::HashSet;
+
+    // 录制对象可见性
+    assert!(recorder_room_visible(None, "123"), "admin 不过滤");
+    let mine = HashSet::from(["123".to_string()]);
+    assert!(recorder_room_visible(Some(&mine), "123"));
+    assert!(!recorder_room_visible(Some(&mine), "456"), "别人的房间不可见");
+
+    // added / project_id 按账号分
+    let dir = tempfile::tempdir().unwrap();
+    let db = yekitrim_service::db::Db::open(&dir.path().join("t.db")).unwrap();
+    let a = db.create_user("a", "h", "user", false, 0).unwrap();
+    let c = db.create_user("c", "h", "user", false, 0).unwrap();
+    let proj = dir.path().join("a-proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    let cfg_a = proj.join("yekitrim.toml");
+    let pid_a = db
+        .create_project(a, "a-proj", None, "local", None, &proj, &cfg_a, None)
+        .unwrap();
+
+    // 登记者本人：added:true + 自己的 id
+    let (added, pid) = added_project_of(&db, false, a, &cfg_a);
+    assert!(added);
+    assert_eq!(pid, Some(pid_a));
+
+    // 没登记的第三人：added:false + project_id:null（不泄露 A 的 id）
+    let (added, pid) = added_project_of(&db, false, c, &cfg_a);
+    assert!(!added, "别人的登记不该算到 C 头上");
+    assert_eq!(pid, None, "别人的项目 id 不许回");
+
+    // admin：回**任意人**的登记（他要能收拾全平台）
+    let (added, pid) = added_project_of(&db, true, c, &cfg_a);
+    assert!(added);
+    assert_eq!(pid, Some(pid_a));
 }
 }

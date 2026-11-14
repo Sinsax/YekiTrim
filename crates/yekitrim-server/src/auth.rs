@@ -95,6 +95,51 @@ pub fn owner_of(user: &CurrentUser) -> yekitrim_core::owner::Owner {
     }
 }
 
+/// **可选的**会话 → `Owner`：给 `/api/health` 这类**公开**接口用。
+///
+/// ## 为什么需要它（2026-11-13 用户报「LLM 明明配好了，切片页仍显示『未配置 AI』」）
+///
+/// `llm.toml` **按账号**存在 `users/<uid>/.yekitrim/llm.toml`（设置页 `PUT /config/llm`
+/// 写的就是那里，`/polish/llm*` 与事件检测读的也是那里）；而 `/api/health` 原来只看
+/// `load_global_config()` = **顶层旧位置**，而且**根本不加载 `llm.toml`** ⇒ `llm` 恒 `false`
+/// ⇒ 前端把「智能剪辑 / 重新分段」置灰并显示"未配置 AI"（同一个坑在 `api/polish.rs` 的
+/// `/polish/cover-title` 上已经踩过一次，那里有 100% 复现记录）。
+///
+/// ## 三条口径
+///
+/// 1. **没有会话是正常状态**：health 在登录页也要能问，所以这里回 `None`（调用方回落到
+///    [`owner_of`] 的 `Local` 那一档），**绝不**回 401，也不做 CSRF 校验（只读、只回布尔）。
+/// 2. **有会话就用该账号**：判定走 [`owner_of`]（同一条分叉点），这里只负责
+///    "cookie → [`CurrentUser`]" 那一步，绝不自己拼路径。
+/// 3. 过期 / 禁用 / 认不出的 cookie ⇒ `None`，**不报错**：一个能力位不该因为坏 cookie 变 500。
+pub(crate) fn optional_owner(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Option<yekitrim_core::owner::Owner> {
+    // 本地免登录（托盘 / `--local-no-auth`）：合成身份与 `authenticate` 注入的**完全一致**
+    if let Some(la) = &state.local_admin {
+        return Some(owner_of(&CurrentUser {
+            id: la.id,
+            username: la.username.clone(),
+            role: la.role.clone(),
+            must_change_password: false,
+            session_id: LOCAL_SESSION_ID.to_string(),
+        }));
+    }
+    let sid = cookie_value(headers, kdf::COOKIE_SID)?;
+    let s = state.auth.session(&sid).ok().flatten()?;
+    if s.expires_at <= db::now_secs() || s.disabled {
+        return None;
+    }
+    Some(owner_of(&CurrentUser {
+        id: s.user_id,
+        username: s.username,
+        role: s.role,
+        must_change_password: s.must_change_password,
+        session_id: s.id,
+    }))
+}
+
 /// 已认证调用者（写进**响应**扩展，供最外层的 `access_log` 中间件记「谁在操作」）。
 ///
 /// 请求扩展里的 [`CurrentUser`] 只在被认证层包住的 handler 里可见，挂在最外层的
@@ -920,6 +965,51 @@ mod tests {
             );
         }
         h
+    }
+
+    /// `/api/health` 的 `llm` 位要按**会话所属账号**算（2026-11-13：LLM 配好了却被判成未配置）。
+    ///
+    /// 判据三条：无 cookie ⇒ `None`（调用方回落 `Local`，不 401）· 真会话 ⇒ `User(uid)` ·
+    /// 坏/过期 cookie ⇒ `None`（能力位不该因为坏 cookie 变 500）。
+    #[tokio::test]
+    async fn optional_owner_reads_the_session_account() {
+        use crate::model::{AppState, LocalAdmin};
+
+        let dir = tempfile::tempdir().unwrap();
+        let auth = AuthService::open(dir.path().to_path_buf(), Listening::Loopback).unwrap();
+        let hash = yekitrim_service::auth::hash_password("pw-123456789").unwrap();
+        let uid = auth
+            .db()
+            .create_user("admin", &hash, "admin", false, 0)
+            .unwrap();
+        let bundle = auth.login("admin", "pw-123456789", None, None).expect("应能登录");
+        let state = Arc::new(AppState::with_auth(auth.clone()));
+
+        // 登录页 / 探活：没有会话是**正常**状态，不能报错
+        assert_eq!(optional_owner(&state, &HeaderMap::new()), None);
+
+        // 真会话 ⇒ 该账号（密钥就在 users/<uid>/.yekitrim/llm.toml）
+        let ok = headers_with(&[("cookie", &format!("{}={}", kdf::COOKIE_SID, bundle.session_id))]);
+        assert_eq!(
+            optional_owner(&state, &ok),
+            Some(yekitrim_core::owner::Owner::User(uid)),
+            "health 必须按会话账号读 llm.toml，不能回落到顶层那份"
+        );
+
+        // 认不出的 cookie ⇒ None（不 500、也不 401）
+        let bad = headers_with(&[("cookie", &format!("{}=nope", kdf::COOKIE_SID))]);
+        assert_eq!(optional_owner(&state, &bad), None);
+
+        // 本地免登录（托盘）：合成身份 ⇒ Local
+        let local = AppState::with_auth(auth).with_local_admin(LocalAdmin {
+            id: uid,
+            username: "admin".into(),
+            role: "admin".into(),
+        });
+        assert_eq!(
+            optional_owner(&local, &HeaderMap::new()),
+            Some(yekitrim_core::owner::Owner::Local)
+        );
     }
 
     #[test]

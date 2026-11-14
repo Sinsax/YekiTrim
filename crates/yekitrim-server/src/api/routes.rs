@@ -236,6 +236,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/project-data/clips", get(project_data_clips))
         .route("/project-data/clips/:rank", axum::routing::delete(project_data_clip_delete))
         .route("/project-data/clips/:rank/thumb", get(project_data_clip_thumb))
+        // 发布标题（写 output/publish_config.json 的 clips[].title，投稿链路读它）
+        .route("/project-data/clips/:rank/title", put(project_data_clip_title_put))
         .route("/project-data/events/cut-all", post(project_data_event_cut_all))
         .route("/project-data/events/merge-splits", post(project_data_events_merge_splits))
         .route("/project-data/events/:rank/cut", post(project_data_event_cut))
@@ -258,6 +260,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         // 直播间自助登记（用户只填房间号/链接，服务端去录播姬加房间）
         .route("/rooms", get(rooms_list).post(rooms_add))
+        .route("/recorder/objects", get(crate::api::rooms::recorder_objects))
+        .route("/recorder/recordings", get(crate::api::rooms::recorder_recordings))
         .route("/rooms/:room_id", axum::routing::delete(rooms_delete))
         // 该房间在录像目录里的文件（展开房间行时用）+ 单个文件导入
         .route("/rooms/:room_id/recordings", get(crate::ingest::room_recordings))
