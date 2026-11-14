@@ -1175,6 +1175,24 @@ pub struct Db {
         })
     }
 
+    /// 把会话的 `last_event_at` / `created_at` **拨回**到录像文件自身的时间。
+    ///
+    /// 只给兜底扫描登记用：扫描一口气登记几十场历史录像，若全部盖 `now`，
+    /// 「录制导入」的排序键（`COALESCE(last_event_at, created_at)`）会全部相等，
+    /// 顺序退化成插入序。回拨后按真实录像时间排序；已有更晚事件（webhook）时不回拨。
+    pub fn ingest_session_backdate(&self, session_id: &str, mtime: i64) -> Result<()> {
+        self.with(|conn| {
+            conn.execute(
+                "UPDATE ingest_sessions SET
+                     last_event_at = MIN(last_event_at, ?2),
+                     created_at    = MIN(created_at,    ?2)
+                   WHERE session_id = ?1 AND first_event_at > ?2",
+                params![session_id, mtime],
+            )?;
+            Ok(())
+        })
+    }
+
     fn ingest_session_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<IngestSessionRow> {
         let parse_list = |raw: String| -> Vec<String> {
             // 读侧：解析失败按空处理是安全的（不会写回），但必须留痕 ——
@@ -1690,6 +1708,26 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open(&dir.path().join("yekitrim.db")).unwrap();
         (dir, db)
+    }
+
+    /// 回拨只对**扫描登记**的会话生效：touch 把时间盖到 now，backdate 拉回录像 mtime；
+    /// webhook 会话（first_event_at 早于 mtime，比如事后补扫旧文件）不许被回拨，
+    /// 否则「录制导入」的时间排序会把真实事件顶掉。
+    #[test]
+    fn backdate_pulls_scan_sessions_to_recording_time() {
+        let (_d, db) = tmp_db();
+        db.ingest_session_touch("scan-x", Some("23058"), None).unwrap();
+        db.ingest_session_backdate("scan-x", 1_000_000).unwrap();
+        let s = db.ingest_session("scan-x").unwrap().unwrap();
+        assert_eq!(s.last_event_at, Some(1_000_000), "扫描会话应回拨到录像 mtime");
+        assert_eq!(s.created_at, 1_000_000, "created_at 是同一次 INSERT 写的 now，一并回拨");
+
+        // webhook 会话：first_event_at 早于 mtime ⇒ 不回拨
+        db.ingest_session_touch("hook-x", Some("23058"), None).unwrap();
+        db.with(|c| { c.execute("UPDATE ingest_sessions SET first_event_at = 500 WHERE session_id = 'hook-x'", []).unwrap(); Ok(()) }).unwrap();
+        db.ingest_session_backdate("hook-x", 1_000_000).unwrap();
+        let s = db.ingest_session("hook-x").unwrap().unwrap();
+        assert!(s.last_event_at.unwrap() > 1_000_000, "webhook 会话的真实事件时间不许被回拨");
     }
 
     /// 指派必须把待分配会话推到 `closing`。

@@ -386,10 +386,17 @@ fn register_scan_session(
         db.channel_for_room(&room)?
     };
     db.ingest_session_touch(&session_id, Some(&room), None)?;
-    db.ingest_session_add_file(&session_id, rel, true)?;
-    db.ingest_session_add_file(&session_id, rel, false)?;
     let meta = std::fs::metadata(abs).ok();
     let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+    // ⚠️ 扫描登记的会话时间必须用**录像文件自己的 mtime**，不能留在“扫描那一刻”：
+    //    兜底扫描一口气登记几十场历史录像，全部盖同一个 now ⇒ 排序键
+    //    COALESCE(last_event_at, created_at) 全等 ⇒ 「录制导入」顺序退化成插入序，
+    //    看起来就像乱排/按大小排（2026-11-15 用户报障）。mtime 才是这场直播的真实时间。
+    if let Some(mtime) = meta.as_ref().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs() as i64) {
+        db.ingest_session_backdate(&session_id, mtime)?;
+    }
+    db.ingest_session_add_file(&session_id, rel, true)?;
+    db.ingest_session_add_file(&session_id, rel, false)?;
     db.upsert_ingest_file(rel, Some(&session_id), Some(&room), size, 0, "ingested")?;
     let already_owned = db
         .ingest_session(&session_id)?
