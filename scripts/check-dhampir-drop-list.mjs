@@ -13,10 +13,15 @@
 //
 // # 跑法
 //
-//     node scripts/check-dhampir-drop-list.mjs
+//     node scripts/check-dhampir-drop-list.mjs [--require-sample] [--self-test]
 //
 // 零外部依赖（node + 本仓的转译器）；样本是**仓库自带**的演示工程，所以它在常规门禁里跑得动
 // （不需要底座二进制、ffmpeg、Chrome、GPU —— 那些是对拍工具的要求，不是这一条）。
+//
+// ⚠️ **缺样本时默认 SKIP + exit 0**（干净检出的常态：clip.mp4 被 .gitignore 排除），但
+// "没跑"必须一眼能看出**不是通过** —— 输出以 `· SKIP` 开头、且 `--self-test` 之外只有这一条
+// 输出。CI / 有样本的机器加 `--require-sample`：缺样本改成 **exit 3**，别让"没跑"长得像"通过"
+// （review polish.md E4a / 报告 §3 曾把这份 SKIP 列为已知残留）。
 import { strict as assert } from 'node:assert';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
@@ -28,12 +33,28 @@ const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const CLIP = join(repo, 'docs', 'wgpu-effect-reference', 'demo');
 const TRANSLATOR = join(repo, 'tools', 'polish-to-dhampir.mjs');
 
+// ⚠️ `--self-test` 只测 `compare` 的比对语义（纯函数），**不需要样本** —— 必须放在缺样本
+// 检查之前，否则干净检出上自证永远跑不到、判据空转没人知道（review polish.md E4a；
+// 函数声明会提升，这里前向调用没问题）。
+if (process.argv.includes('--self-test')) {
+  selfTest();
+  process.exit(0);
+}
+
 // 样本的 `clip.mp4` 被 `.gitignore` 排除（`*.mp4`）⇒ 干净检出上它不存在。
 // 缺它时转译器探不到源尺寸，会多报一条 CLAMP `stage` —— 那是样本缺失，不是防线变化。
 // 按仓库惯例：**缺依赖就 SKIP 并明说**，不写成通过、也不拿它去改基线。
+// ⚠️ `--require-sample`（CI 用）：缺样本 = exit 3 —— "没跑"不许长得像"通过"（E4a）。
+const requireSample = process.argv.includes('--require-sample');
 if (!existsSync(join(CLIP, 'clip.mp4'))) {
-  console.log('· SKIP：缺 docs/wgpu-effect-reference/demo/clip.mp4（.gitignore 排除的媒体样本）',
-    '—— 本判据要在带样本的机器上跑');
+  const why =
+    '缺 docs/wgpu-effect-reference/demo/clip.mp4（.gitignore 排除的媒体样本）—— 本判据要在带样本的机器上跑';
+  if (requireSample) {
+    console.error('✗ REQUIRE-SAMPLE 失败：' + why);
+    console.error('  本判据没跑，DROP/CLAMP 清单没有被钉 —— 按 --require-sample 的口径这算失败（exit 3）。');
+    process.exit(3);
+  }
+  console.log('· SKIP：' + why, '—— 加 --require-sample 可把"缺样本"变成失败（CI 用）');
   process.exit(0);
 }
 
@@ -121,11 +142,6 @@ function selfTest() {
     '少一条也必须报（修好了要改基线；**报告被削弱**了更要查）',
   );
   console.log(`✓ 清单比对自证：${checks} 项（多一条 / 少一条都必须红）`);
-}
-
-if (process.argv.includes('--self-test')) {
-  selfTest();
-  process.exit(0);
 }
 
 const { got, counts } = collectIssues();
