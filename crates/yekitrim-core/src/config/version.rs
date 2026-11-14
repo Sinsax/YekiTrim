@@ -950,7 +950,7 @@ max_tokens = 8192
 
         const OLD_A: &str = r#"[llm]
 api_key = "k"
-base_url = "http://192.168.0.107:7863/v1"
+base_url = "http://127.0.0.1:7863/v1"
 model = "cn:deepseek-v4.1-flash"
 temperature = 0
 max_tokens = 16384

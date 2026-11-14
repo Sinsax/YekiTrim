@@ -117,6 +117,7 @@ headless Chrome 渲染腿（出片兜底腿 + 封面截图通道）**整条删�
 | 音效文件本体 | 运行时下载到工程的 `sfx/` 目录，**不随仓库分发**。备选下载源为 `sounddictionary.info`。 |
 | **いらすとや** 插画 | `yekitrim-polish` 可按需从 <https://www.irasutoya.com/> 检索并下载插画。该站**免费额度有限且条款较严**（例如单次使用有数量限制、禁止转售素材本身），请使用前自行确认。 |
 | EmoteLab 贴纸包 | 本地贴纸库（`<exe同级>/stickers/`）由用户自行导入的贴纸包构成，**不随仓库分发**。 |
+| 项目 LOGO（`webui/src/assets/logo.png`） | **作者本人创作**（Sinsax），随本仓库与发行物分发，仅用于本项目的品牌展示；不适用 Apache-2.0 代码许可。 |
 | 内置字体 | **随二进制分发**（内嵌）。两支**自带字体**（**Noto Sans SC**、Noto Color Emoji，均 SIL OFL-1.1）的字节编译进 `yekitrim.exe`，首次启动自动落盘到字体库，OFL 全文一并内嵌落盘。OFL-1.1 正文明确允许 `bundled, embedded, redistributed`，故随包分发合规。见上表与 `docs/plan/font-library.md`。 |
 
 ## 六、平台名称

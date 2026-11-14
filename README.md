@@ -640,7 +640,7 @@ cargo xtask package --target linux --skip-build --smoke-test \
 落到整个二进制上。
 
 **那个原因已经消除**。本项目只做 ASR、从不调用 TTS，改用
-[TTS-off 预编译归档](docs/plan/sherpa-onnx-no-tts-switch-guide.md) 后，espeak-ng 被替换成
+TTS-off 预编译归档后，espeak-ng 被替换成
 896 字节的**零符号占位库**，不再进入二进制。依赖审计（`cargo metadata --locked`，全树 335 个包）
 确认**随二进制分发的 312 个包中没有任何 GPL / LGPL / AGPL**，逐条统计见
 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
@@ -697,8 +697,7 @@ yekitrim fonts list                # 看库里有什么
 yekitrim fonts install             # 重新装上还缺的自带字体
 yekitrim fonts install --id NotoColorEmoji   # 只装某一支
 ```
-**没选字体的工程**会优先用 Noto Sans SC（栈里写的是它的内部族名，见
-`docs/plan/font-library.md` §15）——这个"默认位"只作**初始化设定**：界面上的字体下拉只列库内字体，
+**没选字体的工程**会优先用 Noto Sans SC（栈里写的是它的内部族名）——这个"默认位"只作**初始化设定**：界面上的字体下拉只列库内字体，
 不会再给一个「（系统默认）」的选项（自带字体就在库里，回到系统栈必然是更差的选择）。
 
 **想用别的字体：把字体文件丢进程序目录的 `resources/fonts/`**
