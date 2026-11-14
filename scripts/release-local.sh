@@ -50,14 +50,20 @@ fi
 # ---------- Windows（cargo-xwin 交叉编译） ----------
 if want windows; then
   echo "==> [windows] 检查工具链"
-  rustup target view x86_64-pc-windows-msvc >/dev/null 2>&1 || rustup target add x86_64-pc-windows-msvc
-  command -v cargo-xwin >/dev/null || cargo install cargo-xwin --locked
-  command -v lld-link >/dev/null || { echo "缺 lld-link（pacman -S lld）"; exit 1; }
+  # 必须走容器：libwebp-sys 要对 target 编 C（需要 clang-cl），宿主机没有 MSVC 工具链；
+  # messense/cargo-xwin 镜像自带 clang-cl / lld-link，并按需从微软拉 SDK/CRT。
+  docker image inspect messense/cargo-xwin:latest >/dev/null 2>&1 \\
+    || docker pull messense/cargo-xwin:latest
 
-  echo "==> [windows] 交叉编译（crt-static 匹配 /MT 静态库）"
-  export RUSTFLAGS="-C target-feature=+crt-static"
-  export XWIN_CACHE_DIR="$ROOT/.workbuddy/xwin-cache"
-  cargo xwin build --release --target x86_64-pc-windows-msvc -p yekitrim-cli --locked
+  echo "==> [windows] 容器内交叉编译（crt-static 匹配 /MT 静态库）"
+  docker run --rm --network host \\
+    -v "$ROOT:/src" -w /src \\
+    -v "$ROOT/.workbuddy/cargo-home:/usr/local/cargo" \\
+    -v "$ROOT/.workbuddy/xwin-cache:/src/.workbuddy/xwin-cache" \\
+    -e RUSTFLAGS="-C target-feature=+crt-static" \\
+    -e XWIN_CACHE_DIR=/src/.workbuddy/xwin-cache \\
+    messense/cargo-xwin:latest \\
+    cargo xwin build --release --target x86_64-pc-windows-msvc -p yekitrim-cli --locked
 
   # xtask 的门禁与组装都从 target/release/ 取 exe；交叉产物在 triple 子目录里，拷过去
   mkdir -p target/release
