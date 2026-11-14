@@ -645,6 +645,22 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
             )
             .into());
         }
+        // ⚠️ 契约下界（review polish.md E4c）：VERSION 能读就比对 `MIN_DHAMPIR_*` 下限，
+        //   低于下限**拒绝打包** —— readiness 的下界拦的是"装好之后"，这里拦的是"发出去之前"
+        //   （装了旧底座的用户原本要到出片那一刻才炸，且 health 还是绿的）。
+        //   行缺失 = dev 树产物，按"未知"放行（与 dhampir.rs 同判据）。
+        let version_text = fs::read_to_string(artifact.join("VERSION"))?;
+        let floor_problems = dhampir_contract_floor_problems(&version_text);
+        if !floor_problems.is_empty() {
+            return Err(format!(
+                "Dhampir 底座版本不满足本仓契约下限（{}）：
+  - {}
+                   换新版底座（--dhampir-artifact / --dhampir-exe 指到新产物）后再打包",
+                artifact.display(),
+                floor_problems.join("\n  - ")
+            )
+            .into());
+        }
         copy_dir_all(
             &artifact.join("preview"),
             &package_dir.join("dhampir").join("preview"),
@@ -836,6 +852,43 @@ fn dhampir_version_key(dir_name: &str) -> Vec<u64> {
 ///
 /// 基座是 `ubuntu:24.04`（glibc 2.39）。比这更高的符号说明**没在容器里编**
 /// （比如在滚动发行版上直编）—— 那种产物绝大多数用户跑不了，必须拦下。
+/// 底座契约**下限**（打包门禁，review polish.md E4c）。
+///
+/// ⚠️ 与 `crates/yekitrim-polish/src/render/dhampir.rs` 的 `MIN_PROJECT_SCHEMA` /
+/// `MIN_HOST_API` **手抄同值**：xtask 刻意不依赖 yekitrim-polish（本 crate 只用
+/// std + sha2 + zip），两边各有一份常量，靠
+/// `tests::pins_dhampir_contract_floor_with_polish` 这条文本钉子互防漂移。
+/// 语义见 dhampir.rs：**下界不是期望值**（底座可以更新，不能更旧）；
+/// 行缺失 = 未知不拦（dev 树产物可能没有全字段，底座自己在出片时会兜底）。
+const MIN_DHAMPIR_PROJECT_SCHEMA: u32 = 1;
+const MIN_DHAMPIR_HOST_API: u32 = 6;
+
+/// 对照 `VERSION` 文本算契约下界问题（纯函数，与 dhampir.rs::contract_floor_problems 同判据）。
+fn dhampir_contract_floor_problems(version_text: &str) -> Vec<String> {
+    let field = |key: &str| {
+        version_text
+            .lines()
+            .find_map(|l| l.trim().strip_prefix(key))
+            .and_then(|v| v.trim().parse::<u32>().ok())
+    };
+    let mut out = Vec::new();
+    if let Some(schema) = field("project_schema=") {
+        if schema < MIN_DHAMPIR_PROJECT_SCHEMA {
+            out.push(format!(
+                "底座工程契约太旧：project_schema={schema}（本仓要 ≥ {MIN_DHAMPIR_PROJECT_SCHEMA}）"
+            ));
+        }
+    }
+    if let Some(api) = field("host_api=") {
+        if api < MIN_DHAMPIR_HOST_API {
+            out.push(format!(
+                "底座宿主接口太旧：host_api={api}（本仓要 ≥ {MIN_DHAMPIR_HOST_API}）"
+            ));
+        }
+    }
+    out
+}
+
 const MAX_GLIBC: (u32, u32) = (2, 39);
 
 fn run_package_linux(
@@ -1669,5 +1722,71 @@ mod tests {
         fs::create_dir_all(root.join("out")).unwrap();
         assert_eq!(picked(&root), None);
         let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 打包侧的契约下界判据与 dhampir.rs::contract_floor_problems 同形：
+    /// 低于下限报（两条独立）、等于/高于不报、行缺失与垃圾值当"未知"不报。
+    #[test]
+    fn dhampir_contract_floor_matches_polish_semantics() {
+        let below = dhampir_contract_floor_problems("project_schema=1\nhost_api=5");
+        assert_eq!(below.len(), 1, "host_api=5 低于下限要报");
+        assert!(below[0].contains("host_api=5"), "{}", below[0]);
+        let schema_old = dhampir_contract_floor_problems("project_schema=0\nhost_api=7");
+        assert_eq!(schema_old.len(), 1, "project_schema=0 低于下限要报");
+        assert!(schema_old[0].contains("project_schema"), "{}", schema_old[0]);
+        assert!(
+            dhampir_contract_floor_problems("project_schema=1\nhost_api=6\nversion=0.1.0").is_empty(),
+            "等于下限不拦（下界语义）"
+        );
+        assert!(
+            dhampir_contract_floor_problems("project_schema=1\ngit=test").is_empty(),
+            "缺 host_api 行（dev 树产物）= 未知，不拦"
+        );
+        assert!(
+            dhampir_contract_floor_problems("project_schema=abc\nhost_api=xyz").is_empty(),
+            "解析不出的值当未知，不拦"
+        );
+    }
+
+    /// **文本钉子**：xtask 的 `MIN_DHAMPIR_*` 与 yekitrim-polish::render::dhampir.rs 的
+    /// `MIN_PROJECT_SCHEMA` / `MIN_HOST_API` 必须逐字同值。
+    /// 为什么钉：xtask 刻意不依赖 polish（只用 std + sha2 + zip），两份手抄常量只能靠
+    /// 这条测试防漂移 —— 漂了就是「打包放行的底座、readiness 却判不就绪」。
+    #[test]
+    fn pins_dhampir_contract_floor_with_polish() {
+        let src = fs::read_to_string(
+            repo_root()
+                .join("crates")
+                .join("yekitrim-polish")
+                .join("src")
+                .join("render")
+                .join("dhampir.rs"),
+        )
+        .expect("读得到 dhampir.rs");
+        let grab = |name: &str| -> u32 {
+            let needle = format!("pub const {name}: u32 = ");
+            let line = src
+                .lines()
+                .find(|l| l.trim_start().starts_with(&needle))
+                .unwrap_or_else(|| panic!("dhampir.rs 里找不到 {name}（常量改名/挪位要同步这条钉子）"));
+            line.split('=')
+                .nth(1)
+                .unwrap()
+                .trim()
+                .trim_end_matches(';')
+                .trim()
+                .parse()
+                .unwrap_or_else(|_| panic!("{name} 的值解析不出：{line}"))
+        };
+        assert_eq!(
+            grab("MIN_PROJECT_SCHEMA"),
+            MIN_DHAMPIR_PROJECT_SCHEMA,
+            "project_schema 下限漂了：xtask 与 dhampir.rs 要一起改"
+        );
+        assert_eq!(
+            grab("MIN_HOST_API"),
+            MIN_DHAMPIR_HOST_API,
+            "host_api 下限漂了：xtask 与 dhampir.rs 要一起改"
+        );
     }
 }
