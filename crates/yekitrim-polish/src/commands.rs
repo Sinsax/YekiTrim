@@ -647,14 +647,19 @@ pub async fn cmd_preview(project_path: &Path, mode: &str) -> anyhow::Result<()> 
         let cover_image = project_path.join("_cover_frame.jpg");
         if !cover_image.exists() {
             let video_path = &resolved.video;
-            let duration = config.segments.last().map(|s| s.end).unwrap_or(0.0);
+            // ⚠️ 时长走 `project_duration`（clip-meta.json 优先）：只 init 没跑 LLM 时 segments 是空的，
+            //    以前 `frame_pos × 0` 让预览封面恒取 0.1s 那一帧（review polish.md P3）。
+            let duration = render::project_duration(project_path, &config);
             let frame_time = (duration * config.cover.frame_pos).max(0.1);
-            if let Ok(frame_data) = yekitrim_core::process::cmd("ffmpeg")
-                .args(["-ss", &frame_time.to_string(), "-i", video_path,
-                       "-vframes", "1", "-f", "image2pipe", "-vcodec", "mjpeg", "-q:v", "3", "-"])
-                .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null())
-                .output().map(|o| o.stdout)
-                && !frame_data.is_empty() { std::fs::write(&cover_image, &frame_data).ok(); }
+            let mut cmd = yekitrim_core::process::cmd("ffmpeg");
+            cmd.args(["-ss", &frame_time.to_string(), "-i", video_path,
+                      "-vframes", "1", "-f", "image2pipe", "-vcodec", "mjpeg", "-q:v", "3", "-"]);
+            // 截帧也走带超时的那个出口（无超时的 `.output()` 会在坏素材上永久挂住）
+            if let Ok(out) = render::ffmpeg::Ffmpeg::run_with_timeout(
+                cmd, "预览封面截帧", render::ffmpeg::Ffmpeg::PROBE_TIMEOUT,
+            ) {
+                if !out.stdout.is_empty() { std::fs::write(&cover_image, &out.stdout).ok(); }
+            }
         }
         let html = cover::build_cover_html(project_path, &config, &resolved);
         let port = render::server::start_file_server(project_path.to_path_buf(), Some(html)).await?;
@@ -738,13 +743,16 @@ pub async fn cmd_test(project_path: &Path) -> anyhow::Result<()> {
             // ffmpeg 生成 15s 黑底测试视频
             tracing::info!("  🎬 生成测试视频 (ffmpeg)...");
             let out_vid = work.join("clip.mp4");
-            let ok = yekitrim_core::process::cmd("ffmpeg")
-                .args(["-f", "lavfi", "-i", "color=c=black:s=1920x1080:d=15",
-                       "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                       &out_vid.to_string_lossy()])
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false);
+            // 编码也走带超时的那个出口（E2 同款）：编码器卡住要能失败，不能永久挂住。
+            let mut cmd = yekitrim_core::process::cmd("ffmpeg");
+            cmd.args(["-f", "lavfi", "-i", "color=c=black:s=1920x1080:d=15",
+                      "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                      &out_vid.to_string_lossy()]);
+            let ok = render::ffmpeg::Ffmpeg::run_with_timeout(
+                cmd, "生成测试视频", render::ffmpeg::Ffmpeg::budget_for(Some(15.0)),
+            )
+            .map(|o| o.status.success())
+            .unwrap_or(false);
             if ok { tracing::info!("  ✓ 测试视频已生成: clip.mp4"); }
             else { tracing::info!("  ⚠ 无法生成测试视频（需要 ffmpeg）"); }
             found = ok;
@@ -905,7 +913,10 @@ pub fn cmd_doctor(_project_path: &Path) -> anyhow::Result<()> {
     tracing::info!("🔍  System check...\n");
 
     // Check ffmpeg
-    match yekitrim_core::process::cmd("ffmpeg").arg("-version").output() {
+    // ⚠️ doctor 也别裸 `.output()`（E2 同款）：坏环境里挂住 = doctor 永远不返回。
+    let mut ver_cmd = yekitrim_core::process::cmd("ffmpeg");
+    ver_cmd.arg("-version");
+    match render::ffmpeg::Ffmpeg::run_with_timeout(ver_cmd, "探 ffmpeg 版本", render::ffmpeg::Ffmpeg::PROBE_TIMEOUT) {
         Ok(out) => {
             let ver = String::from_utf8_lossy(&out.stdout);
             let first = ver.lines().next().unwrap_or("unknown");

@@ -483,6 +483,11 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
     tracing::info!("\n  -- Audio --");
     let t_audio = std::time::Instant::now();
     let ta = project_path.join("_temp_audio.aac");
+
+    // ⚠️ **失败路径统一收口**（E3）：这一整段（音轨 → 音效 → BGM → 合流 → 屏蔽重编码）
+    // 里任何一步的 `?` 都不能直接返回 —— 那样 `_temp_*` 会留在用户片段目录里。
+    // 闭包把"哪一步失败"原样带出去，出口只有一个 `cleanup`。
+    let tail: anyhow::Result<String> = (|| {
     // ---------------------------------------------------------------------
     // **原声轨：有 EDL 就按 EDL 重拼，没有就走老路**（B 件）
     // ---------------------------------------------------------------------
@@ -595,9 +600,28 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
             cleanup(project_path, &tv, &ta);
             anyhow::bail!("按 EDL 组装音轨失败: {e:#}");
         }
+    } else if matches!(Ffmpeg::probe_has_audio_stream(&resolved.video), Some(false)) {
+        // **源素材没有音轨**（录屏 / 无声素材 / 只出画面的片头）：补一条**与画面等长**的静音轨，
+        // 后面的音效 / BGM / 合流链路一行都不用分叉 —— 否则 `extract_audio` 会拿
+        // "Output file does not contain any stream" 把整条出片拦死（review polish.md E1 / D8）。
+        //
+        // ⚠️ 判据必须用**三态**的 `probe_has_audio_stream`：`None`（ffprobe 探不出来）要**走老路**，
+        // 把"探不出来"当成"没有音轨"会让**有声音的素材静默出成无声片**。
+        let secs = Ffmpeg::probe_duration(&tv.to_string_lossy()).unwrap_or(duration);
+        tracing::warn!(
+            "  ⚠ 源素材没有音轨 —— 补一条 {secs:.2}s 静音轨（音效 / BGM 照常混入；不是失败）"
+        );
+        if let Err(e) = Ffmpeg::silent_audio(&ta.to_string_lossy(), secs) {
+            cleanup(project_path, &tv, &ta);
+            anyhow::bail!("源素材没有音轨，补静音轨也失败了: {e:#}");
+        }
     } else if let Err(e) = Ffmpeg::extract_audio(&resolved.video, &ta.to_string_lossy()) {
         cleanup(project_path, &tv, &ta);
-        anyhow::bail!("音频提取失败: {e:#}");
+        anyhow::bail!(
+            "音频提取失败: {e:#}
+  \
+             （源素材到底有没有音轨可用 `ffprobe -select_streams a:0 -show_entries stream=index <视频>` 确认）"
+        );
     }
 
     if !sfx_data.is_empty() {
@@ -908,6 +932,16 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
         }
     }
 
+        Ok(op)
+    })();
+    let op = match tail {
+        Ok(op) => op,
+        Err(e) => {
+            cleanup(project_path, &tv, &ta);
+            return Err(e);
+        }
+    };
+
     cleanup(project_path, &tv, &ta);
     // ⚠️ **封面不再搭渲染的便车**（2026-10-02 用户拍板"视频导出就只导出"）：
     // 原来这里串 `cover::cmd_cover(project_path, Some(&op), None)`，导致
@@ -1010,6 +1044,23 @@ pub struct ResolvedPaths {
     pub danmaku: String,
     pub metadata: String,
     pub output: String,
+}
+
+/// 工程的**画面时长**（秒）：`data/clip-meta.json` 的 `duration` → `[project] duration` →
+/// segments 末尾的 `end`（最后兜底）。
+///
+/// ⚠️ 为什么要有它：封面截帧与预览都用"时长 × `frame_pos`"定位，而**只 init、还没跑 LLM**
+/// 的工程 `segments` 是空的 —— 以前两处都写 `config.segments.last()`，于是 `frame_pos × 0`
+/// 让封面永远取 0.1s 那一帧（片头黑屏）。剪切那一步已经把真时长写在 `clip-meta.json` 里，
+/// 这里优先读它（review `polish.md` P3）。
+pub fn project_duration(project_path: &Path, config: &ProjectFile) -> f64 {
+    let from_meta = std::fs::read_to_string(project_path.join("data").join("clip-meta.json"))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|v| v.get("duration").and_then(|d| d.as_f64()));
+    from_meta
+        .or(config.duration)
+        .unwrap_or_else(|| config.segments.last().map(|s| s.end).unwrap_or(0.0))
 }
 
 pub fn resolve_paths(project_path: &Path, config: &ProjectFile) -> ResolvedPaths {
@@ -1124,20 +1175,21 @@ pub fn prepare_sticker_data(project_path: &Path, config: &project::ProjectFile) 
 /// clip.json 的 duration 是 B站原始元数据含 padding，不可信
 /// 获取视频宽高 (ffprobe stream 信息), 竖屏检测用
 pub fn get_video_size(video_path: &str) -> Option<(u32, u32)> {
-    let out = yekitrim_core::process::cmd("ffprobe")
-        .args([
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "stream=width,height",
-            "-of",
-            "csv=p=0",
-            video_path,
-        ])
-        .output()
-        .ok()?;
+    // ⚠️ 探针也带超时（review polish.md E2 的"等同款"）：网络盘上的坏文件会让裸
+    // `.output()` 永久挂住，而这条在素材库列表/预览的热路径上被调（一个视频 5 次 ffprobe）。
+    let mut cmd = yekitrim_core::process::cmd("ffprobe");
+    cmd.args([
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=width,height",
+        "-of",
+        "csv=p=0",
+        video_path,
+    ]);
+    let out = Ffmpeg::run_with_timeout(cmd, "探视频宽高", Ffmpeg::PROBE_TIMEOUT).ok()?;
     if !out.status.success() {
         return None;
     }
@@ -1176,15 +1228,16 @@ pub struct VideoProbe {
 /// 用 `-of json` 一次拿全：`format=duration,bit_rate` + 视频流的 `width,height,codec_name,r_frame_rate`，
 /// 再顺带看一眼有没有音频流。r_frame_rate 是 `"30000/1001"` 这种分数，要自己除。
 pub fn probe_video(video_path: &str) -> VideoProbe {
-    let out = yekitrim_core::process::cmd("ffprobe")
-        .args([
-            "-v", "error",
-            "-show_entries",
-            "format=duration,bit_rate:stream=codec_type,codec_name,width,height,r_frame_rate",
-            "-of", "json",
-            video_path,
-        ])
-        .output();
+    // ⚠️ 与 `get_video_size` 同理：探针必须带超时（E2），挂住就默认值。
+    let mut cmd = yekitrim_core::process::cmd("ffprobe");
+    cmd.args([
+        "-v", "error",
+        "-show_entries",
+        "format=duration,bit_rate:stream=codec_type,codec_name,width,height,r_frame_rate",
+        "-of", "json",
+        video_path,
+    ]);
+    let out = Ffmpeg::run_with_timeout(cmd, "探视频技术信息", Ffmpeg::PROBE_TIMEOUT);
     let Ok(out) = out else { return VideoProbe::default() };
     if !out.status.success() {
         return VideoProbe::default();
@@ -1241,18 +1294,18 @@ fn parse_rational(s: &str) -> Option<f64> {
 }
 
 pub fn get_video_duration(video_path: &str) -> Option<f64> {
-    let out = yekitrim_core::process::cmd("ffprobe")
-        .args([
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "csv=p=0",
-            video_path,
-        ])
-        .output()
-        .ok()?;
+    // ⚠️ 探针带超时（E2 同款）：挂住返回 None，调用方自己有兜底。
+    let mut cmd = yekitrim_core::process::cmd("ffprobe");
+    cmd.args([
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "csv=p=0",
+        video_path,
+    ]);
+    let out = Ffmpeg::run_with_timeout(cmd, "量视频时长", Ffmpeg::PROBE_TIMEOUT).ok()?;
     if !out.status.success() {
         return None;
     }
@@ -1277,9 +1330,32 @@ pub fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-pub fn cleanup(_project_path: &Path, temp_video: &Path, temp_audio: &Path) {
+/// 收掉本次出片留下的临时产物。
+///
+/// ⚠️ 以前只删 `_temp_video.mp4` / `_temp_audio.aac` 两个**固定名** —— 而音效混音 / 限幅 /
+/// 屏蔽重编码各有自己的中间文件（`_temp_audio_m/_l/_b.aac`、`_temp_muted.mp4`），
+/// 任何一步早退（`?`）都会把它们留在片段目录里（用户报过「渲染导出时中间文件过多」）。
+///
+/// 判据刻意**只认直接子项里的 `_temp_` 前缀**：不递归、不碰 `data/`、不碰成片与封面。
+pub fn cleanup(project_path: &Path, temp_video: &Path, temp_audio: &Path) {
     for p in [temp_video, temp_audio] {
         std::fs::remove_file(p).ok();
+    }
+    let Ok(entries) = std::fs::read_dir(project_path) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !name.starts_with("_temp_") {
+            continue;
+        }
+        let path = entry.path();
+        if path.is_dir() {
+            std::fs::remove_dir_all(&path).ok();
+        } else {
+            std::fs::remove_file(&path).ok();
+        }
     }
 }
 
@@ -1289,24 +1365,21 @@ pub fn measure_segment_loudness(audio_path: &str, start: f64, dur: f64) -> Optio
     if dur <= 0.0 {
         return None;
     }
-    let output = yekitrim_core::process::cmd("ffmpeg")
-        .args([
-            "-ss",
-            &format!("{:.2}", start),
-            "-t",
-            &format!("{:.2}", dur),
-            "-i",
-            audio_path,
-            "-af",
-            "volumedetect",
-            "-f",
-            "null",
-            "-",
-        ])
-        .stderr(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .output()
-        .ok()?;
+    let mut cmd = yekitrim_core::process::cmd("ffmpeg");
+    cmd.args([
+        "-ss",
+        &format!("{:.2}", start),
+        "-t",
+        &format!("{:.2}", dur),
+        "-i",
+        audio_path,
+        "-af",
+        "volumedetect",
+        "-f",
+        "null",
+        "-",
+    ]);
+    let output = Ffmpeg::run_with_timeout(cmd, "量段响度", Ffmpeg::budget_for(Some(dur))).ok()?;
     let stderr = String::from_utf8_lossy(&output.stderr);
     for line in stderr.lines() {
         if let Some(val_str) = line.split("mean_volume: ").nth(1)
@@ -1327,22 +1400,19 @@ pub fn measure_segment_loudness(audio_path: &str, start: f64, dur: f64) -> Optio
 /// 音频滤镜链一分不变。剪切收尾会给每个新片段预热这条曲线
 /// （`yekitrim-service` 的 `core_pipeline::warm_loudness_cache`），热路径上一次剪切要跑 N 遍。
 pub fn measure_loudness_curve(audio_path: &str) -> Vec<(f64, f64)> {
-    let output = yekitrim_core::process::cmd("ffmpeg")
-        .args([
-            "-i",
-            audio_path,
-            // 输出参数段：作用于 `-f null -`，只解码音频
-            "-vn",
-            "-af",
-            "ebur128=peak=true",
-            "-f",
-            "null",
-            "-",
-        ])
-        .stderr(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .output()
-        .ok();
+    let mut cmd = yekitrim_core::process::cmd("ffmpeg");
+    cmd.args([
+        "-i",
+        audio_path,
+        // 输出参数段：作用于 `-f null -`，只解码音频
+        "-vn",
+        "-af",
+        "ebur128=peak=true",
+        "-f",
+        "null",
+        "-",
+    ]);
+    let output = Ffmpeg::run_with_timeout(cmd, "量响度曲线", Ffmpeg::media_timeout(audio_path)).ok();
     let Some(output) = output else {
         return Vec::new();
     };
@@ -1467,12 +1537,11 @@ fn media_key(path: &Path) -> Option<String> {
 
 /// 检测音频整体响度 (mean_volume dB)
 pub fn measure_audio_loudness(audio_path: &str) -> Option<f64> {
-    let output = yekitrim_core::process::cmd("ffmpeg")
-        .args(["-i", audio_path, "-af", "volumedetect", "-f", "null", "-"])
-        .stderr(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .output()
-        .ok()?;
+    // ⚠️ 带超时（E2）：这条按文件逐个跑（音效文件可能有几十个），坏文件挂住 = 整条混音挂住。
+    //   预算按文件时长给（`media_timeout`），与 `measure_segment_loudness` 同一出口。
+    let mut cmd = yekitrim_core::process::cmd("ffmpeg");
+    cmd.args(["-i", audio_path, "-af", "volumedetect", "-f", "null", "-"]);
+    let output = Ffmpeg::run_with_timeout(cmd, "量整体响度", Ffmpeg::media_timeout(audio_path)).ok()?;
     let stderr = String::from_utf8_lossy(&output.stderr);
     for line in stderr.lines() {
         if let Some(val_str) = line.split("mean_volume: ").nth(1)

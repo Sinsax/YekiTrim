@@ -170,8 +170,14 @@ pub fn ensure_preview_proxy_with(
         ]);
         c.args(audio);
         c.args(["-movflags", "+faststart"]).arg(&proxy);
-        c.output()
-            .map_err(|e| anyhow::anyhow!("跑 ffmpeg 失败（ffmpeg 不在 PATH？）：{e}"))
+        // ⚠️ 带超时（E2 同款）：代理编码按**源**时长给预算（`max(180s, 3×时长)`）——
+        //   init 是"失败不阻断"的尽力而为步骤，挂死比失败更糟（整个 init 永远不返回）。
+        crate::render::ffmpeg::Ffmpeg::run_with_timeout(
+            c,
+            "编码预览代理",
+            crate::render::ffmpeg::Ffmpeg::media_timeout(&src_str),
+        )
+        .map_err(|e| anyhow::anyhow!("跑 ffmpeg 失败（ffmpeg 不在 PATH？）：{e}"))
     };
 
     let out = run(&["-c:a", "copy"])?;
