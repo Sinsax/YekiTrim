@@ -28,6 +28,10 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$HERE")"
 cd "$ROOT"
 
+# Dhampir 底座（同层仓库）：存在就构建并**随包**；不存在就退回 --no-dhampir 并大声警告
+# （那台机器上默认出片通道不可用，用户需自行放置 <程序目录>/dhampir/）。
+DHAMPIR_DIR="$ROOT/../Dhampir"
+
 TARGETS="${*:-linux windows}"
 echo "==> 发版目标: $TARGETS"
 
@@ -49,7 +53,19 @@ if want linux; then
     cargo build --release -p yekitrim-cli --locked
 
   echo "==> [linux] 打包"
-  cargo xtask package --target linux --skip-build --no-dhampir
+  if [ -d "$DHAMPIR_DIR" ]; then
+    # 底座随包：容器内编译（glibc 2.39 基线，见 Dhampir 的 docker/Dockerfile.linux-x64）+
+    # 打产物（wasm 半在其宿主机上出，glibc 门禁会实测 native 二进制）。
+    echo "==> [linux] Dhampir 底座：容器内编译 + 打产物"
+    (cd "$DHAMPIR_DIR" && ./scripts/release-local.sh linux)
+    ART="$(ls -td "$DHAMPIR_DIR"/dist/dhampir-*+*/ | head -1)"
+    cargo xtask package --target linux --skip-build \
+      --dhampir-artifact "${ART%/}" \
+      --dhampir-exe "$DHAMPIR_DIR/target-docker/release/dhampir"
+  else
+    echo "⚠️ 没有同层 ../Dhampir —— 退回 --no-dhampir：目标机器上默认出片通道不可用（需自行放置 dhampir/）"
+    cargo xtask package --target linux --skip-build --no-dhampir
+  fi
 fi
 
 # ---------- Windows（cargo-xwin 交叉编译，宿主机直跑） ----------
@@ -92,7 +108,19 @@ if want windows; then
   done
 
   echo "==> [windows] 打包"
-  cargo xtask package --target windows --skip-build --no-dhampir
+  if [ -d "$DHAMPIR_DIR" ]; then
+    # 底座随包：cargo-xwin 交叉编译出 dhampir.exe（依赖全纯 Rust，无需 C 工具链配套）+
+    # 打产物（wasm 半与平台无关；--platform windows-x64 让产物命名/自检跟目标走）。
+    echo "==> [windows] Dhampir 底座：cargo-xwin 交叉编译 + 打产物"
+    (cd "$DHAMPIR_DIR" && ./scripts/release-local.sh windows)
+    ART="$(ls -td "$DHAMPIR_DIR"/dist/dhampir-*+*/ | head -1)"
+    cargo xtask package --target windows --skip-build \
+      --dhampir-artifact "${ART%/}" \
+      --dhampir-exe "$DHAMPIR_DIR/target/x86_64-pc-windows-msvc/release/dhampir.exe"
+  else
+    echo "⚠️ 没有同层 ../Dhampir —— 退回 --no-dhampir：目标机器上默认出片通道不可用"
+    cargo xtask package --target windows --skip-build --no-dhampir
+  fi
 fi
 
 echo "==> 完成。产物："
