@@ -36,6 +36,10 @@ pub enum Command {
         /// 配置文件路径 (默认 ./yekitrim.toml)
         #[arg(long)]
         config: Option<PathBuf>,
+
+        /// 覆盖已存在的 yekitrim.toml（默认拒绝；会先备份成 <名字>.bak-<时间>）
+        #[arg(long)]
+        force: bool,
     },
 
     /// 下载 sherpa-onnx binary + 模型到 .yekitrim/
