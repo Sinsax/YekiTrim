@@ -26,7 +26,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-22.04
+          # 24.04：sherpa 的 Linux 静态库引用 CXXABI_1.3.15（GCC 12+），22.04 链不上；
+          # 它的 glibc 基线 2.39 也正好等于 xtask 的 MAX_GLIBC。
+          - os: ubuntu-24.04
             target: linux
           - os: windows-latest
             target: windows
@@ -48,8 +50,26 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      # sherpa-onnx 的预编译库由 vendor/sherpa-onnx-sys/build.rs 自己按平台下载
-      # （Sinsax/sherpa-onnx-prebuilt-no-tts 的 release，sha256 钉死），不需要额外环境变量。
+      # Windows：sherpa-onnx 的预编译库由 vendored build.rs 自己下载（sha256 钉死）。
+      # Linux：build.rs 只自动下载 Windows 那份，其它平台必须显式给 SHERPA_ONNX_LIB_DIR；
+      # 这里用 Sinsax/sherpa-onnx-prebuilt-no-tts 的 Linux 归档（TTS-off 版）。
+      - name: Prepare sherpa-onnx libs (Linux)
+        if: matrix.target == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          VER=$(grep -m1 '^version' vendor/sherpa-onnx-sys/Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          NAME="sherpa-onnx-v${VER}-linux-x64-static-lib.tar.bz2"
+          URL="https://github.com/Sinsax/sherpa-onnx-prebuilt-no-tts/releases/download/v${VER}/${NAME}"
+          curl -fsSL -o /tmp/sherpa.tar.bz2 "$URL"
+          mkdir -p /tmp/sherpa && tar -xjf /tmp/sherpa.tar.bz2 -C /tmp/sherpa
+          LIBDIR=$(find /tmp/sherpa -maxdepth 3 -type d -name lib | head -1)
+          test -n "$LIBDIR"
+          ESPEAK=$(stat -c%s "$LIBDIR/libespeak-ng.a")
+          echo "espeak placeholder = $ESPEAK bytes"
+          test "$ESPEAK" -lt 4096   # 占位库 ~1 KB；真 espeak-ng 是 MB 级 ⇒ 直接失败
+          echo "SHERPA_ONNX_LIB_DIR=$LIBDIR" >> "$GITHUB_ENV"
+
       - name: Build
         run: cargo build --release -p yekitrim-cli --locked
 
