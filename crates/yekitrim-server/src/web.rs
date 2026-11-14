@@ -193,7 +193,13 @@ fn mime_for(path: &Path) -> String {
 fn asset_response(key: &str, bytes: Vec<u8>) -> Response<Body> {
     let mut b = Response::builder().header(header::CONTENT_TYPE, mime_for(Path::new(key)));
     if key == INDEX {
+        // 入口永远回源：发版后不能停在旧 index
         b = b.header(header::CACHE_CONTROL, "no-cache");
+    } else if key.starts_with("assets/") {
+        // vite 产物文件名带内容哈希 ⇒ 可以长缓存（重复访问不再重新下载 JS/CSS）
+        b = b.header(header::CACHE_CONTROL, "public, max-age=31536000, immutable");
+    } else {
+        b = b.header(header::CACHE_CONTROL, "public, max-age=86400");
     }
     b.body(Body::from(bytes))
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())

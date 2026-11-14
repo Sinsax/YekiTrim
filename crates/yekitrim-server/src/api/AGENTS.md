@@ -54,25 +54,19 @@
   `asset_kind_root` 按 kind 现取）—— 一旦 `file` 认 `/`，普通账号就能拿
   `?kind=font&file=../.yekitrim/llm.toml` 读走 API key。有单测钉在**穿越尝试**上（不是"正常文件名
   能取到"），去掉那道判断立刻红。⚠️ 贴纸**不收编**进来（两级：包/包内文件，收编就得让 `file` 认 `/`）。
-  后者抽第 1 秒那帧（<1s 退到第 0 帧）、按 `<库>/.thumbs/<名>@<mtime>.jpg` 缓存；
-  ⚠️ **抽不出来回 404 不是 500** —— 没装 ffmpeg / 容器怪异 / 文件损坏都只是"这张没缩略图"，
-  回 500 会让界面报读取失败，而其它素材全都好好的。
+  后者抽第 1 秒那帧、按 `<库>/.thumbs/<名>@<mtime>.jpg` 缓存；⚠️ **抽不出来回 404 不是 500**
+  （没装 ffmpeg / 文件损坏都只是"这张没缩略图"）。
   ⚠️ **写路径（导入/上传/装自带）必须走 `fonts::ensure_dir_for(owner)`**，**`owner` 不能省**：
   这三个接口在**用户路由**上，而 `fonts::ensure_dir()` 是单人库入口 —— 2026-10-10 实测其后果是
   "传了却看不见"（字节落进别人的库）。改后实测 carol 上传 → `users/2/resources/fonts/`，
   admin 列表里没有它。`set_default`/`remove` 同样按 `asset_dir(owner, Fonts)`。
   ⚠️ 这三条**有意不挂 `enforce_scope`**；导入用"服务器上的路径"而非上传（同 `/api/fs/list`）。
-- **`POST /api/polish/cover`** 的 body 多了可选 **`renderer`**（现在**只有 `takumi`** —— `chrome` 那条截图腿 2026-10-01 整条删除，传它由 `cover.rs` **明确报错**）：服务端**只透传**成子进程的 `--renderer`，取值口径与白名单只在 `crates/yekitrim-polish/src/cover.rs`（**只此一份**，不在这一层抄第二份），认不出的值由那里**报错**。**能不能用**（编了 feature + 字体库非空）回在 `/api/health.cover_static`（`{compiled, fonts, fonts_dir, ready}`）—— 前端据此把「生成封面」置灰并在卡片里写原因（通道弹窗已删）；health 是公开接口，只回布尔 + 字体库路径（本机配置问题，不是账号/工程信息）。
+- **`POST /api/polish/cover`** 的 body 多了可选 **`renderer`**（现在**只有 `takumi`** —— `chrome` 那条截图腿 2026-10-01 整条删除，传它由 `cover.rs` **明确报错**）：服务端**只透传**成子进程的 `--renderer`，取值口径与白名单只在 `crates/yekitrim-polish/src/cover.rs`（**只此一份**，不在这一层抄第二份），认不出的值由那里**报错**。**能不能用**（编了 feature + 字体库非空）回在 `/api/health.cover_static`（`{compiled, fonts, ready}`）—— 前端据此把「生成封面」置灰并在卡片里写原因（通道弹窗已删）。⚠️ **review B6（2026-11-14）：health 公开、一律不回路径** —— `fonts_dir` 已从回包删掉，空字体的指路文案由前端给。
 
-- ⚠️ **`/polish/dhampir-wasm/*` 的响应压缩与 ETag/304**（2026-10-02 首屏提速，只在这条路由上开）：
-  那份 `pkg/dhampir_wasm_bg.wasm` 是 **7.66 MB**，以前原样发出 ⇒ 每次进精修页都搬 7.66 MB。
-  现在走 `media::serve_file_cond`：实测 **8,036,021 → 1,492,985 字节（18%）**，配合 ETag 让
-  「文件没变」的刷新直接 304（几乎零字节）。三条**硬规矩**：
-  ① **只压文本类**（`media::compressible_mime` 白名单：wasm / js / css / html / json）；
-  ② **有 `Range` 头一律不压** —— 压缩后与「原始文件第 start..end 字节」不再一一对应，
-     对 206 做压缩会直接破坏播放；`/api/media/*`（视频）仍走老签名 `serve_file`，行为不变；
-  ③ **ETag 取 `len+mtime`**（`media::file_etag`），**不是**「永不变」的常量 —— 这条路由的既有
-     意图是「Dhampir 重建 wasm 后刷新即新」，靠 mtime 自然失效；写成 max-age 长缓存会破坏它。
+- ⚠️ **`/polish/dhampir-wasm/*` 的压缩 + ETag/304**（只在这条路由上开，7.66 MB wasm → 1.49 MB）走
+  `media::serve_file_cond`。三条硬规矩：① 只压文本类（`compressible_mime`）；② **有 `Range` 头
+  一律不压**（对 206 压缩会破坏播放；`/api/media/*` 仍走 `serve_file`）；③ **ETag 取 `len+mtime`**
+  （不是常量 —— 底座重建 wasm 后刷新即新，写成 max-age 长缓存会破坏它）。
 - **`routes` 是唯一的路由权威**；加接口 = 在 `routes.rs` 挂一条 + 在对应领域模块写 handler。
   ⚠️ **本地免登录（`--local-no-auth`）/ `POST /api/shutdown` 控制通道**：正文（两道闸、三道闸、
   互斥与开机守卫、哨兵会话、`local_no_auth` 布尔、令牌头名与托盘各写一份字面量）见 `docs/deploy.md`。
@@ -96,9 +90,7 @@
   `dir + '/' + name` 会把 canonicalize 的 `\\?\F:\a` 拼成 `\\?\F:\a/b`（Windows ERROR_INVALID_NAME 123）。
   因此所有出 JSON 的路径都过 `yekitrim_core::path::display()`（剥掉 `\\?\`/`\\?\UNC\`），前端拿到的永远是
   `F:\a\b` 这种可回传、可拼 URL 的形式。
-  响应里的 **`volumes`**（2026-10）= 可浏览的盘符/卷候选，给“服务器文件”浏览器铺在目录树顶部。
-  ⚠️ 加它的原因：目录树靠 `parent` 上展开，**到盘根就断**，用户**换不了盘**。
-  ⚠️ `volumes` 只是**展示候选、不构成访问限制**。
+  响应里的 **`volumes`** = 盘符/卷候选（目录树到盘根就断、用户换不了盘），**只是展示候选、不构成访问限制**。
   ⚠️ 探测要跟目录列举一起放 `spawn_blocking`（每个候选一次 `is_dir()`，是阻塞 IO）。
   ⚠️ 前端**别把 `roots` 当树根**：服务端会把**当前目录**追加进 `roots`（本意是给下拉框显示“当前位置”），
   拿它当根的话根会随用户走到哪而变。
@@ -135,15 +127,17 @@
 - `/api/health` 是**未认证**接口：不含账号数量、不含"是否仍用初始密码"（那等于告诉远端"这台机器还在用初始密码"），
   也不含任何路径；要看这些走 `/api/admin/users`、`/api/me` 或 `yekitrim doctor`。`GET /api/admin/usage` 与
   `/api/admin/logs` **仅 admin**：记录含**其他用户的工程路径**与任务输出（两者同一个理由）。
+  ⚠️ **`llm` 这一位按调用者的账号算**（2026-11-13：LLM 配好了却被判未配置 ⇒ 智能剪辑置灰）：
+  走 `crate::auth::optional_owner` + `load_llm_config_for(owner)`（与 `/polish/llm*` 同一个 loader），
+  无会话才回落 `Owner::Local`；旧写法读 `load_global_config()`（顶层旧位置，且**不加载 `llm.toml`**）
+  ⇒ **恒 false**。其余位（`ingest_ready`/`registration_enabled`）仍是平台级，别一把全改。
+  判据：`auth::tests::optional_owner_reads_the_session_account`。
 
 ### 同步 IO 纪律（剪切时"整个服务器连不上"的根因，2026-09）
 
-- ⚠️ **同步 IO 绝不能留在 async 线程上（剪切时"整个服务器连不上"的根因，2026-09）**：
-  项目目录经常在网络盘上（RaiDrive/WebDAV 挂载的录播目录），剪切/渲染把盘占满时，
-  一次 `exists()`、一次读 `yekitrim.toml` 就要几百毫秒到几秒。这类调用留在 tokio worker 上做，
-  十几个并发（前端一次页面加载就会打出一串）就能把 worker 全占住 —— runtime 连 accept
-  都排不上，浏览器表现就是"服务器无法建立连接"，而日志里一行都没有（请求根本没处理完）。
-  实测样本：`GET /api/projects` 有 2288ms 的记录，日志里 1 秒内 52 次连发。
+- ⚠️ **同步 IO 绝不能留在 async 线程上**（"整个服务器连不上"的根因，2026-09；
+  起因与实测样本见 server 卡）：项目目录常在网络盘上，一次 `exists()` 就可能几百毫秒，
+  十几个并发（前端一次页面加载就会打出一串）就把 worker 全占住，日志里一行都没有。
   - **handler 里的同步文件访问**一律走 `api::blocking(f)`（`spawn_blocking`，512 线程的
     blocking 池），worker 留给 accept 与轻量接口。已覆盖：`projects_list` / `project_list` /
     `project_data_{status,events,clips,polish,transcript,config}` / `clips/:rank/thumb` /
@@ -171,8 +165,8 @@
     `polish_cover_frame`/`preview` 的截帧 ffmpeg、入库的扫描与跨盘搬运、`POST /api/admin/ingest/scan`。
   - **前端取数要单飞**：`stores/workbench.js::loadProjects()`（`inflight` 去重）与
     `composables/useJobs.js::load()`（在飞合并 + SSE 250ms 合帧）。视图注册 `onJobDone(fn)`
-    **必须用返回的退订函数在 `onUnmounted` 里退订** —— 不退订会随反复挂载攒出一串陈旧回调，
-    任务结束时同时各打一整套 project-data 请求（就是那次 1 秒 52 连发的放大源）。
+    **必须用返回的退订函数在 `onUnmounted` 里退订** —— 不退订会攒出一串陈旧回调，
+    任务结束时同时各打一整套 project-data 请求。
     `loadProjectData` 的 `stale` 标记也别删：任务结束撞上在飞请求时，旧响应会盖掉新数据。
 
 ### 路径面三防线（多租户的头号风险，改动前先读）

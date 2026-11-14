@@ -119,6 +119,86 @@ pub(crate) fn spawn_job<JobBody, Fut>(
     }
 }
 
+// ---------------------------------------------------------------------------
+// B7（2026-11-14 后端 review）：出片 / 管线任务**建任务前**的配额预检。
+//
+// 配额此前只拦"入库/下载"入口（`ingest::capacity::check_capacity` 的三个调用点），
+// 转写/检测/剪切/出片往 `output/` 里写的东西完全不受限 —— 一个已顶满配额的账号
+// 仍能反复起任务把磁盘写穿（review 原话："出片/转写产物增长不设上限"）。
+//
+// 这里做的是 review 里的**低风险版**：建任务时把当前工程的占用刷新落库，然后按
+// "已超配额 ⇒ 409"拦。判据复用 `projects::quota_exceeded(used, 0, quota)` ——
+// 与入库闸门同一条纯函数、同一个边界（恰好用满放行，超 1 字节就拦）。
+//
+// 口径：
+// - **admin 不受限**（与入库闸门一致：他要能收拾一个已经超额的账号）；
+// - `project_id` 传得到就先把**这个工程**的占用刷新落库（`refresh_bytes` 是同步 IO，
+//   整段在 blocking 池）；传不到（polish 用 `dir` 且没解析出项目）就按已存的汇总判；
+// - **不做产物体积预估**：转写/出片能写多少取决于素材与参数，没有可靠又便宜的估算，
+//   拍脑袋的预估只会误拒 —— review 里"能估的用 estimate_bytes"留给有真估算时再接。
+// ---------------------------------------------------------------------------
+
+/// 建任务前的配额预检：已超配额的普通账号 ⇒ 409，不再放进新的重活。
+pub(super) async fn quota_gate(
+    state: &Arc<AppState>,
+    user: &crate::auth::CurrentUser,
+    project_id: Option<i64>,
+) -> Result<(), AppError> {
+    if user.is_admin() {
+        return Ok(());
+    }
+    let db = state.auth.db_arc();
+    let uid = user.id;
+    // ⚠️ `blocking` 的 T 是**成功值**类型（闭包回 `Ok(...)`，模式同 config_llm_put）——
+    // 直接把 Result 塞进去会把 T 推断成 ()，`?` 之后就不是 Result 了。
+    blocking(move || Ok(quota_gate_impl(&db, uid, project_id))).await?
+}
+
+/// [`quota_gate`] 的内核（同步部分：刷新占用 + 判配额，调用方已在 blocking 池）。
+fn quota_gate_impl(
+    db: &yekitrim_service::db::Db,
+    uid: i64,
+    project_id: Option<i64>,
+) -> Result<(), AppError> {
+    // 只刷新**本人**的工程：别人的占用归别人的账
+    if let Some(pid) = project_id {
+        if let Ok(Some(row)) = db.project_by_id(pid) {
+            if row.owner_id == uid {
+                let _ = yekitrim_service::projects::refresh_bytes(db, &row);
+            }
+        }
+    }
+    // 生效配额：账号自己的非零值 > 全局默认（与 capacity::check_capacity 同一套优先级）
+    let cfg = yekitrim_core::config::load_global_config();
+    let quota = db
+        .find_user_by_id(uid)
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取配额失败: {e:#}")))?
+        .map(|u| u.quota_bytes.max(0) as u64)
+        .filter(|q| *q > 0)
+        .or_else(|| (cfg.storage.default_quota_bytes > 0).then_some(cfg.storage.default_quota_bytes));
+    let Some(quota) = quota else {
+        return Ok(()); // 0 = 不限（全局默认值语义，见 projects::effective_quota_bytes）
+    };
+    let used = db
+        .storage_summary(Some(uid))
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("统计占用失败: {e:#}")))?
+        .first()
+        .map(|(_, b)| *b)
+        .unwrap_or(0);
+    if yekitrim_service::projects::quota_exceeded(used, 0, quota) {
+        return Err(err(
+            StatusCode::CONFLICT,
+            format!(
+                "本账号已超出配额（已用 {} / 上限 {}），不再启动新的转写/出片任务；\
+                 请删除部分项目的源录播或产物后重试",
+                yekitrim_service::disk::human_bytes(used),
+                yekitrim_service::disk::human_bytes(quota)
+            ),
+        ));
+    }
+    Ok(())
+}
+
 // 外部命令探测（`command_available` / `command_available_blocking` / 30s 缓存）
 // 已搬去 `crate::tool_probe` —— 任务 worker 也要探外部工具，
 // 让 worker 去 `use crate::api` 是反向依赖。见该模块头部说明。
@@ -242,28 +322,49 @@ fn llm_ready_is_provider_aware() {
         c
     }
     // provider 有 key、顶层没有 ⇒ true（这就是用户那份配置）
-    assert!(llm_ready(&cfg_with(Some("k"), "")), "多配置下不许再判成未配置");
+    assert!(llm_ready(&cfg_with(Some("k"), "").llm), "多配置下不许再判成未配置");
     // 两份都没有 ⇒ false
-    assert!(!llm_ready(&cfg_with(None, "")));
+    assert!(!llm_ready(&cfg_with(None, "").llm));
     // legacy 顶层有 ⇒ true（老配置行为不变）
-    assert!(llm_ready(&cfg_with(None, "k")));
+    assert!(llm_ready(&cfg_with(None, "k").llm));
     // 模板占位值仍算没配
-    assert!(!llm_ready(&cfg_with(None, "sk-your-api-key-here")));
+    assert!(!llm_ready(&cfg_with(None, "sk-your-api-key-here").llm));
 }
 
 /// `/api/health` 的能力位：**当前配置配没配 API 密钥**（纯谓词，便于钉住）。
-fn llm_ready(cfg: &yekitrim_core::config::Config) -> bool {
-    cfg.llm.has_api_key()
+///
+/// ⚠️ 入参是 **`LlmConfig` 而不是整份 `Config`**：health 里这一位**按账号**读
+/// （`load_llm_config_for(owner)`，见 [`health`]），拿不到 `Config`；判据仍然只有
+/// `has_api_key()` 这一个入口。
+fn llm_ready(llm: &yekitrim_core::config::LlmConfig) -> bool {
+    llm.has_api_key()
 }
 
 /// 本地排查 `yekitrim doctor`（直接读本机账本，信息更全）。
 /// 顺带一个好处：`/api/health` 会被前端反复轮询，去掉这里两次同步 SQLite 查询后它不再碰磁盘。
 pub(crate) async fn health(State(state): State<Arc<AppState>>, headers: axum::http::HeaderMap) -> ApiResult {
-    // 能力位只看平台级配置（global-only）：health 是公开接口，不该泄露任何工程信息
-    let cfg = yekitrim_core::config::load_global_config();
-    // ⚠️ 判定走 `has_api_key()`（= active provider 的 key）：多配置下顶层 `api_key` **恒空**，
-    // 读顶层会让 `/api/health.llm` **一直 false**（前端据此把 LLM 相关入口置灰/提示未配置）。
-    let llm = llm_ready(&cfg);
+    // ⚠️ **`llm` 这一位按调用者的账号算**（2026-11-13 用户报「LLM 明明配好了，切片页仍显示
+    // 「未配置 AI」、智能剪辑置灰」）。密钥存在 `users/<uid>/.yekitrim/llm.toml`（设置页
+    // `PUT /config/llm` 写的就是那里），而 `load_global_config()` 读的是**顶层旧位置**、
+    // 而且**根本不加载 `llm.toml`** ⇒ 恒 `false`。判定必须与真实消费侧
+    // （`/polish/llm*`、事件检测）**同一个 loader**：`load_llm_config_for(owner)`。
+    // 有会话 ⇒ 该账号；登录页/探活没有会话 ⇒ `Owner::Local`（= 当前管理员，与本地免登录同一档）。
+    //
+    // 其余能力位仍只看**平台级**配置（`load_global_config()` = 顶层 `config.toml`）：
+    // `[ingest]` / `[auth]` 那几项是平台级的（`PUT /api/admin/ingest` 就写顶层那份），
+    // 与按账号分的 `config.toml` / `llm.toml` 是**两件事**，别一把全改。
+    //
+    // 两件同步文件 IO（读配置 + `llm.toml`）都搬进 blocking 池：health 被前端反复轮询，
+    // 而配置读取带 `version::prepare` 的迁移回写（见 api/AGENTS.md 的同步 IO 纪律）。
+    let (llm_state, llm_headers) = (state.clone(), headers.clone());
+    let (cfg, llm) = blocking(move || {
+        let cfg = yekitrim_core::config::load_global_config();
+        let owner = crate::auth::optional_owner(&llm_state, &llm_headers)
+            .unwrap_or(yekitrim_core::owner::Owner::Local);
+        let llm = llm_ready(&yekitrim_core::config::load_llm_config_for(owner));
+        Ok((cfg, llm))
+    })
+    .await?;
     // ⚠️ 只查一次，别在 json! 里连着调两遍：`find_ytdlp` 会做 sha256 校验（17.8MB），
     // 而 health 是前端反复轮询的接口（registry 侧另有 (path,len,mtime) 缓存兜底，但两次调用仍多余）。
     let dl = yekitrim_service::downloader::registry::find_ytdlp(&cfg);
@@ -292,6 +393,9 @@ pub(crate) async fn health(State(state): State<Arc<AppState>>, headers: axum::ht
         },
         // 注册开关（登录页据此决定要不要显示「用邀请码注册」入口）
         "registration_enabled": cfg.auth.registration_enabled,
+        // **多人形态开关**（2026-11-13 用户拍板：默认单人）—— 前端据此隐藏邀请码 / 账号配额 /
+        // 注册入口 / 任务指派对象。只回布尔，不回任何账号信息（health 是公开接口）。
+        "multi_user": cfg.auth.multi_user,
         // 本地免登录位（`--local-no-auth`，托盘那种"双击就用"的桌面形态）。
         // 前端据此隐藏「退出登录」这种在没有会话时毫无意义的入口。
         // ⚠️ 只回布尔，不回任何身份信息 —— health 是**公开**接口。
@@ -301,12 +405,17 @@ pub(crate) async fn health(State(state): State<Arc<AppState>>, headers: axum::ht
         // `deep = false`：这条被前端反复轮询，不起进程（也不跑 `node --version`）。
         "dhampir_ready": yekitrim_polish::render::dhampir::readiness("", false).ready,
         // 封面静态渲染通道（Takumi）的能力位（2026-10-01）：前端据此决定弹窗里那个选项
-        // 是能点还是置灰 + 为什么。**回字体库路径**是因为"库为空 → 用不了"是本机配置问题，
-        // 而字体库路径不是账号/工程信息（与上面 downloader 不回路径的口径不同，理由在此）。
+        // 是能点还是置灰 + 为什么。
+        //
+        // ⚠️ **只回布尔与计数，不回任何路径**（2026-11-14 后端 review B6）：这里原来还带了
+        // `fonts_dir`（绝对路径），而 health 是**未认证**接口 —— 与同一张卡里"不含任何路径"的
+        // 口径直接打架（实测匿名请求能拿到 `/home/…/resources/fonts`）。要看库路径请走已登录的
+        // `GET /api/polish/fonts`（它回 `root`，且只回 admin 的）。
+        // TODO(api/AGENTS.md): 那张卡里"只回布尔 + 字体库路径"与"不含任何路径"两句自相矛盾，
+        // 需要 Lead 统一措辞（文档归 Lead，这里只留代码口径）。
         "cover_static": {
             "compiled": cover_static.0,
             "fonts": cover_static.1,
-            "fonts_dir": cover_static.2.display().to_string(),
             "ready": cover_static.0 && cover_static.1 > 0,
         },
         // 本机/远端与是否走 HTTPS 反代：只影响本地排查提示，不含任何账号信息
@@ -399,6 +508,61 @@ async fn spawn_job_marks_job_failed_on_panic() {
     assert_eq!(status, "failed", "任务 panic 后应当被标记为 failed");
     // 资源键必须释放：同资源的新任务能立刻开工
     assert!(jobs.busy_with(&["dir:x".to_string()]).await.is_none(), "panic 的任务不应继续占着资源键");
+}
+
+/// **B7（2026-11-14 后端 review）：配额预检的内核判据**。
+///
+/// `refresh_bytes` 把当前工程的源/产物落库后，`used > quota` ⇒ 409；恰好用满**放行**
+/// （与入库闸门 `quota_exceeded` 的边界同一条，别在这里另立 `>=`）。
+#[test]
+fn quota_gate_impl_rejects_only_after_refreshing_usage() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = yekitrim_service::db::Db::open(&dir.path().join("t.db")).unwrap();
+    let uid = db.create_user("quota_u", "h", "user", false, 100).unwrap();
+    let root = dir.path().join("proj");
+    std::fs::create_dir_all(root.join("output")).unwrap();
+    std::fs::write(root.join("a.mp4"), vec![0u8; 200]).unwrap(); // 200 字节 > 配额 100
+    let cfg = root.join("yekitrim.toml");
+    std::fs::write(&cfg, "input_file = \"a.mp4\"\n").unwrap();
+    let pid = db.create_project(uid, "proj", None, "local", None, &root, &cfg, None).unwrap();
+
+    // ① 第一次调用自己刷新占用：200 > 100 ⇒ 409（判据内部先 refresh，不依赖外部刷过账）
+    let e = quota_gate_impl(&db, uid, Some(pid)).unwrap_err();
+    assert_eq!(e.0, StatusCode::CONFLICT, "{e:?}");
+    assert!(e.1 .0["error"].as_str().unwrap_or("").contains("配额"), "{e:?}");
+    // 刷新真的落了库（storage_summary 反映盘上实况，而不是"没刷过账就放行"）
+    assert_eq!(
+        db.storage_summary(Some(uid)).unwrap().first().map(|(_, b)| *b).unwrap_or(0),
+        200,
+        "源录播要被计量落库"
+    );
+
+    // ② 删掉源再刷新：占用回落 ⇒ 放行（不是"一旦超就永远超"）
+    std::fs::remove_file(root.join("a.mp4")).unwrap();
+    assert!(quota_gate_impl(&db, uid, Some(pid)).is_ok(), "占用回落后要放行");
+
+    // ③ 源回来了：再次拦（占用双向校准）
+    std::fs::write(root.join("a.mp4"), vec![0u8; 200]).unwrap();
+    assert!(quota_gate_impl(&db, uid, Some(pid)).is_err(), "占用回升要再拦");
+
+    // ④ 别人的工程：不刷、不拦（配额按账号分账）
+    let uid2 = db.create_user("quota_v", "h", "user", false, 100).unwrap();
+    assert!(quota_gate_impl(&db, uid2, Some(pid)).is_ok(), "别人的工程不许动他的账");
+}
+
+/// B7：admin 不受限（`quota_gate` 的短路分支 —— 不读库、不刷盘，直接放行）。
+#[tokio::test]
+async fn quota_gate_lets_admin_through_without_touching_the_ledger() {
+    let t = crate::api::test_support::test_app().await;
+    let user = crate::auth::CurrentUser {
+        id: 1,
+        username: "admin".into(),
+        role: "admin".into(),
+        must_change_password: false,
+        session_id: "test-session".into(),
+    };
+    let res = quota_gate(&t.state, &user, Some(1)).await;
+    assert!(res.is_ok(), "admin 必须无条件放行：{res:?}");
 }
 
 /// 错误原样透传（handler 靠它把 4xx/5xx 文案给前端）

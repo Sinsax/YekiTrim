@@ -22,6 +22,54 @@ use super::{pipeline::*, project_data::*, render::*};
 
 // ===================== Polish =====================
 
+/// 成片的**默认**文件名主干（`[project] output` 缺省）。与
+/// `yekitrim_polish::project::config::ProjectMeta::default_output()` 是同一个值
+/// （那边是 `vtuber-clip.mp4`）。
+const DEFAULT_RENDER_STEM: &str = "vtuber-clip";
+
+/// `[project] output` → 产物 stem（**去目录、去扩展名**）。空/无 stem ⇒ `None`。
+///
+/// 只取文件名部分：`latest_numbered_file` 扫的是**片段目录的直接子项**，
+/// 而 `output` 允许写子目录（`out/my.mp4`）—— 那种情况这里仍返回 `my`，
+/// 由调用方的默认名兜底（子目录产物的可见性不在本次修复范围内）。
+fn render_stem_of(output: &str) -> Option<String> {
+    let raw = output.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let stem = std::path::Path::new(raw)
+        .file_stem()?
+        .to_string_lossy()
+        .trim()
+        .to_string();
+    if stem.is_empty() || stem == "." || stem == ".." {
+        None
+    } else {
+        Some(stem)
+    }
+}
+
+/// 这个片段目录里"最新那份成片"：stem **跟着工程自己的 `[project] output` 走**。
+///
+/// ⚠️ 这里曾经把 stem 写死成 `vtuber-clip` —— 用户改了输出名（精修页「渲染输出」/ 手改
+/// `[project] output`）之后，成片明明写出来了（日志 `FINISHED: …/custom-out.mp4`），
+/// 「产物」区却一直显示"导出成片或生成封面后在这里查看"、切片卡片也认为未出片
+/// （review `polish.md` P1-2）。
+///
+/// 两段查询：先按工程配置的名字找，找不到再按**默认名**找 —— 后者保住
+/// "先用默认名出过片、之后才改配置"的存量产物。
+fn rendered_file_of(dir: &std::path::Path, configured_output: Option<&str>) -> Option<String> {
+    if let Some(stem) = configured_output.and_then(render_stem_of) {
+        if let Some(hit) = latest_numbered_file(dir, &stem, "mp4") {
+            return Some(hit);
+        }
+        if stem == DEFAULT_RENDER_STEM {
+            return None;
+        }
+    }
+    latest_numbered_file(dir, DEFAULT_RENDER_STEM, "mp4")
+}
+
 pub(super) fn polish_projects_impl(ws: &Workspace) -> ApiResult {
     let clips = ws.output_dir().join("clips");
     let mut out = vec![];
@@ -37,18 +85,25 @@ pub(super) fn polish_projects_impl(ws: &Workspace) -> ApiResult {
             let polish_ready = dir.join("polish.toml").exists();
             let processed = polish_ready && std::fs::read_to_string(dir.join("polish.toml")).ok()
                 .map(|raw| raw.contains("processed = true")).unwrap_or(false);
-            let rendered_file = latest_numbered_file(&dir, "vtuber-clip", "mp4");
+            // 工程只读一次：产物 stem（`[project] output`）与消音版判定都要它。
+            let polish_cfg = if polish_ready {
+                yekitrim_polish::project::load_project(&dir).ok()
+            } else {
+                None
+            };
+            // ⚠️ **stem 跟着工程配置走**（用户可改输出名），不能写死 `vtuber-clip` —— 见
+            // `rendered_file_of` 的注释（review `polish.md` P1-2）。
+            let rendered_file =
+                rendered_file_of(&dir, polish_cfg.as_ref().map(|cfg| cfg.project.output.as_str()));
             let rendered = rendered_file.is_some();
             let cover_file = latest_numbered_file(&dir, "cover", "jpg");
             let cover = cover_file.is_some();
             let mut version = "original";
             let mut mute_range_count = 0usize;
-            if polish_ready {
-                if let Ok(cfg) = yekitrim_polish::project::load_project(&dir) {
-                    // 消音版 = 静音区间已写入屏蔽轨道（video 始终是未改动的 clip.mp4）
-                    if !cfg.silence_ranges.is_empty() { version = "silent"; }
-                    mute_range_count = cfg.mute_ranges.len();
-                }
+            if let Some(cfg) = polish_cfg.as_ref() {
+                // 消音版 = 静音区间已写入屏蔽轨道（video 始终是未改动的 clip.mp4）
+                if !cfg.silence_ranges.is_empty() { version = "silent"; }
+                mute_range_count = cfg.mute_ranges.len();
             }
             out.push(serde_json::json!({
                 "dir": yekitrim_core::path::display(&dir),
@@ -307,6 +362,8 @@ pub(super) async fn polish_render(State(state): State<Arc<AppState>>, Extension(
     };
     // ⚠️ 「版本数」（§9 多版本成片）**已整条删除**（2026-10-18 用户口径：没有理由）。
     //    它与 `unique_output_path` 的 `_n` 后缀**无关**：后者是「同名不覆盖」，保留。
+    // 配额预检（review B7/D14）：成片是产出大户 —— 已超配额的普通账号建任务前就 409。
+    super::quota_gate(&state, &user, scope_pid(pid)).await?;
     polish_spawn(
         &state,
         crate::auth::owner_of(&user),
@@ -323,6 +380,8 @@ pub(super) async fn polish_cover(State(state): State<Arc<AppState>>, Extension(u
     // 通道由**前端**给（现在只有 `takumi`）；这里只透传，取值口径在 `cover.rs`（只一份）——
     // 传 `chrome` 会由那里**明确报错**（那条截图腿已删除），这一层不抄第二份白名单。
     let renderer = body.get("renderer").and_then(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    // 配额预检（review B7/D14）：与 polish_render 同一道闸（封面 jpg 相对小，但口径要一致）。
+    super::quota_gate(&state, &user, scope_pid(pid)).await?;
     polish_spawn(&state, crate::auth::owner_of(&user), scope_pid(pid), "cover", dir, PolishJobOpts { renderer, ..Default::default() }).await
 }
 
@@ -1539,16 +1598,50 @@ pub(super) async fn polish_fonts(Extension(user): Extension<crate::auth::Current
     ok(payload)
 }
 
-/// 往字体库里**导入**一支字体（**仅 admin**）。
+/// B5 判据（纯函数）：`path` 能不能作为这个账号的字体导入来源。
 ///
-/// body：`{path}` —— 服务器上那个**字体文件**的绝对路径；或 `{dir, name}`（推荐，
+/// admin 不受限；普通账号 = 路径必须落进 `roots` 之一（[`font_import_roots`] 给出的
+/// 本人素材根 / 本人项目根）。`ensure_within` 是 core 的租户囚笼（词法 + 符号链接
+/// 双判），别在这里手写第二份。
+fn font_import_allowed(is_admin: bool, roots: &[PathBuf], path: &Path) -> bool {
+    if is_admin {
+        return true;
+    }
+    roots
+        .iter()
+        .any(|r| yekitrim_core::tenant::ensure_within(r, path).is_ok())
+}
+
+/// 非 admin 的字体导入来源清单：本人素材根 + 本人项目根（B5）。
+///
+/// `resources_root` 由调用方按 owner 现算（`owner::resources_dir`）；单独抽成参数是为了
+/// 单测能把"素材根"指到 tempdir —— 否则用例得往真实程序目录里种文件（禁止）。
+fn font_import_roots(
+    db: &yekitrim_service::db::Db,
+    uid: i64,
+    resources_root: PathBuf,
+) -> Vec<PathBuf> {
+    let mut roots = vec![resources_root];
+    if let Ok(rows) = db.list_projects(Some(uid)) {
+        roots.extend(rows.into_iter().map(|p| p.root_dir));
+    }
+    roots
+}
+
+/// 往字体库里**导入**一支字体（**登录即可，但来源受限**）。
+///
+/// body：`{path}` —— 服务器上那个**字体文件**的路径；或 `{dir, name}`（推荐，
 /// **由服务端拼**，免得前端把 `\\?\F:\a` 拼成 `\\?\F:\a/b` 撞上 Windows 123，同 `/api/fs/list` 的规矩）。
-/// 可选 `{name}` 当给人看的显示名（`display_name`）；**id 永远取自文件名**（配置里存的就是它）。
+/// 可选 `{display}` 当给人看的显示名（`display_name`）；**id 永远取自文件名**（配置里存的就是它）。
 ///
-/// ⚠️ 收的是**服务器上的路径**，不是上传 —— 与 `/api/fs/list` 同一条来源（axum 默认 body 上限 2 MB，
-/// 上传要像贴纸那样单独放宽 `DefaultBodyLimit`，那是另一件事）。所以这条**必须** `require_admin`：
-/// 普通用户让它读服务器任意文件就是路径面事故。
+/// ⚠️ **来源面必须收口**（2026-11-14 后端 review B5）：这条在**用户层**（素材库那一组，
+/// 刻意不挂 `enforce_scope`），却收"服务器上的路径"。不管的话，普通账号可以
+/// `{"path":"/任意/位置/x.ttf"}` 把服务器上任意 `.ttf/.otf/.ttc` 拷进自己的库、再用
+/// `GET /api/polish/asset?kind=font&file=…` 读回来（还能拿它探测文件存在性）。
+/// 所以：**普通用户只能从「自己的素材根」或「自己的项目目录」里导入**，admin 不受限
+/// （与 `/api/fs/list` 的 admin-only 口径对齐；admin 本来就能浏览服务器任意目录）。
 pub(super) async fn polish_fonts_import(
+    State(state): State<Arc<AppState>>,
     Extension(user): Extension<crate::auth::CurrentUser>,
     Json(body): Json<serde_json::Value>,
 ) -> ApiResult {
@@ -1580,6 +1673,8 @@ pub(super) async fn polish_fonts_import(
         .or_else(|| body.get("name").filter(|_| body.get("path").is_some()))
         .and_then(|v| v.as_str())
         .map(str::to_string);
+    let user_for_check = user.clone();
+    let db = state.auth.db_arc();
     let entry = blocking(move || {
         // 目录布局写入 + 读字体表都碰磁盘（可能是网络盘），一律留在 blocking 池上。
         // ⚠️ 字体库的错都是 `anyhow`（"只收 .ttf/.otf"、"程序自带字体不可删除"…），
@@ -1587,6 +1682,21 @@ pub(super) async fn polish_fonts_import(
         // ⚠️ 写路径走 `ensure_dir_for(owner)`（它会 `create_dir_all`），别自己拼 `font_dir()`。
         // ⚠️ **必须带 owner**：这条走的是 `require_user` 那条用户路由，写错的库会让
         // 甲导入的字体落进单人库、而甲自己的库还是空的（多用户下就是"传了却看不见"）。
+        //
+        // 来源面收口（review B5）：非 admin 只许从**自己的素材根 / 自己的项目目录**里取文件。
+        // admin 不受限（他能用 /api/fs/list 浏览服务器任意目录，卡他只会打断既有工作流）。
+        // 判据抽成纯函数（[`font_import_allowed`] / [`font_import_roots`]）—— 单测能钉住
+        // "别人的项目目录 → 拒"，不必往真实字体库里种文件。
+        if !user_for_check.is_admin() {
+            let resources_root = yekitrim_core::owner::resources_dir(crate::auth::owner_of(&user_for_check));
+            let roots = font_import_roots(&db, user_for_check.id, resources_root);
+            if !font_import_allowed(false, &roots, &path) {
+                return Err(err(
+                    StatusCode::FORBIDDEN,
+                    "只能从自己的素材目录或项目目录导入字体（服务器其他位置仅管理员可用）",
+                ));
+            }
+        }
         let root = yekitrim_core::fonts::ensure_dir_for(owner)
             .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("字体库目录不可用: {e}")))?;
         yekitrim_core::fonts::import_font(&root, &path, display.as_deref())
@@ -2561,7 +2671,108 @@ mod tests {
     use crate::api::test_support::*;
     use axum::body::Body;
 
+    /// **B5（2026-11-14 后端 review）：fonts/import 的来源面收口（判据层，两用户）**。
+    ///
+    /// 成功路径不往真实字体库里写（与 routes.rs 那条同规矩）；这里钉的是**判据**：
+    /// 普通账号只能从「本人素材根 / 本人项目根」导，别人的项目目录 → 拒，admin 不受限。
+    #[test]
+    fn font_import_sources_are_scoped_to_the_owners_roots() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = yekitrim_service::db::Db::open(&dir.path().join("t.db")).unwrap();
+        let a = db.create_user("fa", "h", "user", false, 0).unwrap();
+        let b = db.create_user("fb", "h", "user", false, 0).unwrap();
+        let proj_a = dir.path().join("a-proj");
+        let proj_b = dir.path().join("b-proj");
+        std::fs::create_dir_all(&proj_a).unwrap();
+        std::fs::create_dir_all(&proj_b).unwrap();
+        let cfg_a = proj_a.join("yekitrim.toml");
+        let cfg_b = proj_b.join("yekitrim.toml");
+        db.create_project(a, "a-proj", None, "local", None, &proj_a, &cfg_a, None).unwrap();
+        db.create_project(b, "b-proj", None, "local", None, &proj_b, &cfg_b, None).unwrap();
+        let res_root_b = dir.path().join("b-resources");
+        std::fs::create_dir_all(&res_root_b).unwrap();
 
+        // ① 清单 = 素材根（调用方传入的那份）+ **本人**项目根；别人的项目根不许进清单
+        let roots = font_import_roots(&db, b, res_root_b.clone());
+        assert!(roots.contains(&res_root_b), "{roots:?}");
+        assert!(roots.iter().any(|r| r == &proj_b), "{roots:?}");
+        assert!(!roots.iter().any(|r| r == &proj_a), "别人的项目根不许进清单：{roots:?}");
+
+        // ② 别人的项目目录里的文件 → 拒
+        let font_in_a = proj_a.join("x.ttf");
+        std::fs::write(&font_in_a, b"x").unwrap();
+        assert!(!font_import_allowed(false, &roots, &font_in_a));
+        // ③ 自己的项目目录 → 允许
+        let font_in_b = proj_b.join("y.ttf");
+        std::fs::write(&font_in_b, b"x").unwrap();
+        assert!(font_import_allowed(false, &roots, &font_in_b));
+        // ④ 自己的素材根 → 允许
+        let font_in_res = res_root_b.join("z.ttf");
+        std::fs::write(&font_in_res, b"x").unwrap();
+        assert!(font_import_allowed(false, &roots, &font_in_res));
+        // ⑤ 素材根外的相对路径小动作（.. 段）同样出不去 —— ensure_within 的词法判据
+        let escape = proj_b.join("../a-proj/x.ttf");
+        assert!(!font_import_allowed(false, &roots, &escape));
+        // ⑥ admin：任何位置都允许
+        assert!(font_import_allowed(true, &roots, &font_in_a));
+    }
+
+    /// B5 的 HTTP 面：普通账号从**别人项目**导入 ⇒ 403（判据在动字体库**之前**）；
+    /// 从**自己项目**导入 ⇒ 判据放行（走到 import_font 的格式校验 ⇒ 400，不是 403）。
+    ///
+    /// ⚠️ 两条都**不写真实字体库**：403 在 `ensure_dir_for` 之前返回；
+    /// 400 那条是 import_font 拒收假字体（写不进库）。
+    #[tokio::test]
+    async fn font_import_rejects_other_users_project_paths() {
+        let t = test_app().await;
+        let db = t.auth.db();
+        let hash = yekitrim_service::auth::hash_password("pass-12345678").unwrap();
+        let uid = db.create_user("font_b", &hash, "user", false, 0).unwrap();
+
+        // admin 的测试项目（t.root）里放一支假字体 —— B 试图从那儿导
+        let foreign = t.root.join("foreign.ttf");
+        std::fs::write(&foreign, b"x").unwrap();
+        let b = t.auth.login("font_b", "pass-12345678", None, None).unwrap();
+        let res = t
+            .call(
+                t.req_as(&b.session_id, &b.csrf, "POST", "/polish/fonts/import")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "path": yekitrim_core::path::display(&foreign) })
+                            .to_string()
+                            .into_bytes(),
+                    ))
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN, "别人项目里的文件不许导：{res:?}");
+
+        // 自己项目里的假字体：判据放行 ⇒ 400（import_font 拒收"读不出族名"的假货），
+        // **绝不能是 403** —— 那样说明判据把自己人也拦了。
+        let own = t._dir.path().join(format!("own-proj-{uid}"));
+        std::fs::create_dir_all(&own).unwrap();
+        let cfg = own.join("yekitrim.toml");
+        std::fs::write(&cfg, "").unwrap();
+        let own_pid = db
+            .create_project(uid, "own-proj", None, "local", None, &own, &cfg, None)
+            .unwrap();
+        let _ = own_pid;
+        let own_font = own.join("mine.ttf");
+        std::fs::write(&own_font, b"x").unwrap();
+        let res = t
+            .call(
+                t.req_as(&b.session_id, &b.csrf, "POST", "/polish/fonts/import")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "path": yekitrim_core::path::display(&own_font) })
+                            .to_string()
+                            .into_bytes(),
+                    ))
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST, "自己项目内应放行到格式校验：{res:?}");
+    }
 
     /// **封面文案挂的是 `Title` 链路**（不是 Utility）：用户口径「加一个标题生成」，
     /// 而贴纸包/扫描标签仍属零散单发 —— 挂错的话两者会共用一组覆盖，改一个动一片。
@@ -2588,6 +2799,58 @@ mod tests {
         assert_eq!(cover_title_temperature(Some(0.0), 0.0), 0.0, "显式 0 = 完全稳定，不许被下限顶回去");
         assert_eq!(cover_title_temperature(Some(1.2), 0.0), 1.2);
         assert_eq!(cover_title_temperature(Some(9.0), 0.0), 2.0, "夹到 2");
+    }
+
+    /// ★ **P1-2 的钉子：成片 stem 跟着 `[project] output` 走。**
+    ///
+    /// 以前 `rendered_file` 的 stem 写死成 `vtuber-clip`：用户改了输出名之后，成片明明写出来了
+    /// （日志 `FINISHED: …/custom-out.mp4`），「产物」区却一直显示"导出成片或生成封面后在这里查看"、
+    /// 切片卡片也认为未出片（review `polish.md` P1-2）。
+    /// 两段查询（配置名 → 默认名）同时钉住"默认名的存量行为不变"。
+    #[test]
+    fn rendered_file_follows_the_configured_output_name() {
+        let dir = std::env::temp_dir().join(format!(
+            "yekitrim-rendered-name-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // ① 自定义输出名：目录里只有 my-cut_2.mp4
+        std::fs::write(dir.join("my-cut_2.mp4"), b"x").unwrap();
+        assert_eq!(
+            rendered_file_of(&dir, Some("my-cut.mp4")).as_deref(),
+            Some("my-cut_2.mp4"),
+            "自定义输出名必须被认出来（同名不覆盖的 _n 后缀也算）"
+        );
+        // …而且改了配置名之后，先用**默认名**出过的片不能凭空消失
+        std::fs::remove_file(dir.join("my-cut_2.mp4")).unwrap();
+        std::fs::write(dir.join("vtuber-clip_1.mp4"), b"x").unwrap();
+        assert_eq!(
+            rendered_file_of(&dir, Some("my-cut.mp4")).as_deref(),
+            Some("vtuber-clip_1.mp4"),
+            "配置名找不到时必须回落默认名（存量产物）"
+        );
+
+        // ② 没有工程 / 名字是空白 ⇒ 默认名，行为与改造前逐字相同
+        assert_eq!(
+            rendered_file_of(&dir, None).as_deref(),
+            Some("vtuber-clip_1.mp4"),
+            "读不到工程时必须回落默认名"
+        );
+        assert_eq!(
+            rendered_file_of(&dir, Some("  ")).as_deref(),
+            Some("vtuber-clip_1.mp4"),
+            "空名字也必须回落默认名"
+        );
+
+        // ③ stem 推导：去目录、去扩展名；只有空白 ⇒ None（否则会去扫 ".mp4" 这种名字）
+        assert_eq!(render_stem_of("my-cut.mp4").as_deref(), Some("my-cut"));
+        assert_eq!(render_stem_of("out/my-cut.mp4").as_deref(), Some("my-cut"));
+        assert_eq!(render_stem_of("   "), None);
+        assert_eq!(render_stem_of(""), None);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
     /// 封面标题的 prompt 必须**把参考标题当口吻基准**（2026-10-19 用户报「没有幽默串子那种想点进去的欲望」）。
     ///

@@ -633,7 +633,7 @@ fn resolve_webhook_completion(
     })
 }
 
-fn map_webhook_path(root: &Path, container_root: &str, raw: &str) -> Result<PathBuf, String> {
+pub(crate) fn map_webhook_path(root: &Path, container_root: &str, raw: &str) -> Result<PathBuf, String> {
     let raw = raw.trim();
     if raw.is_empty() || raw.contains('\0') {
         return Err("路径为空或含非法字符".into());
@@ -964,7 +964,10 @@ fn recording_state(
 }
 
 /// 归属校验：房间必须是调用者自己的（admin 通吃）。不可见一律 404，不泄露存在性。
-fn owned_room(
+///
+/// `pub(crate)`（2026-11-14 后端 review B2）：`/api/recorder/recordings` 用同一份判据 ——
+/// 同一语义两个端点一套有一道没有，正是 review 指出的问题；**别抄第二份**。
+pub(crate) fn owned_room(
     db: &yekitrim_service::db::Db,
     user: &CurrentUser,
     room_id: &str,
@@ -994,17 +997,68 @@ pub async fn room_recordings(
             "未配置 [ingest.recorder] root，列不出录像（设置页「录播姬（采集）」）",
         ));
     }
-    // 递归 read_dir + 逐文件 metadata（可能在网络盘上）→ 下 blocking 池
-    let cfg_scan = cfg.clone();
-    let files = tokio::task::spawn_blocking(move || crate::ingest_worker::list_recordings(&cfg_scan))
-        .await
-        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("列目录线程失败: {e}")))?
-        .map_err(internal)?;
-
-    let mut mine: Vec<_> = files
-        .into_iter()
-        .filter(|f| f.room.as_deref() == Some(room_id.as_str()))
-        .collect();
+    // biliLive-tools 的路径里没有房间号 ⇒ 走它的录像历史；录播姬仍然扫目录。
+    let backend = yekitrim_service::recorder::RecorderBackend::from_config(&cfg.ingest);
+    let mut mine: Vec<crate::ingest_worker::RecordedFile> =
+        if backend.as_ref().is_some_and(|c| c.is_bililive_tools()) {
+            let client = backend.as_ref().unwrap();
+            let rooms = client
+                .list_rooms()
+                .await
+                .map_err(|e| err(StatusCode::BAD_GATEWAY, format!("{e:#}")))?;
+            let Some(st) = rooms.iter().find(|r| r.room_id.to_string() == room_id) else {
+                return Err(err(StatusCode::NOT_FOUND, "biliLive-tools 的录制列表里没有这个直播间"));
+            };
+            let items = client
+                .list_history(&room_id, &st.platform)
+                .await
+                .map_err(|e| err(StatusCode::BAD_GATEWAY, format!("{e:#}")))?;
+            let root = std::path::PathBuf::from(cfg.ingest.recorder.root.trim());
+            let container_root = cfg.ingest.recorder.container_root.clone();
+            let room_for_scan = room_id.clone();
+            tokio::task::spawn_blocking(move || {
+                let mut out = Vec::new();
+                for it in items {
+                    let Ok(abs) = crate::ingest::map_webhook_path(&root, &container_root, &it.video_file) else { continue };
+                    let Ok(md) = std::fs::metadata(&abs) else { continue };
+                    let rel = abs
+                        .strip_prefix(&root)
+                        .map(|p| p.to_string_lossy().replace('\\', "/"))
+                        .unwrap_or_default();
+                    if rel.is_empty() {
+                        continue;
+                    }
+                    let name = abs.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    let mtime = md
+                        .modified()
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs() as i64)
+                        .unwrap_or(0);
+                    out.push(crate::ingest_worker::RecordedFile {
+                        rel,
+                        name,
+                        size: md.len(),
+                        mtime,
+                        room: Some(room_for_scan.clone()),
+                    });
+                }
+                out
+            })
+            .await
+            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("列录像线程失败: {e}")))?
+        } else {
+            // 递归 read_dir + 逐文件 metadata（可能在网络盘上）→ 下 blocking 池
+            let cfg_scan = cfg.clone();
+            let files = tokio::task::spawn_blocking(move || crate::ingest_worker::list_recordings(&cfg_scan))
+                .await
+                .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("列目录线程失败: {e}")))?
+                .map_err(internal)?;
+            files
+                .into_iter()
+                .filter(|f| f.room.as_deref() == Some(room_id.as_str()))
+                .collect()
+        };
     // 新的在前（列表第一眼要看到刚录完的）
     mine.sort_by(|a, b| b.mtime.cmp(&a.mtime).then_with(|| a.rel.cmp(&b.rel)));
     let total = mine.len();
@@ -1065,8 +1119,90 @@ pub async fn import_recording(
     if rel.is_empty() {
         return Err(err(StatusCode::BAD_REQUEST, "缺少 rel（录像相对路径）"));
     }
-    // 这个文件必须真的属于这个房间：否则用户能拿任意 rel 把别人的录像导进自己项目
-    if yekitrim_service::recorder::room_id_from_rel_path(&rel).as_deref() != Some(room_id.as_str()) {
+    // 这个文件必须真的属于这个房间：否则用户能拿任意 rel 把别人的录像导进自己项目。
+    // 录播姬靠目录名解析房间号；biliLive-tools 的目录名里没有房间号 ⇒ 用它的录像历史核对。
+    let cfg_early = yekitrim_core::config::load_global_config();
+    let backend_early =
+        yekitrim_service::recorder::RecorderBackend::from_config(&cfg_early.ingest);
+    if backend_early.as_ref().is_some_and(|c| c.is_bililive_tools()) {
+        let client = backend_early.as_ref().unwrap();
+        let rooms = client
+            .list_rooms()
+            .await
+            .map_err(|e| err(StatusCode::BAD_GATEWAY, format!("{e:#}")))?;
+        let Some(st) = rooms.iter().find(|r| r.room_id.to_string() == room_id) else {
+            return Err(err(StatusCode::NOT_FOUND, "biliLive-tools 的录制列表里没有这个直播间"));
+        };
+        let items = client
+            .list_history(&room_id, &st.platform)
+            .await
+            .map_err(|e| err(StatusCode::BAD_GATEWAY, format!("{e:#}")))?;
+        let root = std::path::Path::new(cfg_early.ingest.recorder.root.trim());
+        let cr = cfg_early.ingest.recorder.container_root.as_str();
+        let mut belongs = false;
+        for it in &items {
+            if let Ok(abs) = crate::ingest::map_webhook_path(root, cr, &it.video_file) {
+                if let Ok(p) = abs.strip_prefix(root) {
+                    if p.to_string_lossy().replace('\\', "/") == rel {
+                        belongs = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if !belongs {
+            return Err(err(
+                StatusCode::BAD_REQUEST,
+                format!("这个文件不属于直播间 {room_id}：{rel}"),
+            ));
+        }
+
+        // 原地建项目（**不搬文件**）：biliLive-tools 的录像历史记的是原路径，搬走会让它那边打不开。
+        // 与通用 Webhook 同一语义 —— 工程就建在录像目录里。
+        let root = std::path::PathBuf::from(cfg_early.ingest.recorder.root.trim());
+        let rel_for_abs = rel.clone();
+        let abs = tokio::task::spawn_blocking(move || {
+            crate::ingest_worker::resolve_recorder_path(&root, &rel_for_abs)
+        })
+        .await
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("校验线程失败: {e}")))?
+        .map_err(internal)?;
+        let parent = abs
+            .parent()
+            .ok_or_else(|| err(StatusCode::BAD_REQUEST, "无法确定项目目录"))?
+            .to_path_buf();
+        let input_name = abs
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .ok_or_else(|| err(StatusCode::BAD_REQUEST, "文件名不合法"))?;
+        let danmaku_name = find_danmaku(&abs).and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
+        let title = parent
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| input_name.clone());
+        let landed = landing::land_project(
+            db,
+            &landing::ProjectLanding {
+                owner_id: user.id,
+                name: title.clone(),
+                source_kind: "recorder",
+                source_label: Some("biliLive-tools"),
+                room: Some(&room_id),
+                project_root: &parent,
+                input_file: &input_name,
+                danmaku_file: danmaku_name.as_deref(),
+                session_id: None,
+            },
+        )
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("创建项目失败: {e:#}")))?;
+        return ok(serde_json::json!({
+            "ok": true,
+            "project_id": landed.project_id,
+            "duplicate": !landed.created,
+        }));
+    } else if yekitrim_service::recorder::room_id_from_rel_path(&rel).as_deref()
+        != Some(room_id.as_str())
+    {
         return Err(err(
             StatusCode::BAD_REQUEST,
             format!("这个文件不属于直播间 {room_id}：{rel}"),
@@ -1166,6 +1302,12 @@ pub async fn channel_map_get(
 }
 
 /// `PUT /api/channel-map`：整体替换**本人**的房间规则。
+///
+/// ⚠️ **别人的房间号不能被顶掉**：`room_id` 是 `channel_map` 的全局主键，无脑 upsert
+/// 等于"任何账号都能把别人的直播间改到自己名下"（2026-11-14 后端 review 的 P1）。
+/// 现在先由 `replace_channel_map` 在同一事务里查冲突：**命中别人的行 ⇒ 整批不生效 + 409**，
+/// 与 `POST /api/rooms`（`api/rooms.rs` 里那条 409）同一口径。**未登记**的房间仍可自助登记，
+/// admin 仍可接管（`allow_takeover`）。
 pub async fn channel_map_put(
     State(state): State<Arc<AppState>>,
     axum::extract::Extension(user): axum::extract::Extension<CurrentUser>,
@@ -1195,7 +1337,20 @@ pub async fn channel_map_put(
         rules.push((room, pipeline, enabled));
     }
     let db = state.auth.db();
-    db.replace_channel_map(user.id, &rules).map_err(internal)?;
+    let conflicts = db
+        .replace_channel_map(user.id, user.is_admin(), &rules)
+        .map_err(internal)?;
+    if !conflicts.is_empty() {
+        // 409 而不是 403：语义是"这个房间号被别人先登记了"，不是"你没权限调这个接口"。
+        // 冲突时**一条规则都没保存**（事务未提交），所以文案要写清"本次未保存"。
+        return Err(err(
+            StatusCode::CONFLICT,
+            format!(
+                "该直播间已被其他账号登记: {}（本次未保存任何改动）",
+                conflicts.join(", ")
+            ),
+        ));
+    }
     let _ = db.audit(
         Some(user.id),
         "channel_map_update",
@@ -1303,14 +1458,24 @@ fn config_view_json() -> serde_json::Value {
         "ok": true,
         // 设置页「通用 Webhook」地址用：Docker/另一台机器不能用 127.0.0.1
         "lan_ip": local_lan_ip(),
+        "proxy": cfg.ingest.proxy,
         "webhook_enabled": cfg.ingest.webhook_enabled,
         "token_configured": !cfg.ingest.token_hash.trim().is_empty(),
         "allow_ips": cfg.ingest.allow_ips,
+        "bililive_tools": {
+            "api_base": cfg.ingest.recorder.api_base,
+            "api_key_set": !cfg.ingest.recorder.api_key.trim().is_empty(),
+            "root": cfg.ingest.recorder.root,
+            "container_root": cfg.ingest.recorder.container_root,
+        },
         "recorder": {
+            "kind": cfg.ingest.recorder.kind,
             "root": cfg.ingest.recorder.root,
             "api_base": cfg.ingest.recorder.api_base,
             "api_user": cfg.ingest.recorder.api_user,
             "api_pass_set": !cfg.ingest.recorder.api_pass.is_empty(),
+            "api_key_set": !cfg.ingest.recorder.api_key.trim().is_empty(),
+            "container_root": cfg.ingest.recorder.container_root,
             "watch_interval_mins": cfg.ingest.recorder.watch_interval_mins,
             "finalize_idle_mins": cfg.ingest.recorder.finalize_idle_mins,
             "move_into_managed": cfg.ingest.recorder.move_into_managed,
@@ -1443,13 +1608,81 @@ fn build_ingest_patch(
         ingest.insert("allow_ips".into(), serde_json::json!(ips));
     }
 
+    if let Some(v) = body.get("proxy") {
+        let raw = v
+            .as_str()
+            .ok_or_else(|| err(StatusCode::BAD_REQUEST, "proxy 必须是字符串"))?
+            .trim();
+        // 允许清空（空串 = 直连）；非空则必须是带 scheme 的地址
+        if !raw.is_empty()
+            && !["http://", "https://", "socks5://", "socks5h://"]
+                .iter()
+                .any(|p| raw.starts_with(p))
+        {
+            return Err(err(
+                StatusCode::BAD_REQUEST,
+                format!("proxy 要写成 http:// / socks5:// / socks5h:// 开头：{raw}"),
+            ));
+        }
+        ingest.insert("proxy".into(), serde_json::json!(raw));
+    }
+
+    if let Some(blt) = body.get("bililive_tools") {
+        let blt = blt
+            .as_object()
+            .ok_or_else(|| err(StatusCode::BAD_REQUEST, "bililive_tools 必须是对象"))?;
+        let mut out = serde_json::Map::new();
+        for key in ["api_base", "root", "container_root"] {
+            if let Some(v) = blt.get(key) {
+                let raw = v
+                    .as_str()
+                    .ok_or_else(|| err(StatusCode::BAD_REQUEST, format!("bililive_tools.{key} 必须是字符串")))?
+                    .trim();
+                if key == "api_base"
+                    && !raw.is_empty()
+                    && !(raw.starts_with("http://") || raw.starts_with("https://"))
+                {
+                    return Err(err(
+                        StatusCode::BAD_REQUEST,
+                        format!("bililive_tools.api_base 需要以 http:// 或 https:// 开头：{raw}"),
+                    ));
+                }
+                out.insert(key.into(), serde_json::json!(raw));
+            }
+        }
+        if let Some(v) = blt.get("api_key") {
+            let raw = v
+                .as_str()
+                .ok_or_else(|| err(StatusCode::BAD_REQUEST, "bililive_tools.api_key 必须是字符串"))?;
+            if !raw.trim().is_empty() {
+                out.insert("api_key".into(), serde_json::json!(raw));
+            }
+        }
+        if !out.is_empty() {
+            ingest.insert("bililive_tools".into(), serde_json::Value::Object(out));
+        }
+    }
+
     if let Some(rec) = body.get("recorder") {
         let rec = rec
             .as_object()
             .ok_or_else(|| err(StatusCode::BAD_REQUEST, "recorder 必须是对象"))?;
         let mut out = serde_json::Map::new();
 
-        for key in ["root", "api_base", "api_user"] {
+        if let Some(v) = rec.get("kind") {
+            let s = v
+                .as_str()
+                .ok_or_else(|| err(StatusCode::BAD_REQUEST, "recorder.kind 必须是字符串"))?
+                .trim();
+            if !["bililive", "bililive-tools", "none"].contains(&s) {
+                return Err(err(
+                    StatusCode::BAD_REQUEST,
+                    format!("recorder.kind 只能是 bililive / bililive-tools / none：{s}"),
+                ));
+            }
+            out.insert("kind".into(), serde_json::json!(s));
+        }
+        for key in ["root", "api_base", "api_user", "container_root"] {
             if let Some(v) = rec.get(key) {
                 let s = v
                     .as_str()
@@ -1464,6 +1697,15 @@ fn build_ingest_patch(
                 .as_str()
                 .ok_or_else(|| err(StatusCode::BAD_REQUEST, "recorder.api_pass 必须是字符串"))?;
             out.insert("api_pass".into(), serde_json::json!(s));
+        }
+        // biliLive-tools 的访问密钥同理：空串 = 不修改（前端只回 api_key_set 布尔）
+        if let Some(v) = rec.get("api_key") {
+            let s = v
+                .as_str()
+                .ok_or_else(|| err(StatusCode::BAD_REQUEST, "recorder.api_key 必须是字符串"))?;
+            if !s.trim().is_empty() {
+                out.insert("api_key".into(), serde_json::json!(s));
+            }
         }
         if let Some(v) = rec.get("auto_pipeline") {
             let s = v
@@ -1737,13 +1979,17 @@ fn config_patch(
     serde_json::Value::Object(patch)
 }
 
-/// 把 `[ingest]` / `[storage]` 的字段合并进**全局配置**（默认 `<程序目录>/.yekitrim/config.toml`）。
+/// 把 `[ingest]` / `[storage]` 的字段合并进**程序配置**（`config::global_config_path()`）。
+///
+/// ⚠️ **与运行时读的那份必须是同一个文件**（2026-11-13）：以前这里写顶层
+/// `<数据>/.yekitrim/config.toml`，而设置页写 `users/<uid>/…` —— 两份长得一模一样，
+/// 一半设置保存成功却不生效。现在两侧都走 `config::global_config_path()`。
 async fn write_global_config(
     ingest: serde_json::Map<String, serde_json::Value>,
     storage: serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), AppError> {
     write_global_config_at(
-        &yekitrim_core::path::yekitrim_home().join("config.toml"),
+        &yekitrim_core::config::global_config_path(),
         config_patch(ingest, storage),
     )
     .await
@@ -2117,8 +2363,11 @@ pub async fn bilibili_submit(
 
 /// `POST /api/admin/downloader/install`：下载内置 yt-dlp 并校验 sha256（仅 admin）。
 ///
-/// 同步等它下完（17.8MB，实测 1.8s，但网络差时会久）→ 下到 blocking 池外面，
-/// 用 async；前端显示"正在下载"。
+/// ⚠️ **下载必须跑在 `tokio::spawn` 里，不能直接 `await` 在 handler 上**（2026-11-12 事故）：
+/// axum 的 handler future 会在**客户端断开时被丢弃**，连带把下载一起取消 —— 40 MB 的包
+/// 在慢网络上要几十分钟，用户一刷新 / 一切标签页 / 代理一超时，下载就死在中途，
+/// 界面上表现为"一直转圈然后失败"，而 `.part` 停在那里不动。
+/// `tokio::spawn` 出来的任务**不随 handler 一起 drop**，断了也照下完。
 pub async fn downloader_install(
     State(_state): State<Arc<AppState>>,
     axum::extract::Extension(user): axum::extract::Extension<CurrentUser>,
@@ -2126,9 +2375,31 @@ pub async fn downloader_install(
     if !user.is_admin() {
         return Err(err(StatusCode::FORBIDDEN, "仅管理员可安装下载器"));
     }
-    let path = yekitrim_service::downloader::registry::ensure_ytdlp(&yekitrim_core::config::load_global_config())
-        .await
-        .map_err(|e| err(StatusCode::BAD_GATEWAY, format!("安装下载器失败: {e:#}")))?;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        let cfg = yekitrim_core::config::load_global_config();
+        let r = yekitrim_service::downloader::registry::ensure_ytdlp(&cfg).await;
+        let _ = tx.send(r);
+    });
+    let path = match rx.await {
+        Ok(Ok(p)) => p,
+        Ok(Err(e)) => {
+            return Err(err(
+                StatusCode::BAD_GATEWAY,
+                format!(
+                    "安装下载器失败: {e:#}\n\n{}",
+                    yekitrim_service::downloader::registry::install_hint()
+                ),
+            ))
+        }
+        // 发信号的 task 挂了：下载本身不受影响（它在自己的 task 里），让用户稍后刷新
+        Err(_) => {
+            return Err(err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "安装任务异常结束；下载可能仍在后台进行，稍后点「刷新」查看",
+            ))
+        }
+    };
     let cfg = yekitrim_core::config::load_global_config();
     // ⚠️ 只回版本与是否通过哈希校验，**不回路径**（与 §3.5.9 一致）
     let (verified, source) = match yekitrim_service::downloader::registry::find_ytdlp(&cfg) {
@@ -2154,6 +2425,16 @@ pub async fn downloader_status(
     let cfg = yekitrim_core::config::load_global_config();
     let found = yekitrim_service::downloader::registry::find_ytdlp(&cfg);
     let kind = yekitrim_service::downloader::DownloaderKind::parse(&cfg.ingest.downloader);
+    // 安装进度（前端轮询画进度条）：托管目录里 `.part*` 的当前字节 vs 钉死的总大小
+    let mut part_bytes: u64 = 0;
+    let bin_dir = yekitrim_service::downloader::registry::managed_dir();
+    if let Ok(rd) = std::fs::read_dir(&bin_dir) {
+        for e in rd.flatten() {
+            if e.file_name().to_string_lossy().starts_with("yt-dlp.part") {
+                part_bytes += e.metadata().map(|m| m.len()).unwrap_or(0);
+            }
+        }
+    }
     // 同样**不含路径**：这个响应给非管理员看
     ok(serde_json::json!({
         "ok": true,
@@ -2162,6 +2443,8 @@ pub async fn downloader_status(
         "verified": found.map(|i| i.verified).unwrap_or(false),
         "pinned_version": yekitrim_service::downloader::registry::VERSION,
         "license": yekitrim_service::downloader::registry::LICENSE,
+        "part_bytes": part_bytes,
+        "total_bytes": yekitrim_service::downloader::registry::pin().size,
     }))
 }
 
@@ -2289,7 +2572,7 @@ mod tests {
     fn channel_map_assigns_owner_on_session_started() {
         let (_d, db) = db();
         let uid = db.create_user("alice", "h", "user", false, 0).unwrap();
-        db.replace_channel_map(uid, &[("23058".into(), "cut".into(), true)])
+        db.replace_channel_map(uid, false, &[("23058".into(), "cut".into(), true)])
             .unwrap();
 
         handle_event(&db, &ev("SessionStarted", "e1", "s1", serde_json::json!({}))).unwrap();
@@ -2307,6 +2590,78 @@ mod tests {
         // 指派后从待分配池消失
         db.assign_ingest_session("s2", uid, Some("detect")).unwrap();
         assert_eq!(db.unassigned_ingest_sessions(10).unwrap().len(), 0);
+    }
+
+    /// **接口层**：`PUT /api/channel-map` 抢别人的直播间 → **409**，未登记的房间照旧可自助登记。
+    ///
+    /// DB 层的机制判据在 `yekitrim_service::db::tests::replace_channel_map_never_steals_another_users_room`；
+    /// 这条钉的是**接口语义**（409 而不是 200/403），以及 `allow_takeover` 的接线
+    /// （普通用户 false、admin true）—— 2026-11-14 后端 review 的 P1 的回归钉子。
+    #[tokio::test]
+    async fn channel_map_put_rejects_someone_elses_room_with_409() {
+        use crate::api::test_support::*;
+        let t = test_app().await;
+        let hash = yekitrim_service::auth::hash_password("pass-12345678").unwrap();
+        t.auth.db().create_user("cm_alice", &hash, "user", false, 0).unwrap();
+        t.auth.db().create_user("cm_bob", &hash, "user", false, 0).unwrap();
+        let alice = t.auth.login("cm_alice", "pass-12345678", Some("10.9.8.1"), None).unwrap();
+        let bob = t.auth.login("cm_bob", "pass-12345678", Some("10.9.8.2"), None).unwrap();
+
+        // ① alice 登记 26320007（未登记过 ⇒ 允许）
+        let res = t
+            .call(
+                t.req_as(&alice.session_id, &alice.csrf, "PUT", "/channel-map")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(
+                        r#"{"rules":[{"room_id":"26320007","auto_pipeline":"detect"}]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(res.status(), 200, "未登记的房间该允许自助登记");
+
+        // ② bob 想把 26320007 改成自己的 ⇒ 409，且归属仍是 alice
+        let res = t
+            .call(
+                t.req_as(&bob.session_id, &bob.csrf, "PUT", "/channel-map")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(
+                        r#"{"rules":[{"room_id":"26320007","auto_pipeline":"cut","enabled":false}]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(res.status(), 409, "抢别人的直播间必须 409");
+        let body = body_json(res).await;
+        assert!(
+            body["error"].as_str().unwrap_or("").contains("该直播间已被其他账号登记"),
+            "文案要说清是「已被别人登记」：{body}"
+        );
+        let alice_id = t.auth.db().find_user("cm_alice").unwrap().unwrap().id;
+        let rule = t.auth.db().channel_for_room("26320007").unwrap().unwrap();
+        assert_eq!(rule.user_id, alice_id, "归属绝不能被改到 bob");
+        assert!(rule.enabled, "也不能被 enabled:false 掐掉");
+        assert_eq!(rule.auto_pipeline, "detect", "pipeline 不能被别人改");
+
+        // ③ bob 登记一个**没被登记过**的房间 ⇒ 200（自助登记这条路不能被误伤）
+        let res = t
+            .call(
+                t.req_as(&bob.session_id, &bob.csrf, "PUT", "/channel-map")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(
+                        r#"{"rules":[{"room_id":"18001","auto_pipeline":"none"}]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(res.status(), 200, "未登记的房间仍要允许占位");
+        let bob_id = t.auth.db().find_user("cm_bob").unwrap().unwrap().id;
+        assert_eq!(
+            t.auth.db().channel_for_room("18001").unwrap().unwrap().user_id,
+            bob_id
+        );
+        // ② 那次失败没有把 alice 的行删掉，① 那次也没有把 bob 的规则写进去
+        assert_eq!(t.auth.db().channel_map_list().unwrap().len(), 2, "只该留下两条规则");
     }
 
     /// webhook token 的形状检查：只有"`<TOKEN_PREFIX>` + 40 位 base64url"才值得跑 scrypt。

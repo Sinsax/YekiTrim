@@ -235,16 +235,37 @@ pub(super) async fn job_events(
             .into_response();
     };
     // 先回放历史：快任务可能在 EventSource 建立之前就结束，
-    // 只给实时流会让前端永远停在「运行中」。终态事件之后流即结束。
-    let replayed =
-        futures_util::stream::iter(history.into_iter().map(|ev| (is_terminal_event(&ev), sse_event(&ev))));
+    // 只给实时流会让前端永远停在「运行中」。
+    //
+    // ⚠️ **终态事件必须"发出去之后再结束流"**（2026-11-14 后端 review B1）：
+    // 旧实现是 `.take_while(|(terminal, _)| !*terminal)`，而 `take_while` 的语义是
+    // "谓词为真才 yield" ⇒ 终态那条正是谓词为假的第一条，被**连它一起丢掉**。
+    // 实测后果：`/api/jobs/<已完成的 id>/events` 回放里 `grep '"type":"completed"'` = 0，
+    // 前端 `jobs.js` 里那三个终态分支成了死代码（只能靠 2s 轮询兜）。
+    // 现在改成"**先发终态、再关**"。
+    //
+    // ⚠️ 不能用 `.scan(...)`/`.take_while(...)`：它们在"上一条是终态"这件事上都要**先拿到下一条**
+    // 才能表达结束，而 `job_event_stream`（broadcast）在任务结束后**永远不会再产出**（发送端还活着）
+    // —— 流就挂在那里，终态事件发出去了、连接却不关。必须用 `unfold` 直接把"发完这条就结束"
+    // 编码进状态机：终态那条 yield 之后，下一次拉取**不再 poll inner**，直接 `None`。
+    let merged: std::pin::Pin<Box<dyn Stream<Item = (bool, Event)> + Send>> = Box::pin(
+        futures_util::stream::iter(
+            history.into_iter().map(|ev| (is_terminal_event(&ev), sse_event(&ev))),
+        )
+        .chain(job_event_stream(rx)),
+    );
     let stream: std::pin::Pin<Box<dyn Stream<Item = Result<Event, axum::Error>> + Send>> =
-        Box::pin(
-            replayed
-                .chain(job_event_stream(rx))
-                .take_while(|(terminal, _)| std::future::ready(!*terminal))
-                .map(|(_, ev)| Ok(ev)),
-        );
+        Box::pin(futures_util::stream::unfold(
+            (merged, false),
+            |(mut inner, done)| async move {
+                if done {
+                    return None;
+                }
+                let (terminal, ev) = inner.next().await?;
+                // 终态这条**照常发**，把 done 交给下一步 ⇒ 下一次拉取立刻关流
+                Some((Ok(ev), (inner, terminal)))
+            },
+        ));
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15))).into_response()
 }
 
@@ -445,5 +466,59 @@ fn latest_numbered_file_ignores_empty_middle() {
     let nonnum = tempfile::tempdir().unwrap();
     std::fs::write(nonnum.path().join("cover_abc.jpg"), b"x").unwrap();
     assert_eq!(latest_numbered_file(nonnum.path(), "cover", "jpg"), None);
+}
+
+/// **`/api/jobs/:id/events` 必须把终态事件发出去，然后才关流**（2026-11-14 后端 review B1）。
+///
+/// 旧实现用 `.take_while(|(terminal, _)| !*terminal)` —— `take_while` 把"谓词为假的第一条"
+/// 也丢掉，而那条正好是 `completed`/`failed`/`cancelled`。于是对**已经结束**的任务订阅，
+/// 前端只能拿到一串 log，永远等不到"完成"（实测 `grep '"type":"completed"'` = 0）。
+///
+/// 判据三条：
+/// ① 历史回放里最后一条必须是终态事件（`completed`）；
+/// ② 终态之后流真的结束（`to_bytes` 能收完 —— 没有终态时这条 SSE 会一直挂着）；
+/// ③ 实时流新推的终态事件同样要发（这里用同一份 `scan` 逻辑，随历史一起验到）。
+#[tokio::test]
+async fn job_events_stream_emits_the_terminal_event_then_closes() {
+    let t = test_app().await;
+    let handle = t
+        .state
+        .jobs
+        .create(1, JobSpec::new("test_sse", "SSE 终态", vec!["sse:out".into()], JobClass::Light))
+        .await;
+    let id = handle.id.clone();
+    let _ = handle.wait_start().await;
+    t.state.jobs.log(&id, "info", "跑起来啦").await;
+    t.state.jobs.complete(&id).await;
+
+    let res = t
+        .call(
+            t.req("GET", &format!("/jobs/{id}/events"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(res.status(), 200);
+    // 终态之后流必须自己结束，所以这里能收完（旧实现会挂到 keep-alive/超时）
+    let bytes = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        axum::body::to_bytes(res.into_body(), 4 * 1024 * 1024),
+    )
+    .await
+    .expect("终态之后 SSE 必须关流（否则前端永远等不到完成）")
+    .unwrap();
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(text.contains("跑起来啦"), "回放要带上历史日志：{text}");
+    assert!(
+        text.contains(r#""type":"completed""#),
+        "终态事件必须出现在流里（take_while 会把它吃掉）：{text}"
+    );
+    // 终态是**最后**一条 data（之后不该再有别的事件）
+    let last_data = text
+        .lines()
+        .filter(|l| l.starts_with("data: "))
+        .next_back()
+        .unwrap_or_default();
+    assert!(last_data.contains(r#""type":"completed""#), "终态必须是最后一条：{last_data}");
 }
 }

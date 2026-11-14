@@ -80,12 +80,10 @@ pub(super) async fn projects_list(
         let out: Vec<serde_json::Value> = rows
             .iter()
             .map(|p| {
-                let json = yekitrim_service::projects::summary_json(p, owner_name(db, p.owner_id).as_deref());
-                // 项目目录/yekitrim.toml 被外部删掉时落库标记，列表里显示"缺失"而不是静默消失
-                if json["missing"].as_bool() == Some(true) && !p.missing {
-                    let _ = db.set_project_missing(p.id, true);
-                }
-                json
+                // `missing` 由 `summary_json` 按**磁盘当场算**（目录不在 / 配置解析失败），
+                // 这里**不再顺手写库**（读接口有副作用是最容易踩的一类坑，review P3）。
+                // DB 里那一列由启动时的 `projects::refresh_all_bytes` 双向校准。
+                yekitrim_service::projects::summary_json(p, owner_name(db, p.owner_id).as_deref())
             })
             .collect();
         Ok(out)

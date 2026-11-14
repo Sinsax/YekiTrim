@@ -173,16 +173,17 @@ fn migrate_solo_assets_to_first_admin(db: &db::Db) -> anyhow::Result<Vec<std::pa
 /// 所有 handler 与任务）。顺序反了不会报错，只会让那几次解析落到 `users/1/`
 /// —— 恰好等于默认值，所以**只在"首个管理员不是 1"时才看得出来**。
 /// 那种库是可能的（1 号账号被删过），所以别省这一步。
-fn install_local_admin(db: &db::Db) -> anyhow::Result<()> {
-    if let Some(u) = db
+fn install_local_admin(db: &db::Db) -> anyhow::Result<Option<i64>> {
+    let admin = db
         .list_users()?
         .iter()
         .filter(|u| u.role == "admin")
         .min_by_key(|u| u.id)
-    {
-        yekitrim_core::owner::set_local_admin(u.id);
+        .map(|u| u.id);
+    if let Some(uid) = admin {
+        yekitrim_core::owner::set_local_admin(uid);
     }
-    Ok(())
+    Ok(admin)
 }
 
 fn import_legacy_projects(db: &db::Db) -> anyhow::Result<usize> {    let Some(admin) = db.find_user("admin")? else {
@@ -256,6 +257,38 @@ fn explicit_admin_password(args: &ServerArgs) -> anyhow::Result<Option<String>> 
         }
     }
     Ok(None)
+}
+
+/// 「初始密码怎么改」的可操作提示 —— 拒绝启动与启动警告**共用这一份文案**。
+///
+/// ⚠️ 第一行命令里的 `YEKITRIM_DATA_DIR=<账本目录>` **不能省**：`yekitrim user passwd` 是
+/// **另一个进程**，它只认环境变量、不认 `--data-dir`（见 `db::data_dir` 的注释）。少了它，用户
+/// 照着提示改的是 exe 旁边那份账本，服务器上这份仍是初始密码 —— 命令行一切正常、重启照样被拒。
+/// 这正是"我明明改了密码还是起不来"的报障形态，所以它同时是 `password_change_hint_names_ledger`
+/// 那条单测的判据。
+fn password_change_hint(ledger_dir: &Path, initial_pw_file: &Path) -> String {
+    let dir = ledger_dir.display();
+    let mut s = String::from("改掉它再启动，任选一条：\n");
+    s.push_str("  ① 账本里已有 admin —— 先改密码，再用同样的参数启动：\n");
+    s.push_str(&format!(
+        "       YEKITRIM_DATA_DIR={dir} yekitrim user passwd admin --password-file <密码文件>\n"
+    ));
+    s.push_str(&format!(
+        "       Windows: set YEKITRIM_DATA_DIR={dir} && yekitrim user passwd admin --password-file <密码文件>\n"
+    ));
+    s.push_str("     ⚠️ 那个变量必须与启动时的 --data-dir 同值：改密码是另一个进程，它不认 --data-dir。\n");
+    s.push_str("  ② 全新部署（账本里还没有账号）—— 启动时直接给，不走「先改密」：\n");
+    s.push_str("       yekitrim server <其余参数> --admin-password-file <密码文件>\n");
+    s.push_str("  改完用 `yekitrim user list` 确认 admin 那行后面不再标「(初始密码)」。\n");
+    s.push_str(&format!(
+        "  口令至少 {} 字符；忘了密码：YEKITRIM_DATA_DIR={dir} yekitrim user reset-admin-password --password-file <密码文件>\n",
+        yekitrim_service::auth::MIN_PASSWORD_LEN
+    ));
+    s.push_str(&format!(
+        "  初始密码文件（改完密码自动删除）：{}",
+        initial_pw_file.display()
+    ));
+    s
 }
 
 /// 对外暴露（非 loopback 监听，或显式 `--allow-remote`）且仍在用初始密码 → 拒绝启动。
@@ -363,6 +396,8 @@ where
     // （网页端、CLI 端后续所有调用都会落 `llm_usage` 表；设置页「LLM 用量」读它）
     yekitrim_service::usage::install(auth.db_arc());
     let bootstrap = yekitrim_service::ensure_admin_bootstrap(explicit_pw.clone())?;
+    // 初始密码文件路径只算一次：警告与拒绝启动两条文案都要提它（指向"别再照它输"的那份）。
+    let pw_file = yekitrim_service::initial_password_path();
     if bootstrap.created {
         match (&bootstrap.initial_password, &bootstrap.password_file) {
             (Some(pw), Some(path)) => info!(
@@ -375,7 +410,12 @@ where
     } else {
         info!("账号账本: {} 个账号（{}）", bootstrap.accounts, auth.data_dir().display());
         if bootstrap.must_change_password {
-            tracing::warn!("⚠ 管理员仍在使用初始密码，请尽快登录并修改（或 `yekitrim user passwd admin`）");
+            // ⚠️ 这里是"对外部署之前"唯一的提示位：本地起服务时看到它，就该知道要改密。
+            // 文案与拒绝启动那条共用（含 `YEKITRIM_DATA_DIR` —— 改密是另一个进程）。
+            tracing::warn!(
+                "⚠ 管理员仍在使用初始密码 —— 一旦对外监听（--allow-remote / 非 loopback）服务会**拒绝启动**。\n{}",
+                password_change_hint(&data_dir, &pw_file)
+            );
         }
     }
     // 对外监听 + 仍用初始密码 = 把密码写在服务器上 → 拒绝启动（§3.5.4）
@@ -398,10 +438,9 @@ where
     // 于是文档承诺的这条护栏在它自己推荐的配置下**从不触发**。
     if must_refuse_initial_password(is_loopback, args.allow_remote, bootstrap.must_change_password) {
         anyhow::bail!(
-            "拒绝在 {addr} 上对外监听：管理员仍在使用初始密码（初始密码会出现在日志与 {} 里，等同把密码写在服务器上）。\n\
-             请先修改密码：yekitrim user passwd admin（非交互：--stdin / --password-file），\
-             或在部署时用 --admin-password-file 显式设定初始密码。",
-            yekitrim_service::initial_password_path().display()
+            "拒绝在 {addr} 上对外监听：管理员仍在使用初始密码（初始密码会写进启动日志与 {}，等同把凭证摊在服务器上）。\n{}",
+            pw_file.display(),
+            password_change_hint(&data_dir, &pw_file)
         );
     }
 
@@ -436,9 +475,13 @@ where
     // ⚠️ **顺序**：先 `install_local_admin` 再迁移。迁移本身用的是 `Owner::User(uid)`
     // （不依赖这一步），但**紧跟其后的** `ensure_global_config` 等初始化按 `Local` 取路径 ——
     // 顺序反了那些东西会落到 `users/1/`（默认值，通常恰好对，所以只在"首个管理员不是 1"时才露馅）。
-    if let Err(e) = install_local_admin(auth.db()) {
-        tracing::warn!("解析「当前管理员是谁」失败（按默认 uid=1 继续）: {e:#}");
-    }
+    let admin_uid = match install_local_admin(auth.db()) {
+        Ok(uid) => uid,
+        Err(e) => {
+            tracing::warn!("解析「当前管理员是谁」失败（按默认 uid=1 继续）: {e:#}");
+            None
+        }
+    };
     match migrate_solo_assets_to_first_admin(auth.db()) {
         Ok(ref moved) if moved.is_empty() => {}
         Ok(moved) => info!(
@@ -446,6 +489,28 @@ where
             moved.len()
         ),
         Err(e) => tracing::warn!("归入首个管理员的存量失败（不影响启动，数据保持原状）: {e:#}"),
+    }
+
+    // ---- 程序配置收敛（2026-11-13，方案 A）----
+    //
+    // 顶层 `<数据>/.yekitrim/{config,llm}.toml` **退役**：配置只有 `users/<uid>/.yekitrim/` 一份。
+    // 上面那次素材迁移只在"目标还不存在"时 rename，所以**两份都存在**（本机就是）这种情况它不动 ——
+    // 那正是"接入选顶层、设置页写账号树、各读一半"的来源。这里做一次**合并式**迁移：
+    // 平台段（ingest/storage/publish/auth）以顶层为准、内容段以账号为准，搬完把顶层文件改名留档。
+    // 幂等：顶层文件一旦搬走就不再触发；失败只 warn（迁移不动数据，启动必须照常）。
+    if let Some(uid) = admin_uid {
+        match yekitrim_core::config::migrate_top_level_config_to(
+            yekitrim_core::owner::Owner::User(uid),
+            &yekitrim_core::path::data_dir(),
+        ) {
+            Ok(ref moved) if moved.is_empty() => {}
+            Ok(moved) => info!(
+                "程序配置已收敛到 users/{uid}/：{} 份顶层旧文件已合并并留档（{}）",
+                moved.len(),
+                moved.iter().map(|p| p.file_name().unwrap_or_default().to_string_lossy().into_owned()).collect::<Vec<_>>().join(", ")
+            ),
+            Err(e) => tracing::warn!("顶层程序配置合并失败（不影响启动，原文件保持原状）: {e:#}"),
+        }
     }
 
     // 首次运行（没有程序配置）时自动生成默认配置；已有配置不会被覆盖
@@ -791,6 +856,37 @@ mod tests {
         // 改过密码：一律放行
         assert!(!must_refuse_initial_password(false, true, false));
         assert!(!must_refuse_initial_password(true, true, false));
+    }
+
+    /// 「怎么改密码」的提示必须**能照着做**：给出账本目录、改密命令、全新部署那条路。
+    ///
+    /// ⚠️ 少掉 `YEKITRIM_DATA_DIR` 那一项就是实测踩过的坑：`yekitrim user passwd` 是另一个进程，
+    /// 它不认 `--data-dir`，于是用户改的是 exe 旁边那份账本、服务器上这份仍是初始密码 ——
+    /// 命令行一切正常，重启还是被这条护栏拒掉（"我明明改了密码"）。
+    #[test]
+    fn password_change_hint_names_ledger_and_both_ways() {
+        let hint = password_change_hint(
+            Path::new("/var/lib/yekitrim"),
+            Path::new("/var/lib/yekitrim/initial-admin-password.txt"),
+        );
+        assert!(
+            hint.contains("YEKITRIM_DATA_DIR=/var/lib/yekitrim"),
+            "必须指明账本目录（改密是另一个进程，不认 --data-dir）: {hint}"
+        );
+        assert!(hint.contains("yekitrim user passwd admin"), "必须给出改密命令: {hint}");
+        assert!(hint.contains("--password-file"), "必须给出非交互形式: {hint}");
+        assert!(
+            hint.contains("--admin-password-file"),
+            "必须给出「全新部署一次给」那条路: {hint}"
+        );
+        assert!(
+            hint.contains("reset-admin-password"),
+            "忘了密码要能自救: {hint}"
+        );
+        assert!(
+            hint.contains("/var/lib/yekitrim/initial-admin-password.txt"),
+            "要点名那份会撒谎的初始密码文件: {hint}"
+        );
     }
 
     fn addr() -> SocketAddr {

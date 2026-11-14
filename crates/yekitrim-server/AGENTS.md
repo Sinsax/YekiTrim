@@ -21,6 +21,9 @@
   现在信号之后再给 3 秒，到点停止监听（日志一条 WARN），锁照样正常释放。**别把这段时限去掉。**
   `ServerArgs { host, port, open, config, webui_dir, allow_remote, trust_proxy, data_dir, admin_password_file, force, open_path }`；
   `first_bindable_port` / `bind_conflict_hint`（绑失败**实测试绑**再报；`10013`=系统拒绝，`10048`=真被占用）。
+  ⚠️ 启动时还要把程序配置收敛到 `users/<uid>/`（2026-11-13）：在 `install_local_admin` 与
+  `ensure_global_config` **之间**调 `yekitrim_core::config::migrate_top_level_config_to`（顶层两份
+  合并后改名 `*.migrated-<日期>.bak`）。幂等、fail-soft；规则见 core 的 config 卡。
 - `AppState`（`src/model.rs`）：共享句柄（`AuthService`/`JobManager`/日志总线）。⚠️ **里面没有"当前工程"**。
 - `jobs.rs`：`JobManager`（`create`/`wait_start`/`cancel`/`complete`/`fail`/`busy_with`/`spawn_housekeeping`）与
   `JobSpec`/`JobHandle`/`JobSummary`/`JobEvent`/`JobClass`/`JobPriority`。
@@ -164,7 +167,9 @@
   别把压缩挪进 `serve_file` 让所有调用点都吃到。细节见 `src/api/AGENTS.md`。
   ⚠️ 前端 `webui/src/api/stickers.js::UPLOAD_MAX_BYTES` 与 Rust 的是同一个数。
 - `src/auth.rs`：`require_user` / `require_admin` / `require_password_changed`（**服务端强制**）/ `resolve_client_ip` /
-  `trust_proxy` / `tls_terminated`；登录失败计数表（`auth.rs::rate_fail`）必须按 `MAX_LOGIN_KEYS`(4096) 清理。
+  `trust_proxy` / `tls_terminated` / `owner_of`（身份 → `Owner` 唯一分叉点）/ `optional_owner`（**公开接口**的可选
+  会话解析：`GET /api/health` 的 `llm` 位靠它按**账号**读 `llm.toml`；无会话回 `None`，调用方回落 `Owner::Local`）；
+  登录失败计数表（`auth.rs::rate_fail`）必须按 `MAX_LOGIN_KEYS`(4096) 清理。
   `--trust-proxy` / 端口 26320 / `--allow-remote` 的全局规矩见根卡。
   注册接口（`POST /api/auth/register`）的三重条件、失败一律 **403**（不泄露是哪一条不过）、
   `register|<ip>` 独立限流、账本 v5 邀请码**明文落库可重复查看** —— 正文在

@@ -196,6 +196,9 @@ pub(super) async fn project_data_pipeline(
     // 作用域由 `Scope` 解析（`?project=` / 过渡期 `?config=`）；
     // 旧前端还会在 body 里带 `config`，那只是冗余字段，不再作为作用域来源。
     let ws = scope.ws;
+    // 配额预检（review B7/D14）：转写/检测/剪切的产物也占账号配额 ——
+    // 已超配额的普通账号不再放进新任务（admin 不受限）。
+    quota_gate(&state, &user, Some(scope.project.id)).await?;
     if let Some(stage) = body.get("stage").and_then(|v| v.as_str()) {
         // 转写**每个模式只跑一次**：ASR 产物按模式占槽（`[asr] mode` 只有 hybrid / single
         // 两种，见 `yekitrim_service::assets`），该模式已经出过产物就不再提供重跑入口。
@@ -983,6 +986,26 @@ pub(super) fn data_events_merge_splits_impl(ws: &Workspace) -> ApiResult {
 pub(super) fn data_clips_impl(ws: &Workspace) -> ApiResult {
     let clips = ws.output_dir().join("clips");
     if !clips.exists() { return Err(err(StatusCode::NOT_FOUND, "暂无 clips")); }
+    // 发布标题（`publish_config.json` 的 `clips[].title`）：页面上那个「发布标题」框要显示
+    // **投稿真正会用的那句**，而不是 `clip.json` 的原始标题 —— 改过标题的片段刷新后
+    // 必须还是改过的那句（否则用户会以为没保存成功，再改一遍）。整份文件读一次即可。
+    let publish_titles: std::collections::HashMap<String, String> = std::fs::read_to_string(
+        ws.output_dir().join("publish_config.json"),
+    )
+    .ok()
+    .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+    .and_then(|v| {
+        v.get("clips").and_then(|c| c.as_array()).map(|arr| {
+            arr.iter()
+                .filter_map(|c| {
+                    let dir = c.get("directory").and_then(|d| d.as_str())?;
+                    let title = c.get("title").and_then(|t| t.as_str()).unwrap_or("");
+                    Some((dir.to_string(), title.to_string()))
+                })
+                .collect()
+        })
+    })
+    .unwrap_or_default();
     let mut out = vec![];
     // 源弹幕的起始时间表：只有遇到「没有 clip.dm.srt 的老切片」时才解析一次（见下）
     let mut dm_starts: Option<Vec<f64>> = None;
@@ -990,6 +1013,7 @@ pub(super) fn data_clips_impl(ws: &Workspace) -> ApiResult {
     for entry in entries.flatten() {
         if !entry.path().is_dir() { continue; }
         let dir_path = entry.path();
+        let dir_name = entry.file_name().to_string_lossy().into_owned();
         let meta_path = dir_path.join("clip.json");
         let meta = std::fs::read_to_string(&meta_path).ok()
             .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
@@ -1021,9 +1045,14 @@ pub(super) fn data_clips_impl(ws: &Workspace) -> ApiResult {
         // 就没有分段/事件，算出来是"零干扰满分"，那是**假的高分**、比没有更糟。
         // 算不出来（工程缺失/字幕缺失/解析失败）一律 `null`，前端不显示那一栏。
         let quality = clip_quality(&dir_path, duration_secs);
+        // 先取出来再进 `json!`：`dir_name` 在下面会被 `json!` 吃掉（`to_value` 按值），
+        // 之后再 `get(&dir_name)` 就借不到了。
+        let publish_title = publish_titles.get(&dir_name).cloned().unwrap_or_default();
         out.push(serde_json::json!({
             "dir": yekitrim_core::path::display(&dir_path),
-            "name": entry.file_name().to_string_lossy(),
+            "name": dir_name,
+            // 发布标题（投稿用；改过就是改过的那句）—— 见上面 `publish_titles` 的注释
+            "publish_title": publish_title,
             "video_exists": video_path.exists(),
             "size_bytes": size_bytes,
             "duration_secs": duration_secs,
@@ -1193,6 +1222,118 @@ pub(super) fn prune_clip_from_index(output_dir: &Path, dir_name: &str) {
     }
 }
 
+/// 发布标题的字数上限（B站标题 80 字，这里留足余量给「标题 + 主播名」）。
+const MAX_TITLE_CHARS: usize = 200;
+
+/// 改一个片段的**发布标题**（output/publish_config.json 的 clips[].title）。
+///
+/// 为什么写这一份、不写 clip.json：投稿链路（crate::publish → biliLive-tools）读的就是
+/// publish_config.json，改标题的目的正是「投稿时用我改过的这句」。
+/// ⚠️ **刻意不碰 clip.json 的 title**：它是片段的**身份** —— clip_index::clip_meta_matches
+/// 用「标题相同 或 原片区间 IoU ≥ 0.5」判断重新检测时能不能复用这个目录；改了它，老片段在重新
+/// 检测后会匹配不上、另开一个目录（精修产物留在旧目录里，用户看到的是「精修白做了」）。
+///
+/// 生命周期：重切**这个**片段会按 clip.json 重新生成标题（Cutter 的「同名覆盖」），重切**别的**
+/// 片段不会动它 —— 后者由 publish_index_merges_incremental_cuts_* 钉着。
+pub(super) fn clip_title_put_impl(ws: &Workspace, arg: &str, title: &str) -> ApiResult {
+    let output = ws.output_dir();
+    let clip_dir = resolve_clip_dir(&output, arg)?;
+    let Some(dir_name) = clip_dir.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+        return Err(err(StatusCode::BAD_REQUEST, "rank 无效"));
+    };
+    if !clip_dir.is_dir() {
+        return Err(err(StatusCode::NOT_FOUND, format!("{dir_name} 不存在")));
+    }
+    let publish = output.join("publish_config.json");
+    let raw = std::fs::read_to_string(&publish).map_err(|e| {
+        err(
+            StatusCode::NOT_FOUND,
+            format!("还没有发布索引 publish_config.json（重新剪一次会重建）: {e}"),
+        )
+    })?;
+    let mut v: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
+        err(StatusCode::INTERNAL_SERVER_ERROR, format!("publish_config.json 解析失败: {e}"))
+    })?;
+    let mut hit = false;
+    if let Some(arr) = v.get_mut("clips").and_then(|c| c.as_array_mut()) {
+        for c in arr.iter_mut() {
+            if c.get("directory").and_then(|d| d.as_str()) == Some(dir_name.as_str()) {
+                c["title"] = serde_json::json!(title);
+                hit = true;
+            }
+        }
+    }
+    if !hit {
+        return Err(err(
+            StatusCode::NOT_FOUND,
+            format!("{dir_name} 还没进发布索引（重新剪一次会重建）"),
+        ));
+    }
+    let pretty = serde_json::to_string_pretty(&v)
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("序列化失败: {e}")))?;
+    std::fs::write(&publish, pretty).map_err(|e| {
+        err(StatusCode::INTERNAL_SERVER_ERROR, format!("写入 publish_config.json 失败: {e}"))
+    })?;
+    sync_order_title(&output, &dir_name, title);
+    ok(serde_json::json!({ "ok": true, "directory": dir_name, "title": title }))
+}
+
+/// clips/clips_order.txt 每行「<目录名> <标题>」：标题跟着改，否则那份索引还念着旧标题。
+/// 文件缺失/格式异常一律静默跳过（与 prune_clip_from_index 同一条口径）。
+fn sync_order_title(output_dir: &Path, dir_name: &str, title: &str) {
+    let order = output_dir.join("clips").join("clips_order.txt");
+    let Ok(raw) = std::fs::read_to_string(&order) else { return };
+    // ⚠️ 分隔符必须与 Cutter 写的一致（目录名 + ' / ' + 标题，见 cutting/mod.rs 的 order_lines）：
+    // 写成空格虽然仍能被 starts_with(目录名 + ' ') 命中，但同一份文件出现两种格式，人看像两份东西。
+    let prefix = format!("{dir_name} ");
+    let want = if title.trim().is_empty() {
+        dir_name.to_string()
+    } else {
+        format!("{dir_name} / {title}")
+    };
+    let mut changed = false;
+    let lines: Vec<String> = raw
+        .lines()
+        .map(|line| {
+            let t = line.trim();
+            if t == dir_name || t.starts_with(&prefix) {
+                changed |= t != want;
+                want.clone()
+            } else {
+                line.to_string()
+            }
+        })
+        .collect();
+    if changed {
+        let _ = std::fs::write(&order, lines.join("\n"));
+    }
+}
+
+/// PUT /api/project-data/clips/:rank/title —— 改发布标题（正文见 clip_title_put_impl）。
+pub(super) async fn project_data_clip_title_put(
+    scope: Scope,
+    AxumPath(rank): AxumPath<String>,
+    Json(body): Json<serde_json::Value>,
+) -> ApiResult {
+    let ws = scope.ws;
+    let title = body
+        .get("title")
+        .and_then(|t| t.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let len = title.chars().count();
+    if len > MAX_TITLE_CHARS {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            format!("标题最多 {MAX_TITLE_CHARS} 字（当前 {len}）"),
+        ));
+    }
+    // publish_config.json 是 read-modify-write（Cutter 也在写它）：与它走同一条路径锁
+    let path = ws.output_dir().join("publish_config.json");
+    let _guard = yekitrim_core::filelock::lock_path(&path).await;
+    blocking(move || clip_title_put_impl(&ws, &rank, &title)).await
+}
 /// polish 系列接口的 `dir` 参数校验：非空 + 必须已存在且是目录。
 ///
 /// 前端永远传绝对路径；这里挡的是空串（会在 server 进程 CWD 下写入 polish.toml /
@@ -1687,6 +1828,50 @@ pub(super) fn resolve_media_path(
 
 #[cfg(test)]
 mod tests {
+    /// **B7（2026-11-14 后端 review）：已超配额的普通账号不能再起转写/检测/剪切任务**。
+    ///
+    /// 占用是 `quota_gate_impl` 自己刷新的（源文件落盘即计入）—— 内核判据见 api/mod.rs
+    /// 的单测；这里钉的是 HTTP 面：409 + 文案点名配额，admin 不受限。
+    #[tokio::test]
+    async fn pipeline_is_rejected_when_account_is_over_quota() {
+        let t = test_app().await;
+        let db = t.auth.db();
+        let hash = yekitrim_service::auth::hash_password("pass-12345678").unwrap();
+        let uid = db.create_user("quota_http", &hash, "user", false, 100).unwrap();
+        let root = t._dir.path().join(format!("quota-proj-{uid}"));
+        std::fs::create_dir_all(root.join("output")).unwrap();
+        std::fs::write(root.join("big.mp4"), vec![0u8; 200]).unwrap();
+        let cfg_path = root.join("yekitrim.toml");
+        std::fs::write(&cfg_path, "input_file = \"big.mp4\"\n").unwrap();
+        let pid = db
+            .create_project(uid, "quota-proj", None, "local", Some("配额"), &root, &cfg_path, None)
+            .unwrap();
+        let b = t.auth.login("quota_http", "pass-12345678", None, None).unwrap();
+
+        let res = t
+            .call(
+                t.req_as(&b.session_id, &b.csrf, "POST", &format!("/project-data/pipeline?project={pid}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"stage":"detect"}"#.to_string()))
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(res.status(), StatusCode::CONFLICT, "已超配额必须 409");
+        let j = body_json(res).await;
+        assert!(j["error"].as_str().unwrap_or("").contains("配额"), "{j}");
+
+        // admin 不受限：同一形状的请求（admin 自己的项目 1）不是 409
+        let res = t
+            .call(
+                t.req("POST", "/project-data/pipeline?project=1")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"stage":"detect"}"#.to_string()))
+                    .unwrap(),
+            )
+            .await;
+        assert_ne!(res.status(), StatusCode::CONFLICT, "admin 不受配额约束");
+    }
+
     /// **§3 剪辑质量分**：`/project-data/clips` 必须回它，且**没精修过的片段回 `null`**。
     ///
     /// 两条判据缺一不可：
@@ -2777,5 +2962,83 @@ async fn danmaku_texts_keeps_raw_ass_text() {
     assert!(v["subs"].as_array().is_some(), "subs 桶也必须存在（可能是空的）");
 }
 
+/// 发布标题（2026-11-14 用户要求「产物那里加个标题，方便复制也方便改」）：
+/// 写的是 `publish_config.json` 的 `clips[].title`（投稿链路读那份），**绝不动 `clip.json` 的
+/// title** —— 后者是片段身份（`clip_meta_matches` 拿它判断重新检测能不能复用目录），改了会让
+/// 老片段另开一个目录、精修产物留在旧目录里（用户看到的是「精修白做了」）。
+/// 另外两件事一起钉住：`clips_order.txt` 那行标题跟着改；`/clips` 回包要回**改后**的
+/// `publish_title`（页面刷新后靠它回填，否则用户会以为没保存）。
+#[tokio::test]
+async fn clip_title_writes_publish_config_and_leaves_clip_json_alone() {
+    let t = test_app().await;
+    let root = t.root.clone();
+    let clips = root.join("output").join("clips");
+    std::fs::create_dir_all(&clips).unwrap();
+    write_clip_dir(&clips, 1, 0.0, 10.0, 1, None);
+    std::fs::write(
+        root.join("output").join("publish_config.json"),
+        r#"{"video_source":"a.mp4","clips":[{"directory":"clip-01","title":"旧标题"}]}"#,
+    )
+    .unwrap();
+    std::fs::write(clips.join("clips_order.txt"), "clip-01 旧标题").unwrap();
+
+    let put = |uri: &str, body: serde_json::Value| {
+        t.req("PUT", uri)
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+
+    // 首尾空白要去掉（文本框里手滑敲个空格不该原样落盘）
+    let res = t
+        .call(put(
+            "/project-data/clips/clip-01/title?project=1",
+            serde_json::json!({ "title": "  新标题（改过）  " }),
+        ))
+        .await;
+    let status = res.status();
+    let j = body_json(res).await;
+    assert_eq!(status, StatusCode::OK, "{j}");
+    assert_eq!(j["title"], "新标题（改过）", "{j}");
+
+    let pv: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(root.join("output").join("publish_config.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(pv["clips"][0]["title"], "新标题（改过）", "{pv}");
+    let meta: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(clips.join("clip-01").join("clip.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(meta["title"], "片段1", "clip.json 的标题是片段身份，不许被改: {meta}");
+    assert_eq!(
+        std::fs::read_to_string(clips.join("clips_order.txt")).unwrap(),
+        "clip-01 / 新标题（改过）",
+        "clips_order.txt 那行的标题要跟着改"
+    );
+
+    // 列表接口回改后的那句（页面刷新靠它回填）
+    let res = t
+        .call(t.req("GET", "/project-data/clips?project=1").body(Body::empty()).unwrap())
+        .await;
+    let v = body_json(res).await;
+    assert_eq!(v[0]["publish_title"], "新标题（改过）", "{v}");
+
+    // 不存在的片段 → 404；没有发布索引 → 404（不许假装成功）；超长 → 400
+    let res = t
+        .call(put("/project-data/clips/nope/title?project=1", serde_json::json!({"title":"x"})))
+        .await;
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    std::fs::remove_file(root.join("output").join("publish_config.json")).unwrap();
+    let res = t
+        .call(put("/project-data/clips/clip-01/title?project=1", serde_json::json!({"title":"x"})))
+        .await;
+    assert_eq!(res.status(), StatusCode::NOT_FOUND, "没有 publish_config 时不许假装成功");
+    let long = "长".repeat(MAX_TITLE_CHARS + 1);
+    let res = t
+        .call(put("/project-data/clips/clip-01/title?project=1", serde_json::json!({"title": long})))
+        .await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST, "超长标题必须 400");
 }
 
+}
