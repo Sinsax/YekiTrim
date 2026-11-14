@@ -282,7 +282,7 @@
             <div class="add-pane-right">
               <div class="pane-col-head">
                 <span>录像</span>
-                <span class="val">{{ recSelected ? (recSelected.title || recSelected.id) : '未选择房间' }}</span>
+                <span class="val"><template v-if="recSelected">{{ recSelected.title || recSelected.id }} · </template>共 {{ recRecordings.length }} 场</span>
               </div>
               <div v-if="recRecLoading" class="row muted small"><span class="spinner"></span> 读取录像…</div>
               <div v-else-if="recRecError" class="hint">{{ recRecError }}</div>
