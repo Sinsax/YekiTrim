@@ -20,6 +20,13 @@
 
 **简化基础件**
 - 页面级空态/下一步/首启检查：`AppEmptyState.vue` / `NextStepBar.vue` / `SetupChecklist.vue`。
+- `SetupChecklist`（v8 起 = 首页环境与模型的**唯一**状态卡，2026-11-15 用户口径：原「运行状况」卡整卡
+  并入）：「运行环境」行 = ffmpeg/ffprobe/**出片底座**实测 chips（数据源 `/api/health`，与 doctor 同一批
+  命令、一样现场实测）+ 缺项一行指路（底座 → 程序目录 `dhampir/bin/`）；「字幕模型」行内嵌 `ModelList`
+  （缺模型才展开，下载仅管理员）；全就绪收成一行「开始使用 · 环境就绪」。数据仍是 health + doctor +
+  models 三口一起发一起刷，`doctorError` 要传进来照实报（读失败 ≠ 缺失，不许拿旧 doctor 快照充数）。
+  ⚠️ **待处理项必须行里逐项可见** —— 旧运行状况卡"报 1 项待处理、展开却全绿"的病根就是底座缺失
+  没有展示位（用户实测）；页头汇总 chip 随之删除（同一件事不说三遍）。口径见 `docs/web-ui-design.md` 附录 E。
 - LLM 快配：`components/llm/LlmQuickSetup.vue` + `presets.js`（只给 base_url/模型提示，不是能力表）；
   详细多接口编辑仍在 `LlmProviders.vue` 的「高级配置」里。
 - 新控件带 `data-cap`；高级项用 `useDisclosure`/`<details>` 默认折叠，隐藏 ≠ 删除。
@@ -167,8 +174,8 @@
     **新任务永远订阅不上，界面从此停在「运行中」**。
   - 编辑器里被推迟的后处理（时间轴自动保存 / 选框保存触发的 process）：**不进队列**，只记 `pendingProcess`
     （带片段名），该片段空闲时自动补跑一次 —— 一次编辑风暴不该塞十几条任务。
-- `ModelList`：⚠️ 下载 **admin-only**（服务端 403），而它挂在**人人可见的首页**「运行状况」里 —— 按钮必须按
-  `isAdmin()` 门控。
+- `ModelList`：⚠️ 下载 **admin-only**（服务端 403），而它挂在**人人可见的首页**检查项「字幕模型」行里
+  （v8 起，原「运行状况」卡已并入检查项）—— 按钮必须按 `isAdmin()` 门控。
 - `LogConsole`：**挂载连 SSE、卸载断**，只在设置页 `monitor` 挂；颜色一律走 tokens。品牌标
   `src/assets/logo.png`（favicon 在 `public/`），别改回内联 SVG。`AppModal`/`AppDialog`/`ToastHost`
   （`stores/toast`）—— **别再手搓弹窗/确认**。

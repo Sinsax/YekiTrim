@@ -13,8 +13,8 @@
   `:pid/polish[/:clip]`=`PolishView`；`:pid/settings`=`ProjectSettingsView`；`#/settings/<key>`=`SettingsView`；
   `#/ingest`=`IngestView`；`#/login|register`=`LoginView`/`RegisterView`。
 - 共用子组件：`ProjectClipsSection.vue` / `FragmentList.vue` /
-  `MaterialList.vue` / `ModelList.vue`（`/models` → `/settings/account`）；接口层 `api/{projectData,polish,models,auth}.js`
-  与 `/api/health`，查询串只经 `scopeQ(pid)`。
+  `MaterialList.vue`（`ModelList` 已并入检查项，v8）；接口层
+  `api/{projectData,polish,models,auth}.js` 与 `/api/health`，查询串只经 `scopeQ(pid)`。
 
 ## 边界
 

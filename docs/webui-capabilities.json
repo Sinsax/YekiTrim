@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated": "2026-11-06",
+  "updated": "2026-11-15",
   "why": "WebUI 简化不允许静默丢入口：每个面向用户的能力登记一行，源码里用 data-cap 锚点标注；check-simplify.mjs 负责双向校验。只登记能力入口，不登记每个装饰按钮，避免维护爆炸。",
   "surfaces": {
     "home": {
@@ -34,7 +34,7 @@
       "id": "home.setup-checklist",
       "phase": "P1",
       "surface": "home",
-      "label": "开始使用（运行环境/字幕模型/AI 模型/第一段录像）",
+      "label": "检查项（运行环境/字幕模型/AI 模型/第一段录像，含原「运行状况」实测）",
       "files": [
         "webui/src/views/WorkbenchView.vue",
         "webui/src/components/SetupChecklist.vue"
@@ -124,18 +124,6 @@
         "webui/src/components/MediaLibrary.vue"
       ],
       "anchor": "data-cap=\"home.media-library\"",
-      "advancedOnly": false,
-      "firstScreen": true
-    },
-    {
-      "id": "home.doctor",
-      "phase": "P1",
-      "surface": "home",
-      "label": "运行状况（ffmpeg/模型/底座）",
-      "files": [
-        "webui/src/views/WorkbenchView.vue"
-      ],
-      "anchor": "data-cap=\"home.doctor\"",
       "advancedOnly": false,
       "firstScreen": true
     },
@@ -446,6 +434,12 @@
       "date": "2026-11",
       "reason": "死代码（无引用），由 NextStepBar 取代",
       "replacedBy": "components.NextStepBar"
+    },
+    {
+      "id": "home.doctor",
+      "date": "2026-11-15",
+      "reason": "独立「运行状况」卡并入首页检查项（用户口径）：ffmpeg/ffprobe/出片底座的实测 chips 进「运行环境」行，模型清单与下载（ModelList）进「字幕模型」行 —— 待处理项不再出现『卡片报数、展开却看不出缺哪项』的错位",
+      "replacedBy": "home.setup-checklist"
     }
   ]
 }

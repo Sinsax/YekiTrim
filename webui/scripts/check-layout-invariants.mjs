@@ -181,7 +181,9 @@ const RULES = [
 
 /** 关键标识符：模板里用到 + `<script setup>` 里必须定义过。 */
 const CRITICAL_BINDINGS = [
-  ['webui/src/views/WorkbenchView.vue', workbench, ['doctorProblem', 'loadDoctor']],
+  // 2026-11-15：doctorProblem/doctorIssues 随「运行状况」卡并入 SetupChecklist 删除；
+  // 这张卡换成钉新的模板关键标识符（setupReady 管两块卡显隐、doctorError 要传进检查项照实报）。
+  ['webui/src/views/WorkbenchView.vue', workbench, ['loadDoctor', 'doctorError', 'setupReady']],
   ['webui/src/components/HomeClipsOverview.vue', overview, ['ovFilter', 'OV_FILTERS', 'searchIn', 'query', 'shownClips']],
   ['webui/src/views/SettingsView.vue', settings, ['localNoAuth', 'visibleSections']],
   ['webui/src/components/ModelList.vue', modelList, ['canDownload']],

@@ -5,11 +5,8 @@
            不再重复同名标题（原来是「首页」上下各一遍，占掉两行垂直空间）。 -->
       <p class="wb-lead">把一段录像变成可发布的片段</p>
       <div class="actions">
-        <!-- 运行状况有问题时放一枚短提示（点开跳到卡片并展开）；常驻状态在页尾的运行状况行。 -->
-        <button v-if="doctorProblem" class="mini-btn doctor-chip" :title="doctorIssues.join('；')"
-                @click="openDoctor">
-          <Icon name="alert" :size="13" /> 运行状况：{{ doctorIssues.length }} 项待处理
-        </button>
+        <!-- （v8）原「运行状况：N 项待处理」chip 已删：运行状况并入下面的检查项卡，
+             待处理项在那张卡里逐行可见，页头再报一遍就是同一件事说三遍。 -->
         <button class="btn" :disabled="refreshing" title="重新读取项目、运行状况与环境检查" @click="refresh">
           <span v-if="refreshing" class="spinner"></span>
           <Icon v-else name="refresh" :size="14" />
@@ -20,8 +17,8 @@
 
     <div v-if="wb.error" class="error-banner"><Icon name="alert" :size="15" /> {{ wb.error }}</div>
 
-    <!-- 「开始使用」页 = 环境检查 + 运行状况；「工作台」页 = 继续上次 → 添加录像 → 项目 →
-         最近片段 → 素材库。功能一个都没删：检查项折叠、添加向导折叠、素材库折叠。 -->
+    <!-- 单页工作台：检查项（含原「运行状况」）→ 继续上次 → 添加录像 → 最近片段 → 素材库。
+         功能一个都没删：检查项折叠、添加向导折叠、素材库折叠。 -->
 
     <!-- v7（用户口径）：**不再分「开始使用 / 工作台」两页** —— 环境检查只在没配好时占地方，
          配好之后整页直接是工作台。原来两个页签还带一个副作用：每次切回来都要 v-show 两套 DOM。 -->
@@ -36,51 +33,26 @@
       <button class="mini-btn" :disabled="checking" @click="recheck">重新检查</button>
     </div>
 
-    <!-- ═════ 开始使用：运行环境 / 字幕模型 / AI 模型（可选）/ 第一段录像 ═════ -->
-    <!-- 就绪后这张卡不再渲染（顶部状态卡已经说清）；只有缺项时才展开逐条明细 -->
+    <!-- ═════ 检查项：运行环境 / 字幕模型 / AI 模型（可选）/ 第一段录像 ═════
+         v8（2026-11-15 用户口径）：**「运行状况」卡整卡并入检查项** ——
+         ffmpeg/ffprobe/出片底座的实测 chips 进「运行环境」行（数据源 /api/health，同一批命令、
+         一样现场实测），模型清单与下载（ModelList）进「字幕模型」行；原独立 doctor 卡删除。
+         数据仍是三个口：GET /api/health（环境位）+ GET /api/doctor（模型清单/目录）+
+         GET /api/models（富列表，ModelList 靠它渲染），一起发、一起刷；下载仅管理员。
+         ⚠️ 常驻渲染：全就绪时收成一行「开始使用 · 环境就绪」，只有缺项才展开逐条明细 ——
+         待处理项必须能在展开的行里看得见（不许只报数量不报明细）。 -->
     <SetupChecklist
-      v-if="!setupReady"
-      head="检查项"
+      :head="setupReady ? '' : '检查项'"
       :health="health"
       :doctor="doctor"
+      :doctor-error="doctorError"
       :models="models"
       :project-count="(wb.projects || []).length"
       :loading="checking"
-      @open-doctor="openDoctor"
       @open-wizard="openWizard"
       @go-llm="goLlm"
       @refresh="recheck"
     />
-    <!-- ═════ 运行状况：这台机器上「干活要用的东西」齐不齐 ═════
-         ffmpeg / ffprobe 是剪切与出片的外部依赖，ASR 模型是转写的前提，两者都是
-         **全机共享的程序级资产**（跟"谁在登录"无关）—— 所以它们不该住在账号页。
-         数据来自 `GET /api/doctor`（外部命令是否可用 + 模型清单）与 `GET /api/models`
-         （装在哪一份、多大、怎么下）。写操作（下载）仅管理员，由 ModelList 自己门控。
-         ⚠️ **默认折叠成一行**：以前"有问题就 order:-1 冒到页标题之上"，一个可选模型
-         没下载就让 300px 的卡片占满首屏、主功能被压到第二屏（用户截图实测）。 -->
-    <div id="doctor-card" ref="doctorCard" class="card card-blk doctor-card">
-      <button class="doctor-head" data-cap="home.doctor"
-              :aria-expanded="doctorOpen ? 'true' : 'false'" @click="doctorOpen = !doctorOpen">
-        <Icon name="cpu" :size="15" />
-        <b class="t" style="margin:0">运行状况</b>
-        <span v-if="doctorIssues.length" class="chip a">{{ doctorIssues.length }} 项待处理</span>
-        <span v-else-if="doctor" class="chip g">一切就绪</span>
-        <span v-else class="muted small">读取中…</span>
-        <span v-if="doctor" class="muted small" title="由服务端在当前进程里实测，不是缓存的旧值">已实测</span>
-        <span class="flex-1"></span>
-        <span class="muted small">{{ doctorOpen ? '收起' : '展开' }}</span>
-        <Icon :name="doctorOpen ? 'chevron-down' : 'chevron-right'" :size="13" />
-      </button>
-      <div v-show="doctorOpen" class="mt-8">
-        <div v-if="doctor" class="row mb-8">
-          <span class="chip" :class="doctor.ffmpeg ? 'g' : 'n'">ffmpeg {{ doctor.ffmpeg ? '就绪' : '缺失' }}</span>
-          <span class="chip" :class="doctor.ffprobe ? 'g' : 'n'">ffprobe {{ doctor.ffprobe ? '就绪' : '缺失' }}</span>
-          <span class="muted small" :title="doctor.models_dir">模型目录</span>
-        </div>
-        <div v-if="doctorError" class="error-banner mb-8">{{ doctorError }}</div>
-        <ModelList :models="models" @changed="loadDoctor" />
-      </div>
-    </div>
 
     <!-- 概览 + 继续上次：**同一行**（2026-11-13 用户口径）。
          左边是动作（继续哪个项目 / 下一步做什么），右边是四项读数，最右是主按钮；
@@ -476,7 +448,6 @@ import ServerFileBrowser from '../components/ServerFileBrowser.vue'
 import SetupChecklist from '../components/SetupChecklist.vue'
 import MediaLibrary from '../components/MediaLibrary.vue'
 import HomeClipsOverview from '../components/HomeClipsOverview.vue'
-import ModelList from '../components/ModelList.vue'
 import UiStat from '../components/ui/UiStat.vue'
 import UiEmpty from '../components/ui/UiEmpty.vue'
 import { authState } from '../stores/auth'
@@ -1337,8 +1308,8 @@ async function refresh() {
  * `GET /api/models` 的富列表（`size_label` / `note` / `source_label`，ModelList 要靠它渲染）。
  *
  * ⚠️ 两个请求**一起发、一起刷**：doctor 里的 `models[].installed` 是"装没装"的权威判据，
- * 而 ModelList 要的是富列表 —— 只刷一个会出现"点了下载、按钮没变"的错位。
- * ⚠️ 读失败**照实报**（`doctorError`），不要静默留空 —— 这整块的存在意义就是"告诉你缺什么"。
+ * 而 ModelList（挂在检查项「字幕模型」行内）要的是富列表 —— 只刷一个会出现"点了下载、按钮没变"的错位。
+ * ⚠️ 读失败**照实报**（`doctorError`），不要静默留空 —— 检查项会把它原样显示出来（读失败 ≠ 缺失）。
  */
 const doctor = ref(null)
 const models = ref([])
@@ -1358,36 +1329,8 @@ async function loadDoctor() {
   }
 }
 
-/**
- * 运行状况待处理项（页头短提示与卡片 title 共用；空 = 一切就绪）。
- * 判据 = 外部命令缺失 · 读取失败 · **有模型没装**。
- * ⚠️ 还没读到时**不算问题**（`doctor` 为 null）—— 否则首帧会先冒一条再消失。
- */
-const doctorIssues = computed(() => {
-  const out = []
-  if (doctorError.value) out.push('运行状况读取失败')
-  const d = doctor.value
-  if (d) {
-    if (!d.ffmpeg) out.push('缺 ffmpeg')
-    if (!d.ffprobe) out.push('缺 ffprobe')
-  }
-  // ⚠️ 出片底座在 `/api/health.dhampir_ready`（不在 doctor 里）：
-  // 只查 ffmpeg/ffprobe 会让页头「N 项待处理」漏报，而底座缺失时出片是直接失败的。
-  const h = health.value
-  if (h && !h.dhampir_ready) out.push('缺出片底座')
-  const missing = models.value.filter((m) => !m.installed)
-  if (missing.length) out.push('模型未下载：' + missing.map((m) => m.name).join('、'))
-  return out
-})
-const doctorProblem = computed(() => doctorIssues.value.length > 0)
-/** 卡片**默认折叠**成一行状态条；页头那枚提示点开时再展开并滚过去。 */
-const doctorOpen = ref(false)
-const doctorCard = ref(null)
-function openDoctor() {
-  // 单页布局：直接展开并滚过去
-  doctorOpen.value = true
-  requestAnimationFrame(() => doctorCard.value?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }))
-}
+// （v8）原 doctorIssues / doctorProblem / doctorOpen / doctorCard / openDoctor 整组已删：
+// 「运行状况」卡并入 SetupChecklist 后，待处理项在检查项各行里逐项可见，页头汇总 chip 没了消费者。
 
 /** 统计条读数：片段/出片只能从 per-pid 缓存算，没加载过就显示 `—`（别报 0 冒充"没有片段"）。 */
 const totals = computed(() => {
@@ -1642,11 +1585,7 @@ watch(() => route.name, (to, from) => {
 .rec-fail-text { display:flex; flex-direction:column; gap:2px; min-width:0; line-height:1.5;
   overflow-wrap:anywhere; }
 .rec-fail-acts { display:flex; gap:6px; flex-wrap:wrap; }
-/* 运行状况：折叠成一行状态条；展开才显示模型清单（默认不占首屏） */
-.doctor-card { margin-top:4px; }
-.doctor-head { display:flex; align-items:center; gap:8px; width:100%; padding:0;
-  background:none; border:none; text-align:left; cursor:pointer; color:inherit; }
-.doctor-head:hover .t { color:var(--main-deep); }
+/* （v8）.doctor-card / .doctor-head 样式已随「运行状况」卡删除（并入 SetupChecklist） */
 .room-list { margin-top:10px; }
 .room-item { border-bottom:1px dashed var(--line-soft); }
 .room-item:last-child { border-bottom:none; }
