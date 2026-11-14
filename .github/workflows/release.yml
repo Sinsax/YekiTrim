@@ -79,10 +79,15 @@ jobs:
       - name: Package
         run: cargo xtask package --target ${{ matrix.target }} --skip-build --no-dhampir
 
+      # ⚠️ 只传**文件**：release/ 里还有解包目录（同名文件夹），release/* 会把目录也带上，
+      # 下一步 gh release upload 就会报 "is a directory"（第一次跑就踩到）。
       - uses: actions/upload-artifact@v4
         with:
           name: yekitrim-${{ matrix.target }}-x64
-          path: release/*
+          path: |
+            release/*.zip
+            release/*.tar.gz
+            release/*.txt
           if-no-files-found: error
 
       - name: Attach to release
@@ -91,8 +96,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           TAG="${{ inputs.release_tag || github.ref_name }}"
           for f in release/*; do
+            [ -f "$f" ] || continue      # 跳过解包目录
             gh release upload "$TAG" "$f" --clobber
           done
 
