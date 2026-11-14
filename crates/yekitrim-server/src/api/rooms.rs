@@ -505,20 +505,33 @@ pub(super) async fn recorder_recordings(
             .list_history(&room_id, &st.platform)
             .await
             .map_err(|e| err(StatusCode::BAD_GATEWAY, format!("{e:#}")))?;
-        // 一场录像 = **一个目录**：size = 目录内全部视频之和（多分段录像以前只显示
-        // 最后一段的大小，跟资源管理器里的目录大小对不上 —— 2026-11-15 用户报障），
-        // mtime = 最新一段的修改时间（= 录完时间）。
+        // 一场录像 = **一个目录**：size = 目录内全部视频之和（多分段以前只显示
+        // 最后一段的大小），mtime = 最新一段的修改时间（= 录完时间）。
+        // ⚠️ 数据源 = **biliLive-tools 历史 ∪ 磁盘扫描**：blt 的 record-history 只包含
+        // **它自己录的**场次 —— 录播姬时代留在同一个主播目录里的老场次不在里面
+        // （实测 26 个含视频的目录只列出 16 个，2026-11-15 用户口径："最低要求是有
+        // 视频文件就行"）。归属按**子树**：场次目录的上一级（主播目录）整棵归这个房间。
         let mut agg: std::collections::HashMap<
             std::path::PathBuf,
             (u64, i64),
         > = std::collections::HashMap::new();
         let mut seen_files = std::collections::HashSet::new();
+        let mut room_roots: Vec<std::path::PathBuf> = Vec::new();
         for it in items {
             let Ok(abs) = crate::ingest::map_webhook_path(&root, &container_root, &it.video_file) else {
                 continue;
             };
             if !seen_files.insert(abs.clone()) {
                 continue;
+            }
+            if let Some(session) = abs.parent() {
+                if let Some(owner) = session.parent() {
+                    for cand in [session.to_path_buf(), owner.to_path_buf()] {
+                        if !room_roots.contains(&cand) {
+                            room_roots.push(cand);
+                        }
+                    }
+                }
             }
             let Ok(md) = std::fs::metadata(&abs) else { continue };
             let Some(dir) = abs.parent() else { continue };
@@ -531,6 +544,32 @@ pub(super) async fn recorder_recordings(
             let e = agg.entry(dir.to_path_buf()).or_insert((0, 0));
             e.0 += md.len();
             e.1 = e.1.max(mtime);
+        }
+        // 同子树下、历史里没有的场次：扫盘补齐（尽力而为，扫失败不挡列表）
+        let cfg_scan = cfg.clone();
+        let root_scan = root.clone();
+        let roots = room_roots.clone();
+        let extra = tokio::task::spawn_blocking(move || {
+            crate::ingest_worker::list_recordings(&cfg_scan).map(|files| {
+                files
+                    .into_iter()
+                    .filter(|f| roots.iter().any(|r| root_scan.join(&f.rel).starts_with(r)))
+                    .collect::<Vec<_>>()
+            })
+        })
+        .await
+        .ok();
+        if let Some(Ok(files)) = extra {
+            for f in files {
+                let abs = root.join(&f.rel);
+                if !seen_files.insert(abs.clone()) {
+                    continue;
+                }
+                let Some(dir) = abs.parent() else { continue };
+                let e = agg.entry(dir.to_path_buf()).or_insert((0, 0));
+                e.0 += f.size;
+                e.1 = e.1.max(f.mtime);
+            }
         }
         for (dir, (size, mtime)) in agg {
             let rel = dir.strip_prefix(&root).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
