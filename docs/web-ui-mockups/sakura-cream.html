@@ -21,8 +21,11 @@
      与 webui/src/styles/tokens.css 同源；改色两边一起改。 */
   --bg:#F8F8F0;  --bg-soft:#F4F4E8;  --card:#FFFFFF;
   --line:#EFE5D7;  --line-soft:#F4EEE6;
-  --ink:#202020;  --ink-dim:#5C5C54;  --ink-faint:#8C8C81;
+  --ink:#202020;  --ink-dim:#5C5C54;  --ink-faint:#6F6F65;  /* 4.75 压 --bg：小字标签要过 AA */
   --main:#E86838;  --main-deep:#904028;  --main-soft:#FCEDE7;
+  /* 主按钮专用：白字压 --main 只有 3.25，13px 正文不达标 ⇒ 压深一档到 4.99。见 tokens.css */
+  --action-bg:#B5522B;  --action-bg-deep:#8F3D1F;  --on-action:#FFFFFF;
+  --green-deep:#1B7A5E;  --blue-deep:#4668BE;  --red-deep:#A8423C;
   --main-glow:#F9D5C7;
   --tan:#D8C0A0;  --tan-soft:#F0E8DA;  --tan-deep:#8C7455;
   --blue:#7FA8F0;  --blue-soft:#E8EEFC;
@@ -102,12 +105,12 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
 .steps .sl.on{background:var(--main-glow);}
 .steps .dot{width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex:0 0 22px;}
 .steps .dot.done{background:var(--green-soft);color:var(--green);}
-.steps .dot.now{background:var(--main);color:#fff;box-shadow:0 0 0 4px var(--main-soft);}
+.steps .dot.now{background:var(--main-deep);color:#fff;box-shadow:0 0 0 4px var(--main-soft);}
 .steps .dot.wait{background:var(--card);border:2px dashed var(--ink-faint);color:var(--ink-faint);}
 .chips{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0 14px;}
 .chip{display:inline-flex;align-items:center;gap:5px;padding:4px 11px;border-radius:999px;font-size:11px;}
-.chip.g{background:var(--green-soft);color:#2FA07E;} .chip.p{background:var(--main-soft);color:var(--main-deep);}
-.chip.b{background:var(--blue-soft);color:#5E7FD8;} .chip.n{background:var(--bg-soft);color:var(--ink-dim);}
+.chip.g{background:var(--green-soft);color:var(--green-deep);} .chip.p{background:var(--main-soft);color:var(--main-deep);}
+.chip.b{background:var(--blue-soft);color:var(--blue-deep);} .chip.n{background:var(--bg-soft);color:var(--ink-dim);}
 .pcard-foot{display:flex;align-items:center;gap:8px;border-top:1px dashed var(--line-soft);padding-top:13px;}
 .pcard-foot .name{font-size:11px;color:var(--ink-faint);margin-right:auto;}
 .mini-btn{padding:6px 13px;border-radius:999px;border:1px solid var(--line);background:var(--card);font-size:12px;

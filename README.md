@@ -75,8 +75,12 @@ yekitrim process
 | `--danmaku <file>` | 弹幕文件 (ASS 格式)。不传则自动寻找 `<video>.ass` |
 | `-o, --output <dir>` | 默认 `./output` |
 | `--config <path>` | `yekitrim.toml` 输出路径 (默认 `./yekitrim.toml`) |
+| `--force` | 目标 `yekitrim.toml` 已存在时**才**允许重建（先备份 `yekitrim.toml.bak-<时间>`） |
 
 自动发现：`--danmaku` 不传时，自动检查视频同名 `.ass` 文件，存在则写入配置。
+
+⚠️ **目标 `yekitrim.toml` 已存在时默认拒绝覆盖**：`init` 是整份重写，会把素材清单（ASR 槽位）、
+`transcript_file`、`output_dir` 一起换回模板值。要重建必须显式加 `--force`（会先备份原文件）。
 
 ### `yekitrim process`
 

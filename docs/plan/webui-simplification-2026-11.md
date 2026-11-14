@@ -162,3 +162,17 @@ python3 scripts/check_module_boundaries.py
 - **P2**：`ui.polishMode`（`yekitrim.polish.mode`，默认 quick）；快速卡（智能剪辑 / 画面 / 导出 / 封面 / 任务条）；pro 子树原样保留；`?mode=pro` 首次与同页切换都生效、手动切模式清掉查询；`check-polish-page-loads.mjs` 覆盖 quick + pro。
 - **P3**：`LlmQuickSetup` + 静态 presets（服务商/地址/密钥/模型/获取模型/保存并测试）；高级配置 `<details>`；config 首屏只留模式/主播名/输出目录/覆盖；集成两张卡折叠；日志懒挂载。
 - **P4**：`check-simplify` 补出片模式/`?mode=pro`/`?list=1`/retired/页面探针覆盖；全量 18 条静态门禁 + 两条结构门禁 + `VT_BASE` fixture 上的快速/专业页面探针通过；`webui/dist` 重建。
+
+## 9. 现状更正（2026-11-14 全工程 review）
+
+本文是**方案快照**，下面几处已被后续用户拍板/提交覆盖，读细则时以代码与
+`docs/plan/engineering-review-2026-11-14.md` 为准：
+
+- **出片页只有精修（2026-11-13 起）**：快速出片整条删除（quick 卡、`ui.polishMode`、`?mode=pro`、
+  `polish.quick-*` 四颗锚点都没了）；§2 的「快速出片（默认）/ 精修（P2）」与 §8 P2 的 quick/pro
+  描述仅作历史记录。`check-polish-page-loads.mjs` 的判据也已是「只有精修」。
+- **设置页现在是 4 个子页**：处理（`config`）/ AI 模型（`llm`）/ 接入（`integrations`）/
+  系统（`system`，账号+邀请+用量+日志）；旧 `account`/`monitor` 只保留 redirect。§3 里写的
+  「五块标签」是改版前的目标。
+- **术语**：`utils.js::STEPS` 已用「识别 / 挑片段 / 出片」；但 `#/ingest` 页面标题、面包屑与
+  少量按钮仍用「入库 / 切片 / 精修」（见 review 报告 P2「术语不一致」），是否统一待用户拍板。
