@@ -949,13 +949,21 @@ pub async fn cmd_preview_cover(project_path: &Path) -> anyhow::Result<()> {
     if !cover_image.exists() {
         // 没有封面帧则截一张
         let video_path = &resolved.video;
-        let duration = config.segments.last().map(|s| s.end).unwrap_or(0.0);
+        // ⚠️ 时长走 `project_duration`（clip-meta.json 优先）：只 init 没跑 LLM 时 segments 是空的，
+        //    以前 `frame_pos × 0` 让预览封面恒取 0.1s 那一帧（review polish.md P3；
+        //    `cmd_cover` / `cmd_preview` 两处已同改，这里是最后一处）。
+        let duration = crate::render::project_duration(project_path, &config);
         let frame_time = (duration * config.cover.frame_pos).max(0.1);
-        let data = yekitrim_core::process::cmd("ffmpeg")
-            .args(["-ss", &frame_time.to_string(), "-i", video_path,
-                   "-vframes", "1", "-f", "image2pipe", "-vcodec", "mjpeg", "-q:v", "3", "-"])
-            .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null())
-            .output()?.stdout;
+        let mut cmd = yekitrim_core::process::cmd("ffmpeg");
+        cmd.args(["-ss", &frame_time.to_string(), "-i", video_path,
+                  "-vframes", "1", "-f", "image2pipe", "-vcodec", "mjpeg", "-q:v", "3", "-"]);
+        // 截帧也走带超时的那个出口（E2；与 `cmd_cover` 的封面截帧同款），
+        // 裸 `.output()` 在坏素材上会永久挂住。
+        let out = crate::render::ffmpeg::Ffmpeg::run_with_timeout(
+            cmd, "预览封面截帧", crate::render::ffmpeg::Ffmpeg::PROBE_TIMEOUT,
+        )
+        .map_err(|e| anyhow::anyhow!("预览封面截帧失败: {e:#}"))?;
+        let data = out.stdout;
         if !data.is_empty() { std::fs::write(&cover_image, &data)?; }
     }
 
@@ -1120,6 +1128,35 @@ pub fn build_cover_html(project_path: &Path, config: &project::ProjectFile, _res
 }
 
 
+/// 把 `[cover] image` 播种成关键帧 `_cover_frame.jpg` —— **只在关键帧还不存在时**。
+///
+/// ⚠️ 以前这里是**无条件** `fs::copy`：老工程 / 手改过 `cover.image` 的工程每出一次封面，
+/// 就把用户导出（`/polish/cover-frame`）或上一轮截好的关键帧**覆盖掉** —— 与
+/// 「出片不再删 `_cover_frame.jpg`、它就是关键帧层的图源」那条保护方向正好相反
+/// （review `polish.md` E5 / D13：用户报过「又把关键帧那一层给我删了」）。
+///
+/// 路径囚笼保留（两道防线之一）：`cover.image` 是配置里的字符串、可手改，
+/// 绝对路径下 `join` 会原样返回它本身 ⇒ 不囚笼就能把项目外任意文件复制进来当关键帧。
+///
+/// 返回 `true` = 这次真的播种了；`false` = 关键帧已在、保留它。
+fn seed_frame_from_cover_image(project_path: &Path, image: &str) -> anyhow::Result<bool> {
+    let frame = project_path.join(COVER_FRAME_IMG);
+    if frame.exists() {
+        tracing::info!(
+            "    cover.image 未启用：关键帧 {COVER_FRAME_IMG} 已存在，保留它（不再覆盖）"
+        );
+        return Ok(false);
+    }
+    let img_path = yekitrim_core::tenant::ensure_within(project_path, Path::new(image))
+        .map_err(|e| anyhow::anyhow!("Cover image 越出项目目录（{image}）: {e:#}"))?;
+    if !img_path.exists() {
+        anyhow::bail!("Cover image not found: {}", img_path.display());
+    }
+    std::fs::copy(&img_path, &frame)?;
+    tracing::info!("    using custom image: {image}");
+    Ok(true)
+}
+
 pub async fn cmd_cover(project_path: &Path, existing_video: Option<&str>, renderer: Option<&str>) -> anyhow::Result<()> {
     tracing::info!("\n  -- Cover --");
     let config = project::load_project(project_path)?;
@@ -1134,32 +1171,27 @@ pub async fn cmd_cover(project_path: &Path, existing_video: Option<&str>, render
     }
 
     // 背景图: 自定义 image 或 ffmpeg 截帧
-    let duration = config.segments.last().map(|s| s.end).unwrap_or(0.0);
+    // ⚠️ 时长走 `project_duration`（clip-meta.json → [project] duration → segments 末尾）：
+    //    只 init 没跑 LLM 的工程 segments 是空的，以前 `frame_pos × 0` 让封面恒取 0.1s 那一帧。
+    let duration = crate::render::project_duration(project_path, &config);
     if cc.image.is_empty() {
         // 优先使用已导出的关键帧（cover-frame 手动导出/导入背景生成），不要每次重新截帧覆盖
         let manual_frame = project_path.join(COVER_FRAME_IMG);
         if !manual_frame.exists() {
             let video_path = existing_video.unwrap_or(&resolved.video);
             let frame_time = (duration * cc.frame_pos).max(0.1);
-            let frame_data = yekitrim_core::process::cmd("ffmpeg")
-                .args(["-ss", &frame_time.to_string(), "-i", video_path,
-                       "-vframes", "1", "-f", "image2pipe", "-vcodec", "mjpeg", "-q:v", "3", "-"])
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::null())
-                .output()?.stdout;
+            let mut cmd = yekitrim_core::process::cmd("ffmpeg");
+            cmd.args(["-ss", &frame_time.to_string(), "-i", video_path,
+                      "-vframes", "1", "-f", "image2pipe", "-vcodec", "mjpeg", "-q:v", "3", "-"]);
+            let frame_data = crate::render::ffmpeg::Ffmpeg::run_with_timeout(
+                cmd, "封面截帧", crate::render::ffmpeg::Ffmpeg::PROBE_TIMEOUT,
+            )?.stdout;
             if frame_data.is_empty() { anyhow::bail!("Frame extraction failed"); }
             std::fs::write(&manual_frame, &frame_data)?;
         }
     } else {
-        // `cc.image` 是配置里的字符串（`polish.toml` 可手改），不能无条件 `join` 后直接复制：
-        // 绝对路径下 `join` 会**原样返回它本身**，于是指向项目外的任意文件都会被复制进来
-        // 当作封面关键帧。这里用项目根做一次路径囚笼 —— 与 `/api/polish/*` 的 scope 守卫
-        // （`server/scope.rs::resolve_file_in_project`）是两道**互相独立**的防线，别删任何一道。
-        let img_path = yekitrim_core::tenant::ensure_within(project_path, Path::new(&cc.image))
-            .map_err(|e| anyhow::anyhow!("Cover image 越出项目目录（{}）: {e:#}", cc.image))?;
-        if !img_path.exists() { anyhow::bail!("Cover image not found: {}", img_path.display()); }
-        std::fs::copy(&img_path, project_path.join(COVER_FRAME_IMG))?;
-        tracing::info!("    using custom image: {}", cc.image);
+        // `cover.image` 只在**关键帧还不存在**时播种（它不再每次覆盖用户导出的那一帧）。
+        seed_frame_from_cover_image(project_path, &cc.image)?;
     }
 
     // 标题: 先读 title_lines, 空则自动分行；**首次**把它写回 `polish.toml`（读-改-写，只动 title_lines）
@@ -1192,6 +1224,54 @@ pub async fn cmd_cover(project_path: &Path, existing_video: Option<&str>, render
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `cover.image` → 关键帧的**播种**语义（review polish.md E5 / D13）：
+    /// 只在 `_cover_frame.jpg` **不存在**时才复制；已在 ⇒ 保留（不再每次覆盖用户导出/
+    /// 上轮截好的关键帧 —— 与「出片不再删 `_cover_frame.jpg`、它就是关键帧层图源」同向）；
+    /// 越出项目目录的 `cover.image` 依旧报错（`tenant::ensure_within` 这道消费侧囚笼不松）。
+    #[test]
+    fn cover_image_only_seeds_when_frame_missing() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let root = dir.path();
+        std::fs::write(root.join("img.jpg"), b"seed-bytes").unwrap();
+
+        // ① 关键帧不存在 → 播种 + 返回 true
+        let seeded = seed_frame_from_cover_image(root, "img.jpg").expect("播种必须成功");
+        assert!(seeded, "第一次应当真的播种");
+        assert_eq!(
+            std::fs::read(root.join(COVER_FRAME_IMG)).unwrap(),
+            b"seed-bytes",
+            "关键帧 = cover.image 的内容"
+        );
+
+        // ② 关键帧已在 → 保留、不覆盖、返回 false（E5 的核心断言：老行为是每次覆盖）
+        std::fs::write(root.join(COVER_FRAME_IMG), b"user-exported").unwrap();
+        std::fs::write(root.join("img.jpg"), b"NEW-BYTES").unwrap();
+        let again = seed_frame_from_cover_image(root, "img.jpg").expect("第二次也不该报错");
+        assert!(!again, "关键帧已在 ⇒ 不播种");
+        assert_eq!(
+            std::fs::read(root.join(COVER_FRAME_IMG)).unwrap(),
+            b"user-exported",
+            "已有关键帧不许被 cover.image 覆盖（用户报过「又把关键帧那一层给我删了」）"
+        );
+
+        // ③ 指向关键帧自己：等价于"已在"，no-op
+        let self_ref = seed_frame_from_cover_image(root, COVER_FRAME_IMG).expect("同文件 no-op");
+        assert!(!self_ref, "关键帧已存在（它就是自己）⇒ 不播种");
+
+        // ④ 越出项目目录 → 报错（路径囚笼保留：cover.image 是配置字符串、可手改）。
+        //   ⚠️ 先**删掉关键帧**：函数在关键帧已存在时于囚笼**之前**就早退（保留语义），
+        //   囚笼只在真的要播种的路径上才走到 —— 不删帧这条断言永远走不到。
+        std::fs::write(dir.path().parent().unwrap().join("outside.jpg"), b"x")
+            .expect("工程目录外的样本文件要写得出（囚笼才能按越界判，而不是按缺失判）");
+        std::fs::remove_file(root.join(COVER_FRAME_IMG)).unwrap();
+        let outside = seed_frame_from_cover_image(root, "../outside.jpg");
+        assert!(outside.is_err(), "越出项目目录的 cover.image 必须报错（播种路径上的囚笼）");
+
+        // ⑤ 指向不存在的文件 → 报错（与旧行为一致：明确失败，不静默）
+        let missing = seed_frame_from_cover_image(root, "no-such.jpg");
+        assert!(missing.is_err(), "cover.image 不存在时必须报错");
+    }
 
     /// 封面字体：没选（空串）→ **跟随字体库默认位**（按 **id**：注入它的 @font-face、栈首也是它）；
     /// 库里连默认都没有 → 动态兜底栈；选了库外的值 → 当系统族名用、仍要有兜底栈，

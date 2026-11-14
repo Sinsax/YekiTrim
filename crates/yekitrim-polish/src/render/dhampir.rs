@@ -748,6 +748,53 @@ pub struct Readiness {
     pub problems: Vec<String>,
 }
 
+/// 本仓调用的底座工程契约**下限**（`VERSION` 的 `project_schema=`）。
+///
+/// **不是期望值 —— 是下界**（docs/plan/dhampir-pinning-plan.md 提交 2）：底座可以更新，
+/// 但不能更旧。比 `!=` 宽松是刻意的：底座加端点/加字段属兼容变更，不该被旧宿主拦下。
+/// 改值时同步 `crates/xtask/src/main.rs` 的 `MIN_DHAMPIR_PROJECT_SCHEMA`（xtask 不依赖
+/// 本 crate，两边各有文本钉子测试防漂移）。
+pub const MIN_PROJECT_SCHEMA: u32 = 1;
+
+/// 本仓调用的底座 wasm 导出面**下限**（`VERSION` 的 `host_api=`）。
+///
+/// 为什么必须有这条（review polish.md E4c）：以前 `readiness` 只把 `VERSION` 的两个字段
+/// **印出来**、不与任何最小值比较 —— 装了旧底座时 `/api/health.dhampir_ready` 仍是 true，
+/// 只有真出片（schema 由底座自检）或浏览器读 wasm 才发现。下界把它变成**渲染前一句话**。
+pub const MIN_HOST_API: u32 = 6;
+
+/// 对照 `VERSION` 文本算契约下界问题（**纯函数，为了可测** —— 真环境没法"假装底座更旧"）。
+///
+/// 判据：
+/// - 行**存在且能解析成 u32**、又低于下限 ⇒ 一条人话进 `problems`（`ready=false`）；
+/// - 行**缺失 / 解析不出** ⇒ 当"未知"，不拦 —— 开发树的产物可能没有全字段（实测
+///   `tests` 里造的最小 VERSION 只有 `project_schema=`），底座自己在出片时会兜底；
+/// - 等于下限不拦（下界语义：允许"这一版及以上"）。
+pub fn contract_floor_problems(version_text: &str) -> Vec<String> {
+    let field = |key: &str| {
+        version_text
+            .lines()
+            .find_map(|l| l.trim().strip_prefix(key))
+            .and_then(|v| v.trim().parse::<u32>().ok())
+    };
+    let mut out = Vec::new();
+    if let Some(schema) = field("project_schema=") {
+        if schema < MIN_PROJECT_SCHEMA {
+            out.push(format!(
+                "底座工程契约太旧：project_schema={schema}（本仓要 ≥ {MIN_PROJECT_SCHEMA}）                 —— 升级 Dhampir 底座后重试（旧底座出的工程本仓读不了）"
+            ));
+        }
+    }
+    if let Some(api) = field("host_api=") {
+        if api < MIN_HOST_API {
+            out.push(format!(
+                "底座宿主接口太旧：host_api={api}（本仓要 ≥ {MIN_HOST_API}）                 —— 底座缺本仓预览/出片要用的 wasm 导出，升级 Dhampir 底座后重试"
+            ));
+        }
+    }
+    out
+}
+
 /// `deep` = 顺带跑一次 `node --version`（转译器要 Node ≥ 18，而"PATH 里有个 node"不等于"它能跑"——
     /// 商店里的桩、装了一半的 Node 都属于这一类）。
 pub fn readiness(project_font: &str, deep: bool) -> Readiness {
@@ -836,6 +883,11 @@ pub fn readiness(project_font: &str, deep: bool) -> Readiness {
             let text = engine
                 .parent()
                 .and_then(|dir| std::fs::read_to_string(dir.join("VERSION")).ok());
+            // ⚠️ 契约下界（E4c）：VERSION 能读就比对 `MIN_PROJECT_SCHEMA` / `MIN_HOST_API`，
+            //   低于下限 ⇒ problems（ready=false + 一条人话）。以前这里只印不比。
+            if let Some(t) = text.as_deref() {
+                problems.extend(contract_floor_problems(t));
+            }
             let field = |key: &str| {
                 text.as_deref().and_then(|t| {
                     t.lines()
@@ -882,10 +934,16 @@ pub struct FfmpegInfo {
 }
 
 fn ffmpeg_libass() -> Option<FfmpegInfo> {
-    let ver = yekitrim_core::process::cmd("ffmpeg")
-        .arg("-version")
-        .output()
-        .ok()?;
+    // ⚠️ 两个探针都走带超时的出口（E2 同款）：这条在 `readiness(deep)` 里被调，
+    //   而 deep 那条会挂在 /api/health 的热路径上 —— ffmpeg 挂住 = health 挂住。
+    let mut ver_cmd = yekitrim_core::process::cmd("ffmpeg");
+    ver_cmd.arg("-version");
+    let ver = crate::render::ffmpeg::Ffmpeg::run_with_timeout(
+        ver_cmd,
+        "探 ffmpeg 版本",
+        crate::render::ffmpeg::Ffmpeg::PROBE_TIMEOUT,
+    )
+    .ok()?;
     if !ver.status.success() {
         return None;
     }
@@ -895,10 +953,14 @@ fn ffmpeg_libass() -> Option<FfmpegInfo> {
         .unwrap_or("ffmpeg")
         .trim()
         .to_string();
-    let filters = yekitrim_core::process::cmd("ffmpeg")
-        .args(["-hide_banner", "-filters"])
-        .output()
-        .ok()?;
+    let mut filters_cmd = yekitrim_core::process::cmd("ffmpeg");
+    filters_cmd.args(["-hide_banner", "-filters"]);
+    let filters = crate::render::ffmpeg::Ffmpeg::run_with_timeout(
+        filters_cmd,
+        "探 ffmpeg 滤镜表",
+        crate::render::ffmpeg::Ffmpeg::PROBE_TIMEOUT,
+    )
+    .ok()?;
     // 认的是滤镜表里那一行（`.. subtitles  V->V  Render text subtitles using the libass library.`）。
     let libass = String::from_utf8_lossy(&filters.stdout)
         .lines()
@@ -2024,6 +2086,39 @@ fn link_or_copy(src: &Path, dst: &Path) {
         // ⚠️ `version=` **不许**匹配到 `host_api=` 之类的前缀相同项（这里靠的是完整前缀）。
         assert_eq!(field("api="), None, "不许把 host_api= 当成 api=");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 契约下界（review polish.md E4c）：低于下限 ⇒ problems 一条人话；
+    /// 等于下限/高于不拦（**下界不是期望值**）；行缺失（开发树）与垃圾值当"未知"不拦。
+    /// 变异自证：把 `MIN_HOST_API` 改成 5 ⇒ "host_api=5 不报"的断言翻红。
+    #[test]
+    fn contract_floor_problems_fire_only_below_min() {
+        let below = contract_floor_problems("project_schema=1\nhost_api=5\nversion=0.1.0");
+        assert_eq!(below.len(), 1, "host_api=5 < MIN_HOST_API={MIN_HOST_API} 要报");
+        assert!(
+            below[0].contains("host_api=5") && below[0].contains("≥ 6"),
+            "人话要点名现状与下限：{}",
+            below[0]
+        );
+        assert!(
+            contract_floor_problems("project_schema=1\nhost_api=6").is_empty(),
+            "等于下限不拦（下界语义：允许这一版及以上）"
+        );
+        assert!(
+            contract_floor_problems("project_schema=1\nhost_api=7\nversion=0.2.0").is_empty(),
+            "高于下限不拦（底座可以更新）"
+        );
+        assert!(
+            contract_floor_problems("project_schema=1\ngit=test").is_empty(),
+            "缺 host_api 行（开发树产物）= 未知，不拦"
+        );
+        let schema_old = contract_floor_problems("project_schema=0\nhost_api=7");
+        assert_eq!(schema_old.len(), 1, "project_schema=0 < MIN_PROJECT_SCHEMA 要报");
+        assert!(schema_old[0].contains("project_schema"), "{}", schema_old[0]);
+        assert!(
+            contract_floor_problems("project_schema=abc\nhost_api=xyz").is_empty(),
+            "解析不出的值当未知，不拦"
+        );
     }
 
     /// `ffmpeg -filters` 的判据是**滤镜表里有 `subtitles`**，不是有没有 libass 这四个字母。    ///

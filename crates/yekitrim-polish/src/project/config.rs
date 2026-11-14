@@ -482,6 +482,12 @@ pub fn edl_clips_from_mute_complement(
 }
 
 // ===== 项目元信息 =====
+//
+// ⚠️ **刻意没有「质量档 / 分辨率 / 码率」这类字段**（review polish.md E7，2026-11-14 收口）：
+//   画质由底座（Dhampir 整段出画面）+ 本仓 ffmpeg 的编码默认决定 ——
+//   合流是 `-c:v copy`（一个字节都不重压），屏蔽重编码用 `detect_encoder()` 的同级参数。
+//   提供一个用户改不动的伪旋钮只会让人怀疑「是不是没生效」；真要画质控制是**新功能**
+//   （要动底座与编码链），不是往 `[project]` 里塞配置项。
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ProjectMeta {

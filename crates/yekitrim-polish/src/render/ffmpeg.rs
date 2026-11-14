@@ -241,6 +241,90 @@ fn atempo_filter(speed: f64) -> Option<String> {
 pub struct Ffmpeg;
 
 impl Ffmpeg {
+    /// 探测类命令（ffprobe / 编码器列表）的超时：它们不解码，正常几十毫秒，60s 只为慢盘。
+    pub(crate) const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+    /// 媒体处理类命令的预算：**按输入时长**给 —— `max(180s, 3×时长)`，上限 6h。
+    ///
+    /// 为什么不是固定值：一次整段重编码/合流本来就随片长线性增长（10 分钟的片子
+    /// 在慢盘上跑几分钟很正常），固定超时要么误杀长片、要么对短片形同虚设。
+    pub(crate) fn budget_for(duration_secs: Option<f64>) -> std::time::Duration {
+        let secs = duration_secs.unwrap_or(0.0).max(0.0);
+        std::time::Duration::from_secs_f64((secs * 3.0).max(180.0).min(6.0 * 3600.0))
+    }
+
+    /// 某份媒体该给多少预算（探不到时长 ⇒ 180s 下限）。
+    pub(crate) fn media_timeout(path: &str) -> std::time::Duration {
+        Self::budget_for(Self::probe_duration(path).ok())
+    }
+
+    /// 跑一个外部命令并**带超时**。`Ffmpeg::*` 与 `pipeline` 里那两处量响度都走它。
+    ///
+    /// # 为什么必须自己 spawn（不能 `Command::output()`）
+    ///
+    /// `output()` **没有超时**：网络盘上的坏文件、卡住的编码器会让整条出片永久挂住
+    /// （server 侧只有一条"60s 无输出"的 warn，任务永远占着 Heavy 槽，只能人工取消）。
+    ///
+    /// # 三条实现约束
+    ///
+    /// 1. **stdout/stderr 各开一个读线程** —— 只读一条、另一条写满 64KB 管道就会互锁；
+    /// 2. 等待是 `try_wait` 轮询 + 截止时间，超时 `kill` 后报「**哪一步**、**多久**」；
+    /// 3. 超时那一支**不 join 读线程**：万一还有孙进程攥着管道，join 会再挂一次。
+    ///    调用方是短命的出片进程，泄漏一个读线程远好于挂死。
+    pub(crate) fn run_with_timeout(
+        mut cmd: std::process::Command,
+        what: &str,
+        budget: std::time::Duration,
+    ) -> anyhow::Result<std::process::Output> {
+        use std::io::Read;
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = cmd.spawn().map_err(|e| {
+            anyhow::anyhow!("{what}：启动 ffmpeg/ffprobe 失败（不在 PATH 上？）：{e}")
+        })?;
+        let mut out_pipe = child.stdout.take();
+        let mut err_pipe = child.stderr.take();
+        let t_out = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(p) = out_pipe.as_mut() {
+                let _ = p.read_to_end(&mut buf);
+            }
+            buf
+        });
+        let t_err = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(p) = err_pipe.as_mut() {
+                let _ = p.read_to_end(&mut buf);
+            }
+            buf
+        });
+        let started = std::time::Instant::now();
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) => {
+                    if started.elapsed() >= budget {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        anyhow::bail!(
+                            "{what} 超时：{:.0}s 内没跑完（已强杀）。这一步不会自己结束 ——                              常见原因是网络盘/坏文件，或编码器卡住；检查素材后重试。",
+                            budget.as_secs_f64()
+                        );
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(40));
+                }
+                Err(e) => {
+                    let _ = child.kill();
+                    anyhow::bail!("{what}：等待子进程失败：{e}");
+                }
+            }
+        };
+        let stdout = t_out.join().unwrap_or_default();
+        let stderr = t_err.join().unwrap_or_default();
+        Ok(std::process::Output { status, stdout, stderr })
+    }
+
     /// 检测可用编码器 (NVENC 优先)
     ///
     /// ⚠️ **2026-10-18：这里的参数与底座那一遍对齐了**（原来比它更差：`p1/cq22` / `veryfast/crf22`）。
@@ -249,10 +333,9 @@ impl Ffmpeg {
     /// 现在：NVENC `p5/cq19`、libx264 `slow/crf17` —— **与底座那次编码同级**，不做"更差的第二遍"。
     /// ⚠️ 代价：这一遍只在真有屏蔽区间时才跑（没有屏蔽时是 `-c:v copy`，一个字节都不重压）。
     pub fn detect_encoder() -> EncoderInfo {
-        let output = yekitrim_core::process::cmd("ffmpeg")
-            .args(["-hide_banner", "-encoders"])
-            .output()
-            .ok();
+        let mut cmd = yekitrim_core::process::cmd("ffmpeg");
+        cmd.args(["-hide_banner", "-encoders"]);
+        let output = Self::run_with_timeout(cmd, "探测编码器", Self::PROBE_TIMEOUT).ok();
 
         if let Some(out) = output {
             let text = String::from_utf8_lossy(&out.stdout);
@@ -288,35 +371,37 @@ impl Ffmpeg {
         let concat_file = concat_temp_path();
         std::fs::write(&concat_file, &concat_content)?;
 
-        let status = yekitrim_core::process::cmd("ffmpeg")
-            .args([
-                "-y", "-f", "concat", "-safe", "0",
-                "-i", &concat_file.to_string_lossy(),
-                "-c", "copy",
-                &abs_output.to_string_lossy(),
-            ])
-            .stderr(Stdio::null()).stdout(Stdio::null()).status();
+        let mut cmd = yekitrim_core::process::cmd("ffmpeg");
+        cmd.args([
+            "-y", "-f", "concat", "-safe", "0",
+            "-i", &concat_file.to_string_lossy(),
+            "-c", "copy",
+            &abs_output.to_string_lossy(),
+        ]);
+        let ran = Self::run_with_timeout(cmd, "拼接分块", Self::budget_for(None));
 
         // 失败路径也要删（以前只删成功路径，报错时临时文件会攒下来）
         std::fs::remove_file(&concat_file).ok();
-        let status = status?;
+        let out = ran?;
 
-        if !status.success() {
-            anyhow::bail!("ffmpeg concat failed");
+        if !out.status.success() {
+            anyhow::bail!(
+                "ffmpeg concat failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
         }
         Ok(())
     }
 
     /// 提取音频
     pub fn extract_audio(video_path: &str, audio_output: &str) -> anyhow::Result<()> {
-        let out = yekitrim_core::process::cmd("ffmpeg")
-            .args([
-                "-y", "-i", video_path,
-                "-vn", "-acodec", "aac", "-b:a", "128k",
-                audio_output,
-            ])
-            .output()
-            .map_err(|e| anyhow::anyhow!("ffmpeg audio extraction 启动失败: {}", e))?;
+        let mut cmd = yekitrim_core::process::cmd("ffmpeg");
+        cmd.args([
+            "-y", "-i", video_path,
+            "-vn", "-acodec", "aac", "-b:a", "128k",
+            audio_output,
+        ]);
+        let out = Self::run_with_timeout(cmd, "提取音轨", Self::media_timeout(video_path))?;
 
         if !out.status.success() {
             anyhow::bail!(
@@ -330,12 +415,11 @@ impl Ffmpeg {
     /// 混入音效
     /// 混音后限幅: 防止音效峰值爆音 (alimiter)
     pub fn apply_limiter(input: &str, output: &str) -> anyhow::Result<()> {
-        let out = yekitrim_core::process::cmd("ffmpeg")
-            .args(["-y", "-i", input,
-                   "-af", "alimiter=limit=0.95:level=false",
-                   "-c:a", "aac", output])
-            .output()
-            .map_err(|e| anyhow::anyhow!("limiter 启动失败: {}", e))?;
+        let mut cmd = yekitrim_core::process::cmd("ffmpeg");
+        cmd.args(["-y", "-i", input,
+                  "-af", "alimiter=limit=0.95:level=false",
+                  "-c:a", "aac", output]);
+        let out = Self::run_with_timeout(cmd, "限幅", Self::media_timeout(input))?;
         if !out.status.success() {
             anyhow::bail!("limiter 失败: {}", String::from_utf8_lossy(&out.stderr).trim());
         }
@@ -546,10 +630,9 @@ impl Ffmpeg {
             "-movflags".into(), "+faststart".into(),
             output.into(),
         ]);
-        let out = yekitrim_core::process::cmd("ffmpeg")
-            .args(&args)
-            .output()
-            .map_err(|e| anyhow::anyhow!("ffmpeg cut ranges 启动失败: {}", e))?;
+        let mut cmd = yekitrim_core::process::cmd("ffmpeg");
+        cmd.args(&args);
+        let out = Self::run_with_timeout(cmd, "按屏蔽区间重编码", Self::media_timeout(input))?;
         if !out.status.success() {
             anyhow::bail!("ffmpeg cut ranges failed: {}", String::from_utf8_lossy(&out.stderr).trim());
         }
@@ -877,10 +960,11 @@ impl Ffmpeg {
         args.push("-b:a".into());
         args.push("160k".into());
         args.push(output.into());
-        let out = yekitrim_core::process::cmd("ffmpeg")
-            .args(&args)
-            .output()
-            .map_err(|e| anyhow::anyhow!("ffmpeg 按 EDL 组装音轨启动失败: {e}"))?;
+        // 预算按**所有段的源时长之和**给（这是解码量，不是成片时长）
+        let decode_secs: f64 = ordered.iter().map(|c| (c.1 - c.0).abs()).sum();
+        let mut cmd = yekitrim_core::process::cmd("ffmpeg");
+        cmd.args(&args);
+        let out = Self::run_with_timeout(cmd, "按 EDL 组装音轨", Self::budget_for(Some(decode_secs)))?;
         if !out.status.success() {
             anyhow::bail!(
                 "ffmpeg 按 EDL 组装音轨失败（{} 段）: {}",
@@ -910,16 +994,15 @@ impl Ffmpeg {
     /// 取 `r_frame_rate`（"30000/1001" 这种分数），解析不出来退 `avg_frame_rate`。
     pub fn probe_fps(path: &str) -> anyhow::Result<f64> {
         for entry in ["stream=r_frame_rate", "stream=avg_frame_rate"] {
-            let out = yekitrim_core::process::cmd("ffprobe")
-                .args([
-                    "-v", "error",
-                    "-select_streams", "v:0",
-                    "-show_entries", entry,
-                    "-of", "default=noprint_wrappers=1:nokey=1",
-                    path,
-                ])
-                .output()
-                .map_err(|e| anyhow::anyhow!("ffprobe 启动失败: {e}"))?;
+            let mut cmd = yekitrim_core::process::cmd("ffprobe");
+            cmd.args([
+                "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", entry,
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                path,
+            ]);
+            let out = Self::run_with_timeout(cmd, "探帧率", Self::PROBE_TIMEOUT)?;
             if !out.status.success() {
                 continue;
             }
@@ -964,19 +1047,18 @@ impl Ffmpeg {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
         ));
-        let out = yekitrim_core::process::cmd("ffmpeg")
-            .args([
-                "-v", "error",
-                "-y",
-                "-i", path,
-                "-vn",
-                "-f", "wav",
-                "-ar", &sample_rate.to_string(),
-                "-ac", "1",
-            ])
-            .arg(&tmp)
-            .output()
-            .map_err(|e| anyhow::anyhow!("ffmpeg 启动失败: {e}"))?;
+        let mut cmd = yekitrim_core::process::cmd("ffmpeg");
+        cmd.args([
+            "-v", "error",
+            "-y",
+            "-i", path,
+            "-vn",
+            "-f", "wav",
+            "-ar", &sample_rate.to_string(),
+            "-ac", "1",
+        ])
+        .arg(&tmp);
+        let out = Self::run_with_timeout(cmd, "解码音轨数样本", Self::media_timeout(path))?;
         if !out.status.success() {
             let _ = std::fs::remove_file(&tmp);
             anyhow::bail!(
@@ -1129,34 +1211,63 @@ impl Ffmpeg {
     /// 探不出来（ffprobe 失败）时**当"没有"**，即补静音 —— 宁可少一段素材声，
     /// 也不要因为探不出而让整片渲染失败。
     pub fn has_audio_stream(path: &str) -> bool {
-        let Ok(out) = yekitrim_core::process::cmd("ffprobe")
-            .args([
-                "-v", "error",
-                "-select_streams", "a:0",
-                "-show_entries", "stream=index",
-                "-of", "default=noprint_wrappers=1:nokey=1",
-                path,
-            ])
-            .output()
-        else {
-            return false;
-        };
-        out.status.success() && !String::from_utf8_lossy(&out.stdout).trim().is_empty()
+        Self::probe_has_audio_stream(path).unwrap_or(false)
+    }
+
+    /// 三态版：`Some(true/false)` = ffprobe 说得清；`None` = **探不出来**（ffprobe 不在/文件读不了）。
+    ///
+    /// 出片主链要用这一版：把"探不出来"当成"没有音轨"会让**有声音的素材被静默出成无声片**，
+    /// 所以 `None` 那一支必须走老路（真去抽音轨，失败时报真错）。
+    pub(crate) fn probe_has_audio_stream(path: &str) -> Option<bool> {
+        let mut cmd = yekitrim_core::process::cmd("ffprobe");
+        cmd.args([
+            "-v", "error",
+            "-select_streams", "a:0",
+            "-show_entries", "stream=index",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            path,
+        ]);
+        let out = Self::run_with_timeout(cmd, "探音轨", Self::PROBE_TIMEOUT).ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        Some(!String::from_utf8_lossy(&out.stdout).trim().is_empty())
+    }
+
+    /// 造一条**与画面等长的静音轨**（源素材没有音轨时补位，让音效/BGM/合流链路一行都不用分叉）。
+    pub fn silent_audio(output: &str, seconds: f64) -> anyhow::Result<()> {
+        let secs = seconds.max(0.01);
+        let mut cmd = yekitrim_core::process::cmd("ffmpeg");
+        cmd.args([
+            "-y",
+            "-f", "lavfi",
+            "-i", "anullsrc=r=48000:cl=stereo",
+            "-t", &format!("{secs:.3}"),
+            "-c:a", "aac", "-b:a", "128k",
+            output,
+        ]);
+        let out = Self::run_with_timeout(cmd, "补静音轨", Self::budget_for(Some(secs)))?;
+        if !out.status.success() {
+            anyhow::bail!(
+                "补静音轨失败（{secs:.2}s）: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        Ok(())
     }
 
     /// 走 `ffprobe` 的 `format=duration`（容器级，不解码）；它读不出来时退到
     /// `stream=duration`（有些流式容器只在流上写）。
     pub fn probe_duration(path: &str) -> anyhow::Result<f64> {
         for entry in ["format=duration", "stream=duration"] {
-            let out = yekitrim_core::process::cmd("ffprobe")
-                .args([
-                    "-v", "error",
-                    "-show_entries", entry,
-                    "-of", "default=noprint_wrappers=1:nokey=1",
-                    path,
-                ])
-                .output()
-                .map_err(|e| anyhow::anyhow!("ffprobe 启动失败: {e}"))?;
+            let mut cmd = yekitrim_core::process::cmd("ffprobe");
+            cmd.args([
+                "-v", "error",
+                "-show_entries", entry,
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                path,
+            ]);
+            let out = Self::run_with_timeout(cmd, "量时长", Self::PROBE_TIMEOUT)?;
             if !out.status.success() {
                 continue;
             }
@@ -1171,18 +1282,17 @@ impl Ffmpeg {
 
     /// 视频 + 音频合流
     pub fn mux(video: &str, audio: &str, output: &str) -> anyhow::Result<()> {
-        let out = yekitrim_core::process::cmd("ffmpeg")
-            .args([
-                "-y", "-i", video,
-                "-i", audio,
-                "-c:v", "copy",
-                "-c:a", "aac",
-                "-b:a", "128k",
-                "-shortest",
-                output,
-            ])
-            .output()
-            .map_err(|e| anyhow::anyhow!("ffmpeg mux 启动失败: {}", e))?;
+        let mut cmd = yekitrim_core::process::cmd("ffmpeg");
+        cmd.args([
+            "-y", "-i", video,
+            "-i", audio,
+            "-c:v", "copy",
+            "-c:a", "aac",
+            "-b:a", "128k",
+            "-shortest",
+            output,
+        ]);
+        let out = Self::run_with_timeout(cmd, "合流", Self::media_timeout(video))?;
 
         if !out.status.success() {
             anyhow::bail!(
@@ -2118,5 +2228,127 @@ mod tests {
             .ok()
             .filter(|o| o.status.success())
             .map(|_| ())
+    }
+
+    // ── E1/E2（review polish.md）：无音轨素材 + 超时预算 ─────────────────
+
+    /// 预算函数的夹取：固定 180s 下限、3×时长、6h 上限（E2「按操作/片长」的判据）。
+    /// 变异自证：把 `(secs * 3.0).max(180.0).min(6.0 * 3600.0)` 的任一端拿掉，本条翻红。
+    #[test]
+    fn budget_for_clamps_to_floor_and_ceiling() {
+        assert_eq!(Ffmpeg::budget_for(None), std::time::Duration::from_secs(180));
+        assert_eq!(Ffmpeg::budget_for(Some(0.0)), std::time::Duration::from_secs(180));
+        assert_eq!(
+            Ffmpeg::budget_for(Some(10.0)),
+            std::time::Duration::from_secs(180),
+            "3×10 < 180 ⇒ 落在下限（短片也不许形同虚设）"
+        );
+        assert_eq!(
+            Ffmpeg::budget_for(Some(1000.0)),
+            std::time::Duration::from_secs(3000),
+            "长片按 3×片长线性给"
+        );
+        assert_eq!(
+            Ffmpeg::budget_for(Some(1e9)),
+            std::time::Duration::from_secs(6 * 3600),
+            "上限 6h（不许因为时长得不到而永不超时）"
+        );
+    }
+
+    /// `run_with_timeout` 必须**杀掉**挂住的子进程并报「哪一步」——
+    /// E2 的要点是超时是**失败**而不是 warn（旧形态：挂住只 warn，任务永久占 Heavy 槽）。
+    /// Unix 专属：用 `sleep 30` 构造挂起场景（Windows 没有一行同义命令）。
+    #[cfg(unix)]
+    #[test]
+    fn run_with_timeout_kills_a_hung_command() {
+        let mut cmd = yekitrim_core::process::cmd("sleep");
+        cmd.arg("30");
+        let started = std::time::Instant::now();
+        let err = Ffmpeg::run_with_timeout(cmd, "构造的挂起步骤", std::time::Duration::from_millis(300))
+            .expect_err("sleep 30s + 0.3s 预算必须超时");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("构造的挂起步骤"), "错误要报「哪一步」：{msg}");
+        assert!(msg.contains("超时"), "错误要报「超时」：{msg}");
+        assert!(msg.contains("内没跑完"), "错误要报「多久」：{msg}");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "必须在预算附近就杀掉子进程（而不是等满 30s）"
+        );
+    }
+
+    /// `probe_has_audio_stream` 的**三态**（E1 的判据本身就是三态的）：
+    /// 有声素材 `Some(true)` / 无声素材 `Some(false)` / 探不出来 `None`。
+    /// ⚠️ 把 `None` 当 `false`（"探不出来=没有"）会让**有声素材静默出成无声片** ——
+    /// 这正是 pipeline.rs 那条分支选三态而非布尔的理由。
+    #[test]
+    fn probe_has_audio_stream_is_three_state() {
+        if which_ffmpeg().is_none() {
+            eprintln!("跳过：PATH 上没有 ffmpeg");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("_polish_no_audio_probe_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let mkclip = |name: &str, with_audio: bool| -> Option<std::path::PathBuf> {
+            let p = dir.join(name);
+            let mut cmd = yekitrim_core::process::cmd("ffmpeg");
+            cmd.args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=black:s=64x64:d=1"]);
+            if with_audio {
+                cmd.args([
+                    "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=1",
+                    "-shortest", "-c:a", "aac",
+                ]);
+            }
+            cmd.args(["-c:v", "libx264", "-pix_fmt", "yuv420p"]).arg(&p);
+            cmd.status().ok().filter(|s| s.success())?;
+            if p.is_file() { Some(p) } else { None }
+        };
+        let with = mkclip("with-audio.mp4", true);
+        let silent = mkclip("no-audio.mp4", false);
+        let (Some(with), Some(silent)) = (with, silent) else {
+            eprintln!("跳过：fixture 造不出来");
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        };
+        assert_eq!(
+            Ffmpeg::probe_has_audio_stream(with.to_str().unwrap()),
+            Some(true),
+            "有声素材"
+        );
+        assert_eq!(
+            Ffmpeg::probe_has_audio_stream(silent.to_str().unwrap()),
+            Some(false),
+            "无声素材（录屏 / 只出画面的片头）：必须明确是 false，走补静音那条路"
+        );
+        assert_eq!(
+            Ffmpeg::probe_has_audio_stream(dir.join("missing.mp4").to_str().unwrap()),
+            None,
+            "探不出来 = None（调用方走老路），不是 false"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `silent_audio` 造出的静音轨**有效且等长**（E1：无音轨素材出片不再失败 ——
+    /// 补出的静音轨要能被后面的音效/BGM/合流链路当正常音轨用）。
+    #[test]
+    fn silent_audio_produces_a_valid_equal_length_track() {
+        if which_ffmpeg().is_none() {
+            eprintln!("跳过：PATH 上没有 ffmpeg");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("_polish_silent_audio_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let out = dir.join("silent.m4a");
+        Ffmpeg::silent_audio(out.to_str().unwrap(), 2.5).expect("补静音轨必须成功");
+        let secs = Ffmpeg::probe_duration(out.to_str().unwrap()).expect("产物要能被 ffprobe 读");
+        assert!(
+            (secs - 2.5).abs() < 0.2,
+            "静音轨要与画面等长：期望 2.5s，实得 {secs:.2}s（不等长合流时音画不同步）"
+        );
+        assert_eq!(
+            Ffmpeg::probe_has_audio_stream(out.to_str().unwrap()),
+            Some(true),
+            "产物必须真有音频流（mux 合流要它；空文件/纯视频都不行）"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

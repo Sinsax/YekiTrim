@@ -14,6 +14,36 @@ use axum::{
 use tower_http::services::ServeDir;
 use std::path::{Path, PathBuf};
 
+/// 本进程起过的预览服务的**中止句柄**（port → abort）。
+///
+/// 为什么需要它：`axum::serve` 一旦 spawn 就**没有关闭入口** —— 只有把
+/// `JoinHandle::abort_handle()` 留下来，才能在被淘汰时**真的释放端口与任务**
+/// （只从端口表里删一行、监听器还在跑，等于没淘汰）。
+/// server 侧的预览端口表（model.rs 的 PreviewPorts）做 LRU 淘汰时调 `shutdown_port`。
+fn preview_tasks() -> &'static std::sync::Mutex<std::collections::HashMap<u16, tokio::task::AbortHandle>> {
+    static TASKS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<u16, tokio::task::AbortHandle>>,
+    > = std::sync::OnceLock::new();
+    TASKS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn register_preview_task(port: u16, handle: tokio::task::AbortHandle) {
+    if let Ok(mut m) = preview_tasks().lock() {
+        m.insert(port, handle);
+    }
+}
+
+/// 关掉一个本进程起的预览服务：**端口随监听器一起 drop**。
+///
+/// 不在表里（别的进程起的 / 已经关了）是 no-op —— 淘汰逻辑不该因为"没找到"报错。
+pub fn shutdown_port(port: u16) {
+    let handle = preview_tasks().lock().ok().and_then(|mut m| m.remove(&port));
+    if let Some(h) = handle {
+        h.abort();
+        tracing::info!("  预览服务 :{port} 已释放（LRU 淘汰）");
+    }
+}
+
 const INDEX_HTML: &str = include_str!("../../templates/index.html");
 
 /// 构建 sticker 映射: stem → URL 路径。
@@ -408,9 +438,14 @@ pub async fn start_file_server(project_path: PathBuf, injected_html: Option<Stri
         .fallback_service(ServeDir::new(&sd_path)));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
-    tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
+    let handle = tokio::spawn(async move {
+        // ⚠️ 别 `unwrap()`（与 `start_with` 同一条理由）：本地静态服务退出不该变成
+        // 一个 panic 到没人看见的任务里 —— 记一行日志，让"预览打不开"是可查的。
+        if let Err(e) = axum::serve(listener, app).await {
+            tracing::error!("本地静态服务退出: {e}");
+        }
     });
+    register_preview_task(port, handle.abort_handle());
     Ok(port)
 }
 
@@ -433,8 +468,15 @@ impl RenderServer {
         // 所以「出片」与「WebUI 预览」不可能算出不同的画布。
         // ⚠️ 只留这一份实现：这里曾经还有第二份「竖屏检测」，改画布方向时两边会不同步。
         // `vertical` 只表示「源视频是竖的」（特效用它做门控），摆放由 `_canvas.stage` 决定。
+        // ⚠️ **必须走 `project::load_project`**（它做 `strip_version_key` + legacy 升级 +
+        //    `migrate_portrait_lanes`）—— **不许退回裸 `toml::from_str::<ProjectFile>`**：
+        //    `polish.toml` 顶层那行 `config_version` 是**文本层**的键（`to_toml_commented` 每次都会补），
+        //    而 `ProjectFile` 是 `deny_unknown_fields` ⇒ 裸解析**必然失败** ⇒ `.ok()` 把它吞成 `None`
+        //    ⇒ 整个 `if let Some(project)` 分支被静默跳过：`_canvas` / `lanes` / `vertical` 一个都不注入。
+        //    症状（实测）：竖画布工程在这一页按模板兜底的 1920×1080 预览、六条轨道退化成**全开**
+        //    （关掉的运镜/特效/音效照画）⇒「预览有、成片没有」，而且**不报错**。
         let project: Option<crate::project::ProjectFile> =
-            raw_cfg.as_deref().and_then(|raw| toml::from_str(raw).ok());
+            crate::project::load_project(project_path).ok();
         if let Some(project) = project {
             let src_size = cfg["source"]["video"].as_str().and_then(|rel| {
                 crate::render::get_video_size(&project_path.join(rel).to_string_lossy())
@@ -540,7 +582,7 @@ impl RenderServer {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let port = listener.local_addr()?.port();
         self.port = port;
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             // ⚠️ detached task：`serve` 出错时 `unwrap()` 会直接 panic。
             // 出片/预览本身由调用方的超时与卡死守卫兜住，这里记一行日志就够 ——
             // 别让"本地静态服务退出"变成整个任务（历史上是整个进程）的崩溃。
@@ -548,6 +590,8 @@ impl RenderServer {
                 tracing::error!("本地渲染服务退出: {e}");
             }
         });
+        // 留一个中止句柄：server 侧预览端口表做 LRU 淘汰时要能**真释放**（见 shutdown_port）
+        register_preview_task(port, handle.abort_handle());
         Ok(port)
     }
 
@@ -860,6 +904,55 @@ mod tests {
         assert!(
             !top_only.contains_key("Popcat_帧"),
             "变异版（只扫顶层）**不该**找得到 —— 否则上一条判据是空转的"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★ **P1-1 的钉子：真实形态的 `polish.toml` 必须注入画布契约与六轨开关。**
+    ///
+    /// 真实工程首行是 `config_version = N`（`to_toml_commented` 每次都会补），而 `ProjectFile`
+    /// 是 `deny_unknown_fields` ⇒ 这里以前用裸 `toml::from_str` 解析、**必然失败**，还被 `.ok()`
+    /// 吞成 `None`：`_canvas` / `lanes` / `vertical` 一个都不注入。症状是竖画布预览退回
+    /// 1920×1080、关掉的轨道照画 —— **不报错**。现在走 `project::load_project`（它先摘版本键）。
+    ///
+    /// 变异自证：把上面那行换回
+    /// `raw_cfg.as_deref().and_then(|raw| toml::from_str(raw).ok())` ⇒ 下面四条断言全红。
+    #[test]
+    fn build_html_injects_canvas_contract_for_real_polish_toml() {
+        let dir = temp_root("build-html-canvas");
+        // 与磁盘上真实工程同形：版本行在最前，`[canvas]` 是竖屏
+        std::fs::write(
+            dir.join("polish.toml"),
+            r#"config_version = 3
+
+[project]
+name = "probe"
+output = "custom-out.mp4"
+
+[source]
+video = "clip.mp4"
+subtitles = "clip.srt"
+
+[canvas]
+orientation = "portrait"
+"#,
+        )
+        .unwrap();
+
+        let html = RenderServer::build_html(&dir);
+        assert!(
+            html.contains("\"_canvas\""),
+            "带 config_version 的真实工程必须注入 _canvas（否则预览退回 1920×1080）：{html:.600}"
+        );
+        assert!(
+            html.contains("\"lanes\""),
+            "…以及六轨开关 lanes（缺注入 = 全部当开）：{html:.600}"
+        );
+        assert!(html.contains("\"vertical\""), "…以及 vertical：{html:.600}");
+        // 画布方向来自 `[canvas]`，不是模板兜底：竖屏必须是 1080×1920
+        assert!(
+            html.contains("\"width\":1080") && html.contains("\"height\":1920"),
+            "竖画布必须按 [canvas] 推导（1080×1920）：{html:.600}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

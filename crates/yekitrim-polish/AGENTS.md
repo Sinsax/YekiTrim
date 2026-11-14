@@ -68,11 +68,9 @@
   （`render/server.rs::INDEX_HTML`），运行中的 `yekitrim server` 端出的仍是旧页面 ——
   「改完没反应」十有八九是没重建/没重启，不是代码没生效。
 - ⚠️ **出片逐帧路径里任何 `ReferenceError` 都是"整块 chunk 失败 → 整个 render job 失败"**
-  （实测：A5 折行改造留下的一句 `ctx.font = '700 ' + fs + ' ' + ff`，
-  `fs` 在 `renderFrame` 作用域里没声明 → 日志 `Chunk: Render error: fs is not defined`，
-  表现是**所有带字幕的片段都导不出来、无字幕的正常**）。改了 `renderFrame` 附近后至少跑一次
-  带字幕的出片；`node webui/scripts/check-stage-backdrop.mjs` 的 ③b 段钉住这类裸变量
-  （判据走**去注释后的源码** —— 注释里出现同样的字样会把判据自己顶翻）。
+  （实测：A5 折行改造留下一句未声明的 `fs` ⇒ **所有带字幕的片段都导不出来、无字幕的正常**）。
+  改了 `renderFrame` 附近后至少跑一次带字幕的出片；`node webui/scripts/check-stage-backdrop.mjs` 的 ③b 段
+  钉住这类裸变量（判据走**去注释后的源码** —— 注释里出现同样的字样会把判据自己顶翻）。
 - ⚠️ **`templates/index.html` 是出片路径的唯一实现，DOM/CSS 那层不算数**：canvas `renderFrame`
   **不读 DOM**。只把 `_canvas.stage`（画面摆放）与 `CFG.lanes`（六条轨道的显示开关）消费在 DOM 上的话，
   成片与预览会**静默分叉**：竖素材进横画布 → 成片被拉成宽屏、竖素材在成片里照旧被 zoom 拖走
@@ -99,11 +97,11 @@
   `filter`（渐变+暗角，一层两块）/ `title` / `fx:<CoverEffect::id>`；`plan_cover_layers()` 把它折成每块的
   `z-index`，`cover_layer_css()` + `cover_fx_html()` 负责注入。**三层各有各的图源，谁也不许覆盖谁**。
   - ⚠️ **老工程零迁移靠"默认栈走改造前的渲染形式"**（`is_default_stack`）：默认栈时**一个 z-index 都不注入**
-    （只把模板里那条 `#fx-extra{z-index:1}` 补回来）、特效还是一个 div —— 实测给五块都写上 z-index 之后
-    浏览器会换一条合成路径，缩放中的帧层重采样差 ~9/255，**SHA-256 会变**，而"存量逐字节零回归"是本仓的硬判据。
-    判据：`.workbuddy/cover-layer/` 里三个样本（含六种特效全上的 rich 工程）改前改后 **SHA-256 相同**。
-    ⚠️ 那条基线是**旧 chrome 截图通道**上量的；现在出片走 Takumi（静态光栅化，没有这条合成路径差异），
-    所以这一项对**当前**封面出片不再适用 —— 它留着是为了解释"为什么默认栈一个 z-index 都不注入"这个**设计**。
+    （只把模板里那条 `#fx-extra{z-index:1}` 补回来）、特效还是一个 div —— 给五块都写上 z-index 会换合成路径，
+    缩放中的帧层重采样差 ~9/255、**SHA-256 会变**，而"存量逐字节零回归"是本仓的硬判据。
+    判据：`.workbuddy/cover-layer/` 三样本改前改后 **SHA-256 相同**。
+    ⚠️ 基线量于**旧 chrome 通道**；Takumi（静态光栅化）没有这条差异 —— 它留着是为了解释
+    "为什么默认栈一个 z-index 都不注入"这个**设计**。
   - ⚠️ **自定义栈时 `#fx-extra` 必须退回 `z-index:auto`**：它一带 z-index 就是个 stacking context，
     所有特效的 z-index 会被锁死在同一层（拖动排序看着生效、出片不动，**而且不报错**）。
   - ⚠️ **`overlay` 特效额外加 `isolation:isolate`**（只加它、`blur` 加不得）：改造前 `#fx-extra` 是 stacking
@@ -123,9 +121,8 @@
   追加 `_1` / `_2`…（`Ffmpeg::mux` 带 `-y`，同名即覆盖 —— 别去掉这层后缀）。
 - **出片几何**（`cmd_cover`）：模板里 `html.export` 让 `#page` 不缩放、左上角对齐视口原点，
   同时 `Emulation.setDeviceMetricsOverride(1920×1080)` 把视口**撑满画布**，抓图用
-  `clip: (0,0,1920,1080)`。**别再退回 `clip: None`**：headless 实测视口只有 1904×929，
-  16:9 页面被居中 → 成片变 1904×929 且左右两条黑边（老 bug，已修）；`#toolbar`（右下角 ↻ 预览按钮）
-  在 `html.export` 下 `display:none`，否则会被连按钮一起抓进成片。
+  `clip: (0,0,1920,1080)`。**别再退回 `clip: None`**（headless 实测视口 1904×929：页面被居中、
+  成片带黑边，老 bug）；`#toolbar` 在 `html.export` 下 `display:none`，否则连按钮一起抓进成片。
 - ⚠️ **封面不接 Dhampir**：封面是"静态单帧 + HTML/CSS 排版"，而**设计器 = 同一份 HTML/CSS**
   是它唯一的不变式 —— 换渲染器就是第三份实现；且 Dhampir 缺的正好是封面全在用的那些
   （字距/行高/文字阴影/描边/混合模式/backdrop-filter/emoji/暗角/扫描线/σ>8 模糊），速度也没收益。
@@ -133,8 +130,8 @@
 - **封面只剩一条渲染通道**（2026-10-01 用户拍板）：**`takumi`**（静态渲染，`src/render/takumi.rs`，
   `cover-takumi` feature **默认关**但 CLI 的 `default` 带上它）。**`chrome` 那条 headless Chrome 截图通道
   已整条删除** —— `normalize_cover_renderer` 对 `"chrome"` 给的是**单独的**「这条腿已删除」错误
-  （**不是**折进"认不出"：那样用户只会去猜拼写）。切到 takumi 的依据 = 字体三处来源收敛后重跑封面门禁
-  （clip-14 真工程）非文字区 **1.17/255**、整图 **11.44/255**，均在阈值内 —— 且是**同库同字体**的对比。
+  （**不是**折进"认不出"：那样用户只会去猜拼写）。切 takumi 的依据 = 字体三处来源收敛后重跑封面门禁（clip-14）
+  非文字区/整图均**在阈值内**、同库同字体对比（数字见 docs/plan/takumi-cover-capability.md）。
   对拍基线已**冻结**（`scripts/fixtures/cover-golden/`，取自删除前最后一次 chrome 渲染）：
   `node scripts/check-cover-takumi.mjs --golden scripts/fixtures/cover-golden`，**不再需要 chrome**。
   - `build_cover_page_static` 是静态那条的构建入口（= 原替换链 + 填 `__EXPORT_CSS__`）。
@@ -172,12 +169,16 @@
   （挪开处必须是模糊衬底、不是黑）。**harness 的三条口径与被修掉的坑**（抽帧要抽成片、变异锚点要落在
   语义位置、衬底判据按开关决定断或明说跳过）见 `docs/plan/polish-vertical-canvas.md` §十。
 
+- ⚠️ **画质刻意不提供「质量档/分辨率/码率」配置**（E7）：由底座 + ffmpeg 编码默认决定（合流 `-c:v copy`）；伪旋钮只会让人怀疑没生效，真要画质控制是新功能。正文见 `project/config.rs` 的 `[project]` 节注释。
+
 > 改动只允许落在本目录；跨模块改动先读对方卡，并跑两条门禁。
 
 ## 验证
 
 ```bash
 cargo check -p yekitrim-polish
+# takumi 字体验收：tests/takumi_font_id.rs 被 #[cfg(feature = "cover-takumi")] 门控、默认跑 0 条（E4b）
+cargo test -p yekitrim-polish --features cover-takumi
 ```
 
 0 warnings。动了 `templates/index.html` / `cover.html` 之后必须再真跑一次出片：
