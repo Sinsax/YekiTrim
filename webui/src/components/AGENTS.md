@@ -24,6 +24,25 @@
   详细多接口编辑仍在 `LlmProviders.vue` 的「高级配置」里。
 - 新控件带 `data-cap`；高级项用 `useDisclosure`/`<details>` 默认折叠，隐藏 ≠ 删除。
 
+### 共享原语（`components/ui/`，v6）
+
+**无状态**：只吃 props、发 events，不 import stores、不发请求。数据访问留在页面。
+新页面**优先用它们**，别再造第 N 套手写标题/工具条/空态。
+
+| 组件 | 用途 | 替代掉的手写物 |
+|---|---|---|
+| `UiPageHeader` | 标题 / 描述 / eyebrow / 右侧动作，`compact` 档 | `.page-head` 手写 |
+| `UiSection` | 分区标题 + 描述 + 动作 | `.section-title` 手写 |
+| `UiSegmented` | 互斥分段（受控 `v-model`） | `.mode-seg` / `.wb-tabs` / `.subfilters` |
+| `UiToolbar` | 过滤 / 搜索 / 排序一行，`end` 槽右推 | 各页 `.sort-bar` |
+| `UiStat` | 指标块（数值 + 标签 + tone） | 无 |
+| `UiEmpty` | 空态（图标环 + 主次动作），`inline` 内嵌档 | 与 `AppEmptyState` 同形 |
+| `UiSkeleton` | 骨架屏 `line/card/grid/block` × N | 各处裸 `.skeleton` |
+| `UiField` | 标签 + 控件 + 说明 + 错误，`inline` 档 | 设置页手写 `.fld` |
+| `UiKbd` | 快捷键角标 | 无 |
+
+⚠️ `AppEmptyState` 保留（9 个页面在用），新代码用 `UiEmpty`；两者接口同名，可逐页替换。
+
 > 组件逐个的详细清单、实测数字、几何/常量表与推导见 **`docs/webui-components.md`**，按组件分节：
 > ① 时间轴编辑器 ② 精修预览 ③ 封面设计器 ④ 运镜 ⑤ 贴纸落点与区域编辑 ⑥ 其他组件逐个。
 > 各节内部自带子目录（布局几何 / 安全区几何 / 两种「隐身」根因等）。
@@ -157,7 +176,14 @@
   文件**；外部改 `startDir` 要跟着 browse；`update:listing` 供判可用性。⚠ **`projectFile` prop 默认须空
   （opt-in）**：传了才有绿框与「工程配置」标签。弹出用 **`ServerFileBrowser`**（双栏；细节见 ⑥）。
 - `RecorderConfig`：`GET /api/admin/ingest` **绝不回 `api_pass` 明文/token_hash**，只回 `api_pass_set` 布尔；
-  `api_base` 非空要带 scheme。
+  `api_base` 非空要带 scheme。⚠ 卡内只有两块：**录制软件**（`kind`：录播姬 / biliLive-tools / 不接；选谁
+  只显示谁的字段：bili-tools 要 API 地址 + 密钥 + 容器路径，录播姬要 API 地址 + Basic 账号）与**自动入库**
+  （`webhook_enabled` + 地址 + 生成）。**没有「录播姬 / Webhook / 两样都收」的模式切换** —— 自动入库是开关，
+  不是通道。保存形状仍是同一张 `[ingest.recorder]` + `[ingest.webhook]`；账号密码、白名单、自动流程、
+  容器路径都在「高级」`<details>` 里默认折叠。
+- `AppModal` / `AppDialog` / `JobDrawer`：焦点圈定 / Esc / 滚动锁统一走 `composables/useOverlay.js`。
+  ⚠️ **AppDialog 不再整块挂 `@keydown.enter`**（以前焦点落在哪、一按回车就确认，危险操作也能被误触）：
+  默认焦点在**取消**，只有 prompt 的输入框允许 Enter 提交。
 - 其余：`HomeClipsOverview`（自动 `polish init` 传**绝对目录**）· `SubtitlePanel`/`SubtitleEditor`（`addSub()`
   后按 `start` 排序）· `prepare/SubtitleTrack`（常驻横排属性条，不要右侧竖面板）· `prepare/MaterialList`
   （**改一边等于改两边**）· `polish/StickerPicker`/`SfxPicker`（`name` = **去扩展名的文件名**）。

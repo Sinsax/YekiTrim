@@ -38,15 +38,30 @@
 
         <div class="card flow-card mb-12">
           <b class="t">识别</b>
-          <div class="row" style="gap:6px;flex-wrap:wrap;margin:8px 0 10px">
-            <span class="chip" :class="chipClass('transcribe')" :title="transcribeChipTitle">识别声音 {{ chipText('transcribe') }}</span>
-            <span class="chip" :class="chipClass('detect')">找亮点 {{ chipText('detect') }}</span>
-            <span v-if="autoCut" class="chip" :class="chipClass('cut')" title="剪出片段（「处理选项」里可关自动剪出）">剪出片段 {{ chipText('cut') }}</span>
+
+          <!-- v6 步骤条：替换掉原来的三枚 chip —— 它们和步骤条说的是同一件事，
+               同时出现就是"同一状态说两遍"。步骤条多了序号与连线，扫一眼就知道走到哪。
+               ⚠️ 只读 `hasTranscript/hasEvents/hasClips` 与任务态，**不改主按钮状态机**。 -->
+          <div class="prep-steps">
+            <template v-for="(st, i) in prepSteps" :key="st.key">
+              <div class="pstep" :class="st.state">
+                <span class="pstep-dot" aria-hidden="true">{{ st.state === 'done' ? '✓' : i + 1 }}</span>
+                <span class="pstep-body">
+                  <b>{{ st.label }}</b>
+                  <span class="pstep-sub">{{ st.sub }}</span>
+                </span>
+              </div>
+              <span v-if="i < prepSteps.length - 1" class="pstep-line" :class="{ on: st.state === 'done' }" aria-hidden="true"></span>
+            </template>
           </div>
 
           <!-- 主按钮（状态机见 primaryLabel / onPrimary）：没有事件时 = 一键处理，
                已有事件 = 去挑片段；运行中禁用，进度与「停止」在下面的任务盒。 -->
+          <!-- ⚠️ 刚跑完这一次时**不渲染主按钮**：上面的 NextStepBar 已经是「去挑片段」，
+               两颗同目的地的主按钮并排 = 一页两个主行动。重新跑走「处理选项 → 重新找亮点」。
+               `data-cap` 仍只有源码里这一处（check-simplify 数的是锚点，不是渲染结果）。 -->
           <button
+            v-if="!completed"
             class="btn btn-primary run-btn"
             data-cap="prepare.run-all"
             :disabled="primaryDisabled"
@@ -124,6 +139,7 @@
           </div>
           <SubtitleTrack
             v-if="subsOpen"
+            :disabled="writeBlocked"
             :segments="segments"
             :duration="duration"
             :current-time="currentTime"
@@ -416,6 +432,14 @@ import { segColor, EVENT_TYPES, TYPE_ZH, mediaUrl, redetectWarning, isEditableKe
 const route = useRoute()
 const router = useRouter()
 const pid = computed(() => route.params.pid || '')
+/**
+ * 本实例所属的项目 id（**字符串快照**）。
+ *
+ * ⚠️ 写盘要用它、不要用 `pid.value`：`App.vue` 用 `:key="pid"` 让视图换项目时重挂，而
+ *    `onUnmounted` 里路由**已经是新项目**了 —— 那时读 `pid.value` 会把 A 的字幕写进 B。
+ *    同一个实例终身只服务一个 pid，所以快照与 `pid` 恒等；读路径继续用 `pid`。
+ */
+const ownPid = String(route.params.pid || '')
 
 const src = ref('')
 const inputName = ref('')
@@ -432,6 +456,14 @@ const loadError = ref('')
 const statusLoading = ref(true)
 /** 服务端 404（项目不存在 / 无权访问）：走空态，**不当成普通读取失败**（见 views/AGENTS.md「读失败」）。 */
 const notFound = ref(false)
+/**
+ * 字幕**写闸**：读失败 / 项目不存在时基线不可信，一个字节都不许写。
+ *
+ * 与精修时间轴的 `flushSave`（`TimelineEditor.vue`）同一条口径：读失败时内存里可能是空数组，
+ * 任何一次落盘都会把磁盘上真实的转写稿整份覆盖成"当前看到的这几条"（2026-09-16 那类事故）。
+ * 404 不算：服务端语义就是"还没转写"，那是正常空态，新建字幕要能存。
+ */
+const writeBlocked = computed(() => notFound.value || !!loadError.value)
 /** `/api/health.llm === false`：只多一句提示，**不挡任何操作**（检测会退化成热度 + 一个整段）。 */
 const llmMissing = ref(false)
 /** 三块可折叠区的展开状态：首帧同步读 localStorage（`useDisclosure`），避免先展开再收起闪一下。
@@ -538,6 +570,8 @@ const saveState = ref('')      // '' | 'saving' | 'saved' | 'error'
 const saveError = ref('')
 const saveAt = ref('')
 const saveHint = computed(() => {
+  // 读失败时写着"已保存"是骗人的：优先级与 TimelineEditor 的 `saveText` 一致（读失败 > 保存中）。
+  if (writeBlocked.value) return '读取失败，已暂停保存'
   if (saveState.value === 'saving') return '保存中…'
   if (saveState.value === 'error') return '保存失败：' + saveError.value
   if (saveState.value === 'saved') return '已保存 ' + saveAt.value
@@ -589,9 +623,19 @@ const slicesPath = computed(() => `/p/${encodeURIComponent(pid.value)}/slices`)
 const chainDetect = ref(false)
 
 // ---- 主按钮状态机（没有事件 → 一键处理 / 去挑片段；运行中禁用）----
+/**
+ * 项目状态**读失败**（非 404）。
+ *
+ * ⚠️ 此时 `status` 还是 null ⇒ `hasVideo` 一定是 false —— 但那是「不知道」而不是「没有视频」。
+ * 原来主按钮在这种情况下显示「还没有输入视频」并置灰，用户看到的是"我的视频呢"，
+ * 而真正的下一步是**重试**（错误横幅就在顶上）。判据必须带 `!status.value`：
+ * 已经有旧快照时静默刷新失败只加横幅，不能把主行动锁成"缺输入"。
+ */
+const statusUnavailable = computed(() => !statusLoading.value && !status.value && !!loadError.value)
 const primaryDisabled = computed(() => {
   if (jobRunning.value) return true
   if (statusLoading.value) return true // 状态还没读回来：先别下结论
+  if (statusUnavailable.value) return true // 读失败 ≠ 空项目：置灰并让人去重试
   if (!hasVideo.value) return true // 没有输入视频：什么都跑不了
   if (hasEvents.value) return false // 已识别：随时能去挑片段
   if (busy.value) return true
@@ -605,6 +649,7 @@ const primaryLabel = computed(() => {
   if (runningStage.value === 'cut') return `剪切中 ${jobPct.value}%`
   if (jobRunning.value) return '处理中…'
   if (statusLoading.value) return '读取中…'
+  if (statusUnavailable.value) return '状态不可用'
   if (!hasVideo.value) return '还没有输入视频'
   if (hasEvents.value) return '去挑片段 →'
   if (!hasTranscript.value && !canRunAsr.value) return '先选一份字幕'
@@ -612,6 +657,7 @@ const primaryLabel = computed(() => {
 })
 const primaryTitle = computed(() => {
   if (statusLoading.value) return '正在读取这个项目的状态…'
+  if (statusUnavailable.value) return '项目状态没读出来 —— 点上面的「重试」重新读取（不代表没有视频）'
   if (!hasVideo.value) return '还没有输入视频：先去项目设置里填 input_file（或跑一次音频提取）'
   if (hasEvents.value) return '已经找到亮点：去切片页挑要发的片段'
   if (!hasTranscript.value && !canRunAsr.value) {
@@ -636,6 +682,32 @@ const completedHint = computed(() => {
     ? '只得到一个整段，配置 AI 后可细分'
     : '只找到一个亮点，可重新处理再试'
 })
+/** 步骤条的三段（只用于展示；真正的主行动仍由 `primaryLabel` 状态机决定）。 */
+const prepSteps = computed(() => {
+  const tr = hasTranscript.value
+  const ev = hasEvents.value
+  const cl = hasClips.value
+  const run = runningStage.value
+  const pct = jobPct.value
+  return [
+    {
+      key: 'transcribe', label: '识别声音',
+      state: run === 'transcribe' ? 'active' : tr ? 'done' : 'todo',
+      sub: run === 'transcribe' ? `进行中 ${pct}%` : tr ? '已完成' : '待开始'
+    },
+    {
+      key: 'detect', label: '找亮点',
+      state: run === 'detect' ? 'active' : ev ? 'done' : tr ? 'active' : 'todo',
+      sub: run === 'detect' ? `进行中 ${pct}%` : ev ? '已完成' : '待开始'
+    },
+    {
+      key: 'cut', label: '剪出片段',
+      state: run === 'cut' ? 'active' : cl ? 'done' : 'todo',
+      sub: run === 'cut' ? `进行中 ${pct}%` : cl ? '已剪出' : '待开始'
+    }
+  ]
+})
+
 const completedHintTitle = computed(() => (completed.value && /^完整录像/.test(completed.value.firstLabel)
   ? '未配置 AI 模型（或模型没识别出话题）时，检测只产出一个「完整录像」事件。'
   : '检测只产出一条事件时的提示。'))
@@ -821,7 +893,7 @@ async function load() {
     // 但其它错误（500 / 解析失败）**不许**伪装成"没有字幕"：那会把"读取失败"显示成干净的空轨道，
     // 用户唯一的下一步就是点「开始预处理」重跑一遍转写（可能覆盖掉盘上真实存在的那份）。
     segments.value = []
-    if (e?.status !== 404) loadError.value = '字幕读取失败：' + (e?.message || e)
+    if (e?.status !== 404) loadError.value = loadError.value || ('字幕读取失败：' + (e?.message || e))
   }
   saveState.value = ''
   await loadAssets()
@@ -1006,22 +1078,46 @@ function sliceRangePayload() {
 
 /** 轨道编辑统一入口：`next` 是整份 segments；transient（拖动中）只更新本地，落盘由拖动结束/防抖触发。 */
 function onTrackSave(next, opts = {}) {
+  // 写闸：读失败时连模型都不接（基线不可信，接下去的任何落盘都是覆盖真稿）。
+  if (writeBlocked.value) return
   segments.value = next
   if (opts.transient) return
   clearTimeout(saveTimer)
   saveTimer = setTimeout(saveSubs, opts.committed ? 0 : 500)
 }
 
-async function saveSubs() {
+/** 正在飞的那次保存。**串行化**用：`saveState='saving'` 只是显示，不会阻止第二次 PUT ——
+ *  慢盘上"先发的旧请求后到"会把新稿盖回旧内容。 */
+let saveInflight = null
+/** 保存期间又来了新改动 ⇒ 这一次落地后用最新值再存一次（保证"最后一次值"最后落盘）。 */
+let saveAgain = false
+
+/** 真正落盘。参数是**快照**：卸载/切项目时必须由调用方显式给 pid 与 segments。 */
+async function persistSubs(pidArg, segmentsArg) {
+  if (!pidArg) return
   saveState.value = 'saving'
   try {
-    await projectData.saveTranscript(pid.value, segments.value)
+    await projectData.saveTranscript(pidArg, segmentsArg)
     saveState.value = 'saved'
     saveAt.value = new Date().toLocaleTimeString('zh-CN', { hour12: false })
+    saveError.value = ''
   } catch (e) {
     saveState.value = 'error'
     saveError.value = e.message || '未知错误'
     toast('字幕保存失败：' + (e.message || ''), 'err')
+  }
+}
+
+async function saveSubs() {
+  // ⚠️ 读失败 / 项目不存在 ⇒ 禁止写盘（见 `writeBlocked`）。404 是空态，不拦。
+  if (writeBlocked.value) return
+  // 串行化：在飞时只记一笔"还要再存"，不并发发第二个 PUT。
+  if (saveInflight) { saveAgain = true; return saveInflight }
+  saveInflight = persistSubs(ownPid, segments.value).finally(() => { saveInflight = null })
+  try {
+    await saveInflight
+  } finally {
+    if (saveAgain) { saveAgain = false; saveSubs() }
   }
 }
 
@@ -1363,7 +1459,15 @@ onMounted(() => {
 onUnmounted(() => {
   jobClose?.close?.()
   offJobDone()
-  clearTimeout(saveTimer)
+  // ⚠️ **卸载前把待落盘的改动发出去**：`onTrackSave` 有 500ms 防抖，切路由/切项目时只
+  //    `clearTimeout` 会把最后一批改动（尤其"改字"）直接丢掉。SPA 内切路由 `fetch` 不会被取消
+  //    （整页关闭才需要 sendBeacon/keepalive，那属于另一条路）。
+  //    pid/segments 由 `saveSubs` 走 `ownPid` 快照 —— 卸载时 `route` 已指向新项目，别读 `pid.value`。
+  if (saveTimer) {
+    clearTimeout(saveTimer)
+    saveTimer = null
+    saveSubs()
+  }
   window.removeEventListener('keydown', onKey)
 })
 </script>
@@ -1405,6 +1509,25 @@ onUnmounted(() => {
 .seg-overlap { color:var(--amber-deep); font-size:11px; white-space:nowrap; }
 .run-btn { width:100%; justify-content:center; margin-bottom:8px; }
 /* 识别流程卡在 grid 上方：标题/状态 chips 在左，主按钮在右，任务盒另起一行。 */
+/* ── v6 步骤条（转写 → 找亮点 → 剪片段）：flow-card 内可伸缩的一段，不是独立卡片 ── */
+.prep-steps { display:flex; align-items:center; gap:10px; flex:1 1 340px; min-width:0; }
+.pstep { display:flex; align-items:center; gap:8px; min-width:0; flex:none; }
+.pstep-dot { width:22px; height:22px; flex:none; border-radius:var(--r-full);
+  display:flex; align-items:center; justify-content:center;
+  font-size:11px; font-weight:var(--fw-semi); font-variant-numeric:tabular-nums;
+  border:1.5px solid var(--line); background:var(--card); color:var(--ink-faint); }
+.pstep.done .pstep-dot { border-color:var(--green); background:var(--green-soft); color:var(--green-deep); }
+.pstep.active .pstep-dot { border-color:var(--main); background:var(--main-soft); color:var(--pink-text); }
+.pstep-body { display:flex; flex-direction:column; line-height:1.25; min-width:0; }
+.pstep-body b { font-size:var(--fs-sm); font-weight:var(--fw-semi); color:var(--ink); }
+.pstep-sub { font-size:var(--fs-xs); color:var(--ink-faint); white-space:nowrap; }
+.pstep-line { flex:1 1 auto; min-width:14px; height:2px; border-radius:2px; background:var(--line); }
+.pstep-line.on { background:var(--green); }
+@media (max-width:900px) {
+  .prep-steps { flex-basis:100%; order:3; overflow-x:auto; }
+  .pstep-body b { white-space:nowrap; }
+}
+
 .flow-card { display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; }
 .flow-card > .t { flex:none; }
 .flow-card > .row { flex:1 1 auto; margin:0 !important; }

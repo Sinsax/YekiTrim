@@ -45,6 +45,12 @@
     `webui/src/styles/app.css` = 两份样稿组件类的**并集**（`.shell/.side/.proj/.snode/.foot-item/`
     `.user-chip/.card/.card-blk/.btn/.mini-btn/.chip/.state-badge/.src-badge/.tb/.tabs/.wiz-src/`
     `.player/.lane/.grid9/.meter/.login-*/.empty/...`）。
+  - ⚠️ **主行动按钮用 `--action-bg` / `--action-bg-deep` / `--on-action`，不用 `--grad-main` / `--on-main`**：
+    白字压 `--main`(#E86838) 只有 **3.25**，而按钮文案是 13px 正文（AA 要 4.5）—— 现值最亮端 4.99。
+    暗色**反向**（提亮底 + `#202020` 深字，6.71）。渐变那套只留给**图形**（头像 / 进度条 / 折叠轨）。
+  - ⚠️ **Toast 的定位与堆叠只在 `app.css` 一份**（`.toast-wrap` + `.toast`）：组件里再写同名类会
+    各覆盖一半属性，子元素仍是 `fixed`、脱离容器 flex 流 ⇒ 多条消息全叠在屏幕中央（实测过）。
+    正文一律 `--ink`、语义只上左侧强调条（`--green-deep` 压白卡只有 3.26，读不清）。
   - **组件内不再重复定义这些基准类**（scoped 样式只写样稿里没有的东西，如行内删除按钮、
     页面专属布局）；新增组件先在样稿里找同名类，找到就照抄数值。
   - 关键数值：侧栏 268px、卡片 `22px 22px 18px`（`.card-lg`）/`16px`（`.card-blk`）、

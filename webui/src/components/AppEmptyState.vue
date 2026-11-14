@@ -37,18 +37,21 @@ defineEmits(['primary', 'secondary'])
   text-align: center;
 }
 .es-icon {
-  width: 46px;
-  height: 46px;
-  margin: 0 auto 10px;
+  width: 48px;
+  height: 48px;
+  margin: 0 auto 12px;
   border-radius: var(--r-full);
   display: flex;
   align-items: center;
   justify-content: center;
   background: var(--main-soft);
   color: var(--pink-text);
+  box-shadow: 0 0 0 6px var(--bg-soft);
 }
-.es-title { display: block; font-size: 15px; color: var(--main-deep); }
-.es-desc { margin: 8px 0 0; color: var(--ink-dim); font-size: 12.5px; line-height: 1.7; }
+/* 标题用 --ink 而不是 --main-deep：空态是"页面状态"，不是品牌强调；
+   橙色标题在暗色底上反而会跟主按钮抢注意力。 */
+.es-title { display: block; font-size: 15px; font-weight: 650; color: var(--ink); }
+.es-desc { margin: 8px auto 0; max-width: 42ch; color: var(--ink-dim); font-size: 12.5px; line-height: 1.7; }
 .es-actions {
   display: flex;
   gap: 8px;

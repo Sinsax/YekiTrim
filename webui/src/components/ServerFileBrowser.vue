@@ -10,7 +10,7 @@
                   @click="go(c.path)">{{ c.label }}</button>
         </template>
       </div>
-      <div v-if="roots.length" class="sfb-roots">
+      <div v-if="roots.length && !hideRoots" class="sfb-roots">
         <span class="muted small flex-none">快捷入口</span>
         <button v-for="r in roots" :key="r.path" class="mini-btn" @click="go(r.path)">{{ r.label }}</button>
       </div>
@@ -93,7 +93,7 @@ export { VIDEO_EXTS, IMAGE_EXTS }
  *
  * emits：`update:dir`（当前目录）/ `update:listing`（`{dir,files,dirs}`，供判有无可用视频）/ `pick-file`。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import Icon from './Icon.vue'
 import { listTenantFiles } from '../stores/project'
 
@@ -109,9 +109,16 @@ const props = defineProps({
    * 传了之后，当前目录存在该文件时给目录区加一层绿框 + 「已有工程」标记 —— 与内联那套同口径。
    * ⚠️ 别给它默认值：别的选择器（字体/弹幕/字幕）里这个文件名没有含义。
    */
-  projectFile: { type: String, default: '' }
+  projectFile: { type: String, default: '' },
+  /**
+   * 隐藏组件**内部**那排快捷入口。
+   * 调用方如果把 roots 提到外面做成「常用位置」条（首页「服务器文件」就是），
+   * 这里再画一遍就是同一个东西出现两次 —— 传 true 关掉。
+   * 默认 false：弹窗等其它用法仍然需要内置的快捷入口。
+   */
+  hideRoots: { type: Boolean, default: false }
 })
-const emit = defineEmits(['pick-file', 'update:dir', 'update:listing'])
+const emit = defineEmits(['pick-file', 'update:dir', 'update:listing', 'update:roots'])
 
 const current = ref('')
 const crumbs = ref([])
@@ -319,6 +326,14 @@ async function enter(name) {
   await go(d.dir || current.value)
 }
 
+/**
+ * 外部改 `startDir`（常用位置 chip / 上层切换）要跟着跳。
+ * ⚠️ `v !== current.value` 挡回环：自己浏览时 emit 的 `update:dir` 会让父组件把 startDir 设成同一个值。
+ */
+watch(() => props.startDir, (v) => {
+  if (v && v !== current.value) go(v)
+})
+
 onMounted(async () => {
   treeLoading.value = true
   try {
@@ -326,6 +341,8 @@ onMounted(async () => {
     //    "当前目录不在根列表里就追加"那条分支不会触发 ⇒ 拿到的是**纯配置根**。
     const base = await listTenantFiles('')
     roots.value = base?.roots || []
+    // 快捷入口（如「我的托管目录」）并进调用方的「常用位置」，作为**不可移除的预设点**
+    emit('update:roots', roots.value)
     volumeNodes.value = (base?.volumes || []).map((v) => ({
       name: v.label,
       parent: '',

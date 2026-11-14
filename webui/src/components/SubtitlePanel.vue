@@ -1,7 +1,7 @@
 <template>
   <div class="sub-list" :style="{ maxHeight: height }">
     <div v-if="!segments.length" class="muted small sub-empty">暂无字幕</div>
-    <div v-for="(seg, i) in segments" :key="i" class="sub-row" @click="emit('play', seg)">
+    <div v-for="(seg, i) in segments" :key="keyOf(seg)" class="sub-row" @click="emit('play', seg)">
       <textarea :value="seg.text" @input="onTextInput(seg, $event.target.value)" rows="1" class="sub-input" @click.stop></textarea>
       <div class="sub-meta" :class="{ 'has-end': showEnd }">
         <span class="time-cell" :title="editableTime ? '点击编辑开始时间' : ''" @click.stop="startEdit(i, 'start')">
@@ -33,6 +33,23 @@ const props = defineProps({
   editableTime: { type: Boolean, default: false }  // 点击开始/结束时间可编辑（秒）
 })
 const emit = defineEmits(['play'])
+
+/**
+ * 稳定的行 key（**不要退回下标**）。
+ *
+ * 下标 key + `sortByStart()`（改开始/结束时间后会重排）会让"第 i 行"换一条字幕：
+ * 焦点留在原 DOM 节点上，光标与正在编辑的文本会落到**另一条**字幕上（表里不一）。
+ * 这里用 WeakMap 按**对象身份**发号：重排只换顺序、不换身份 ⇒ key 跟着对象走；
+ * 文本输入是原地改字段（对象不变），所以打字时不会重挂、不会丢焦点。
+ */
+const segIds = new WeakMap()
+let nextSegId = 1
+function keyOf(seg) {
+  if (!seg || typeof seg !== 'object') return 'x' + String(seg)
+  let id = segIds.get(seg)
+  if (!id) { id = 's' + nextSegId++; segIds.set(seg, id) }
+  return id
+}
 
 function sortByStart() {
   props.segments.sort((a, b) => (Number(a.start) || 0) - (Number(b.start) || 0))

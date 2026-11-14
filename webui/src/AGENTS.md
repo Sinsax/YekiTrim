@@ -17,6 +17,8 @@ Vue3 工作台的全部前端：壳 + 面包屑、hash 路由、首页 `#/workbe
   `invalidate`/`forgetProject`）、`ui.js`（`sideCollapsed`/`fragRows`/`toggleSide`）、`theme.js`
   （**哥特浅色/暗色**，见「主题」）、`health.js`（`localNoAuth()` —— 见「本地模式」）。
 - `composables/useJobs.js`：`load()`（单飞 + SSE 合帧）/ `onJobDone(fn)` → 返回退订函数。
+- `composables/useOverlay.js`：弹层通用行为（初始焦点 / Tab 圈定 / **Esc 只关最上层** / 还焦点 /
+  计数式滚动锁）。新增弹层直接调它，别再各写一套 keydown。
 - 关键组件：`MaterialList.vue`（弹幕/字幕共用清单）、`side/ProjectNode.vue`、`HomeClipsOverview.vue`、
   `StickerPacks.vue`、`SliderField.vue`、`SettingsView.vue`。
 
@@ -26,10 +28,11 @@ Vue3 工作台的全部前端：壳 + 面包屑、hash 路由、首页 `#/workbe
 - 一级文案在 `utils.js::STEPS`（`name` 白话 / `tech` 技术名）与 `api/jobs.js::KIND_ZH`；别处不抄第二份。
 - 每个能力入口带 `data-cap`，清单 `docs/webui-capabilities.json`；高级项用 `useDisclosure`/`<details>` 默认折叠，
   **隐藏 ≠ 删除**。门禁：`node webui/scripts/check-simplify.mjs --phase=P3`。
-- 出片模式：`stores/ui.js::ui.polishMode`（localStorage `yekitrim.polish.mode`，默认 `quick`）；
-  `?mode=pro` 是一次性覆盖、不写盘；快速/专业只切右栏/时间轴/封面，`PolishPreview` 不重挂。
+- 出片页**只有精修**（2026-11-13「不留快速切片」）：quick 那一列、`polish.quick-*` 四颗锚点、
+  `ui.polishMode` / `?mode=pro` **已删**。⚠️ 判据方向相反：把 quick 加回来会翻红。
 - `stores/health.js` 是 `/api/health` 的唯一缓存（`local_no_auth` 仍只认那个字段）；首页 checklist 与出片
   `dhampirStatus` 都读它，别各拉一次。
+  ⚠️ `multi_user` 也只认这里：单人藏多人入口（隐藏 ≠ 删除）。
 
 **主题**
 - `stores/theme.js` 是唯一写 `<html data-theme>` 的地方，localStorage `yekitrim.ui.theme`
@@ -38,9 +41,9 @@ Vue3 工作台的全部前端：壳 + 面包屑、hash 路由、首页 `#/workbe
 - ⚠ 色值一律走 tokens 两套变量（见 `styles/AGENTS.md` 双主题纪律）。
 
 **壳与侧栏**
-- 当前项目整行高亮判据 `String(p.id) === String(route.params.pid)`（与折叠轨同一个）：
+- 当前项目整行高亮判据 `String(p.id) === String(route.params.pid)`：
   `.proj.on .proj-head` = `--main-soft` 底色 + 左侧 3px `--main` 强调条 + 名字 `--pink-text`
-  （`--main-soft` #FAECEA 与悬停底 `--bg-soft` #F0EAE4 太接近）。
+  （`--main-soft` 与悬停底 `--bg-soft` 太接近）。
 - ⚠ 选择器**必须比 `.proj-head:hover` 更特指**，否则悬停底色会盖掉高亮；样式写在 `ProjectNode.vue`
   的 scoped 里，别塞回 app.css。
 - 来源徽标只显示类型（`sourceBadge`）：本地来源回 **`本机`**，**不要拼路径**（服务端 `source.label`
@@ -63,6 +66,11 @@ Vue3 工作台的全部前端：壳 + 面包屑、hash 路由、首页 `#/workbe
   二次确认。**全局入口只剩 首页 / 设置**（「入库」入口已删；`#/ingest` 仍可从首页「录播姬录制」块进）。
 
 **首页 `#/workbench`**
+- **v7 起是单页**（用户口径：把「开始使用」并进「工作台」）。顺序：环境状态（**只在未就绪时出现**）
+  → 统计条 → 继续上次 → 添加录像 → 最近片段 → 素材库。
+- ⚠️ **首页不再渲染「项目」列表**：侧栏已经是项目树，再列一遍是重复信息。
+- 「添加录像」= **左选来源 / 右填参数**，`.add-body` 定高；三块面板见 `docs/plan/webui-redesign-v6.md`。
+  ⚠️ projects_root 留空≠不能下载（回退程序目录）。
 - ⚠️ `localNoAuth`（`stores/health.js`）· 运行状况面板（doctor）：见 `docs/web-ui-design.md` 附录 E。
 - 服务器文件（**仅 admin；非 admin 整条不显示** —— 不给点不动、只写"仅管理员"的入口）：`sources` 按
   角色过滤，`source` 用 watch 保证始终落在"看得见且可用"的那一项。
@@ -90,12 +98,11 @@ Vue3 工作台的全部前端：壳 + 面包屑、hash 路由、首页 `#/workbe
   可能带空格 / `#` / 中文）。而 `polishMap` **按绝对 dir 索引**，判 `polish_ready` 仍用 `dir`。
 
 **设置页**
-- 5 个子页 `/settings/<key>`（`config`/`llm`/`account`/`integrations`/`monitor`）：标签 / 副标题 / 路由**同源
-  于 `utils.js` 的 `SETTINGS_SECTIONS`** —— **加一页只改这一处**，别处不再抄一份。
-- ⚠ `/settings` 已降级为 **redirect 到 `config`**；`meta.admin` 与标签高亮挂在**每条子路由**上，**别写回
-  `route.name === 'settings'`**（redirect 那条永远不会被落到，照旧写会让面包屑与侧栏高亮一起失灵）。五块
-  内容仍在**同一个 `SettingsView.vue`**（`defineProps({section})` + `v-if` 切），不拆子组件；**只有
-  `monitor` 才挂 `LogConsole`**（SSE 的连接/断开跟着子页走）。
+- **4 个子页**（`config`/`llm`/`integrations`/`system`）：标签/路由同源于 `SETTINGS_SECTIONS`；旧
+  `account`/`monitor` 已并入 `system`（redirect）。
+- ⚠ `/settings` redirect 到 `config`；`meta.admin` 与高亮挂在每条子路由上，别写回 `route.name === 'settings'`。
+  四块内容同一个 `SettingsView.vue`（`v-if` 切），`LogConsole` 只在 `system` 挂。
+- ⚠️ `AI 模型`页：快速配置已含 base_url/api_key/model，高级**不重复**（legacy 无「接口」块）。
 - 设置页数值项走 `components/SliderField.vue`：手填的值只夹 `[min, max]`、**不吸附 step**，**清空/非数字
   不写模型**；数字框在**标签行右端**（`.lbl-row`/`.rv`）；滑块宽度 = 所在格子的 **1/3**（`.slf-range`
   `flex:0 0 33.333%`）；窄格由 **`@container`** 处理，**别改成媒体查询**。

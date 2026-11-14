@@ -4,7 +4,7 @@
 
 ## 职责
 
-9 个页面组件（清单见下「入口」，与 `router.js` 同源）。**壳与侧栏、路由表、重挂 key、设置页五子页、
+9 个页面组件（清单见下「入口」，与 `router.js` 同源）。**壳与侧栏、路由表、重挂 key、设置页四子页、
 缓存与单飞、`useJobs` 退订、首页** 见 `webui/src/AGENTS.md`，本卡只写页面自身的纪律。
 
 ## 入口
@@ -21,8 +21,8 @@
 **简化 / 每页一个主行动**
 - 一级 CTA 唯一；空态用 `components/AppEmptyState.vue`，完成后的下一步用 `components/NextStepBar.vue`。
 - 能力入口带 `data-cap`（清单 `docs/webui-capabilities.json`）；高级项默认折叠、保留可达。
-- 出片页 `快速出片 / 精修`：默认 quick（`ui.polishMode`），`?mode=pro` 一次性覆盖；快速只换右栏/隐藏
-  时间轴与封面，pro 子树源码字符串不删。识别页主按钮状态机见 `docs/plan/webui-simplification-2026-11.md`。
+- 出片页只有精修（快速切片已删）：右栏 / 时间轴**无条件渲染**，⚠️ 别用裸 `<template>` 包（内容不进 DOM）。
+  识别页主按钮状态机见 `docs/plan/webui-simplification-2026-11.md`。
 
 **读失败 / 静默刷新（全页面通用）**
 
@@ -167,8 +167,7 @@
 - **「弹幕量」排序**：有 `clip.dm.srt` 就用它，**没有（老切片）就按 `clip.json` 的 `original_start/end`
   从源弹幕里数**（`count_in_range`）—— 否则整列 0，排序静默退化成按 rank。
 
-**字体库（`components/FontLibrary.vue`，首页内嵌区块，仅 admin，无单独页面）**：见
-`docs/webui-components.md` ⑥ 与 `docs/plan/font-library.md` §12/§21。
+**字体库** = 素材库的字体卡片（`components/MediaLibrary.vue`）：见 `docs/webui-components.md` ⑥。
 
 **项目设置页 / 设置页 / 模型管理 / 登录注册 / 首页**
 
@@ -186,20 +185,21 @@
   `POST /project/delete`）—— 以前是两份拷贝、各删一次 `yekitrim.toml`，别再写回两份。
 - 设置页 `SettingsView.vue` 五块内容仍在**同一个文件**（`defineProps({section})` + `v-if` 切），
   不拆子组件；`account` = 注册与邀请码 + **模型管理**（`components/ModelList.vue`）。
+  ⚠️ 「未保存的改动」的基线要在 `await nextTick()` 之后拍：加载期 flush:'pre' 的 watcher 会补数据，
+  同步拍 = 刚进页面什么都没点就 dirty。
 - ⚠️ **LLM 配置块的「按链路覆盖」= 一行一条链路：勾选框 + 两个 `SliderField` + thinking 下拉**。
   "跟随全局"由**勾选框**表达（不勾 = 发 `null` ⇒ 服务端 `patch_config_file` 删键），**别用空输入框** ——
   SliderField 的清空会拒绝写模型，"没有值"它表达不出来；发空串更糟（`max_tokens = ""` 会让整份
   llm.toml 被打回默认）。行由 `llm_config.overrides` 的键自动生成，后端加链路前端不用改。
   几何：`max-content + minmax(0,300px)×2 + max-content` + `justify-content:start`（1fr 会把滑块拉到格子
   中央、一行散开），实测 1600/1280/1000/860 四档都无横向溢出、控件同行；窄屏 900px 媒体查询拆成一列。
-- **模型管理（别再各写一套）**：模型管理页的「已安装」与运行时**同源** ——
+- **模型管理（别再各写一套）**：「已安装」与运行时**同源** ——
   `yekitrim_core::asr::local::resolve_model_dir`（配置 `local_model_dir` → `<数据目录>/.yekitrim/models`，
   默认即程序目录）是唯一真源，`download::model_install()` 在其之上再校验注册表
   marker（`tokens.txt` / `tokenizer/tokenizer_config.json`，**不是** `dir.exists()`）。
   接口 `/api/models` 回 `{name, installed, dir, source, source_label}`，界面显示实际路径与来源。
-- ⚠️ 曾经 `/api/models` 只查程序目录 `dir.exists()`，而 qwen3-asr 放在**另一处** →
-  界面显示"未下载"却一直在用它（用户报过）；列表也改成由注册表 `download::model_names()` 给出，
-  别再手写模型数组。`yekitrim download` / `POST /api/models/download` 装到 `resolve_model_dir` 的落点。
+- ⚠️ `/api/models` 与运行时**必须同源**（曾经只查程序目录 `dir.exists()`，qwen3-asr 在**另一处** ⇒
+  界面写着"未下载"却一直在用它）；列表仍由 `download::model_names()` 给出，别再手写数组。
   ⚠️ 2026-10-02 资产收回程序目录之前还有"用户目录优先"那一档，**已删除** —— 现在只有两档：
   配置覆盖、数据目录。
 - ⚠️ **`download::ensure_one_model`（转写前的自动守卫）也必须走 `model_install`**，

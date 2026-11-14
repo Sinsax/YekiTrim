@@ -4,7 +4,7 @@
     <button class="sc-head" type="button" data-cap="home.setup-checklist"
             :aria-expanded="open ? 'true' : 'false'" @click="toggle">
       <Icon name="check" :size="15" class="sc-ic" />
-      <b class="sc-title">{{ headText }}</b>
+      <b class="sc-title">{{ head || headText }}</b>
       <span v-if="!loading && !allReady" class="chip a">{{ unknown ? '待检查' : missingCount + ' 项待处理' }}</span>
       <span class="flex-1"></span>
       <span v-if="!loading" class="muted small">{{ open ? '收起' : '展开' }}</span>
@@ -107,7 +107,9 @@ const props = defineProps({
   doctor: { type: Object, default: null },
   models: { type: Array, default: () => [] },
   projectCount: { type: Number, default: 0 },
-  loading: { type: Boolean, default: false }
+  loading: { type: Boolean, default: false },
+  /** 覆写标题（首页把它降级成「检查项」——上面的状态卡才是主标题） */
+  head: { type: String, default: '' }
 })
 const emit = defineEmits(['open-doctor', 'open-wizard', 'go-llm', 'refresh'])
 

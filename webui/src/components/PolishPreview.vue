@@ -175,11 +175,12 @@
     </div>
 
     <div v-if="dhampirMode || dhampirError" class="dhampir-bar">
-      <span class="muted small">
-        {{ dhampirError ? ('Dhampir 预览不可用：' + dhampirError) : (dhampirStatus || 'Dhampir 预览') }}
+      <span class="muted small" :title="dhampirError ? DHAMPIR_FALLBACK_TIP : ''">
+        {{ dhampirError ? ('近似预览 · ' + dhampirError) : (dhampirStatus || 'Dhampir 预览') }}
         <!-- ⚠️ 兜底（DOM/GSAP）预览是**近似**：它是第二条渲染链路，默认出片走的是底座那条。
-             这一行就是"看到的和成片可能不一样"的告知 —— 收敛之后新效果只在底座那条腿上实现。 -->
-        <span v-if="dhampirError" class="err">（当前是近似预览）</span>
+             这一行就是"看到的和成片可能不一样"的告知 —— 收敛之后新效果只在底座那条腿上实现。
+             ⚠️ **别写成红色 `err`**：拿不到 WebGPU 是**环境限制**，不是页面出了故障
+             （2026-11-13 用户看到红字"不可用"以为坏了；真正常见的原因是 http 非 localhost）。 -->
       </span>
       <!-- 底座版本与期望不一致时的**常驻**标注（热重载后也跟着更新）：行内一句、详情进 title。
            没有它的话，v6 底座跑出来的画面看起来和 v7 一模一样 —— 差异只会在成片里出现。 -->
@@ -211,7 +212,7 @@
       <input class="vol" type="range" min="0" max="1" step="0.05" :value="volume" @input="onVolume" title="音量（视频 + 音效）">
       <button class="mini-btn" :class="{ selected: dhampirMode }" :disabled="!!dhampirError" @click="toggleDhampir"
               :title="dhampirError
-                ? ('Dhampir 预览不可用：' + dhampirError)
+                ? ('实时预览不可用：' + dhampirError + '（当前用近似预览）')
                 : '用 Dhampir 底座（wasm + WebGPU）渲染 —— 与上面的 DOM 预览并列，不替代它'">
         Dhampir
       </button>
@@ -238,6 +239,22 @@ import { ensureFontFace, fontFamilyFor } from '../polish/fonts'
 // A3 预览诊断埋点（`window.__dhampirDiag`）：**模块级单例** —— canvasGen 要抓的正是
 // "组件被重挂"，写在实例里会跟着归零。正文与理由见 polish/diag.js。
 import { dhampirDiag, diagFrame, diagHudEnabled, diagPresent, diagTouchCanvas } from '../polish/diag.js'
+
+/** 预览诊断日志（P3 收口）：默认**静音**，生产页面的控制台不再被 9 条 `[dhampir]` 刷屏。
+ *  排查时在控制台执行 `localStorage.setItem('yekitrim.debug','1')` 后刷新即恢复原样。 */
+function dbgLog(...args) {
+  try {
+    if (typeof localStorage !== 'undefined' && localStorage.getItem('yekitrim.debug') === '1') console.log(...args)
+  } catch { /* 拿不到 localStorage（隐私模式等）就保持静音 */ }
+}
+
+/** 近似预览这条提示的完整解释（给 title；只在起引擎失败时出现）。
+ *
+ *  ⚠️ **WebGPU 只在 https / localhost 下可见**：用局域网 IP 走 http 打开本页时
+ *  `navigator.gpu` 根本不存在 —— 那不是"机器没显卡"。文案已按三种情况分别给（见 `startDhampir` 的 catch）。 */
+const DHAMPIR_FALLBACK_TIP =
+  '实时预览需要浏览器提供 WebGPU（GPU 加速），且页面必须从 https 或 localhost 打开。' +
+  '拿不到时自动改用 DOM 近似预览：版式、动画、时间轴一致，但混合/滤镜等合成细节可能与成片不同。'
 
 const props = defineProps({
   pid: { type: [String, Number], required: true },
@@ -946,7 +963,11 @@ async function toggleDhampir() {
     // `startDhampir` 里已经铺过一次，这里再铺一次是为了盖住"加载期间用户动了滑块"那一段。
     applyAudio()
   } catch (e) {
-    // **绝不白屏**：说清原因、退回 DOM、把按钮禁掉（`dhampirError` 有值时按钮 disabled）。
+    // **绝不白屏**：先翻回 DOM 腿，再说原因、把按钮禁掉（`dhampirError` 有值时按钮 disabled）。
+    // ⚠️ `dhampirMode.value = false` **必须放 catch 的第一句**：门禁
+    // （`webui/scripts/check-preview-ab.mjs`）就是在 catch 的头一段里找它；塞在一长串诊断之后
+    // 会被后续改动挤出判据窗口 —— 2026-11-13 加了三行文案注释就把它挤出 1200 字符窗口，当场报红。
+    dhampirMode.value = false
     dhampirError.value = String((e && e.message) || e)
     dhampirStatus.value = ''
     // ⚠️ **失败也要把"卡在哪一步"打出来**：分步计时那套本来就有（`dhampirMark`），
@@ -960,14 +981,20 @@ async function toggleDhampir() {
     const noGpu = /GPU|adapter|WebGPU/i.test(why)
     if (noGpu) {
       // 用户可见文案只留「是什么」；wgpu 那一长串 backends 调试信息进控制台/日志面板。
-      dhampirError.value = '本机没有可用的 WebGPU 适配器'
-      console.warn('[dhampir] 起引擎失败（无 GPU 适配器，退回近似预览）：' + why)
+      //
+      // ⚠️ **三种情况要分开说**（2026-11-13）：以前一律写成"本机没有可用的 WebGPU 适配器"，
+      //    于是「用局域网 IP 走 http 打开」这种**页面根本不是安全上下文**的情况也被说成
+      //    "机器没显卡"，用户按提示查显卡永远查不出来。WebGPU 只在 **https / localhost**
+      //    下可见（`navigator.gpu` 直接不存在），所以先判这个。
+      dhampirError.value = !window.isSecureContext
+        ? 'HTTP 页面拿不到 WebGPU（用 localhost 或 https 打开本页）'
+        : (navigator.gpu ? '本机没有可用的 WebGPU 适配器' : '这个浏览器没有开放 WebGPU')
+      console.warn('[dhampir] 起引擎失败（退回近似预览）：' + why)
     } else {
       console.error('[dhampir] 起引擎失败（最后一步：' + lastStep + '）：' + ((e && e.stack) || e))
     }
     dhampirMark('失败')
     dhampirMarkReport()
-    dhampirMode.value = false
     stopDhampir()
   } finally {
     // 成功与失败都要放下门帘（失败时 `dhampirMode` 已翻回 false，门帘更不该留着）。
@@ -1086,7 +1113,7 @@ async function dhampirLoadAnimations(project) {
   // 打印一次引擎身份：把这个应用的适配器与我基准里的对比（13x 差距的第一嫌疑）。
   if (!window.__dhampirAnimLogged) {
     window.__dhampirAnimLogged = true
-    console.log('[dhampir] 动图加载环境 ' + JSON.stringify({
+    dbgLog('[dhampir] 动图加载环境 ' + JSON.stringify({
       canvas: dhampirCanvasRef.value ? dhampirCanvasRef.value.width + 'x' + dhampirCanvasRef.value.height : '?',
       dpr: window.devicePixelRatio,
       stickers: dhampirStickers.length,
@@ -1122,7 +1149,7 @@ async function dhampirLoadAnimations(project) {
       const tDecoded = performance.now()
       const res = JSON.parse(raw)
       const mib = (bytes.byteLength / 1048576).toFixed(1)
-      console.log('[dhampir] 动图 ' + st.assetId + ' 取字节 ' + Math.round(tFetched - tFetch0)
+      dbgLog('[dhampir] 动图 ' + st.assetId + ' 取字节 ' + Math.round(tFetched - tFetch0)
         + 'ms (' + mib + ' MB) / 解码 ' + Math.round(tDecoded - tFetched) + 'ms')
       if (res && res.ok === true) {
         st.animLoaded = true
@@ -1379,16 +1406,16 @@ async function switchDhampirClip() {
   if (!dhampirEngine) {
     // 引擎还没起来（首屏那 1~2 秒）：记下待办，`startDhampir` 收尾时会来补 ——
     // 否则首屏那次 open 用的是**换片段之前**取的工程，画面会停在上一个片段。
-    console.log('[dhampir] 换片段：引擎还没起来，记为待办')
+    dbgLog('[dhampir] 换片段：引擎还没起来，记为待办')
     dhampirSwitchPending = true
     return
   }
   if (dhampirSwitching || dhampirBusy) {
-    console.log('[dhampir] 换片段：' + (dhampirSwitching ? '正在换' : '有帧在飞') + '，记为待办')
+    dbgLog('[dhampir] 换片段：' + (dhampirSwitching ? '正在换' : '有帧在飞') + '，记为待办')
     dhampirSwitchPending = true
     return
   }
-  console.log('[dhampir] 换片段开始：' + props.dir)
+  dbgLog('[dhampir] 换片段开始：' + props.dir)
   dhampirSwitching = true
   try {
     const res = await api('/api/polish/dhampir-project', {
@@ -1476,7 +1503,7 @@ async function switchDhampirClip() {
     await dhampirApplySubtitles(project, res.subtitles)
     await ensureProjectFonts(project)
     dhampirStatus.value = ''
-    console.log('[dhampir] 换片段完成：' + props.dir)
+    dbgLog('[dhampir] 换片段完成：' + props.dir)
   } catch (e) {
     console.warn('Dhampir 换片段失败：' + ((e && e.message) || e))
     dhampirStatus.value = '换片段失败：' + ((e && e.message) || e)
@@ -1628,7 +1655,7 @@ async function startDhampir() {
   // 打在控制台而不是日志面板：这是排查用的判据，要能直接与另一份产物对比。
   // 拿不到就不打（老产物没这条导出）——**不要**因此报错，它不是契约的一部分。
   const buildId = typeof pkgNs.dhampir_build_id === 'function' ? pkgNs.dhampir_build_id() : '(老产物没有 dhampir_build_id)'
-  console.log('[dhampir] 预览 wasm ' + buildId + '  host_api=' + hostApi + '  ' + PKG_URL)
+  dbgLog('[dhampir] 预览 wasm ' + buildId + '  host_api=' + hostApi + '  ' + PKG_URL)
   dhampirEngine.timing = true
   // ⚠️ **不要再 JSON.parse 一次**：`Engine.open()` 内部已经
   // `JSON.parse(mod.dhampir_project_open(json))` 了，返回的是**对象**。
@@ -1775,7 +1802,9 @@ function stopDhampir() {
  * 2026-10-02 实测过一次 —— wasm 走 304 之后只要 **1 ms**，而 `dhampir-project` 那条
  * 要 **1290 ms**：**大头根本不在 wasm 上**。没有这份数据就只能凭感觉优化。
  *
- * 口径：`mark()` 每调一次就往浏览器控制台打一行；`report()` 收尾给一条汇总 + `console.table`。
+ * 口径：`mark()` 每调一次就往浏览器控制台打一行；`report()` 收尾给一条汇总 + 逐行表格。
+ * ⚠️ 全部走 `dbgLog`（默认静音，`localStorage['yekitrim.debug']='1'` 才输出）——
+ * 生产页面的控制台不再被刷屏（P3）；排查时开开关即可。
  * ⚠️ **走控制台，不走日志面板**：面板默认级别是「信息」，而 debug 级会被滤掉（等于没装）。
  * ⚠️ **不要用 `Date.now()` 之间的差值堆**：这里只用 `performance.now()` 的单调时钟。
  */
@@ -1788,7 +1817,7 @@ function dhampirMark(label) {
   dhampirLoadMarks.push({ label, at })
   // 每一步**当场**打一行：长的那一步你会在控制台里"看着它卡住"，
   // 比等整条链跑完再回头算差值直观得多。
-  console.log('[dhampir] ' + label + '  ' + Math.round(at) + 'ms  (+' + Math.round(at - prev) + 'ms)')
+  dbgLog('[dhampir] ' + label + '  ' + Math.round(at) + 'ms  (+' + Math.round(at - prev) + 'ms)')
   // 顺带把当前那一步写进门帘文案：加载久的时候用户至少知道卡在哪一段
   dhampirStatus.value = '正在加载 Dhampir…（' + label + '）'
 }
@@ -1808,10 +1837,10 @@ function dhampirMarkReport() {
   // 单行摘要（一眼看总账 + 最慢那步），表格（逐步拆开）
   let worst = rows[0]
   for (const r of rows) if (r.本步ms > worst.本步ms) worst = r
-  console.log(
+  dbgLog(
     '[dhampir] 首屏 ' + total + 'ms，最慢一步：' + worst.步骤 + ' +' + worst.本步ms + 'ms',
   )
-  console.table(rows)
+  dbgLog('table:', rows) // 替代 console.table（同样受 debug 开关管）
   dhampirLoadMarks.length = 0
   dhampirLoadT0 = 0
 }

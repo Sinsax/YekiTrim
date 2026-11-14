@@ -49,6 +49,10 @@ const ICONS = {
   'chevron-left': '<path d="m15 18-6-6 6-6"/>',
   'chevron-right': '<path d="m9 18 6-6-6-6"/>',
   'chevron-down': '<path d="m6 9 6 6 6-6"/>',
+  // 移动端导航入口（汉堡）。缺它时 `<use>` 之类不会报错，只会渲染成一个空 svg —— 按钮看着像坏了
+  menu: '<path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h16"/>',
+  // 网格视图（大卡）：2×2 方块。缺它时按钮只剩文字，看不出"当前是哪种视图"
+  grid: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
   list: '<path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/>',
   // 轨道显示开关（眼睛）：`eye` = 这一类渲染 / `eye-off` = 整类不渲染（事件仍留在时间轴上）
   eye: '<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/>',

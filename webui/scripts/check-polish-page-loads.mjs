@@ -15,10 +15,10 @@
 // 唯一的抓法是**把真页面开起来**：这条判据用 headless Chrome + CDP 打开精修页，要求
 // ① 挂载点 .props-host 出现；② **一个未捕获异常都没有**；③ 控制台没有 error 级日志。
 //
-// # P2（2026-11）：默认是**快速出片**，`.props-host` 只在精修（pro）里
+// # 2026-11-13 起只有精修一种模式（快速出片已删）：`.props-host` 一直存在
 //
-//   ① 默认 URL（不带查询串）落在 quick：`.quick-col` 必须在（带几何断言）、`.props-host` 必须不在；
-//   ② 再导航到 `?mode=pro`（**一次性覆盖、不写 localStorage**）才断言 `.props-host` 挂起来了。
+//   **2026-11-13 起出片页只有精修一种模式**（用户口径「不留快速切片」）：
+//   默认 URL 直接就是编辑器，断言 `.props-host` 挂起来；快速模式的那些断言已删除。
 //   ⚠️ A4/B2 那一段要拖 `.ruler-track`（时间轴只在 pro 子树里），所以它也一律走 pro URL。
 //
 // # 跑法与 SKIP
@@ -113,11 +113,8 @@ async function pickTarget() {
 const target = await pickTarget()
 console.log('目标: ' + target.label)
 
-/** P2：出片页默认是**快速出片**，`.props-host` 是精修（pro）专属。
- *  页面挂载类断言要在 pro 里量（`?mode=pro` 是一次性覆盖，不写 localStorage）；
- *  默认 URL 另反证一次"快速卡在、`.props-host` 不在"。 */
-const proHash = target.hash + (target.hash.includes('?') ? '&' : '?') + 'mode=pro'
-const proUrl = BASE + '/' + proHash
+/** 出片页现在**默认就是精修编辑器**（没有 quick/pro 之分），直接用原 URL。 */
+const proUrl = target.url
 
 /** 挂载失败/快速模式错位这类问题在**两条**路径上都会收集，所以先立账本。 */
 const problems = []
@@ -187,32 +184,7 @@ async function waitFor(expr, ms = 15000) {
 await send('Runtime.enable')
 await send('Page.enable')
 
-// ── P2 ①：默认 URL = 快速出片（quick）。快速卡必须在、`.props-host` 必须不在。
-//
-// `?mode=pro` 是**一次性覆盖**（不落 localStorage），而默认档就是 quick —— 所以这里
-// **不带**查询串，走的就是用户双击侧栏进来看到的那一屏。
-if (!SELF_TEST) {
-  await send('Page.navigate', { url: target.url })
-  let quickOk = false
-  for (let i = 0; i < 40; i++) {
-    if (await ev("!!document.querySelector('.quick-col')")) { quickOk = true; break }
-    await sleep(500)
-  }
-  if (!quickOk) {
-    problems.push('默认没落在快速出片（等 20s 没等到 .quick-col）—— polish.mode 默认值或 quick 子树坏了')
-  } else {
-    // ⚠️ 布局类改动必须做**几何断言**：节点在 ≠ 看得见（零尺寸/被 display:none 也一样通过）。
-    const geom = await ev("(function(){var c=document.querySelector('.quick-col');if(!c)return null;var b=c.getBoundingClientRect();return {w:Math.round(b.width),h:Math.round(b.height)}})()")
-    if (!geom || geom.w <= 0 || geom.h <= 0) {
-      problems.push('快速出片卡片零尺寸（w=' + (geom && geom.w) + ' h=' + (geom && geom.h) + '）')
-    }
-    const hostInQuick = await ev("!!document.querySelector('.props-host')")
-    if (hostInQuick) problems.push('快速出片里仍然渲染了 .props-host（它应当只在精修里）')
-    if (geom && geom.w > 0) console.log('· 默认快速出片：卡片 ' + geom.w + '×' + geom.h + '，.props-host ' + (hostInQuick ? '在了（错）' : '不在 ✓'))
-  }
-}
-
-// ── P2 ②：切 pro 再断言 `.props-host`（这页真正"挂起来"的判据）。
+// ── 断言 `.props-host` 挂起来了（这页真正"能打开"的判据）。
 await send('Page.navigate', { url: proUrl })
 
 let mounted = false
@@ -382,9 +354,9 @@ async function b2Scenario(name, action, ms) {
 
 /** 切片段 = **同一个页面里换路由**（不是重新加载文档）—— 这正是 B1 要抓的那条路。 */
 async function switchClip(name) {
-  // ⚠️ 带上 `?mode=pro`：`?mode=pro` 只是**一次性覆盖**、不写 localStorage，
+  // 直接进编辑器（没有模式之分），
   //    换片段（同一个页面里换 hash）时不带上它就会掉回默认 quick，时间轴/标尺整套消失。
-  const hash = '#/p/' + target.pid + '/polish/' + encodeURIComponent(name) + '?mode=pro'
+  const hash = '#/p/' + target.pid + '/polish/' + encodeURIComponent(name)
   return ev("(function(){location.hash='" + hash + "';return location.hash})()")
 }
 /** 拖时间轴标尺（pointerdown → pointermove(window) → pointerup），返回标尺在不在。 */
@@ -564,7 +536,7 @@ if (diagUp.ok) {
   for (const line of diagRows) console.log(line)
   console.log('')
 }
-if (!mounted) problems.push('精修页没挂起来（?mode=pro 下等 30s 没等到 .props-host）—— setup 里多半有立即求值的错误')
+if (!mounted) problems.push('精修页没挂起来（等 30s 没等到 .props-host）—— setup 里多半有立即求值的错误')
 for (const e of exceptions.slice(0, 5)) problems.push('未捕获异常：' + e)
 for (const e of consoleErrors.slice(0, 5)) problems.push('控制台 error：' + e)
 

@@ -18,11 +18,13 @@
       </label>
       <label class="lqs-field">
         <span>API 地址</span>
-        <input v-model.trim="formBaseUrl" type="text" placeholder="https://api.deepseek.com/v1" spellcheck="false">
+        <input v-model.trim="formBaseUrl" type="text" name="llm-base-url" autocomplete="off"
+               placeholder="https://api.deepseek.com/v1" spellcheck="false">
       </label>
       <label class="lqs-field">
         <span>API 密钥</span>
-        <input v-model="formKey" type="password" autocomplete="off" :placeholder="keyPlaceholder" :title="keyTitle">
+        <input v-model="formKey" type="password" name="llm-api-key" autocomplete="new-password"
+               :placeholder="keyPlaceholder" :title="keyTitle">
       </label>
       <label class="lqs-field">
         <span>模型</span>

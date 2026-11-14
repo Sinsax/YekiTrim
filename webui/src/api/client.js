@@ -10,7 +10,11 @@
 import { addClient } from '../stores/log'
 
 /** 成功路径不写日志面板的高频接口（失败照常记）。 */
-const QUIET_OK = [/^\/api\/media\//, /^\/api\/health\b/, /^\/api\/jobs\b/, /^\/api\/stream\b/, /^\/api\/admin\/logs\b/]
+const QUIET_OK = [
+  /^\/api\/media\//, /^\/api\/health\b/, /^\/api\/jobs\b/, /^\/api\/stream\b/, /^\/api\/admin\/logs\b/,
+  // B站下载进度轮询（2.5s 一次）与首页采集记录：成功也写面板会把 2000 条缓冲冲干净。
+  /^\/api\/ingest\/records\b/, /^\/api\/ingest\/sessions\b/,
+]
 
 function nowMs() {
   return typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now()
@@ -56,7 +60,28 @@ function noteFailure(method, path, status, t0, detail, label = '') {
  */
 const DEFAULT_TIMEOUT_MS = 10 * 60_000
 
-export async function api(path, opts = {}) {
+/**
+ * 同一 URL 的**并发 GET 合并**（review D6：精修页一次冷加载 42 个 /api 请求，同一接口被拉 2~3 遍）。
+ *
+ * 只合并**正在飞**的那一次：响应落地立刻从表里删掉 —— 不做时间窗缓存。
+ * 时间窗会让"保存后 reload 拿到旧值"变成常态（那正是本仓最忌讳的"改完没生效"）。
+ * 写请求（POST/PUT/DELETE）与带自定义 `signal` 的调用**永远不合并**。
+ */
+const inflightGet = new Map()
+
+export function api(path, opts = {}) {
+  const method = String((opts && opts.method) || 'GET').toUpperCase()
+  if (method !== 'GET' || (opts && (opts.signal || opts.noDedupe))) return apiOnce(path, opts)
+  const hit = inflightGet.get(path)
+  if (hit) return hit
+  const p = apiOnce(path, opts).finally(() => {
+    if (inflightGet.get(path) === p) inflightGet.delete(path)
+  })
+  inflightGet.set(path, p)
+  return p
+}
+
+async function apiOnce(path, opts = {}) {
   // silent401：调用方自己处理未登录（启动时的 GET /api/me、登录请求），
   // 不让统一 401 分支去跳登录页，否则会绕圈。
   // label：业务说明（「读取片段列表」），进日志更容易对上"刚才点的是什么"。

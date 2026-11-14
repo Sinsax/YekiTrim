@@ -593,12 +593,17 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
   //    「位置→默认 / 大小→默认」那两颗按钮」那句注释 —— 而这次把那段注释整块重写了，
   //    又是 `indexOf` → -1 → `slice(i, -1)` 把整段切到最后。
   //    ⇒ **锚点不该选“可能被重写的说明文字”**，选**紧跟在 `.ss-grid` 后面的另一个小节标题**（它本身就是隔断符）。
-  const ssEnd = polishView.indexOf('<span class="small muted flex-none">弹幕设置</span>')
+  // ⚠️ 锚点又换了一次（2026-11-14）：『显示弹幕』并进『弹幕设置』、后者自己变成开关（`.sw-toggle`），
+  //    `<span class="small muted flex-none">弹幕设置</span>` 不再存在 ⇒ 旧锚点会让 ssTpl 切到 -1 之后（整段）。
+  //    现在锚在**那枚开关自己的闭合标签**上：`>弹幕设置</label>`。
+  const ssEnd = polishView.indexOf('>弹幕设置</label>')
   const ssTpl = polishView.slice(polishView.indexOf('<div class="ss-grid"'), ssEnd)
   check('⑰ 字幕样式块的右端锚点仍然存在（锚点烂了会让下面那条判空转/恒红）',
     ssEnd > polishView.indexOf('<div class="ss-grid"'), true)
-  check('⑰ 字幕样式是两列两行（2 个 .ss-row-2 × 每个 2 条 .ss-row）',
-    (ssTpl.match(/<div class="ss-row-2">/g) || []).length === 2
+  // 2026-11-14 口径：**第 1 行 = 字幕颜色 + 描边颜色 + 白边（3 格，`.cols-3`）**、第 2 行 = 两个数值。
+  check('⑰ 字幕样式 = 两行（第 1 行两色 + 白边三格、第 2 行两个数值）',
+    (ssTpl.match(/<div class="ss-row-2/g) || []).length === 2
+    && /<div class="ss-row-2 cols-3">/.test(ssTpl)
     && (ssTpl.match(/<div class="ss-row"/g) || []).length === 4, true)
   // ⚠️⚠️ 这一条是**两次翻车换来的**，别改松：
   //   ① 只写 `.ss-num { flex:1 1 auto }` 没用 —— `.rv-input`（同特异性、写在文件**后面**）
@@ -700,7 +705,24 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
   // ⚠️ 锚点纪律（两次踩过）：`@change="onDanmakuFontChange"` 在 `<script>` 里也有定义 ⇒ 必须用
   //    剥过注释、且截到 `<script>` 之前的 `tplOnly`；`>显示弹幕<` 那种带尖括号的锚会因为
   //    "那一行是纯文本、前后是换行"而返回 -1 ⇒ 一律用**裸文案 + 唯一绑定字符串**做锚。
+  // ⚠️ **2026-11-14 口径再变**（用户：「显示弹幕并入弹幕设置，用之前主播名那种开关方式」）：
+  //    不再有独立的「显示弹幕」勾选框 —— **「弹幕设置」四个字本身就是开关**（`.sw-toggle`，
+  //    点一下显示/隐藏，亮=显示、灰=不显示）。判据改成钉「开关长在标题自己身上」：
+  //      ① 标题的前一个 `<label` 必须带 `sw-toggle`（否则就是退回普通文字/独立勾选框）；
+  //      ② 那个 label 上必须挂 `toggleLane('danmaku')`（本仓唯一的那枚显示开关）；
+  //      ③ 弹幕字体下拉仍在它后面。
   const dmToggleBesideHead = (s) => {
+    const head = s.indexOf('>弹幕设置</label>')
+    const font = s.indexOf('@change="onDanmakuFontChange"')
+    if (head < 0 || font < 0) return false
+    const open = s.lastIndexOf('<label', head)
+    if (open < 0) return false
+    const tag = s.slice(open, head)
+    return /class="sw-toggle/.test(tag)
+      && /@click\.prevent="toggleLane\('danmaku'\)"/.test(tag)
+      && font > head
+  }
+  const dmToggleBesideHead_OLD = (s) => {
     const head = s.indexOf('弹幕设置')
     const lbl = s.indexOf('显示弹幕')
     const bind = s.indexOf("toggleLane('danmaku')")
@@ -724,14 +746,12 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
     const blockish = /<(div|p|section|ul|ol|h[1-6]|tr|li)\b[^>]*>/.test(window)
     return head < lbl && lbl < font && bind <= lbl + 20 && !blockish
   }
-  check('⑰ 「显示弹幕」与「弹幕设置」标题同一行、且字体下拉在它后面',
+  check('⑰ 「弹幕设置」自己就是显示开关（.sw-toggle + toggleLane），字体下拉在它后面',
     dmToggleBesideHead(tplOnly), true)
   {
-    // 变异：把标题换成块级容器 ⇒ 勾选框必然掉到下一行（那正是本次修掉的"独立一行"形态）。
-    const bad = tplOnly.replace(
-      '<span class="small muted flex-none">弹幕设置</span>',
-      '<div class="small muted">弹幕设置</div>')
-    check('⑰ [变异] 标题与勾选框之间夹换行容器 → 判据翻面', dmToggleBesideHead(bad), false)
+    // 变异：把这枚开关的点击绑定摘掉（退回"只剩文字"）⇒ 判据必须翻面。
+    const bad = tplOnly.replace('@click.prevent="toggleLane(\'danmaku\')"', '')
+    check('⑰ [变异] 把「弹幕设置」退回普通文字 → 判据翻面', dmToggleBesideHead(bad), false)
   }
   check('⑰ 字体行有 `min-width:0`（否则中文标签 + 两颗按钮会横向溢出）',
     /\.ss-font-row \{ display:flex; align-items:center; gap:6px; min-width:0/.test(polishView), true)
@@ -798,7 +818,15 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
 // ── ⑱ 弹幕字体 / 显示开关（无独立泳道 ⇒ 住字幕轨面板；量宽与渲染同族）（2026-10-06）──
 {
   const noDanmakuLane = (s) => !s.includes("lane: 'danmaku'")
-  const dmToggleInPanel = (s) => s.includes("@change=\"toggleLane('danmaku')\"")
+  // 2026-11-14：显示开关不再是 checkbox，而是「弹幕设置」这个 `.sw-toggle` 标签（点标签切换）。
+  const dmToggleInPanel = (s) => {
+    const head = s.indexOf('>弹幕设置</label>')
+    if (head < 0) return false
+    const open = s.lastIndexOf('<label', head)
+    if (open < 0) return false
+    const tag = s.slice(open, head)
+    return /class="sw-toggle/.test(tag) && /@click\.prevent="toggleLane\('danmaku'\)"/.test(tag)
+  }
   const dmFontSaves = (s) => s.includes('saveProjectPatch(pid.value, dir.value, { danmaku_font: next })')
   // ⚠️ **2026-10 口径再变一次**（用户：「弹幕设置的字体为什么还显示跟字幕？字幕不是乐米波波体，
   //   而弹幕默认为 noto」）：空值从"跟随字幕那条字体栈"改成**出厂默认文字字体**（`Noto Sans SC`）。
@@ -852,7 +880,7 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
     ['预览又改回"跟随字幕"（预览与成片不一致的老病）', engineJs, (s) => s.replace(`const fam = own || '${DM_DEFAULT}'`, 'const fam = own || (cfg.style && cfg.style.subtitle && cfg.style.subtitle.font)'), measOk],
     ['转译器退回 `Sans`（成片与预览分叉、且不报错）', translator, (s) => s.replace('font: dmStyle.font || DEFAULT_DANMAKU_FONT', "font: dmStyle.font ?? 'Sans'"), translatorMatches],
     ['转译器改回不填默认（空值一直传到 libass）', translator, (s) => s.replace('fontFamilyFor(dmStyle.font || DEFAULT_DANMAKU_FONT)', 'fontFamilyFor(dmStyle.font)'), translatorMatches],
-    ['弹幕面板里那枚显示开关摘掉', polishView, (s) => s.replace("@change=\"toggleLane('danmaku')\"", ''), dmToggleInPanel],
+    ['弹幕面板里那枚显示开关摘掉', polishView, (s) => s.replace("@click.prevent=\"toggleLane('danmaku')\"", ''), dmToggleInPanel],
   ]
   for (const [what, src, mutate, still] of MUT18) {
     const m = mutate(src)

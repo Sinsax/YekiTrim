@@ -2,7 +2,7 @@ import { createRouter, createWebHashHistory } from 'vue-router'
 import { projectData } from './api/projectData'
 import { setScope } from './api/scope'
 import { SETTINGS_SECTIONS, STAGE_EVENTS_READY } from './utils'
-import { localNoAuth, localNoAuthKnown } from './stores/health'
+import { localNoAuth, multiUser, multiUserKnown } from './stores/health'
 import { authState, isAuthed, loadMe } from './stores/auth'
 import { addClient } from './stores/log'
 import { lastPath } from './stores/workbench'
@@ -28,10 +28,13 @@ async function projectEntryGuard(to) {
 // 五块内容都在同一个 SettingsView 里（表单状态、/api/config 加载与保存都在那一个文件），靠 props.section 切；
 // 拆成独立组件要额外铺一层 props/emit，收益不抵成本。子页各自带 meta.admin —— 守卫读的是**最终落到**的
 // 路由（`/settings` 那条 redirect 不参与判定），它落到最常用的「程序配置」。
+// ⚠️ D2②：`admin` 位来自 `SETTINGS_SECTIONS[].adminOnly`（utils.js 唯一来源）——
+// 「处理 / AI 模型」配置按账号分文件存储（users/<uid>/.yekitrim/），普通账号**应该**能配自己的；
+// 「接入 / 系统」动的是部署与账本，仍然 admin-only。
 const SETTINGS_ROUTES = SETTINGS_SECTIONS.map((s) => ({
   path: `/settings/${s.key}`,
   name: `settings-${s.key}`,
-  meta: { admin: true, settings: true, title: s.label },
+  meta: { admin: s.adminOnly === true, settings: true, title: s.label },
   props: { section: s.key },
   component: () => import('./views/SettingsView.vue')
 }))
@@ -55,6 +58,9 @@ const routes = [
   },
   { path: '/ingest', name: 'ingest', component: () => import('./views/IngestView.vue') },
   { path: '/settings', redirect: '/settings/config' },
+  // 旧设置子页（账号 / 用量与诊断）已并入「系统」
+  { path: '/settings/account', redirect: '/settings/system' },
+  { path: '/settings/monitor', redirect: '/settings/system' },
   ...SETTINGS_ROUTES,
 
   // ---- 旧路径 redirect（v5 之前的路由全部保留兼容） ----
@@ -79,6 +85,13 @@ const router = createRouter({
 router.beforeEach(async (to) => {
   if (to.name === 'login' || to.name === 'register') {
     if (!authState.ready) await loadMe()
+    // 邀请码注册只在**多人形态**下存在：单人时登录页不露出入口，直接敲 `#/register`
+    // 也不能端出表单（老邀请码可能还躺在账本里，而单人根本没有"第二个人"这回事）。
+    // 判据与登录页/设置页同源（health 缓存里的 `multi_user`），读失败 = false = 单人。
+    if (to.name === 'register' && !isAuthed()) {
+      await multiUser()
+      if (!multiUserKnown()) return { name: 'login' }
+    }
     return isAuthed() ? { path: '/workbench' } : true
   }
   if (!authState.ready) await loadMe()
@@ -88,15 +101,12 @@ router.beforeEach(async (to) => {
   if (to.meta?.admin && authState.user?.role !== 'admin') {
     return { path: '/workbench' }
   }
-  // 服务端能力位（本地免登录）**必须在任何视图挂载之前**就位：视图要靠它做**首帧**决策
-  // （首页默认来源、设置页标签条收缩…），晚一步就会先闪一下另一种布局。
-  // 它有缓存（store 内 pending），所以这里 await 不会每次导航都发请求。
+  // 服务端能力位（本地免登录 / 多人开关）**必须在任何视图挂载之前**就位：视图要靠它做**首帧**决策
+  // （首页默认来源、设置页标签条收缩、系统页的邀请码/配额、入库的「指派给…」……），晚一步就会先闪一下
+  // 另一种布局。它有缓存（store 内 pending），所以这里 await 不会每次导航都发请求；
+  // 两个位共享同一份 health 缓存，第二个 await 只是取已知值。
   await localNoAuth()
-  // 本地免登录模式没有"注册/邀请"这回事：直接输网址也要挡回程序配置页
-  // （标签条里也过滤掉了那一项，见 SettingsView —— 两处都读同一个 health store）。
-  if (to.name === 'settings-account' && localNoAuthKnown()) {
-    return { path: '/settings/config' }
-  }
+  await multiUser()
   return true
 })
 

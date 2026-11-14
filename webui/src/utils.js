@@ -276,18 +276,24 @@ export const STEPS = [
 
 // 设置页的子页（与路由 / 页内标签条 / 面包屑共用）：key 既是路径段也是路由名后缀（settings-<key>）。
 // 顺序 = 标签条顺序；`/settings` 落到第一项。
+//
+// 子页显隐标记（导航过滤在 `SettingsView.vue::visibleSections`，**路由仍然注册** —— 隐藏 ≠ 删除）：
+//   · `localHidden: true` —— **本地免登录**（`/api/health.local_no_auth`）时不显示；
+//   · `multiOnly: true`    —— **单人**（`/api/health.multi_user === false`，默认）时不显示，
+//                             与 `localHidden` 语义相反。只收「整个子页都只属于多人部署」的项；
+//                             页内只有部分块属于多人的（如「系统」页的邀请码/配额）别标整页，
+//                             在模板里对那块单独 `v-if="multiUser"`。
+// 当前四项都不带这两个标记：`system` 里邀请码/配额只藏块，LLM 用量与运行日志单人也要用。
+// ⚠️ `adminOnly: true`（D2②）＝ **普通账号整页不可见/进不去**（路由守卫 + 导航过滤同一判据）：
+// 「接入」动的是部署级采集/下载配置、「系统」动的是账号与账本 —— 都是"这台机器"的事；
+// 「处理」与「AI 模型」按 Owner 分文件存储（`users/<uid>/.yekitrim/`），本来就账号隔离 ⇒ 放开。
 export const SETTINGS_SECTIONS = [
-  { key: 'config', label: '识别与检测', sub: '转写 / 检测 / 剪切，写入 .yekitrim/config.toml' },
-  // ⚠️ 副标题要带上"提示词"：那一组写的是 **config.toml 的 [detection]**（不是 llm.toml），
-  //    只是摆在这一页。不写出来，用户会以为这页所有东西都落在 llm.toml 里。
-  { key: 'llm', label: 'AI 模型', sub: '接口 / 密钥 / 模型 / 并发（llm.toml）· 提示词与参考标题（config.toml）' },
-  // 本地免登录模式下整页不显示（没有注册/邀请这回事）—— `localHidden` 由
-  // SettingsView 的标签过滤与 router 的守卫共同执行，两处都读 `stores/health.js`。
-  // ⚠️ ASR 模型管理**不在这里**：它搬去首页当「运行状况」面板了（那是全机共享的资源，
-  //    跟"谁在登录"无关，摆在账号页只会让人以为它是按用户分的）。
-  { key: 'account', label: '账号', sub: '注册与邀请码', localHidden: true },
-  { key: 'integrations', label: '采集与下载', sub: '录播姬 / Webhook 与 B 站链接下载' },
-  { key: 'monitor', label: '用量与诊断', sub: 'LLM 用量账本 与 运行日志' }
+  { key: 'config', label: '处理', sub: '转写 / 检测 / 剪切' },
+  { key: 'llm', label: 'AI 模型', sub: '接口 / 密钥 / 模型 / 提示词' },
+  { key: 'integrations', label: '接入', sub: 'biliLive-tools / 录播姬 / B站下载 / 存储', adminOnly: true },
+  // 账号与诊断合并：它们都是"这台机器/这个部署"的事，不是日常处理参数。
+  // 单人（默认）时「账号与邀请」「账号配额」两块隐藏，多人（`[auth] multi_user = true`）原样回来。
+  { key: 'system', label: '系统', sub: '账号与邀请 · LLM 用量 · 运行日志', adminOnly: true }
 ]
 
 /** 路由名（settings-llm）或子页 key（llm）→ 子页定义；认不出来时回第一项（程序配置）。 */

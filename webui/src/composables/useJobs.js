@@ -39,11 +39,23 @@ let inflight = null
  *  每条都去拉一次列表会把 `/api/jobs` 打成洪水。 */
 let coalesceTimer = null
 
+/**
+ * 首轮成功加载只**播种** prevStatus、不触发 done 通知。
+ *
+ * `GET /api/jobs` 回的是**全部历史**（`JobManager::list_scoped` 无条数上限，服务端内存里留着），
+ * 首轮若把每条终态任务都当成"刚刚结束"，就会对每条各触发一次失效矩阵
+ * （`App.vue` 里 = invalidate + loadProjectData(force) + loadProjects ⇒ 4N 个请求），
+ * 还会先把缓存清空、让侧栏与首页读数闪一次 0。只有"首轮之后新出现的终态"才算真的刚结束。
+ */
+let seeded = false
+
 /** 任务列表里刚出现的终态 → 通知失效矩阵。 */
 function detectDone() {
+  const seed = !seeded
+  seeded = true
   for (const j of jobs.value) {
     const prev = prevStatus.get(j.id)
-    if (prev !== j.status && ['succeeded', 'failed', 'cancelled'].includes(j.status)) {
+    if (!seed && prev !== j.status && ['succeeded', 'failed', 'cancelled'].includes(j.status)) {
       for (const fn of doneWatchers) {
         try { fn(j) } catch (e) { /* 监听方自己兜错 */ }
       }
@@ -152,6 +164,7 @@ function stop() {
   started = false
   jobs.value = []
   prevStatus.clear()
+  seeded = false
   lastLoadedAt.value = 0
   lastError.value = ''
   stale.value = true

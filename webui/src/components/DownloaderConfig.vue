@@ -44,7 +44,32 @@
             <span v-if="installBusy" class="spinner"></span>
             {{ status.ready ? '重新下载并校验' : '下载并校验' }}
           </button>
+          <!-- 安装进度：测速选路（≤4s）→ 下载（真实字节数）→ 校验 -->
+          <div v-if="installBusy" class="dl-prog">
+            <div class="dl-bar"><i :style="{ width: (installPct ?? 0) + '%' }"></i></div>
+            <div class="muted small dl-lab">
+              {{ installPhase }}<template v-if="installPct !== null"> · {{ installPct }}%（{{ installMb }}）</template>
+            </div>
+          </div>
         </div>
+      </div>
+
+      <!-- ═══ 出网代理：境外大文件（yt-dlp 二进制）走它 ═══ -->
+      <div class="form-section">
+        <div class="form-section-title">出网代理</div>
+        <label class="fld mt-12">
+          <span class="lbl">代理地址</span>
+          <input
+            v-model.trim="form.proxy"
+            class="mono"
+            placeholder="socks5h://127.0.0.1:20170（留空 = 直连）"
+            autocomplete="off"
+            name="ingest-proxy"
+          >
+          <span class="muted small" title="http:// https:// socks5:// socks5h:// 均支持；socks5h = 远程 DNS，墙外站点建议用它">
+            装下载器时走它；留空 = 直连
+          </span>
+        </label>
       </div>
 
       <!-- ═══ 引擎与路径（逃生舱） ═══ -->
@@ -90,14 +115,9 @@
           <button class="mini-btn" @click="pickTarget = 'dir'; showPicker = true">浏览…</button>
           <button v-if="form.projects_root" class="mini-btn" @click="form.projects_root = ''">恢复默认</button>
         </div>
-        <span class="muted small">
-          <b>下载与入库都落在这里</b>，布局是
-          <span class="mono">&lt;这里&gt;/users/&lt;账号&gt;/&lt;房间或 BV 号&gt;/&lt;时间戳&gt;-&lt;pid&gt;</span>。
-          录播姬入库与本机导入共用这个根
-        </span>
-        <span class="muted small">
-          当前生效：<span class="mono">{{ effectiveRoot }}</span>
-          <span class="muted" title="不存在时保存会创建；只影响新建项目">（留空 = 程序目录）</span>
+        <span class="muted small"
+              title="布局：&lt;这里&gt;/users/&lt;账号&gt;/&lt;房间或 BV 号&gt;/&lt;时间戳&gt;-&lt;pid&gt;；下载、录播姬入库与本机导入共用这个根">
+          下载与入库都落在这里 · 当前：<span class="mono">{{ effectiveRoot }}</span>
         </span>
       </label>
 
@@ -112,9 +132,7 @@
           <select v-model="form.max_quality">
             <option v-for="q in QUALITIES" :key="q.value" :value="q.value">{{ q.label }}</option>
           </select>
-          <span class="muted small">
-            下载一律偏好 <span class="mono">H.264</span>（默认会选到 HEVC，WebUI 预览放不出来）。
-          </span>
+          <span class="muted small" title="默认会选到 HEVC，WebUI 预览放不出来，所以强制 H.264">优先 H.264（预览可放）</span>
         </label>
 
         <label class="fld">
@@ -126,9 +144,7 @@
         <label class="fld">
           <span class="lbl">同时下载数</span>
           <input v-model.number="form.max_concurrent_downloads" type="number" min="1" max="8">
-          <span class="muted small">
-            <b>建议保持 1</b>：B站的 412 风控与 IP 频次相关，调大更容易被拦。
-          </span>
+          <span class="muted small" title="B站 412 风控与 IP 频次相关，调大更容易被拦">建议保持 1（B站风控）</span>
         </label>
 
         <label class="fld">
@@ -240,6 +256,7 @@ const status = ref({ ready: null, verified: false, kind: '', pinned_version: '',
 const effectiveRoot = ref('')
 
 const form = ref({
+  proxy: '',
   engine: 'yt-dlp',
   ytdlp_path: '',
   max_quality: '1080p',
@@ -270,6 +287,8 @@ function applyView(d) {
   form.value.max_concurrent_downloads = x.max_concurrent_downloads ?? 1
   form.value.cookie_file = x.cookie_file || ''
   form.value.idle_timeout_secs = x.idle_timeout_secs ?? 120
+  // 出网代理在 `[ingest] proxy`（不分下载器种类）：装 yt-dlp 二进制时用它
+  form.value.proxy = d?.proxy || ''
   // 存放位置在 `[storage]`（不属于 `[ingest]`）：下载与入库共用一个根
   const st = d?.storage || {}
   form.value.projects_root = st.projects_root || ''
@@ -305,8 +324,35 @@ async function load() {
   }
 }
 
+/** 安装进度：`part_bytes/total_bytes` 来自 `/api/ingest/downloader`（真实字节数） */
+const installPhase = ref('测速选路…')
+const installPct = ref(null)
+const installMb = ref('')
+let installPoll = null
+
+function trackInstall() {
+  // 阶段显示：0–5s = 服务端在竞速选路；之后按 `/api/ingest/downloader` 的
+  // `part_bytes/total_bytes`（托管目录里 `.part*` 的真实字节数）画进度
+  installPhase.value = '测速中…'
+  installPct.value = null
+  const t0 = Date.now()
+  installPoll = setInterval(async () => {
+    if ((Date.now() - t0) / 1000 < 5) return
+    installPhase.value = '下载中'
+    try {
+      const d = await ingestApi.downloaderStatus()
+      if (d?.total_bytes > 0) {
+        const got = d.part_bytes || 0
+        installPct.value = Math.min(99, Math.floor(got * 100 / d.total_bytes))
+        installMb.value = `${(got / 1048576).toFixed(1)} / ${(d.total_bytes / 1048576).toFixed(1)} MB`
+      }
+    } catch { /* 状态接口失败不影响下载本身 */ }
+  }, 1500)
+}
+
 async function install() {
   installBusy.value = true
+  trackInstall()
   try {
     const r = await ingestApi.installDownloader()
     await loadStatus()
@@ -314,7 +360,9 @@ async function install() {
   } catch (e) {
     toast('安装失败：' + e.message, 'err')
   } finally {
+    clearInterval(installPoll)
     installBusy.value = false
+    installPct.value = null
   }
 }
 
@@ -331,6 +379,7 @@ async function save() {
   try {
     const custom = form.value.engine === '__custom__'
     const d = await ingestApi.saveConfig({
+      proxy: form.value.proxy || '',
       download: {
         // 引擎名：选内置就写 "yt-dlp"（服务端据此走托管副本）；
         // 选自备时把路径直接当引擎名传 —— 服务端把它当"绝对路径"解析（见 DownloaderKind::parse）。
@@ -371,4 +420,12 @@ onMounted(load)
 .lbl { font-size:12px; font-weight:600; }
 .fld input, .fld select { width:100%; }
 .warn-t { color:var(--warn, #d18b00); }
+</style>
+
+<style scoped>
+/* 安装进度条：细条 + 一行说明，宽度跟按钮那一列走 */
+.dl-prog { margin-top:8px; }
+.dl-bar { height:6px; border-radius:3px; background:var(--bg-soft); overflow:hidden; }
+.dl-bar > i { display:block; height:100%; width:0; background:var(--grad-main); transition:width .3s; }
+.dl-lab { margin-top:4px; }
 </style>
