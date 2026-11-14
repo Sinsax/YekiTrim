@@ -3,7 +3,6 @@ import { reactive } from 'vue'
 
 const LS_SIDE = 'yekitrim.ui.sideCollapsed'
 const LS_FRAG = 'yekitrim.ui.fragRows'
-const LS_MODE = 'yekitrim.polish.mode'
 
 // 启动时同步读取：侧栏折叠态必须在首帧就生效（否则会先展开再收起来，闪一下）
 function readSideCollapsed() {
@@ -23,17 +22,6 @@ function readFragRows() {
   }
 }
 
-/** 出片页模式：`'quick'`（默认，快速出片）/ `'pro'`（精修）。
- *
- *  ⚠️ **模块初始化时同步读取**（与 `readSideCollapsed` 同一条理由）：放在 computed 里读会
- *  先渲染一帧专业视图再切快速，界面闪一下、时间轴/封面也跟着白挂载一次。 */
-function readPolishMode() {
-  try {
-    return localStorage.getItem(LS_MODE) === 'pro' ? 'pro' : 'quick'
-  } catch {
-    return 'quick'
-  }
-}
 
 export const ui = reactive({
   jobs: false,
@@ -41,8 +29,6 @@ export const ui = reactive({
   sideCollapsed: readSideCollapsed(),
   /** 精修页顶部片段卡：1 行 / 2 行 */
   fragRows: readFragRows(),
-  /** 出片页快速/精修（`yekitrim.polish.mode`，默认 `'quick'`） */
-  polishMode: readPolishMode()
 })
 
 export function openJobs() {
@@ -65,15 +51,5 @@ export function toggleFragRows() {
   ui.fragRows = ui.fragRows === 2 ? 1 : 2
   try {
     localStorage.setItem(LS_FRAG, String(ui.fragRows))
-  } catch {}
-}
-
-/** 出片页快速出片 ↔ 精修（写盘，下次进来沿用）。
- *  `?mode=pro` 那种**一次性覆盖**不经过这里 —— 视图自己拿 route.query 决定，不写盘。 */
-export function setPolishMode(mode) {
-  const next = mode === 'pro' ? 'pro' : 'quick'
-  ui.polishMode = next
-  try {
-    localStorage.setItem(LS_MODE, next)
   } catch {}
 }

@@ -20,7 +20,10 @@ export const paths = {
   polishMap: (pid) => `/api/project-data/polish?${scopeQ(pid)}`,
   config: (pid) => `/api/project-data/config?${scopeQ(pid)}`,
   thumb: (pid, rank) =>
-    `/api/project-data/clips/${encodeURIComponent(rank)}/thumb?${scopeQ(pid)}`
+    `/api/project-data/clips/${encodeURIComponent(rank)}/thumb?${scopeQ(pid)}`,
+  /** 发布标题（写 `output/publish_config.json` 的 `clips[].title`，投稿链路读它） */
+  clipTitle: (pid, name) =>
+    `/api/project-data/clips/${encodeURIComponent(name)}/title?${scopeQ(pid)}`
 }
 
 export const projectData = {
@@ -31,6 +34,12 @@ export const projectData = {
   status: (pid, label) => api(paths.status(pid), { label }),
   events: (pid, label) => api(`/api/project-data/events?${scopeQ(pid)}`, { label }),
   clips: (pid, label) => api(paths.clips(pid), { label }),
+  /**
+   * 改一个片段的**发布标题**（不是 `clip.json` 的标题 —— 那份是片段身份，见服务端
+   * `clip_title_put_impl` 的注释）。空串 = 清掉标题。
+   */
+  setClipTitle: (pid, name, title) =>
+    api(paths.clipTitle(pid, name), { method: 'PUT', body: JSON.stringify({ title }), label: '保存发布标题' }),
   polishMap: (pid, label) => api(paths.polishMap(pid), { label }),
   config: (pid, label) => api(paths.config(pid), { label }),
   transcript: (pid, label) => api(`/api/project-data/transcript?${scopeQ(pid)}`, { label }),

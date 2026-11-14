@@ -1,16 +1,18 @@
 <template>
-  <div class="toast-wrap">
-    <div v-for="t in toastState.items" :key="t.id" class="toast" :class="t.type">{{ t.message }}</div>
+  <!-- ⚠️ 定位与堆叠**只有 app.css 一份**（`.toast-wrap` + `.toast`）。
+       这里曾经也写了一遍 `.toast`（卡片底/边距），而全局那份带着 `position:fixed; left:50%` ——
+       两套各覆盖一半属性，子元素仍是 fixed、脱离容器的 flex 流，多条消息会全部叠在屏幕中央。 -->
+  <div class="toast-wrap" aria-live="polite" aria-atomic="false">
+    <div
+      v-for="t in toastState.items"
+      :key="t.id"
+      class="toast"
+      :class="t.type"
+      :role="t.type === 'err' ? 'alert' : 'status'"
+    >{{ t.message }}</div>
   </div>
 </template>
 
 <script setup>
 import { toastState } from '../stores/toast'
 </script>
-
-<style scoped>
-.toast-wrap { position:fixed; top:18px; right:18px; z-index:200; display:flex; flex-direction:column; gap:8px; }
-.toast { padding:8px 16px; border-radius:999px; background:var(--card); border:1px solid var(--line); box-shadow:var(--shadow); font-size:13px; }
-.toast.ok { border-color:var(--green); color:#2FA07E; }
-.toast.err { border-color:var(--red); color:var(--red); }
-</style>

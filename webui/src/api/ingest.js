@@ -54,7 +54,7 @@ export const ingestApi = {
     }),
 
   /** 下载器就绪位（任何登录用户可看；响应里**不含路径**）。 */
-  downloaderStatus: () => api('/api/ingest/downloader'),
+  downloaderStatus: () => api('/api/ingest/downloader', { timeout: 10000 }),
 
   /** 下载内置 yt-dlp（仅 admin；会校验 sha256）。 */
   installDownloader: () => api('/api/admin/downloader/install', { method: 'POST' })

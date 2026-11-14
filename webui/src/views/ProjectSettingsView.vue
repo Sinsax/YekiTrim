@@ -43,7 +43,7 @@
     </div>
 
     <details class="form-adv">
-      <summary>直接编辑 yekitrim.toml<span class="muted small">高级</span></summary>
+      <summary>直接编辑 yekitrim.toml<span class="muted small"> · 高级</span></summary>
       <div class="card mt-8">
         <p class="muted small">保存后阶段推导会立即刷新。</p>
         <textarea v-model="raw" rows="18" class="mono"></textarea>
@@ -76,9 +76,13 @@ const busy = ref(false)
 const listLoaded = ref(false)
 
 const project = computed(() => projectById(pid))
+/** 阶段文案：后端 `current_stage` 只产出 0~4（`config/types.rs`），但**越界值不许悄悄显示成
+ *  "已剪出片段"** —— 原来 `Math.min(s, 4)` 会把 stage=5（或 DB 里的脏值）冒充成第 4 档，
+ *  排查时看不出异常。现在照实报「阶段 N」。 */
+const STAGE_TEXT = ['未开始', '已提取音频', '已识别声音', '已找到亮点', '已剪出片段']
 const stageText = computed(() => {
   const s = Number(project.value?.stage || 0)
-  return ['未开始', '已提取音频', '已识别声音', '已找到亮点', '已剪出片段'][Math.min(s, 4)]
+  return STAGE_TEXT[s] || ('阶段 ' + s)
 })
 
 async function load() {

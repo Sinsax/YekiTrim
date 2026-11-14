@@ -24,6 +24,8 @@ defineEmits(['action'])
 </script>
 
 <style scoped>
+/* 「下一步」条：整页唯一的完成态 CTA，所以给它左侧一条主色强调条 + 更实的底，
+   同时**不加阴影**（它贴在内容流里，浮起来会像一张可点的卡片）。 */
 .next-step {
   display: flex;
   align-items: center;
@@ -32,8 +34,13 @@ defineEmits(['action'])
   margin-bottom: 12px;
   border-color: var(--main-glow);
   background: var(--main-soft);
+  border-left: 3px solid var(--main);
 }
 .ns-body { display: flex; align-items: baseline; gap: 10px; flex: 1; min-width: 0; flex-wrap: wrap; }
-.ns-title { color: var(--main-deep); font-size: 13px; }
+.ns-title { color: var(--ink); font-weight: 650; font-size: 13px; }
 .ns-cta { flex: none; }
+@media (max-width:560px) {
+  .next-step { flex-wrap: wrap; }
+  .ns-cta { width: 100%; justify-content: center; }
+}
 </style>

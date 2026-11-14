@@ -4,6 +4,7 @@
 // 用法：
 //   node webui/scripts/check-simplify.mjs             # 默认按 --phase=P1 检查
 //   node webui/scripts/check-simplify.mjs --phase=P0  # 只查清单/路由（P0 用）
+//   node webui/scripts/check-simplify.mjs --phase P0  # 同上（**空格写法也认**，见 argValue）
 //   node webui/scripts/check-simplify.mjs --mutate    # 额外跑原语自证
 //
 // 判据（只登记"能力入口"，不要求每个按钮都带锚点）：
@@ -21,10 +22,41 @@ import { fileURLToPath } from 'node:url'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const PHASES = { P0: 0, P1: 1, P2: 2, P3: 3 }
-const phaseArg = (process.argv.find((a) => a.startsWith('--phase=')) || '--phase=P1').split('=')[1]
+/**
+ * 取具名参数：`--name=value` 与 `--name value` **两种写法都认**。
+ *
+ * ⚠️ 以前只认带等号那种：写成 `--phase P4` 时匹配不到 ⇒ **静默回落 P1**，照样打印
+ *    「✓ 全过（phase=P1）」并 exit 0 —— 门禁被按 P4 调用、实际只按 P1 判（实测过）。
+ */
+function argValue(name, fallback) {
+  const args = process.argv.slice(2)
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--' + name) return args[i + 1]
+    if (args[i].startsWith('--' + name + '=')) return args[i].slice(name.length + 3)
+  }
+  return fallback
+}
+/** 未识别的 `--` 参数一律报错退出：拼错一个字母就把整条门禁变成空转，不能静默。 */
+function rejectUnknownArgs(known) {
+  const args = process.argv.slice(2)
+  const unknown = []
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]
+    if (!a.startsWith('--')) continue
+    const name = a.includes('=') ? a.slice(0, a.indexOf('=')) : a
+    if (!known.includes(name)) { unknown.push(a); continue }
+    if (!a.includes('=')) i++ // 跳过该参数的值（`--phase P4`）
+  }
+  if (unknown.length) {
+    console.error('未知参数：' + unknown.join(' ') + '（支持：' + known.join(' / ') + '）')
+    process.exit(2)
+  }
+}
+const phaseArg = argValue('phase', 'P1')
 const MUTATE = process.argv.includes('--mutate')
+rejectUnknownArgs(['--phase', '--mutate'])
 if (!(phaseArg in PHASES)) {
-  console.error('未知 --phase：' + phaseArg)
+  console.error('未知 --phase：' + phaseArg + '（支持：' + Object.keys(PHASES).join(' / ') + '）')
   process.exit(2)
 }
 
@@ -69,21 +101,20 @@ for (const [key, s] of Object.entries(manifest.surfaces || {})) {
 }
 check('/models redirect 到 /workbench', /path:\s*'\/models',\s*redirect:\s*'\/workbench'/.test(router))
 
-// 出片模式 / 列表模式：P2 的默认值与一次性覆盖点（缺失 = 回滚成"只能进编辑器"）。
+// 出片页：**2026-11-13 起只有精修一种模式**（用户口径「不留快速切片」）。
+// 这一组断言的方向因此反过来：谁把 quick 模式加回来，谁就红。
 const uiSource = read('webui/src/stores/ui.js')
 const polishView = read('webui/src/views/PolishView.vue')
-check('出片模式默认 quick（readPolishMode）', /readPolishMode/.test(uiSource) && /'quick'/.test(uiSource))
-check('出片模式持久化 key', /yekitrim\.polish\.mode/.test(uiSource))
-check('setPolishMode 导出', /export function setPolishMode/.test(uiSource))
-check('?mode=pro 一次性覆盖', /route\.query\.mode\s*===\s*'pro'/.test(polishView))
-check('?mode=pro 同页切换有 watch', /watch\(\(\)\s*=>\s*route\.query\.mode/.test(polishView))
-check('手动切模式会清掉 ?mode=pro', /delete q\.mode/.test(polishView))
-check('?list=1 列表模式', /route\.query\.list\s*===\s*'1'/.test(polishView))
+check('出片页没有快速模式（无 quick-col 子树）', !/quick-col/.test(polishView))
+check('出片页没有模式分段控件（polish.quick-mode 锚点已删）', !/polish\.quick-mode/.test(polishView))
+check('出片页没有 ?mode=pro 覆盖入口', !/route\.query\.mode/.test(polishView))
+check('ui store 不再持久化出片模式', !/yekitrim\.polish\.mode/.test(uiSource) && !/setPolishMode/.test(uiSource))
+check('?list=1 列表模式仍在', /route\.query\.list\s*===\s*'1'/.test(polishView))
 
-// 运行期页面探针：P2 后默认 quick，必须覆盖 quick/pro 两条路径（否则等于没测）。
+// 运行期页面探针：只测精修编辑器这一条路径。
 const pageGate = read('webui/scripts/check-polish-page-loads.mjs')
 check('页面探针支持 chromium', /\/usr\/bin\/chromium/.test(pageGate))
-check('页面探针覆盖 quick 与 pro', /quick-col/.test(pageGate) && /mode=pro/.test(pageGate))
+check('页面探针测的是精修编辑器（不再分 quick/pro）', !/quick-col/.test(pageGate) && !/mode=pro/.test(pageGate))
 
 // retired[] 审计：退役能力不许还留在能力清单里（否则"删了又登记"看不出来）。
 for (const r of manifest.retired || []) {

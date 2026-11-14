@@ -3,35 +3,55 @@
     <!-- 卡片两行（用户要求）：第一行只放箭头 + 项目名，第二行放来源徽标 + 状态 chip + 删除。
          单行时名字要跟「来源徽标 / 状态 chip / ×」分 268px 的侧栏宽度，长名基本只露出前几个字
          （`.nm` 是 nowrap + ellipsis）；徽标让到第二行后名字独占整行，能多显示约一倍字数。
-         `×` 也一并下移：它虽然 opacity:0，但**一直占着布局宽度**，留在第一行会白吃掉名字的空间。 -->
-    <div class="proj-head" @click="toggle">
-      <div class="prow">
-        <span class="tw">▶</span>
-        <span class="nm" :title="p.name" @mouseenter="startMarquee" @mouseleave="stopMarquee">
+         `×` 也一并下移：它虽然 opacity:0，但**一直占着布局宽度**，留在第一行会白吃掉名字的空间。
+
+         ⚠️ 第一行是**真按钮**（不是可点 div）：原来整块 `.proj-head` 挂 @click，键盘 Tab 到不了，
+         而里面还嵌着删除按钮 —— 直接给它 role="button" 会造成嵌套交互元素。
+         现在「箭头 + 项目名」= 一个按钮，删除独立成另一个按钮，两者不再互相嵌套。 -->
+    <div class="proj-head">
+      <button
+        class="proj-toggle"
+        type="button"
+        :aria-label="p.name"
+        :aria-expanded="expanded ? 'true' : 'false'"
+        :aria-controls="stepsId"
+        :title="expanded ? '收起项目' : '展开项目'"
+        @click="toggle"
+      >
+        <span class="tw" aria-hidden="true">▶</span>
+        <span class="nm" @mouseenter="startMarquee" @mouseleave="stopMarquee">
           <span ref="nameTextEl" class="nm-text" :class="{ marquee: marqueeOn }" :style="marqueeStyle">{{ p.name }}</span>
         </span>
-      </div>
+      </button>
       <div class="prow pmeta">
         <span class="src-badge" :class="badgeClass" :title="sourceLabel(p)">{{ sourceBadge(p) }}</span>
         <span class="chip badge" :class="progressChip">{{ currentLabel }}</span>
-        <button class="mini-btn del" title="从列表移除（不动目录里的任何文件）" @click.stop="emit('remove', p)">×</button>
+        <button
+          class="mini-btn del"
+          type="button"
+          :aria-label="`移除项目：${p.name}`"
+          title="从列表移除（不动目录里的任何文件）"
+          @click.stop="emit('remove', p)"
+        >×</button>
       </div>
     </div>
-    <div v-show="expanded" class="proj-steps">
+    <div v-show="expanded" :id="stepsId" class="proj-steps">
       <!-- 只标两件事：**当前位置**（选中的项目 + 该项目正在看的阶段）与**已完成阶段的打勾**。
            打勾**只有「预处理」**会拿到（见 nodeDone）：切片/精修是持续活动、没有终态。
            原来还有一档 `cur`（progress === i+1，走到的最远阶段）的粉底高亮，用户要求删掉 ——
            它和"我在哪"是两套信号，同时亮反而看不出哪个是当前。 -->
-      <div
+      <button
         v-for="s in STEPS"
         :key="s.key"
         class="snode"
+        type="button"
         :class="{ done: nodeDone(s.key), viewing: current && viewing === s.key }"
+        :aria-current="current && viewing === s.key ? 'page' : undefined"
         @click="emit('open', { pid: p.id, step: s.key })"
       >
-        <span class="ic">{{ nodeDone(s.key) ? '✓' : '' }}</span>{{ s.name }}
+        <span class="ic" aria-hidden="true">{{ nodeDone(s.key) ? '✓' : '' }}</span>{{ s.name }}
         <span v-if="runningPct(s.key) != null" class="pct">{{ runningPct(s.key) }}%</span>
-      </div>
+      </button>
       <div class="snode size-node"><span class="size-tag">占用 {{ humanBytes(p.bytes) }}</span></div>
     </div>
   </div>
@@ -56,6 +76,9 @@ const props = defineProps({
   running: { type: Object, default: null }
 })
 const emit = defineEmits(['open', 'remove', 'toggle'])
+
+/** `aria-controls` 要指向真实的容器 id；一个侧栏里可能同时展开多个项目，必须带 pid 去重 */
+const stepsId = computed(() => `proj-steps-${props.p.id}`)
 
 const detail = computed(() => {
   const c = cacheOf(props.p.id)
@@ -147,12 +170,21 @@ function toggle() {
    scoped 规则的 `[data-v]` 让它 (0,2,0) 压过 app.css 的 `.proj-head` (0,1,0)。 */
 .proj-head { flex-direction:column; align-items:stretch; gap:4px; }
 .prow { display:flex; align-items:center; gap:8px; min-width:0; }
+/* 第一行按钮：铺满整行、贴左，去掉按钮默认外观；箭头与名字的排布与原 `.prow` 一致 */
+.proj-toggle { display:flex; align-items:center; gap:8px; width:100%; min-width:0;
+  padding:0; background:none; border:none; color:inherit; text-align:left; cursor:pointer; }
 /* 第二行缩进到名字的左缘：箭头宽 10px + 行内 gap 8px = 18px */
 .pmeta { padding-left:18px; }
 /* `×` 钉住不压缩：`.mini-btn` 没写 flex，默认是可收缩的（虽然它平时 opacity:0）。
-   从第一行下移到第二行后，靠 margin-left:auto 顶到最右端。 */
+   从第一行下移到第二行后，靠 margin-left:auto 顶到最右端。
+   ⚠️ 键盘 focus 与触屏（没有 hover）也必须能看见它 —— 只写 `:hover` 时，
+   键盘用户 Tab 到一颗完全透明的按钮上，属于"焦点不可见"。 */
 .proj-head .del { padding:1px 7px; flex:none; opacity:0; margin-left:auto; }
-.proj-head:hover .del { opacity:1; }
+.proj-head:hover .del,
+.proj-head:focus-within .del { opacity:1; }
+@media (hover:none) {
+  .proj-head .del { opacity:.75; }
+}
 .badge { font-size:10px; }
 /* 进度 chip（如「预处理 42%」）保持完整单词显示：不许被长名挤瘪换行 */
 .proj-head .badge { flex:none; white-space:nowrap; }

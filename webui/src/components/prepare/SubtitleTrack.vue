@@ -1,5 +1,5 @@
 <template>
-  <div class="sub-editor">
+  <div class="sub-editor" :class="{ 'is-off': disabled }">
     <!-- 字幕属性：**常驻横排**在时间轴上方（用户要求：不要右侧竖面板）。
          未选中时字段禁用 + 一句提示，位置固定不跳、不占轨道宽度。
          操作与精修预览的「字幕属性」同款：内容 / 起止秒数 / 当前设为入点·出点 / 拆分 / 删除。 -->
@@ -11,7 +11,7 @@
         <input
           ref="textRef"
           :value="draftText"
-          :disabled="!selSeg"
+          :disabled="disabled || !selSeg"
           placeholder="这条字幕的文本"
           @input="onTextInput"
         >
@@ -19,23 +19,24 @@
 
       <div class="pb-item pb-num">
         <label>开始</label>
-        <input :value="fmtNum(selStart)" :disabled="!selSeg" type="number" step="0.01" min="0" @change="onTimeChange('start', $event)">
+        <input :value="fmtNum(selStart)" :disabled="disabled || !selSeg" type="number" step="0.01" min="0" @change="onTimeChange('start', $event)">
       </div>
       <div class="pb-item pb-num">
         <label>结束</label>
-        <input :value="fmtNum(selEnd)" :disabled="!selSeg" type="number" step="0.01" @change="onTimeChange('end', $event)">
+        <input :value="fmtNum(selEnd)" :disabled="disabled || !selSeg" type="number" step="0.01" @change="onTimeChange('end', $event)">
       </div>
 
       <div class="pb-actions">
-        <button class="mini-btn" :disabled="!selSeg" title="把当前播放时间设为这条字幕的开始" @click="setStartToCurrent">当前设为入点</button>
-        <button class="mini-btn" :disabled="!selSeg" title="把当前播放时间设为这条字幕的结束" @click="setEndToCurrent">当前设为出点</button>
-        <button class="mini-btn" :disabled="!selSeg || !canSplit" title="以当前播放时间把这条字幕拆成两条" @click="splitAtCurrent">拆分</button>
-        <button class="mini-btn" :disabled="!selSeg" title="跳到这条字幕的开始" @click="seekSelected">定位</button>
-        <button class="mini-btn danger" :disabled="!selSeg" title="删除这条字幕" @click="deleteSelected">删除</button>
+        <button class="mini-btn" :disabled="disabled || !selSeg" title="把当前播放时间设为这条字幕的开始" @click="setStartToCurrent">当前设为入点</button>
+        <button class="mini-btn" :disabled="disabled || !selSeg" title="把当前播放时间设为这条字幕的结束" @click="setEndToCurrent">当前设为出点</button>
+        <button class="mini-btn" :disabled="disabled || !selSeg || !canSplit" title="以当前播放时间把这条字幕拆成两条" @click="splitAtCurrent">拆分</button>
+        <button class="mini-btn" :disabled="disabled || !selSeg" title="跳到这条字幕的开始" @click="seekSelected">定位</button>
+        <button class="mini-btn danger" :disabled="disabled || !selSeg" title="删除这条字幕" @click="deleteSelected">删除</button>
       </div>
 
       <span class="pb-meta muted small">
         <template v-if="selSeg">{{ fmtSec(selStart) }} → {{ fmtSec(selEnd) }} · 时长 {{ fmtSec(Math.max(0, selEnd - selStart)) }}</template>
+        <template v-else-if="disabled">字幕未加载（读取失败），已暂停编辑与保存</template>
         <template v-else>点轨道上的字幕块来编辑</template>
       </span>
     </div>
@@ -72,7 +73,9 @@
       <div class="sub-labels">
         <div class="sub-label">
           <span>字幕</span>
-          <button class="lane-add" title="在当前位置新增一条字幕" @click="addAtCurrent"><Icon name="plus" :size="11" /></button>
+          <button class="lane-add" :disabled="disabled"
+                  :title="disabled ? '字幕未加载（读取失败），已暂停编辑' : '在当前位置新增一条字幕'"
+                  @click="addAtCurrent"><Icon name="plus" :size="11" /></button>
         </div>
         <div class="sub-label ruler-label">时间</div>
       </div>
@@ -147,9 +150,18 @@ const props = defineProps({
   /** **多段切片的全部区间**（`[{start,end}, …]`）：每一段都在轨道上画一条色带 */
   ranges: { type: Array, default: () => [] },
   /** 正在编辑的那一段（0 基）：它的色带更亮 */
-  activeRange: { type: Number, default: 0 }
+  activeRange: { type: Number, default: 0 },
+  /** **写闸**（父页面读失败 / 项目不存在时传 true）：整块只读，任何编辑都不再发 `save`。
+   *  父层 `saveSubs` 也有一道同样的闸 —— 这里是为了让"现在改不动"当场可见（而不是点了没反应）。 */
+  disabled: { type: Boolean, default: false }
 })
 const emit = defineEmits(['save', 'seek'])
+
+/** 写闸（见 props.disabled）：所有"会产生 `save`"的入口都先问它一句。
+ *  只挡写、不挡读：选中/搜索/缩放/播放头跟随照常（用户仍能看、能定位）。 */
+function blocked() {
+  return props.disabled === true
+}
 
 /** 缩放档位（像素/秒）：从"全长度刚好一屏"到 120（逐字级）。
  *  ⚠️ **最下面那一档是动态算的**（用户 2026-10-06：「最大还是定为全长度吧，还是很有必要」）：
@@ -440,6 +452,7 @@ watch(() => selSeg.value?.text, (t) => {
 
 /** 用 patch 覆盖当前选中段，emit 给父组件（父组件负责防抖落盘）。 */
 function emitPatch(patch, opts = {}) {
+  if (blocked()) return
   const i = selected.value
   const s = props.segments[i]
   if (!s) return
@@ -462,11 +475,13 @@ function selectSeg(i) {
 }
 
 function onTextInput(e) {
+  if (blocked()) return
   draftText.value = e.target.value
   emitPatch({ text: draftText.value })
 }
 
 function onTimeChange(field, e) {
+  if (blocked()) return
   const el = e.target
   const v = Number(el.value)
   if (!Number.isFinite(v)) { el.value = fmtNum(field === 'start' ? selStart.value : selEnd.value); return }
@@ -486,20 +501,21 @@ function seekSelected() {
 }
 
 function setStartToCurrent() {
-  if (!selSeg.value) return
+  if (blocked() || !selSeg.value) return
   const t = round2(Math.max(0, Number(props.currentTime) || 0))
   if (t >= selEnd.value) { toast('当前时间已在出点之后，无法设为入点', 'err'); return }
   emitPatch({ start: t }, { committed: true })
 }
 
 function setEndToCurrent() {
-  if (!selSeg.value) return
+  if (blocked() || !selSeg.value) return
   const t = round2(Math.max(0, Number(props.currentTime) || 0))
   if (t <= selStart.value) { toast('当前时间在入点之前，无法设为出点', 'err'); return }
   emitPatch({ end: t }, { committed: true })
 }
 
 function splitAtCurrent() {
+  if (blocked()) return
   const s = selSeg.value
   if (!s) return
   if (!canSplit.value) { toast('当前播放时间不在这条字幕中间，无法拆分', 'err'); return }
@@ -514,6 +530,7 @@ function splitAtCurrent() {
 }
 
 async function deleteSeg(i) {
+  if (blocked()) return
   const s = props.segments[i]
   if (!s) return
   const ok = await confirmDialog(`删除这条字幕？「${String(s.text || '').slice(0, 24)}」`, { title: '删除字幕', danger: true })
@@ -529,6 +546,7 @@ function deleteSelected() {
 }
 
 function addAtCurrent() {
+  if (blocked()) return
   const t = round2(Math.max(0, Number(props.currentTime) || 0))
   const next = props.segments.slice()
   let i = next.findIndex((s) => (Number(s.start) || 0) > t)
@@ -545,7 +563,7 @@ let drag = null
 let resize = null
 
 function startDrag(i, e) {
-  if (e.button !== 0) return
+  if (blocked() || e.button !== 0) return
   const s = props.segments[i]
   if (!s) return
   selectIndex(i)      // 拖动中就把属性面板切到这条（与精修时间轴一致）
@@ -584,7 +602,7 @@ function onDragUp() {
 }
 
 function startResize(i, edge, e) {
-  if (e.button !== 0) return
+  if (blocked() || e.button !== 0) return
   const s = props.segments[i]
   if (!s) return
   selectIndex(i)
@@ -716,9 +734,12 @@ onUnmounted(() => {
 .ruler-lane { height:20px; border-bottom:none; cursor:col-resize; }
 .ruler-tick { position:absolute; top:0; bottom:0; width:1px; background:rgba(0,0,0,.14); }
 .ruler-time { position:absolute; top:1px; left:4px; font-size:9px; color:var(--ink-dim); white-space:nowrap; pointer-events:none; }
-/* 字幕块：与精修时间轴的字幕块同色同字重（半透明蓝 + 深色粗体 + 白晕） */
+/* 字幕块：与精修时间轴的字幕块同色同字重（半透明蓝 + 深色粗体 + 白晕）。
+   ⚠️ text-overflow:ellipsis 必须有（U5）：zoom 拉远后块宽 < 文本宽，硬裁的半个字
+   看起来像布局坏了；省略号 + `title` 悬停全文才是"裁但说清楚"。 */
 .block { position:absolute; top:3px; height:20px; border-radius:4px; background:rgba(59,130,246,.35); color:#0f172a;
   font-weight:700; font-size:10px; line-height:20px; padding:0 6px; white-space:nowrap; overflow:hidden;
+  text-overflow:ellipsis;
   cursor:grab; user-select:none; z-index:2; text-shadow:0 0 2px #fff, 0 0 2px #fff; }
 .block.selected { outline:2px solid var(--main); z-index:3; }
 .block.active { outline:1px solid var(--main-deep); }
@@ -738,6 +759,10 @@ onUnmounted(() => {
   text-shadow:0 1px 2px rgba(0,0,0,.55); font-weight:700; }
 .lane-add { background:none; border:none; color:var(--ink-faint); cursor:pointer; line-height:1; padding:2px 4px; display:flex; }
 .lane-add:hover { color:var(--main-deep); }
+.lane-add:disabled { opacity:.35; cursor:not-allowed; }
+/* 写闸生效时整块降透明度（配合 :disabled，让"改不动"看得出来） */
+.sub-editor.is-off .props-bar, .sub-editor.is-off .sub-body { opacity:.65; }
+.sub-editor.is-off .block { cursor:default; }
 .track-foot { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-top:4px; }
 .spacer { flex:1; }
 .zoom-num { min-width:52px; text-align:center; }

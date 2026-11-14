@@ -158,8 +158,8 @@ export const runLlmSegment = (pid, dir, index) =>
   startJob('/api/polish/llm-segment', pid, dir, { index })
 export const runProcess = (pid, dir) => startJob('/api/polish/process', pid, dir)
 export const runSilence = (pid, dir, extra = {}) => startJob('/api/polish/silence', pid, dir, extra)
-/** 渲染导出：输出固定为项目内相对路径（默认 export.mp4）；
- *  **同名不覆盖** —— 已存在时写成 `export_1.mp4`（`render::unique_output_path`，封面同一套规则）。
+/** 渲染导出：`outputFile` 是**项目内相对路径**（默认空串 = 用工程 `[project] output`，缺省 `vtuber-clip.mp4`）；
+ *  **同名不覆盖** —— 已存在时自动加 `_1`/`_2`（`render::unique_output_path`，封面同一套规则）。
  *
  *  出片通道**没有可选项**：只有底座 dhampir 一条腿（本仓那条兜底腿已整条删除）。 */
 // `renderer` 参数**已删除**：出片只剩底座一条腿（本仓 headless Chrome 那条 2026-10-01 整条删除），

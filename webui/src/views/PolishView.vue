@@ -2,26 +2,30 @@
   <div>
     <!-- 紧凑页头一行：chip + 片段标题（竖高省给预览；哪个片段由面包屑/片段卡说明）。
          「列表」= 回到不带 :clip 的列表页（`?list=1` 让 doLoad 跳过自动选片，见下面 doLoad）。 -->
-    <div class="page-head compact-head">
-      <span class="chip p">出片</span>
-      <h1 class="m-0">{{ dir ? title : '选择要出片的片段' }}</h1>
-      <span v-if="!dir" class="sub m-0">从片段库选一个片段开始出片</span>
-      <div class="actions">
-        <!-- 快速出片 / 精修（P2）：默认快速（`ui.polishMode`，持久化）；`?mode=pro` 是一次性覆盖。
-             ⚠️ `data-cap` 挂在这个**分段容器**上，且全页只此一处（判据 check-simplify 数锚点）。 -->
-        <div class="mode-seg" data-cap="polish.quick-mode">
-          <button class="mini-btn" :class="{ selected: viewMode === 'quick' }"
-                  title="快速出片：智能剪辑 / 画面 / 导出 / 封面"
-                  @click="setViewMode('quick')">快速出片</button>
-          <button class="mini-btn" :class="{ selected: viewMode === 'pro' }"
-                  title="精修：时间轴 / 轨道设置 / 封面设计器全在"
-                  @click="setViewMode('pro')">精修</button>
+    <!-- 页头：**只有精修一种模式**（用户口径：不留快速切片）。原来那排「快速出片 / 精修」
+         分段控件、以及 `?mode=pro` 一次性覆盖入口，全部删除。 -->
+    <UiPageHeader :title="dir ? title : '选择要出片的片段'" compact
+                  :description="dir ? '' : '从片段库选一个片段开始出片'">
+      <template #actions>
+        <!-- 片段切换器：不用退回列表就能上下游走。
+             ⚠️ 走的是 `gotoClip()`（named route + `c.name`），`watch(clipName)` 会重载；
+             `router-view` 的 key 是 pid，所以**不会整块重挂**（canvas 安全）。 -->
+        <div v-if="clipPos.i >= 0 && clipPos.total > 1" class="clip-nav">
+          <button type="button" class="mini-btn" :disabled="!clipPos.prev"
+                  title="上一个片段" aria-label="上一个片段" @click="gotoClip(clipPos.prev)">
+            <Icon name="chevron-left" :size="13" />
+          </button>
+          <span class="clip-nav-pos" title="当前是第几个片段">{{ clipPos.i + 1 }} / {{ clipPos.total }}</span>
+          <button type="button" class="mini-btn" :disabled="!clipPos.next"
+                  title="下一个片段" aria-label="下一个片段" @click="gotoClip(clipPos.next)">
+            <Icon name="chevron-right" :size="13" />
+          </button>
         </div>
         <router-link v-if="clipName" class="mini-btn"
                      :to="{ name: 'project-polish', params: { pid }, query: { list: '1' } }"
                      title="回到片段列表（不自动打开片段）">列表</router-link>
-      </div>
-    </div>
+      </template>
+    </UiPageHeader>
 
     <!-- 切片列表读不到：**必须与"真的没有切片"分开**（以前失败被 catch 成空数组，
          页面显示"还没有可精修的切片"，看着像切片被删了） -->
@@ -34,9 +38,9 @@
     <!-- 无切片：空态引导（不报错不白屏）。用 v-else-if 接在错误条后面：读取失败时**只**出错
          —— 否则它会被下面的 v-else 当成"有内容"而把整个编辑器壳渲染出来 -->
     <div v-else-if="!clips.length && !loading" class="card card-blk" style="max-width:520px;margin:48px auto;text-align:center;padding:36px">
-      <b style="font-size:15px">还没有可精修的切片</b>
-      <p class="small muted" style="margin:8px 0 16px">先到「切片」页生成片段，再回来精修</p>
-      <router-link class="btn btn-primary" :to="`/p/${pid}/slices`">去切片</router-link>
+      <b style="font-size:15px">还没有可出片的片段</b>
+      <p class="small muted" style="margin:8px 0 16px">先到「挑片段」页剪出片段，再回来出片</p>
+      <router-link class="btn btn-primary" :to="`/p/${pid}/slices`">去挑片段</router-link>
     </div>
 
     <template v-else>
@@ -108,7 +112,7 @@
         </div>
 
         <!-- 左列 = 预览（属性面板在左、舞台在右）；右栏 = 生成与导出 -->
-        <div class="grid cols-main mt-16 edit-grid">
+        <div class="grid cols-main mt-16 edit-grid polish-grid">
           <div class="card">
             <div class="row spread">
               <h2 class="m-0 card-h2"><Icon name="video" :size="16" /> 视频预览（preview 效果）</h2>
@@ -127,7 +131,7 @@
                    TimelineEditor 用 Teleport 直接往目标里插节点，与本页面子节点混在一起会被 patch 顶掉。 -->
               <!-- ⚠️ 属性面板是**精修专属**：快速模式里预览要占满整宽（用户口径：快速只留预览）。
                    判据 ⑰ 仍钉着 `#tl-props-host` 是**空容器**、且全页唯一。 -->
-              <div v-if="viewMode === 'pro'" class="props-host">
+              <div class="props-host">
                 <div id="tl-props-host"></div>
               </div>
 
@@ -144,67 +148,7 @@
                快速卡塞进去就变成 2、`rightCardCount` 直接翻红。
                ⚠️ 它仍是 `.edit-grid` 的**第二个 grid 子节点**（走同一条 300px 轨道），
                不是另起一格 —— 多一个子节点会掉到下一行占满整宽。
-               ⚠️ 第一颗按钮的锚点 = `polish.quick-llm`（各 P2 能力锚点全页各一处）。 -->
-          <div v-if="viewMode === 'quick'" class="card quick-col">
-            <div class="quick-sec">
-              <div class="quick-h"><b>① 智能剪辑</b><span class="muted small">重新分段 + 生成事件</span></div>
-              <div v-if="llmMissing" class="quick-warn">
-                <span>未配置 AI</span>
-                <router-link to="/settings/llm" class="mini-btn">去配置</router-link>
-              </div>
-              <div class="row mt-6" style="gap:6px">
-                <button class="btn flex-1 jc-center" data-cap="polish.quick-llm"
-                        :disabled="scopeBusy || llmMissing"
-                        :title="llmMissing ? '未配置 AI：去设置 → AI 模型填一个 key' : '重新分段 + 重做全部事件（会确认一次）'"
-                        @click="runLlmJob()"><Icon name="sparkles" :size="12" /> 生成剪辑方案</button>
-                <button class="mini-btn" :disabled="scopeBusy || llmMissing"
-                        title="智能剪辑成功后自动打开导出弹窗；失败或取消则什么都不做"
-                        @click="runLlmAndExport">并导出</button>
-              </div>
-            </div>
-
-            <div class="quick-sec">
-              <div class="quick-h"><b>② 画面</b><span class="muted small">横屏 / 竖屏</span></div>
-              <div class="row" style="gap:6px">
-                <button v-for="o in orientationOptions" :key="o.value" class="mini-btn flex-1 jc-center"
-                        :class="{ selected: (canvasCfg.orientation || 'landscape') === o.value }"
-                        :disabled="stageBusy || !ready" :title="o.label"
-                        @click="patchCanvas({ orientation: o.value })">{{ o.value === 'portrait' ? '竖屏' : '横屏' }}</button>
-              </div>
-            </div>
-
-            <div class="quick-sec">
-              <div class="quick-h"><b>③ 导出成片</b><span class="muted small">底座渲染</span></div>
-              <button class="btn btn-primary w-full jc-center" data-cap="polish.quick-export"
-                      :disabled="scopeBusy || renderBlocked" :title="renderBlockReason || '打开导出弹窗'"
-                      @click="openRenderModal"><Icon name="film" :size="13" /> 导出成片</button>
-            </div>
-
-            <div class="quick-sec">
-              <div class="quick-h"><b>封面</b><span class="muted small">独立于成片</span></div>
-              <div class="row" style="gap:6px">
-                <button class="btn flex-1 jc-center" data-cap="polish.quick-cover"
-                        :disabled="scopeBusy" title="按当前封面配置生成封面（不重出成片）"
-                        @click="generateCover">生成封面</button>
-                <button class="mini-btn" title="切到精修，去封面设计器改版式" @click="editCoverInPro">编辑封面</button>
-              </div>
-            </div>
-
-            <!-- 紧凑任务条：任务名 + 状态 chip + 中断；**失败原因常驻**（不许折叠藏起来）。
-                 与时间轴右上角那份是同一组状态（`job` / `jobStatusText` / `cancelJob`），不另起一套。 -->
-            <div class="quick-sec quick-job">
-              <div class="row spread" style="gap:6px">
-                <span class="small muted">任务</span>
-                <b class="small flex-1 ellipsis">{{ job.kind ? jobLabel(job.kind) : '—' }}</b>
-                <span class="chip" :class="jobChipClass">{{ jobStatusText }}</span>
-                <button v-if="jobRunning" class="mini-btn danger" :disabled="canceling" @click="cancelJob">中断</button>
-              </div>
-              <div v-if="jobRunning && job.total > 0" class="qbar mt-6">
-                <i :style="{ width: Math.round((job.current / job.total) * 100) + '%' }"></i>
-              </div>
-              <div v-if="job.status === 'failed' && job.error" class="quick-err mt-6">{{ job.error }}</div>
-            </div>
-          </div>
+               ⚠️ 快速模式已删（2026-11-13），这里只留精修侧的入口。 -->
 
           <!-- 右栏 = **一块卡片、两个页签**（用户 2026-10-06 第五轮口径，**这一版才对**）：
                「项目设置」= **轨道设置的全部内容 + LLM 剪辑 / 渲染导出 / 任务栏**（用户原话：
@@ -216,10 +160,9 @@
                ⚠️ 必须全在**同一个 grid 子节点** `.right-col` 里：`.edit-grid` 是两列
                （`cols-main` = `1fr 300px`），摊成多个子节点时后面的会充当"第三列"
                **掉到下一行占满整宽**。判据 ⑰ 钉着。
-               ⚠️ P2：整块右栏是**精修（pro）专属**（快速模式换成 `.quick-col`）。
-               这里包一层 `<template v-if>` 而**不是**给它加 `v-if`：判据 ⑰ 拿
+               ⚠️ 快速模式已删（2026-11-13），右栏是**唯一**的出片界面。
+               这里包一层 `<template>` 而**不是**给它加 `v-if`：判据 ⑰ 拿
                `.right-col` 这个类名当锚点切源码，锚点必须原样保留。 -->
-          <template v-if="viewMode === 'pro'">
           <div class="right-col">
             <div class="card">
               <!-- **三个页签独占最上面一行**（用户口径：「三个标签页放在最上面，删除最上面
@@ -308,7 +251,11 @@
            按"控件同类"分组，而不是按语义配对 —— 颜色框与数字框宽度差很远，混排会参差不齐。
            ⚠️ 每行两列、每列 ~130px（行内容宽 266px）：标签 62px + 控件；
               颜色框 34px 够，数字框给 `flex:1` 吃掉剩余宽度。 -->
-      <div class="ss-row-2">
+      <!-- 第 1 行 = 两个颜色 + **白边开关**（2026-11-14 用户口径：白边与两个颜色同一行；
+           开关样式统一成「点标签切换」：亮 = 开（主色圆点），灰 = 关）。
+           ⚠️ 白环三种落盘值：缺键 = 默认开且跟随（`auto #ffffff`）· 开 = 写 `auto #ffffff` ·
+              关 = 写**空串**（显式关）—— 服务端那一支**允许空串**，与 `subtitle_stroke` 正好相反。 -->
+      <div class="ss-row-2 cols-3">
         <div class="ss-row">
           <span class="ss-lbl">字幕颜色</span>
           <input type="color" class="ss-color" :value="subtitleColor"
@@ -321,6 +268,12 @@
                  :disabled="!strokeEditable || !ready" title="字幕描边颜色"
                  @change="onSubtitleStrokeColorChange">
         </div>
+        <!-- 白边（第二层白描边）：点这三个字就切换，粗细跟随第一层 -->
+        <label class="sw-toggle flex-none" :class="{ off: !outerRingOn || styleWriteBlocked || !ready }"
+               role="button" tabindex="0" :title="outerRingHint"
+               @click.prevent="onOuterRingToggle(!outerRingOn)"
+               @keydown.enter.prevent="onOuterRingToggle(!outerRingOn)"
+               @keydown.space.prevent="onOuterRingToggle(!outerRingOn)">白边</label>
       </div>
       <div class="ss-row-2">
         <div class="ss-row" :title="strokeWidthHint">
@@ -343,18 +296,7 @@
           <span class="mono small flex-none">px</span>
         </div>
       </div>
-      <!-- **第二层白描边（白环）**（2026-10-16 用户口径：「可以开关是否开启，粗细跟随第一层的宽度」）。
-           ⚠️ 行内只留 6 个字，条件与推导全在 `outerRingHint` 里（仓里的文案预算：行内 ≤20 字）。
-           ⚠️ 三种落盘值：缺键 = 默认开且跟随（`auto #ffffff`）· 勾 = 写 `auto #ffffff` ·
-              取消 = 写**空串**（显式关）—— 服务端那一支**允许空串**，与 `subtitle_stroke` 正好相反。 -->
-      <div class="ss-row full" :title="outerRingHint">
-        <span class="ss-lbl">白边</span>
-        <label class="ck-row" style="margin-top:0">
-          <input type="checkbox" :checked="outerRingOn" :disabled="styleWriteBlocked || !ready"
-                 @change="onOuterRingToggle($event.target.checked)">
-          <span>第二层白描边</span>
-        </label>
-      </div>
+
       <div class="ss-row full" :title="positionHint">
         <span class="ss-lbl">字幕位置</span>
         <input type="range" class="flex-1 ss-range" min="0" max="50" step="0.5"
@@ -380,14 +322,15 @@
             `fld-input`（`width:100%`），跟它们同处一个 flex 行会被压扁到几乎看不见。
          ⚠️ `margin-bottom:0`：`.ck-row` 自带 `margin-top:8px`，不去掉的话勾选框会被顶得比
             标题低一截、看着不像同一行（对齐靠 `align-items:center`）。 -->
+    <!-- 弹幕设置：标签本身就是开关（2026-11-14 用户口径：「显示弹幕并入弹幕设置」，
+         与主播名同一套点法：亮 = 显示、灰 = 不显示；素材一个字都不动）。 -->
     <div class="row mt-6" style="gap:6px;align-items:center">
-      <span class="small muted flex-none">弹幕设置</span>
-      <label class="ck-row flex-none" style="margin-top:0"
-             :title="lanesOn.danmaku ? '当前显示；点一下整条不渲染（素材一个字都不动）' : '当前不显示；点一下恢复'">
-        <input type="checkbox" :checked="lanesOn.danmaku === true" :disabled="stageBusy || !ready"
-               @change="toggleLane('danmaku')">
-        显示弹幕
-      </label>
+      <label class="sw-toggle flex-none" :class="{ off: lanesOn.danmaku !== true || !ready }"
+             role="button" tabindex="0"
+             :title="lanesOn.danmaku === true ? '弹幕设置 · 当前显示；点一下整条不渲染（素材一个字都不动）' : '弹幕设置 · 当前不显示；点一下恢复'"
+             @click.prevent="toggleLane('danmaku')"
+             @keydown.enter.prevent="toggleLane('danmaku')"
+             @keydown.space.prevent="toggleLane('danmaku')">弹幕设置</label>
       <span class="flex-1"></span>
     </div>
     <select class="fld-input mt-6" :value="danmakuFont" :disabled="fontSaving || !ready" @change="onDanmakuFontChange">
@@ -542,7 +485,8 @@
 
             <!-- 出片：底座未就绪时**不在这里置灰**（点开弹窗才看得到具体原因），
                  弹窗里的主按钮「开始渲染」由 `renderBlocked` 挡住；悬停 title 先提示一句。 -->
-            <button class="btn btn-primary mt-6 w-full jc-center" data-cap="polish.export" :disabled="scopeBusy"
+            <button class="btn btn-primary mt-auto w-full jc-center export-sticky"
+                    data-cap="polish.export" :disabled="scopeBusy"
                     :title="renderBlockReason"
                     @click="openRenderModal"><Icon name="film" :size="13" /> 导出成片</button>
 
@@ -650,9 +594,7 @@
               </template>
             </div>
           </div>
-          </template>
         </div>
-        <template v-if="viewMode === 'pro'">
         <!-- 时间轴编辑器独占一整行（在预览/生成两栏之下）：横向空间全给刻度与泳道。
              标题/提示由 slot 交给组件，省掉独立卡片头；去静音只在这块，右侧不再重复。
              改动走「本地即时镜像 → 预览实时刷新 → 防抖落盘 → 防抖后处理」这条链。 -->
@@ -699,30 +641,84 @@
         </div>
 
         <div ref="coverCardEl" class="mt-16" data-cap="polish.cover"><CoverDesigner :key="'cv' + coverKey" :dir="dir" :pid="pid" @changed="refreshClipEntry(true)" /></div>
-        </template>
 
         <!-- 产物整行（**两种模式共用**）：成片 + 封面 + 输出目录。快速模式也要看得到产物。 -->
         <div class="card mt-16 artifact-bar" data-cap="polish.artifact">
           <div class="row spread">
             <div class="row">
               <b class="t m-0">产物</b>
+              <!-- 有产物才有下载 chip（没有就看右栏的占位框，别两处都说一遍"未渲染"） -->
               <a v-if="renderedUrl && !renderedFailed" class="mini-btn" :href="renderedUrl" download :title="renderedFile">
                 <Icon name="download" :size="12" /> 成片 {{ renderedFile }}
               </a>
-              <span v-else class="muted small">未渲染</span>
               <a v-if="coverUrl && !coverFailed" class="mini-btn" :href="coverUrl" download :title="coverFile">
                 <Icon name="download" :size="12" /> 封面 {{ coverFile }}
               </a>
-              <span v-else class="muted small">无封面</span>
             </div>
             <!-- 打开输出目录：**只在本机（本地免登录）**渲染 —— 服务端模式下这个端点也不存在
                  （远端的人点一下、服务器上弹窗口是不可接受的）。 -->
             <button v-if="isLocal" class="mini-btn" @click="openOutDir">打开输出目录</button>
           </div>
-          <div class="row mt-8">
-            <img v-if="coverUrl && !coverFailed" :src="coverUrl" class="cover-thumb" alt="封面" @error="coverFailed = true">
-            <video v-if="renderedUrl && !renderedFailed" :src="renderedUrl" controls playsinline class="video-bar" @error="renderedFailed = true"></video>
-            <div v-if="!(coverUrl && !coverFailed) && !(renderedUrl && !renderedFailed)" class="muted small">导出成片或生成封面后在这里查看</div>
+          <!-- 产物卡 = **左右两栏 + 固定高度**（用户 2026-11-14 口径：没产物时不许塌成一条，
+               有产物时的高度才是常态）。左：发布标题三行（标题 / 主播名 / 完整标题）；
+               右：成片 + 封面两个 16:9 框（空态是虚线占位框，高度照旧）。
+               标题写的是 `output/publish_config.json` 的 `clips[].title`（投稿链路读那份），**不是**
+               `clip.json` 的标题 —— 后者是片段身份（重新检测靠它匹配目录，见 `clip_title_put_impl`）。
+               ⚠️ 复制别只靠 `navigator.clipboard`：它只在安全上下文（https / localhost）里存在，
+               内网 `http://<ip>:26320` 下是 undefined ⇒ 必须有 execCommand 兜底。 -->
+          <div class="art-body">
+            <div class="art-left">
+              <!-- ① 标题（**没有**开关：标题永远在；字号/字重比主播名重一档，两行一眼分得开） -->
+              <div class="art-field art-field-title">
+                <label class="muted small" for="pub-title-in">标题</label>
+                <input id="pub-title-in" v-model="titleBase" placeholder="标题"
+                       @change="savePublishTitle" @keydown.enter.prevent="savePublishTitle">
+              </div>
+              <!-- ② 主播名：**开关就长在它身上** —— 点「主播名」三个字切换开/关（关 = 变灰、且不拼进标题）；
+                   前/后 两段跟在输入框后面（关着时置灰不可点）。 -->
+              <div class="art-field art-field-name" :class="{ off: !withName }">
+                <label class="small name-toggle" role="button" tabindex="0"
+                       :title="withName ? '主播名已拼进标题 · 点一下关掉' : '主播名没拼进去 · 点一下打开'"
+                       @click.prevent="toggleName" @keydown.enter.prevent="toggleName" @keydown.space.prevent="toggleName">主播名</label>
+                <div class="name-cell">
+                  <input id="pub-name-in" v-model="pubName" placeholder="主播名"
+                         :title="'主播名：默认取本工程（或全局）的 [detection].vtuber_name；这里改只影响这条标题'"
+                         @change="savePublishTitle">
+                  <div class="seg" :class="{ off: !withName }" title="主播名放在标题的前面还是后面">
+                    <button type="button" :class="{ on: nameFirst }" :disabled="!withName"
+                            @click="nameFirst = true; savePublishTitle()">前</button>
+                    <button type="button" :class="{ on: !nameFirst }" :disabled="!withName"
+                            @click="nameFirst = false; savePublishTitle()">后</button>
+                  </div>
+                </div>
+              </div>
+              <!-- ③ 完整标题：**纯文本、单击即复制**（没有按钮、没有「完整」标签）。
+                   它和上面两行共用同一套栅格 ⇒ 左边缘与输入框严格对齐；
+                   右下角常驻「单击复制」小字（复制成功就地变「已复制」，不靠 tooltip）。 -->
+              <div class="art-final-row">
+                <div class="pub-final" :class="{ empty: !finalTitle.trim() }"
+                     role="button" tabindex="0"
+                     @click="copyPublishTitle" @keydown.enter.prevent="copyPublishTitle">
+                  <span class="pub-final-text">{{ finalTitle.trim() || (publishTitleLoaded ? '（开关都关掉了 · 上面填标题或主播名）' : '读不到片段标题') }}</span>
+                  <span v-if="titleSaving" class="copy-hint">保存中…</span>
+                  <span v-else class="copy-hint" :class="{ ok: !!titleFlash }">{{ titleFlash || '单击复制' }}</span>
+                </div>
+              </div>
+              <div v-if="titleErr" class="muted small warn">{{ titleErr }}</div>
+            </div>
+            <div class="art-sep" aria-hidden="true"></div>
+            <div class="art-media">
+              <!-- 成片：有就播放（可拖进度），没有是一条同尺寸的虚线占位框 -->
+              <video v-if="renderedUrl && !renderedFailed" :src="renderedUrl" controls playsinline
+                     class="art-box art-video" :title="renderedFile" @error="renderedFailed = true"></video>
+              <div v-else class="art-box empty"><span>未渲染</span></div>
+              <!-- 封面：点一下下载 -->
+              <a v-if="coverUrl && !coverFailed" class="art-box" :href="coverUrl" download
+                 :title="'封面 ' + coverFile + '（点击下载）'">
+                <img :src="coverUrl" alt="封面" @error="coverFailed = true">
+              </a>
+              <div v-else class="art-box empty"><span>无封面</span></div>
+            </div>
           </div>
         </div>
       </template>
@@ -770,8 +766,10 @@ import { ref, computed, reactive, onMounted, onUnmounted, watch, nextTick } from
 import { useRoute, useRouter } from 'vue-router'
 import { toast } from '../stores/toast'
 import { confirmDialog } from '../stores/dialog'
-import { ui, toggleFragRows, setPolishMode } from '../stores/ui'
+import { ui, toggleFragRows } from '../stores/ui'
 import Icon from '../components/Icon.vue'
+import UiPageHeader from '../components/ui/UiPageHeader.vue'
+
 import AppModal from '../components/AppModal.vue'
 import PolishPreview from '../components/PolishPreview.vue'
 import TimelineEditor from '../components/TimelineEditor.vue'
@@ -802,32 +800,9 @@ const routePid = route.params.pid || ''
 const pid = ref(routePid)
 const dir = ref('')
 const clipName = computed(() => route.params.clip || '')
-/** 出片模式：`'quick'`（默认，快速出片）/ `'pro'`（精修）。
- *
- *  ⚠️ **`?mode=pro` 是一次性覆盖**（判据脚本要它先切 pro 再断言 `.props-host`）：
- *  它只在首次挂载时生效、**不写 localStorage**；`ui.polishMode` 才是用户手动选的那一档。
- *  ⚠️ 用 ref 而不是 computed：覆盖是"一次性的"，用户随后点「快速出片」就该真的切走，
- *  不能被地址栏里那个 `?mode=pro` 一直按着。 */
-const viewMode = ref(route.query.mode === 'pro' ? 'pro' : ui.polishMode)
-
-/** 用户点页头分段按钮：切视图 + 记住选择（`?mode=pro` 覆盖在此被用户的选择取代）。 */
-function setViewMode(mode) {
-  const next = mode === 'pro' ? 'pro' : 'quick'
-  viewMode.value = next
-  setPolishMode(next)
-  // ⚠️ 必须把地址栏里的一次性覆盖清掉：否则用户从 `?mode=pro` 手动切到「快速出片」后，
-  //    一刷新又被 URL 按回 pro（`?mode=pro` 应该是"这次打开用 pro"，不是"永久"）。
-  if (route.query.mode) {
-    const q = { ...route.query }
-    delete q.mode
-    router.replace({ name: route.name, params: route.params, query: q }).catch(() => {})
-  }
-}
-// `?mode=pro` 也可能在**同一个页面里**出现（门禁/深链切 hash 不重新挂载组件）：
-// 只要查询串变成 pro 就跟着切；查询串被上面的 setViewMode 清掉时**不回切**（用户的选择赢）。
-watch(() => route.query.mode, (m) => {
-  if (m === 'pro') viewMode.value = 'pro'
-})
+/** ⚠️ **出片页只有精修一种模式**（2026-11-13 用户口径：不留快速切片）。
+ *  快速模式那一列（智能剪辑 / 画面 / 导出成片 / 封面）及其四颗能力锚点已整块删除；
+ *  `?mode=pro` 一次性覆盖、`yekitrim.polish.mode` 持久化一并作废。 */
 /** 当前已经加载完成的片段名：用于跳过 `load()` 自己 `router.replace` 触发的 watch。 */
 const loadedClip = ref('')
 // 记住最后操作过的片段：下次从侧栏进精修页自动回到它（每项目一个键）
@@ -892,6 +867,9 @@ const clips = ref([])
 /** 切片列表读取失败的原因（非空 → 界面走错误条，**不进"还没有可精修的切片"那个空态**）。
  *  以前失败被 `catch { clips = [] }` 伪装成空态，用户会以为切片丢了。 */
 const clipsError = ref('')
+/** 字幕读取失败的原因（非 404 才算；404 = 还没转写，是空态）。
+ *  非空时**保留旧 subs 与旧 persistedSubs**，只出一条可见错误条（见 `doLoad` 里的注释）。 */
+const subsError = ref('')
 /** 当前片段的配置读取失败的原因（非空 → 走错误条，**不落到「未初始化精修项目」**） */
 const cfgError = ref('')
 const clipEntry = ref(null)
@@ -1352,6 +1330,162 @@ const renderedUrl = computed(() => (renderedFile.value
   ? clipMediaUrl(pid.value, dir.value, renderedFile.value)
   : null))
 
+
+// ---- 发布标题（产物卡那一条）：可直接复制、也能改 ----
+// 写的是 `output/publish_config.json` 的 `clips[].title`（投稿链路读那份），**不是** `clip.json`
+// 的标题 —— 后者是片段身份，改了会让重新检测匹配不上、另开一个目录（见服务端
+// `clip_title_put_impl` 的注释）。
+// 版式（用户 2026-11-14 给的样稿）—— 一行四个开关 + 两个输入框，第二行是**拼出来的完整标题**（只读）：
+//   主播名 [____] ☐开关 ｜ ☐前后 ☐标题 [____]
+//   完整    [ （不可改动 · 自动拼接） ]
+// · 开关 = 用不用主播名（以 `【名】` 形式出现）
+// · 前后 = 勾上主播名放**前**，不勾放**后**
+// · 标题 = 标题本身也拼进去（不勾就只剩主播名）
+const pubName = ref('')            // 主播名（草稿：默认取合并配置，改这里只影响本条标题）
+const withName = ref(false)        // 开关（滑动开关）
+const nameFirst = ref(false)       // 前/后：true = 主播名放标题前面
+const titleBase = ref('')          // 标题本身（可编辑；标题**没有**开关了，永远在）
+const savedPublishTitle = ref('')  // 上一次落盘的**完整标题**（判断有没有改动）
+const publishTitleLoaded = ref(false)
+const titleClip = ref('')
+const titleSaving = ref(false)
+const titleErr = ref('')
+const titleFlash = ref('')
+let flashTimer = null
+
+const nameTag = computed(() => (pubName.value.trim() ? '【' + pubName.value.trim() + '】' : ''))
+/** 拼出来的**完整标题**：只读、也是「复制」与落盘的那一份。 */
+const finalTitle = computed(() => {
+  const tag = withName.value ? nameTag.value : ''
+  const body = titleBase.value.trim()
+  if (!tag) return body
+  if (!body) return tag
+  return nameFirst.value ? tag + body : body + tag
+})
+
+/** 种子：服务端带回来的「投稿用的那句」优先（`publish_title`，来自 publish_config），
+ *  没有才回落到 `clip.json` 的标题。切片段/任务后刷新都走这里。
+ *  拆回三个开关 + 基名：开头/结尾的 `【名】` ⇒ 开关 + 前后，剩下的进「标题」框。
+ *  ⚠️ **同一片段 + 有没保存的编辑时不许覆盖**：任务结束的静默刷新也会走到这里，
+ *  正在打字的人会被冲掉半句（`@change` 才保存，输入中还没发请求）。换片段照常重置。 */
+function seedPublishTitle(entry) {
+  const name = String(entry?.name || '')
+  const dirty = publishTitleLoaded.value && name === titleClip.value
+    && finalTitle.value.trim() !== savedPublishTitle.value
+  if (dirty) return
+  titleClip.value = name
+  const raw = String(entry?.publish_title || entry?.meta?.title || '').trim()
+  savedPublishTitle.value = raw
+  publishTitleLoaded.value = !!entry
+  titleErr.value = ''
+  const hit = splitNameTag(raw)
+  if (hit) {
+    // 标题里带的那个名字**就是它**：比配置里的更可信（配置可能改过、标题未必跟着改），
+    // 所以顺手把「主播名」框对齐到它，免得拆出来的标签和框里的名字对不上。
+    if (hit.name) pubName.value = hit.name
+    withName.value = true
+    nameFirst.value = hit.first
+    titleBase.value = hit.rest
+  } else {
+    withName.value = false
+    titleBase.value = raw
+  }
+}
+
+/** 从落盘的完整标题里拆出头/尾的 `【名】`（没有就 null）。
+ *  ⚠️ 别拿「主播名」框里的值去比对再拆：那个值是配置来的，而标题里的名字可能已经不同 ——
+ *  对不上时旧实现会把整个 `【名】` 当成标题正文塞回输入框（刷新后看着像坏了）。 */
+function splitNameTag(raw) {
+  const head = raw.match(/^【([^】]*)】/)
+  if (head) return { name: head[1].trim(), first: true, rest: raw.slice(head[0].length).trim() }
+  const tail = raw.match(/【([^】]*)】$/)
+  if (tail) return { name: tail[1].trim(), first: false, rest: raw.slice(0, raw.length - tail[0].length).trim() }
+  return null
+}
+
+/** 点「主播名」三个字 = 开关主播名（关 = 不拼进标题，整行变灰）。 */
+function toggleName() {
+  withName.value = !withName.value
+  savePublishTitle()
+}
+function flashTitle(msg) {
+  titleFlash.value = msg
+  if (flashTimer) clearTimeout(flashTimer)
+  flashTimer = setTimeout(() => { titleFlash.value = '' }, 1600)
+}
+
+/** 保存（`@change` = 失焦 / 回车，不每敲一键发一次）。空串 = 清掉标题。 */
+async function savePublishTitle() {
+  if (!publishTitleLoaded.value || !clipName.value) return
+  const t = finalTitle.value.trim()
+  if (t === savedPublishTitle.value) return
+  titleSaving.value = true
+  titleErr.value = ''
+  try {
+    await projectData.setClipTitle(pid.value, clipName.value, t)
+    savedPublishTitle.value = t
+    // 本地这份切片列表也跟上：切走再切回来不必等接口
+    const row = clips.value.find((c) => c.name === clipName.value)
+    if (row) row.publish_title = t
+    flashTitle('已保存')
+  } catch (e) {
+    titleErr.value = '保存失败：' + ((e && e.message) || e)
+  } finally {
+    titleSaving.value = false
+  }
+}
+
+/** 复制标题。
+ *  ⚠️ `navigator.clipboard` **只在安全上下文**（https / localhost）里存在 —— 内网
+ *  `http://<ip>:26320` 下它是 undefined，所以必须留 execCommand 那条兜底。 */
+/** 选一段文本用 `execCommand('copy')` —— 剪贴板 API 不可用 / 被拒时的兜底。 */
+function copyViaSelection(text) {
+  const ta = document.createElement('textarea')
+  ta.value = text
+  ta.setAttribute('readonly', '')
+  ta.style.position = 'fixed'
+  ta.style.top = '0'
+  ta.style.opacity = '0'
+  document.body.appendChild(ta)
+  ta.select()
+  const ok = document.execCommand('copy')
+  ta.remove()
+  return ok
+}
+
+async function copyPublishTitle() {
+  const t = finalTitle.value.trim()
+  if (!t) return
+  // ⚠️ **只判 `navigator.clipboard` 在不在不够**：它在安全上下文里存在，但可能 **reject**
+  //（页面没聚焦 / 权限被拒 / 部分浏览器策略）。那时必须退到 execCommand ——
+  // 否则用户点「复制」什么都没发生，只觉得按钮坏了。
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(t)
+      flashTitle('已复制')
+      return
+    } catch { /* 落到下面的兜底，别在这里就报错 */ }
+  }
+  try {
+    if (!copyViaSelection(t)) throw new Error('浏览器拒绝了复制命令')
+    flashTitle('已复制')
+  } catch (e) {
+    toast('复制失败，请手动选中文本复制：' + ((e && e.message) || e), 'err')
+  }
+}
+
+/** 主播名：**合并后**的 `[detection].vtuber_name`（本工程写了就用本工程的）只作「主播名」框的初值；
+ *  拉回来之后把当前片段重拆一次（此时 `finalTitle === saved`，dirty 守卫会放行）。 */
+async function loadVtuberName() {
+  try {
+    const d = await projectData.config(pid.value, '读取工程配置')
+    pubName.value = String(d?.config?.detection?.vtuber_name || '').trim()
+  } catch {
+    pubName.value = ''
+  }
+  const row = clips.value.find((c) => c.name === clipName.value)
+  if (row) seedPublishTitle(row)
+}
 const coverFailed = ref(false)
 const renderedFailed = ref(false)
 const coverFile = computed(() => clipEntry.value?.cover_file || 'cover.jpg')
@@ -1491,6 +1625,8 @@ async function doLoad(opts = {}) {
     }
     dir.value = entry.dir || clipDirOf(wanted)
     loadedClip.value = wanted
+    // 发布标题跟着片段走（`entry` 里带着服务端从 publish_config 取回的 `publish_title`）
+    seedPublishTitle(entry)
     if (clipName.value !== wanted) {
       router.replace({ name: 'project-polish-clip', params: { pid: pid.value, clip: wanted } })
     }
@@ -1515,12 +1651,28 @@ async function doLoad(opts = {}) {
       else toast('刷新失败：' + e.message, 'err')
     }
     if (dir.value) {
+      // ⚠️ 字幕读失败要分三种形态（views/AGENTS.md「读失败」）：
+      //    ① 成功 → 更新数组 + persistedSubs（"磁盘上那份"的判据）；
+      //    ② **404 = 这个工程还没转写** → 正常空态，数组与 persistedSubs 都写空；
+      //    ③ 其它失败（500/超时）→ **保留旧数组与旧 persistedSubs**、出可见错误条。
+      // ③ 若也写空，会让 Dhampir 热重载以为"磁盘字幕就是空" ⇒ 预览里的字幕凭空消失，
+      // 而磁盘上那份明明还在（以前就是这个 bug：整段 catch 成空数组）。
       try {
         subs.value = (await fetchSubtitles(pid.value, dir.value, '读取字幕')).segments || []
-      } catch { if (!silent) subs.value = [] }
-      subs.value.sort((a, b) => (Number(a.start) || 0) - (Number(b.start) || 0))
-      // 刚从盘上读回来 ⇒ 这份字幕天然已落盘，交给预览当"磁盘版本"
-      persistedSubs.value = subs.value.map((s) => ({ ...s }))
+        subs.value.sort((a, b) => (Number(a.start) || 0) - (Number(b.start) || 0))
+        subsError.value = ''
+        // 刚从盘上读回来 ⇒ 这份字幕天然已落盘，交给预览当"磁盘版本"
+        persistedSubs.value = subs.value.map((s) => ({ ...s }))
+      } catch (e) {
+        const code = Number(e?.status) || 0
+        if (code === 404) {
+          subs.value = []
+          subsError.value = ''
+          persistedSubs.value = []
+        } else {
+          subsError.value = '字幕读取失败：' + (e?.message || String(e))
+        }
+      }
       try {
         const r = await fetch(clipMediaUrl(pid.value, dir.value, 'data/danmaku.json'))
         if (r.ok) dm.value = await r.json()
@@ -1641,6 +1793,18 @@ async function initClip(c) {
 }
 
 const fragRows = computed(() => clips.value.map((c) => ({ name: c.name, thumb: thumbSrc(c), ...clipRow(c) })))
+
+/** 当前片段在列表里的位置（页头「上一个 / 下一个」用）。不在列表里时 i = -1，切换器整块不渲染。 */
+const clipPos = computed(() => {
+  const names = clips.value.map((c) => c.name)
+  const i = names.indexOf(clipName.value)
+  return {
+    i,
+    total: names.length,
+    prev: i > 0 ? names[i - 1] : '',
+    next: i >= 0 && i < names.length - 1 ? names[i + 1] : ''
+  }
+})
 
 function initClipByName(name) {
   const c = clips.value.find((x) => x.name === name)
@@ -2007,14 +2171,6 @@ function generateCover() {
       await refreshClipEntry(true)
     },
   })
-}
-
-/** 快速模式「编辑封面」：切到精修，并滚到封面设计器那张卡。
- *  ⚠️ 它只在 pro 子树里（`v-if`），切完要等**下一帧**DOM 才存在。 */
-async function editCoverInPro() {
-  setViewMode('pro')
-  await nextTick()
-  coverCardEl.value?.scrollIntoView({ block: 'start' })
 }
 
 /** 是否**本机**（本地免登录模式）—— 路由守卫在任何视图挂载之前已经 await 过 `localNoAuth()`，
@@ -2942,11 +3098,14 @@ onMounted(() => {
   loadFonts()
   loadVideoLibrary()
   loadLlmReady()
+  // 主播名（「加主播名 · 放头/放尾」那颗开关的数据源）—— 合并后的 [detection].vtuber_name
+  loadVtuberName()
 })
 onUnmounted(() => {
   pageGone = true
   stopJobTimer()
   closeJobWatcher()
+  if (flashTimer) clearTimeout(flashTimer)
 })
 </script>
 
@@ -2955,34 +3114,56 @@ onUnmounted(() => {
    LLM 剪辑参数块、紧凑片段条、贴纸来源选择器、产物体 */
 /* 两栏各取自然高度（右栏不跟着预览拉长）；时间轴在下一行整行铺开 —— 它的横向空间
    不再被右栏吃掉（刻度/泳道多出约 300px），编辑手感与刻度精度都更好 */
-.edit-grid { align-items:start; }
+.edit-grid { align-items:stretch; }
 /* 右栏那一列：两块卡片上下常驻（`min-width:0` 让内部的长控件能正常收缩，不被 grid 顶宽） */
-.right-col { display:flex; flex-direction:column; gap:12px; min-width:0; }
+/* 右栏：**与左栏（预览）等高**（用户口径）。grid 是 stretch，卡片撑满行高、内容超出在卡内滚动
+   —— 右栏比预览长一截是"看起来不齐"的主因，这里把它钉在左栏的高度上。
+   `.card` 自己 `overflow:auto`（不加 wrapper：判据 ⑰ 数的是 `.right-col` 里的卡片数）。 */
+.right-col { display:flex; flex-direction:column; gap:12px; min-width:0; min-height:0; }
+.right-col > .card { flex:1 1 auto; min-height:0; overflow-y:auto; overflow-x:hidden;
+  display:flex; flex-direction:column; }
+/* 主行动（导出成片）**钉在卡片底部**：等高后内容可能要滚动，主按钮不该被滚走。
+   `mt:auto` 把它推到底（内容短时也在底部），滚动时 sticky 吸住。 */
+.right-col .export-sticky { position:sticky; bottom:0; margin-top:auto;
+  box-shadow:0 -6px 12px -6px var(--scrim-soft); }
 /* 页头「快速出片 / 精修」分段：两颗小胶囊并排（选中态复用 `.mini-btn.selected`） */
 .mode-seg { display:flex; gap:4px; }
 /* 快速出片的右栏卡：与 `.right-col` 走**同一条** 300px grid 轨道，但**不住在** `.right-col`
    里（判据 ⑰ 只数 `.right-col` 内的卡片数，快速卡进去就变成 2）。 */
-.quick-col { display:flex; flex-direction:column; min-width:0; }
-.quick-sec { min-width:0; padding:10px 0; border-top:1px solid var(--line-soft); }
-.quick-sec:first-child { padding-top:0; border-top:none; }
-.quick-sec:last-child { padding-bottom:0; }
-.quick-h { display:flex; align-items:baseline; gap:6px; margin-bottom:6px; font-size:12px; }
-.quick-h > .small { font-weight:400; }
-/* 未配置 AI：琥珀条只挡「智能剪辑」，不挡导出 */
-.quick-warn { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:6px;
-  padding:5px 8px; border-radius:var(--r-sm); border:1px solid var(--amber);
-  background:var(--amber-soft); color:var(--amber-deep); font-size:11px; }
-.quick-warn .mini-btn { padding:2px 8px; }
-.quick-col .ellipsis { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-/* 失败原因常驻（快速卡里没有「展开」这一步，所以整块可见、超长内部滚动） */
-.quick-err { padding:5px 8px; border-radius:var(--r-sm); border:1px solid var(--red);
-  background:var(--red-soft); color:var(--red-deep); font-size:11px; line-height:1.4;
-  max-height:96px; overflow:auto; word-break:break-word; }
+/* 页头片段切换器：两个方按钮夹一个读数，比三个胶囊按钮更紧凑 */
+.clip-nav { display:inline-flex; align-items:center; gap:2px; }
+.clip-nav .mini-btn { padding:4px 6px; }
+.clip-nav-pos { padding:0 6px; font-size:var(--fs-xs); color:var(--ink-dim);
+  font-variant-numeric:tabular-nums; white-space:nowrap; }
+
+/* 精修页右栏 **320px**（全局 `.cols-main` 是 300px）：这一栏里塞了字幕样式、区域设置、
+   片头片尾三组控件，300px 下两列布局的滑杆只剩约 60px，读数还会被挤到下一行。
+   ⚠️ 只在这一页加宽 —— 全局改会影响预处理页（那边播放器需要更多宽度）。 */
+.polish-grid { grid-template-columns:minmax(0,1fr) 320px; }
+@media (max-width:1000px) { .polish-grid { grid-template-columns:1fr; } }
+
 /* 进度条：只在总量已知时出现（不占常驻高度） */
 .qbar { height:6px; overflow:hidden; border-radius:var(--r-full); background:var(--bg-soft); }
 .qbar > i { display:block; height:100%; background:var(--grad-main); transition:width .2s; }
 /* 预览卡内部：属性面板（时间轴 Teleport 过来的）在左，预览舞台在右 */
 .preview-row { display:flex; gap:12px; align-items:stretch; margin-top:8px; }
+
+/* ── 预览控制行**允许换行**（1280×800 实测溢出 96px：全屏按钮被裁到卡片外、点不到）─────
+   `.preview-controls` 住在 `PolishPreview.vue`（本页只负责给它让路，不改那个组件）。
+   一行放得下需要 ≈481px（播放 / 进度条 / 时间 / 静音 / 音量 / Dhampir / 全屏 + 6 个 8px 间距，
+   时间读数按 nowrap 后的 137px 算），而舞台列宽 ≈ 视口 − 941px（侧栏 248 + 右栏 320 + 内边距）
+   ⇒ 1280 只有 339px、1366 只有 425px。**无条件 wrap**（不挂媒体查询）：flex 只在放不下时才换行，
+   1680（舞台 739px）实测仍是一行 28px；而按视口断点写会在 1401~1422 之间留一条
+   "断点已失效、又还没到一行放得下"的溢出缝隙（实测 1400 恰好还需要换行）。
+   ⚠️ 时间读数：`nowrap` + 省略号。以前允许折行，1280 下被折成「00:00.00 /」+「00:08.00」
+      两行（实测 height=38px），看起来像布局坏了；舞台极窄时（1024 ⇒ 83px）由省略号兜底，
+      不让单个控件把行撑出卡片。
+   ⚠️ 别改成"把控制行裁掉 / 隐藏"—— 全屏与 Dhampir 都要能点到（隐藏 ≠ 删除）。
+   判据：`controls.scrollWidth <= clientWidth` + 全屏按钮落在卡片内且 `elementFromPoint` 命中它。 */
+.preview-row :deep(.preview-controls) { flex-wrap: wrap; row-gap: 6px; }
+.preview-row :deep(.preview-controls .time-label) {
+  min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 /* 挂载点定宽 + relative；面板绝对定位撑满它 —— 属性表单再长也只在面板内部滚动，
    不会把整行/预览卡撑高（否则时间轴会被顶出首屏） */
 .props-host { position:relative; flex:none; width:232px; min-width:0; }
@@ -3000,7 +3181,7 @@ onUnmounted(() => {
 .lane-panel input, .lane-panel select { font-size:12px; }
 .lane-panel .ck-row { display:flex; align-items:center; gap:5px; font-size:12px; cursor:pointer; }
 /* 分组：每段一条细线 + 标题；点轨道名时那一段的标题高亮（`on`） */
-.lane-group { margin-top:7px; padding-top:7px; border-top:1px solid var(--line-soft); }
+.lane-group { margin-top:var(--s-3); padding-top:var(--s-3); border-top:1px solid var(--line-soft); }
 .lane-group:first-of-type { border-top:none; margin-top:0; padding-top:0; }
 /* 片头/片尾：一侧一行（勾选 + 素材下拉 + 入出点）。右栏只有 300px，
    所以入出点那行必须能换行、数字框要定宽（`min-width:0` 让 select 不被顶宽）。 */
@@ -3014,13 +3195,15 @@ onUnmounted(() => {
 /* ⚠️ 第六轮我一度把三组做成 `.lane-cols` 三列并排 —— **是误读**（用户第七轮：「整体还是以行来
    排版」）。并三列时每列只有 83px，两颗框选按钮横排溢出 91>83、字体下拉被截断，全是被那个误解
    逼出来的。**别再引回 `.lane-cols`**：三组上下堆叠成行，每组占满 300px。 */
-.lane-group-h { font-size:11px; font-weight:700; color:var(--ink-dim); letter-spacing:.02em; margin-bottom:3px; }
+.lane-group-h { font-size:var(--fs-xs); font-weight:var(--fw-semi); color:var(--ink-dim);
+  letter-spacing:.02em; margin-bottom:var(--s-1); }
 .lane-group.on > .lane-group-h { color:var(--pink-text); }
 .lane-group.on > .lane-group-h::before { content:'▸ '; color:var(--main-deep); }
 /* 「字幕字体」标签 + 两颗重置按钮同一行（用户口径：重置位置 / 重置大小 紧挨着它们管的控件）。
    ⚠️ `min-width:0` 每层都要：flex 项默认 `min-width:auto`，中文标签 + 两颗按钮的总宽
    会被当成最小宽度而横向溢出。两颗按钮 `flex:none`（文字别再被压窄到换行）。 */
-.ss-font-row { display:flex; align-items:center; gap:6px; min-width:0; margin-bottom:4px; }
+.ss-font-row { display:flex; align-items:center; gap:6px; min-width:0;
+  min-height:28px; margin-bottom:var(--s-1); }
 .ss-font-row > * { min-width:0; }
 /* 字幕样式控件（用户 2026-10 四项 + 描边拆两件）。
    ⚠️ 右栏定宽 300px、卡片 1px 边框 + 16px 内边距 ⇒ **行内容宽只有 266px**（判据 ⑰ 的预算）。
@@ -3032,17 +3215,31 @@ onUnmounted(() => {
    （三颗加起来 > 266px）从而横向溢出。 */
 .side-tabs { display:flex; gap:6px; margin-bottom:8px; min-width:0; }
 .side-tabs > .mini-btn { flex:1 1 0; min-width:0; justify-content:center; padding:4px 6px; }
-.ss-grid { display:flex; flex-direction:column; gap:4px; margin-top:6px; min-width:0; }
+.ss-grid { display:flex; flex-direction:column; gap:var(--s-1); margin-top:var(--s-2); min-width:0; }
 /* 读失败 / 未就绪时整块降透明度（配合 :disabled，让"现在不能改"看得出来） */
 .ss-grid.off { opacity:.55; }
-.ss-row { display:flex; align-items:center; gap:6px; min-width:0; }
+/* 字段行：**统一行高 28px**、控件垂直居中 —— 排版乱的根因就是各行高矮不齐
+   （颜色框 26、数字框 24、下拉 30、滑杆 20 混排）。行高由行统一钉住，控件自己撑不满也居中对齐。 */
+.ss-row { display:flex; align-items:center; gap:var(--s-1); min-width:0; min-height:28px; }
 /* **两列一行**（用户口径：「改为两行的排版」）。
    ⚠️ 两个坑，都实测过：
    ① 两列各 130px，而标签 `62px` 是**为单列**定的 —— 照搬会让数字框只剩 ~40px（显示不下 "400"）。
       所以列内标签收窄到 **44px**（"描边宽度"+「近似」角标仍能放下），控件拿回 ~80px。
    ② `min-width:0` 必须在**每一层**：`.ss-row` 是 flex 项，flex 的默认 `min-width:auto`
       会被数字框的 `size` 属性撑开，把右列顶出容器（本卡早就为同类问题写过警告）。 */
-.ss-row-2 { display:grid; grid-template-columns:1fr 1fr; gap:6px; min-width:0; }
+.ss-row-2 { display:grid; grid-template-columns:1fr 1fr; gap:var(--s-2); min-width:0; }
+/* 颜色那一行多一格：白边开关（用户 2026-11-14：白边与两个颜色同一行） */
+.ss-row-2.cols-3 { grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto; align-items:center; }
+/* 统一的「点标签切换」开关 —— 与产物卡「主播名」同一套观感：
+   亮 = 开（字前一颗主色圆点），灰 = 关。勾选框 + 独立文案那一套在这里不用了。 */
+.sw-toggle { display:inline-flex; align-items:center; gap:6px; cursor:pointer; user-select:none;
+  white-space:nowrap; font-size:11.5px; color:var(--ink); border-radius:var(--r-sm); }
+.sw-toggle::before { content:''; width:6px; height:6px; border-radius:50%; background:var(--main);
+  transition:background var(--dur-fast) var(--ease); }
+.sw-toggle:hover { color:var(--pink-text); }
+.sw-toggle:focus-visible { outline:2px solid var(--main-glow); outline-offset:2px; }
+.sw-toggle.off { color:var(--ink-faint); }
+.sw-toggle.off::before { background:var(--line); }
 .ss-row-2 > .ss-row { min-width:0; }
 /* ⚠️⚠️ 这里**不能只写 `.ss-row-2 .ss-lbl`**：`.ss-lbl` 的基础规则写在文件**后面**
    （见下面那条 `width:62px`），同特异性下**后者胜** ⇒ 62px 生效、两列里标签吃掉一大半，
@@ -3139,12 +3336,90 @@ onUnmounted(() => {
 .job-wrap > .job-err { color:var(--red-deep); border-color:var(--red); background:var(--red-soft); }
 
 /* 成片与封面统一为同尺寸 16:9 盒子（源都是 1920×1080，比例异常时裁切对齐） */
-.artifact-bar .cover-thumb,
-.artifact-bar .video-bar {
-  width: 320px; aspect-ratio: 16/9; object-fit: cover; object-position: center;
-  max-height: none; margin-top: 0; flex: none;
-  border-radius: var(--r-sm); border: 1px solid var(--line); background: #000; display: block;
-}
+/* ── 产物卡：左（标题三行）｜ 右（成片 + 封面两个 16:9 框），**高度固定** ──
+   用户口径（2026-11-14）：没产物时高度不许塌成一条 —— 有产物时的高度才是常态，
+   所以空态也画同尺寸的虚线占位框。 */
+.artifact-bar .art-body { display:flex; align-items:stretch; gap:12px; height:180px; margin-top:10px; }
+/* 左栏（标题/主播名/完整标题）**只占 1/4**，剩下的 3/4 全给成片 + 封面（用户 2026-11-14 口径）。
+   栅格 = 44px 标签列 + 控件列（列间距 8px），三行共用同一套列 ⇒ 控件左边缘严格对齐。 */
+.artifact-bar .art-left { display:flex; flex-direction:column; gap:10px; min-width:0; flex:0 0 25%;
+  justify-content:center; }
+.artifact-bar .art-field { display:grid; grid-template-columns:44px minmax(0,1fr); align-items:center;
+  gap:8px; flex:none; }
+.artifact-bar .art-field > label { white-space:nowrap; text-align:right; }
+.artifact-bar .art-field > input { min-width:0; }
+/* 标题 vs 主播名**要有区分**：标题是主文案（字重高一档、常规字号），主播名是附加信息
+   （小一号、弱色 + 浅底）；主播名打开后才升到正常色。 */
+.artifact-bar .art-field-title input { font-weight:var(--fw-medium); color:var(--ink); }
+.artifact-bar .art-field-name input { font-size:var(--fs-sm); color:var(--ink-dim); background:var(--bg-soft); }
+.artifact-bar .art-field-name:not(.off) input { color:var(--ink); }
+/* 开关长在「主播名」这三个字上：亮着 = 进标题（字前一颗主色小圆点），关掉 = 整行变灰 */
+.artifact-bar .name-toggle { position:relative; padding-left:10px; cursor:pointer; user-select:none;
+  color:var(--ink); border-radius:var(--r-sm); }
+.artifact-bar .name-toggle::before { content:''; position:absolute; left:0; top:50%; transform:translateY(-50%);
+  width:6px; height:6px; border-radius:50%; background:var(--main); transition:background var(--dur-fast) var(--ease); }
+.artifact-bar .name-toggle:hover { color:var(--pink-text); }
+.artifact-bar .name-toggle:focus-visible { outline:2px solid var(--main-glow); outline-offset:2px; }
+.artifact-bar .art-field-name.off .name-toggle { color:var(--ink-faint); }
+.artifact-bar .art-field-name.off .name-toggle::before { background:var(--line); }
+.artifact-bar .art-field-name.off .name-cell { opacity:.55; }
+/* 主播名一行 = 输入框 + 前/后两段（两段跟在行尾） */
+.artifact-bar .name-cell { display:flex; align-items:center; gap:8px; min-width:0; }
+.artifact-bar .name-cell > input { flex:1 1 auto; min-width:0; }
+/* 两段控件（前/后）：照 `.tabs` 的观感，选中段用主色浅底 —— 开关关着时整块置灰不可点 */
+/* ⚠️ `flex:none` 不能省：它一旦被 flex 压缩，「后」会被 `overflow:hidden` 裁掉半个字（实测） */
+.artifact-bar .seg { display:inline-flex; flex:none; border:1px solid var(--line); border-radius:var(--r-sm); overflow:hidden; }
+.artifact-bar .seg > button { padding:2px 9px; font-size:var(--fs-xs); background:transparent; border:0;
+  color:var(--ink-dim); cursor:pointer; }
+.artifact-bar .seg > button.on { background:var(--main-soft); color:var(--pink-text); font-weight:var(--fw-semi); }
+.artifact-bar .seg.off { opacity:.45; }
+.artifact-bar .seg > button:disabled { cursor:default; }
+/* 「完整标题」= 栅格第二列（与两个输入框同一条左边缘），吃掉剩下的高度。
+   ⚠️ **至少留两行**（用户口径：只给一行长标题会显示不全）：`min-height` 按两行行高算，
+   超出就自然换行、再超出才滚动 —— 别用 `line-clamp` 截断。 */
+.artifact-bar .art-final-row { display:grid; grid-template-columns:44px minmax(0,1fr); gap:8px;
+  flex:1 1 auto; min-height:56px; }
+/* 常驻一条淡虚线边框：不点开也知道「这一整块是可点的最终标题」（只在 hover 变主色） */
+.artifact-bar .pub-final { grid-column:2; margin-top:0; align-items:flex-start; flex-wrap:nowrap;
+  justify-content:space-between; gap:10px; overflow:auto; min-height:56px;
+  border-color:var(--line); }
+.artifact-bar .pub-final:hover { border-color:var(--main); }
+/* 放大 + 加粗 + 左对齐：它是这条片段最终要发出去的那句话，得比上面两个输入框醒目 */
+.artifact-bar .pub-final .pub-final-text { white-space:pre-wrap; flex:1 1 auto; text-align:left;
+  font-size:var(--fs-lg); font-weight:var(--fw-medium); line-height:1.35; color:var(--ink); }
+.artifact-bar .pub-final.empty .pub-final-text { font-size:var(--fs-base); font-weight:var(--fw-normal);
+  color:var(--ink-faint); }
+/* 右下角常驻提示：平时是「单击复制」，复制成功变「已复制」（比 tooltip 可靠） */
+.artifact-bar .copy-hint { flex:none; align-self:center; font-size:var(--fs-xs); color:var(--ink-faint);
+  opacity:.65; transition:opacity var(--dur-fast) var(--ease); }
+.artifact-bar .pub-final:hover .copy-hint { opacity:1; }
+.artifact-bar .copy-hint.ok { color:var(--green-deep); opacity:1; }
+/* 两栏之间那条竖线（贯穿卡片内容区） */
+.artifact-bar .art-sep { flex:none; width:1px; background:var(--line); }
+/* 媒体列吃掉左栏之外的宽度，两个框**平分**它（高度仍固定 ⇒ 不再锁 16:9，视频用 contain
+   不裁、封面用 cover 裁边；锁死 16:9 的话 1/4 的左栏一改，右边会空出一大块）。 */
+.artifact-bar .art-media { display:flex; gap:12px; flex:1 1 auto; min-width:0; }
+.artifact-bar .art-box { display:flex; align-items:center; justify-content:center; height:100%;
+  flex:1 1 0; min-width:0; overflow:hidden; background:#000;
+  border:1px solid var(--line); border-radius:var(--r-sm); }
+/* 空态框：虚线用 `--ink-faint`（`--line` 在亮色下几乎看不见，用户会以为右边是空白） */
+.artifact-bar .art-box.empty { background:transparent; border-style:dashed; border-color:var(--ink-faint);
+  color:var(--ink-faint); }
+.artifact-bar .art-box img, .artifact-bar .art-box video { width:100%; height:100%; display:block;
+  border-radius:0; object-fit:cover; }
+.artifact-bar .art-box video { object-fit:contain; }
+/* 窄屏把整块等比缩小，别让两个 16:9 框把左栏挤没 */
+@media (max-width:1180px) { .artifact-bar .art-body { height:132px; } .artifact-bar .art-left { flex-basis:32%; } }
+/* 最终标题 = 纯文本、**单击即复制**（没有按钮）：所以必须看起来可点 —— 指针 + 悬停底色，
+   别做成一行不可交互的灰字。空态（开关全关）不显示手型，文案用弱色。 */
+.pub-final { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:6px;
+  padding:6px 8px; border:1px dashed transparent; border-radius:var(--r-sm); cursor:pointer; }
+.pub-final:hover { background:var(--bg-soft); border-color:var(--line); }
+.pub-final:focus-visible { outline:2px solid var(--main-glow); outline-offset:2px; }
+.pub-final.empty { cursor:default; }
+.pub-final.empty .pub-final-text { color:var(--ink-faint); }
+.pub-final .pub-final-text { min-width:0; word-break:break-word; }
+
 .cover-img { width:100%; border-radius:var(--r-sm); border:1px solid var(--line); display:block; }
 .thumb { width:100%; aspect-ratio:16/9; object-fit:cover; border-radius:var(--r-sm); margin-top:10px; border:1px solid var(--line); }
 /* 弹幕偏移的行尾数字框（照 CoverDesigner 的 .rv-input）：常态隐形、hover/focus 现出可编辑 */

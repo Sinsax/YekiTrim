@@ -55,8 +55,8 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { api } from '../api/client'
 import { register } from '../stores/auth'
+import { refreshHealth } from '../stores/health'
 
 const router = useRouter()
 const username = ref('')
@@ -70,12 +70,10 @@ const enabled = ref(null)
 const canSubmit = computed(() => !!username.value.trim() && !!password.value && !!invite.value.trim())
 
 onMounted(async () => {
-  try {
-    const h = await api('/api/health')
-    enabled.value = h?.registration_enabled === true
-  } catch {
-    enabled.value = null // 问不到就当开放，交给服务端判定（失败文案直出）
-  }
+  // 走 stores/health.js 的**唯一缓存**（与登录页/设置页同源，别在这里再拉第二份）。
+  // 读不到（null）就保持 `enabled = null` = "还没问到"：前端不当裁判，交给服务端判定。
+  const h = await refreshHealth()
+  if (h) enabled.value = h.registration_enabled === true
 })
 
 async function submit() {

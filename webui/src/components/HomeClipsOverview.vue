@@ -129,8 +129,8 @@
       卡片较多，只渲染前 {{ RENDER_CAP }} 张（共 {{ shownClips.length }} 个）。
     </div>
 
-    <div v-if="noClipProjects.length" class="muted small ov-none">
-      尚无切片：{{ noClipProjects.map((p) => p.name).join('、') }}
+    <div v-if="noClipProjects.length" class="muted small ov-none" :title="noClipTitle">
+      尚无切片：{{ noClipNames }}
     </div>
 
     <div v-if="loading && !allClips.length" class="row muted small">
@@ -150,6 +150,7 @@ import { initPolish } from '../api/polish'
 import { watchJob } from '../api/jobs'
 import { toast } from '../stores/toast'
 import { dmPlain, hashIndex, rangesHint } from '../utils'
+import { ui } from '../stores/theme'
 
 /** 单区块最多渲染多少张卡片进 DOM（墙本身只显示三行，超出纯 DOM 负担） */
 const RENDER_CAP = 120
@@ -201,15 +202,25 @@ function pickOvSort(k) {
 
 /**
  * 项目专属颜色：id 稳定散列进调色板 —— 同一项目永远同一个颜色，新增项目也不打乱已有分配。
- * 色板挑的是在浅色底上可读的中等饱和度色，避开主题粉（--main）与错误红。
+ * 色板挑的是可读的中等饱和度色，避开主题橙（--main）与错误红。
+ *
+ * ⚠️ **必须分主题两套**：这行是 10.5px 的正文，压在卡片底上。原来只有一套浅色板，
+ * 暗色下 `#1d4ed8` 压 #2B2B2B 只有约 **1.8:1** —— 项目名基本看不见（还带一颗同色圆点）。
+ * 暗色板整体提亮到 6:1 以上；两套都用同一个 `hashIndex`，所以**换主题不掉色、也不换色**。
  */
-const PROJECT_COLORS = [
-  '#2563eb', '#7c3aed', '#0891b2', '#d97706', '#0d9488', '#9333ea',
-  '#ea580c', '#059669', '#6d28d9', '#c026d3', '#4d7c0f', '#ca8a04',
-  '#1d4ed8', '#b45309'
+const PROJECT_COLORS_LIGHT = [
+  '#2563eb', '#7c3aed', '#0891b2', '#b45309', '#0d9488', '#9333ea',
+  '#c2410c', '#047857', '#6d28d9', '#a21caf', '#4d7c0f', '#a16207',
+  '#1d4ed8', '#9a3412'
+]
+const PROJECT_COLORS_DARK = [
+  '#8FB4F5', '#C4A6FF', '#5FD3E8', '#F0B45C', '#5FD9C4', '#D9A6F5',
+  '#F59E6B', '#6EE7A8', '#A9A0FF', '#F58FD0', '#C3D96B', '#F2D06B',
+  '#9CC0FF', '#E8A96B'
 ]
 function colorOf(pid) {
-  return PROJECT_COLORS[hashIndex(String(pid), PROJECT_COLORS.length)]
+  const pal = ui.theme === 'dark' ? PROJECT_COLORS_DARK : PROJECT_COLORS_LIGHT
+  return pal[hashIndex(String(pid), pal.length)]
 }
 
 /**
@@ -273,6 +284,13 @@ const exported = computed(() => sortedClips.value.filter((x) => x.exported))
 const noClipProjects = computed(() =>
   (wb.projects || []).filter((p) => !(cacheOf(p.id).clips || []).some((x) => x && x.video_exists !== false))
 )
+/** ⚠️ 行内最多列 3 个：14 个项目全列出来会把这张卡撑成一整块文字墙（截图里踩过） */
+const noClipNames = computed(() => {
+  const names = noClipProjects.value.map((p) => p.name || `项目 #${p.id}`)
+  if (names.length <= 3) return names.join('、')
+  return `${names.slice(0, 3).join('、')} 等 ${names.length} 个项目`
+})
+const noClipTitle = computed(() => noClipProjects.value.map((p) => p.name || `项目 #${p.id}`).join('\n'))
 
 // ───────────────────────── 搜索：标题 / 字幕 / 弹幕 ─────────────────────────
 /**
@@ -453,23 +471,44 @@ const emptyText = computed(() => {
   return '还没有切片。'
 })
 
+/** HTML 转义（只此一份；字幕/弹幕文本来自用户文件，里面可能有 `<`）。 */
+function escHtml(t) {
+  return String(t ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+}
 /**
- * 关键词高亮（`v-html`）：**HTML 转义在前**，再把命中的词包 `<mark>`。
- * ⚠️ 先转义再拼标签，别反过来 —— 字幕/弹幕文本来自用户文件，里面可能有 `<`。
+ * 关键词高亮（`v-html`）：**先在原文上定位命中区间，再分段转义拼 `<mark>`**。
+ * ⚠️ 不能"先转义、再在转义串上做替换"（旧实现）：搜「amp」会命中 `&amp;` 实体的中间，
+ * 输出 `&amp;amp;`（页面上显示成字面量）。转义必须发生在打标**之后**。
  * 命中素材要高亮在哪：搜到的字幕行原样显示在卡上，把命中的词点亮才看得出"为什么是它"。
  */
 function hl(s) {
   const raw = String(s ?? '')
-  const esc = raw.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
   const ts = terms.value.slice().sort((a, b) => b.length - a.length)
-  if (!ts.length) return esc
-  let out = esc
+  if (!ts.length) return escHtml(raw)
+  const hay = raw.toLowerCase()
+  const ranges = []
   for (const t of ts) {
     if (!t) continue
-    const re = new RegExp('(' + t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi')
-    out = out.replace(re, '<mark>$1</mark>')
+    const needle = String(t).toLowerCase()
+    let from = 0
+    while (from <= hay.length - needle.length && ranges.length < 50) {
+      const i = hay.indexOf(needle, from)
+      if (i < 0) break
+      const end = i + needle.length
+      if (!ranges.some(([s0, e0]) => i < e0 && end > s0)) ranges.push([i, end])
+      from = end
+    }
   }
-  return out
+  if (!ranges.length) return escHtml(raw)
+  ranges.sort((a, b) => a[0] - b[0])
+  let out = ''
+  let pos = 0
+  for (const [s0, e0] of ranges) {
+    if (s0 < pos) continue
+    out += escHtml(raw.slice(pos, s0)) + '<mark>' + escHtml(raw.slice(s0, e0)) + '</mark>'
+    pos = e0
+  }
+  return out + escHtml(raw.slice(pos))
 }
 
 /** 卡片悬停 title：片段名（项目）+（多段时的各段区间由 `.ov-seg` 自己带）。 */
@@ -629,12 +668,16 @@ onUnmounted(() => {
 }
 
 .ov-card {
-  width:140px; height:var(--ov-card-h); box-sizing:border-box;
+  /* ⚠️ 宽度随墙自适应（U6）：写死 140px 时 1680 宽下一行 3 张卡只占 1/3 墙宽，
+     右侧 ~870px 全空。clamp 在窄视口回落到老尺寸、宽视口最多 200px（三行高度不变）。 */
+  width:clamp(140px, 12vw, 200px); height:var(--ov-card-h); box-sizing:border-box;
   border:1px solid var(--line); border-radius:var(--r-sm);
   overflow:hidden; background:var(--card); padding:0; cursor:pointer; text-align:left;
   display:flex; flex-direction:column; flex:none;
 }
-.ov-card:hover { border-color:var(--main); box-shadow:var(--shadow); }
+.ov-card { transition:border-color .14s, box-shadow .14s, transform .14s; }
+.ov-card:hover { border-color:var(--main); box-shadow:var(--shadow-hover); transform:translateY(-1px); }
+.ov-card:focus-visible { outline:2px solid var(--main); outline-offset:2px; }
 /* 正在自动初始化的卡片：压暗 + 盖一层 spinner，重复点击被 openClip 里的 initing 门挡掉 */
 .ov-card.initing { opacity:.75; pointer-events:none; }
 .ov-init {

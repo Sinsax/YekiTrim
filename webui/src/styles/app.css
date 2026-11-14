@@ -14,6 +14,35 @@ a { color:inherit; text-decoration:none; }
 button { font-family:inherit; cursor:pointer; border:none; background:none; color:inherit; }
 input, select { font-family:inherit; }
 
+/* ---------- 键盘焦点（全应用唯一基线） ----------
+   ⚠️ 改样式前先看这条：此前全仓只有 1 条 `focus-visible` 规则，键盘用户 Tab 到按钮/侧栏/
+   页签上时**看不出焦点在哪**（只有鼠标 :hover 的反馈）。这里给所有真控件补一圈主色描边，
+   用的是 `outline`（不参与布局、不会被 `overflow:hidden` 裁掉的方框除外）。
+   文本类控件不叠 outline：它们本来就有 `border-color + --main-soft` 光晕，
+   再加一圈 2px 边框会变成"双重描边"（视觉上像选错了控件）。 */
+:where(button, a[href], summary, [role="button"], [tabindex="0"]):focus-visible {
+  outline:2px solid var(--main);
+  outline-offset:2px;
+}
+:where(input, select, textarea):focus-visible {
+  outline:none;
+  border-color:var(--main);
+  box-shadow:0 0 0 3px var(--main-soft);
+}
+
+/* 减少动态效果：只压 UI 动画（骨架屏呼吸、弹层位移、Toast 滑入）。
+   ⚠️ 用 `iteration-count:1` + 极短时长，而不是 `animation:none` —— 转圈那类
+   `infinite` 动画若只是把时长压到 0，会变成一张静止的残环；限成 1 次就停在首帧。
+   预览/成片的功能动画由 JS（GSAP / 底座）驱动，不受这条影响。 */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration:.01ms !important;
+    animation-iteration-count:1 !important;
+    transition-duration:.01ms !important;
+    scroll-behavior:auto !important;
+  }
+}
+
 /* 背景纹理：蜘蛛网线（45° 双线交叉）—— 哥特基调，替换原来的手绘圆点
    ⚠️ 走 --tex 变量，这样暗色模式下自动换成提亮的值（暗底上 .05 的黑线看不见） */
 body::after { content:''; position:fixed; inset:0; pointer-events:none; z-index:0;
@@ -23,24 +52,43 @@ body::after { content:''; position:fixed; inset:0; pointer-events:none; z-index:
 .wrap { position:relative; z-index:1; }
 
 /* ---------- 按钮 ---------- */
-.btn { display:inline-flex; align-items:center; gap:6px; padding:7px 16px; border-radius:var(--r-full);
-  border:1px solid var(--line); background:var(--card); font-size:13px; transition:.15s; }
+.btn { display:inline-flex; align-items:center; justify-content:center; gap:6px; padding:7px 15px;
+  border-radius:var(--r-full); border:1px solid var(--line); background:var(--card);
+  font-size:var(--fs-base); font-weight:var(--fw-medium); line-height:1.4;
+  transition:color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease),
+             background-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease),
+             transform var(--dur-fast) var(--ease); }
 .btn:hover { border-color:var(--main); color:var(--pink-text); background:var(--main-soft); }
-.btn-primary { background:var(--grad-main); color:var(--on-main); border:none;
-  font-weight:600; box-shadow:var(--shadow-pink); }
-.btn-primary:hover { filter:brightness(1.05); color:var(--on-main); border:none; background:var(--grad-main); }
-.btn-danger { background:var(--red-soft); color:var(--red-deep); border-color:#f3c9ce; }
-.btn-danger:hover { background:var(--red); color:#fff; border-color:var(--red); }
-.mini-btn { display:inline-flex; align-items:center; gap:4px; padding:4px 11px; font-size:12px;
-  border-radius:var(--r-full); border:1px solid var(--line); background:var(--card); transition:.15s;
+/* 按压反馈：按下去轻微缩小，松开回弹 —— 让「点了没反应」的疑问在 120ms 内消失 */
+.btn:not(:disabled):active { transform:scale(.97); }
+.btn-primary { background:linear-gradient(135deg,var(--action-bg),var(--action-bg-deep)); color:var(--on-action); border:none;
+  font-weight:600; box-shadow:var(--shadow-main); }
+.btn-primary:hover { filter:brightness(1.06); color:var(--on-action); border:none;
+  background:linear-gradient(135deg,var(--action-bg),var(--action-bg-deep)); }
+/* 危险按钮：底色走 --red-soft、文字 --red-deep（两套主题都压得住），hover 才转实心。
+   ⚠️ hover 的实心色必须用 `--red-deep` + `--bg`：暗色下 `--red` 是浅红，
+   白字压它只有 2.65（原来写死 `#fff` 就是这个 bug）。 */
+.btn-danger { background:var(--red-soft); color:var(--red-deep); border-color:var(--red); }
+.btn-danger:hover { background:var(--red-deep); color:var(--bg); border-color:var(--red-deep); }
+.mini-btn { display:inline-flex; align-items:center; justify-content:center; gap:4px;
+  padding:4px 11px; font-size:var(--fs-sm); font-weight:var(--fw-medium); line-height:1.5;
+  border-radius:var(--r-full); border:1px solid var(--line); background:var(--card);
+  transition:color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease),
+             background-color var(--dur-fast) var(--ease);
   white-space:nowrap; flex:none; color:var(--ink-dim); cursor:pointer; }
 .mini-btn:hover { border-color:var(--main); color:var(--pink-text); }
 .mini-btn.selected { background:var(--green-soft); color:var(--green-deep); border-color:var(--green); font-weight:600; }
-.mini-btn.primary { background:var(--grad-main); color:var(--on-main); border-color:transparent; box-shadow:var(--shadow-pink); }
-.mini-btn.primary:hover { filter:brightness(1.05); color:var(--on-main); }
+.mini-btn.primary { background:linear-gradient(135deg,var(--action-bg),var(--action-bg-deep)); color:var(--on-action); border-color:transparent; box-shadow:var(--shadow-pink); }
+.mini-btn.primary:hover { filter:brightness(1.06); color:var(--on-action); }
 .mini-btn.danger { color:var(--red-deep); }
 .mini-btn.danger:hover { border-color:var(--red); color:var(--red-deep); background:var(--red-soft); }
 button:disabled { opacity:.45; cursor:not-allowed; }
+/* 主色按钮的禁用态**不要靠整体降透明度**：橙底白字一淡就变成一块发灰的脏色，
+   既不像"不可用"也不像"可用"。改成中性底 + 弱化文字，语义反而更清楚。 */
+.btn-primary:disabled, .mini-btn.primary:disabled {
+  background:var(--bg-soft); color:var(--ink-faint); border:1px solid var(--line);
+  box-shadow:none; opacity:1;
+}
 
 /* ---------- Chip / 徽标 ---------- */
 .chip { display:inline-flex; align-items:center; gap:4px; padding:2px 10px; border-radius:var(--r-full);
@@ -71,10 +119,13 @@ button:disabled { opacity:.45; cursor:not-allowed; }
 .size-tag { font-size:9.5px; color:var(--ink-faint); flex:none; }
 
 /* ---------- 卡片 ---------- */
-.card { background:var(--card); border:1px solid var(--line); border-radius:var(--r); box-shadow:var(--shadow); padding:16px; }
-.card-blk { padding:16px; }
-.card-blk > b.t, .card-blk > .t { font-size:13px; display:block; margin-bottom:8px; }
-.card-lg { padding:22px 22px 18px; }
+.card { background:var(--card); border:1px solid var(--line); border-radius:var(--r-md); box-shadow:var(--e-1); padding:var(--s-4); }
+.card-blk { padding:var(--s-4); }
+.card-blk > b.t, .card-blk > .t { font-size:var(--fs-base); font-weight:var(--fw-semi); display:block; margin-bottom:var(--s-2); }
+.card-lg { padding:var(--s-5) var(--s-5) var(--s-4); }
+/* 可点卡片：**只有 hover 才升档**，静态一律 e-1（v5 是每张卡都带 --shadow，页面一片浮） */
+.card.is-clickable { transition:box-shadow var(--dur-base) var(--ease), border-color var(--dur-base) var(--ease), transform var(--dur-base) var(--ease); }
+.card.is-clickable:hover { box-shadow:var(--e-2); transform:translateY(-1px); }
 .card h2 { font-size:15px; margin-bottom:10px; }
 .card-h2 { display:flex; align-items:center; gap:7px; }
 .t { font-weight:700; }
@@ -97,11 +148,14 @@ button:disabled { opacity:.45; cursor:not-allowed; }
 .grid9 i.hot { background:var(--main-soft); border-color:var(--main-deep); color:var(--pink-text); font-weight:600; }
 
 /* 页头（sakura:57-60） */
-.page-head { display:flex; align-items:flex-end; gap:14px; margin-bottom:8px; flex-wrap:wrap; }
-.page-head h1 { font-size:26px; font-weight:700; }
-.page-head .sub { font-size:13px; color:var(--ink-dim); margin-bottom:6px; }
-.page-head .actions { margin-left:auto; display:flex; gap:10px; flex-wrap:wrap; }
-.section-title { font-size:16px; font-weight:700; margin:20px 0 10px; }
+.page-head { display:flex; align-items:flex-end; gap:var(--s-3); margin-bottom:var(--s-3); flex-wrap:wrap; }
+.page-head h1 { font-size:var(--fs-2xl); font-weight:var(--fw-semi); letter-spacing:-.01em; line-height:1.25; }
+.page-head .sub { font-size:var(--fs-base); color:var(--ink-dim); margin-bottom:4px; }
+.page-head .actions { margin-left:auto; display:flex; gap:var(--s-2); flex-wrap:wrap; align-items:center; }
+/* 分区标题：16/650 + 与内容 12px。分区之间由页面的 `--s-6` 拉开，别再各处写 mt-20。 */
+.section-title { display:flex; align-items:center; gap:var(--s-2);
+  font-size:var(--fs-lg); font-weight:var(--fw-semi); margin:var(--s-6) 0 var(--s-3); }
+.section-title:first-child { margin-top:0; }
 .subnav { display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
 .current-project { display:inline-block; color:var(--main-deep); font-weight:600; font-size:13px; margin:0 6px; white-space:nowrap; }
 .block-frame { border:1px solid var(--line); border-radius:var(--r); padding:16px; margin-bottom:20px; background:var(--bg); }
@@ -126,7 +180,10 @@ button:disabled { opacity:.45; cursor:not-allowed; }
 .pcard h2, .pcard h3 { font-size:16px; font-weight:700; line-height:1.35; word-break:break-word; margin:0; }
 .pcard .path { font-family:var(--mono); font-size:11px; color:var(--ink-faint); margin-top:3px;
   white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.pcard .ribbon { position:absolute; top:16px; right:-34px; transform:rotate(38deg); background:var(--main-soft);
+/* ⚠️ 斜角标签的**字**不许被卡片的 overflow:hidden 削掉（U4，review 实测「场」字贴边被削）：
+   角带本身越出卡片是刻意的斜角造型，但 band 中心要留在卡内 —— 原来 top:16/right:-34
+   让首字符落在卡外。收进来 12px（≈一个字宽），造型不变、文字完整。 */
+.pcard .ribbon { position:absolute; top:22px; right:-22px; transform:rotate(38deg); background:var(--main-soft);
   color:var(--main-deep); font-size:11px; font-weight:700; padding:4px 44px; letter-spacing:.05em; }
 .pcard.open { }
 .pcard.new { border:2px dashed var(--main-glow); background:var(--card); display:flex; flex-direction:column;
@@ -137,7 +194,7 @@ button:disabled { opacity:.45; cursor:not-allowed; }
 .pcard.new b { font-size:14px; }
 .pcard.new small { font-size:11px; color:var(--ink-faint); }
 .sticker { width:52px; height:52px; border-radius:16px; display:flex; align-items:center; justify-content:center;
-  font-size:24px; transform:rotate(-5deg); box-shadow:0 4px 10px rgba(32,32,32,.08); flex:none; }
+  font-size:24px; transform:rotate(-5deg); box-shadow:var(--shadow-soft); flex:none; }
 .sticker.pink { background:var(--main-soft); border:2px dashed var(--main); }
 .sticker.blue { background:var(--blue-soft); border:2px dashed var(--blue); }
 .sticker.mint { background:var(--mint-soft); border:2px dashed var(--mint); }
@@ -198,19 +255,41 @@ summary { cursor:pointer; }
 .switch.on { background:var(--main); }
 .switch.on::after { left:15px; }
 
+/* ---------- 分段控件（v6） ----------
+   一个圆角容器里放若干胶囊按钮，选中项吃主色浅底。比"一排独立按钮"更好读：
+   一眼看得出它们是同一组互斥选项。 */
+.seg { display:inline-flex; align-items:center; gap:2px; padding:3px;
+  background:var(--surface-2); border:1px solid var(--line-soft); border-radius:var(--r-full); }
+.seg > button, .seg > a { display:inline-flex; align-items:center; gap:5px; padding:4px 12px;
+  border:none; background:none; border-radius:var(--r-full); color:var(--ink-dim);
+  font-size:var(--fs-sm); font-weight:var(--fw-medium); cursor:pointer;
+  transition:background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease); }
+.seg > button:hover, .seg > a:hover { color:var(--ink); }
+.seg > .on, .seg > .router-link-active { background:var(--card); color:var(--pink-text);
+  font-weight:var(--fw-semi); box-shadow:var(--e-1); }
+@media (max-width:760px) { .seg { width:100%; overflow-x:auto; } .seg > button, .seg > a { flex:none; } }
+
 /* ---------- Tabs（页内） ---------- */
-.tabs { display:flex; gap:4px; border-bottom:1px solid var(--line); margin-bottom:14px; flex-wrap:wrap; }
-.tab { padding:7px 14px; border-radius:10px 10px 0 0; cursor:pointer; color:var(--ink-dim); font-size:13px; }
-.tab.on, .tab.active { color:var(--pink-text); font-weight:600; background:var(--main-soft); }
+.tabs { display:flex; gap:var(--s-4); border-bottom:1px solid var(--line); margin-bottom:var(--s-4); flex-wrap:wrap; }
+.tab { position:relative; padding:7px 2px 9px; border-radius:0; cursor:pointer; color:var(--ink-dim);
+  font-size:var(--fs-base); font-weight:var(--fw-medium); background:none;
+  transition:color var(--dur-fast) var(--ease); }
+.tab:hover { color:var(--ink); }
+/* 选中态：主色下划线 + 文字加深。底色块交给 `.seg`，两者不再长得一样 */
+.tab.on, .tab.active { color:var(--pink-text); font-weight:var(--fw-semi); background:none; }
+.tab.on::after, .tab.active::after { content:''; position:absolute; left:0; right:0; bottom:-1px; height:2px;
+  border-radius:2px 2px 0 0; background:var(--main); }
 .tab-btn { padding:7px 16px; border-radius:var(--r-full); border:1px solid var(--line); background:var(--card);
   color:var(--ink-dim); font-size:13px; cursor:pointer; text-decoration:none; display:inline-block; }
 .tab-btn:hover { background:var(--bg-soft); color:var(--ink); }
-.tab-btn.router-link-active, .tab-btn.active { background:var(--grad-main); color:var(--on-main); border:none; font-weight:600; }
+.tab-btn.router-link-active, .tab-btn.active { background:linear-gradient(135deg,var(--action-bg),var(--action-bg-deep)); color:var(--on-action); border:none; font-weight:600; }
 
 /* ---------- 表格 ---------- */
-.tb { width:100%; border-collapse:collapse; font-size:12.5px; }
-.tb th, .tb td { padding:9px 10px; text-align:left; border-bottom:1px solid var(--line-soft); }
-.tb th { color:var(--ink-dim); font-weight:600; background:var(--bg-soft); }
+.tb { width:100%; border-collapse:separate; border-spacing:0; font-size:var(--fs-sm); }
+.tb th, .tb td { padding:var(--s-2) var(--s-3); text-align:left; border-bottom:1px solid var(--line-soft); }
+/* 长表滚动时表头跟手：sticky 需要不透明底，否则内容会从下面透出来 */
+.tb th { position:sticky; top:0; z-index:1; color:var(--ink-dim); font-weight:var(--fw-semi);
+  font-size:var(--fs-xs); letter-spacing:.04em; background:var(--bg-soft); }
 .tb tr:last-child td { border-bottom:none; }
 .tb td.num { font-family:var(--mono); text-align:right; }
 .tb tr.missing { opacity:.6; }
@@ -253,17 +332,29 @@ iframe.preview { width:100%; height:75vh; border:0; border-radius:12px; backgrou
 .modal-x { font-size:16px; color:var(--ink-faint); }
 .modal-x:hover { color:var(--pink-text); }
 .drawer { position:fixed; top:0; right:0; width:360px; height:100vh; background:var(--card); border-left:1px solid var(--line);
-  box-shadow:-8px 0 30px rgba(32,32,32,.14); z-index:61; padding:18px; overflow-y:auto; }
+  box-shadow:var(--shadow-hover); z-index:61; padding:18px; overflow-y:auto; }
 .drawer-mask { z-index:60; display:block; }
-/* ⚠️ 文字色必须是 --bg，不能写死 #fff：--ink 在暗色下是 **浅色**(#F0F0E0)，
-   写死白字就成了"白底白字"（实测对比度 1.15，toast 完全读不出来）。--bg 是 --ink 的天然反色。 */
-.toast { position:fixed; top:18px; left:50%; transform:translateX(-50%); z-index:150; background:var(--ink); color:var(--bg);
-  padding:8px 18px; border-radius:var(--r-full); font-size:13px; max-width:80vw; box-shadow:var(--shadow-hover); }
-.toast.err { background:var(--red-deep); }
-/* ⚠️ `warn` 2026-10-09 补：此前只有 `.err` 有样式，而代码里已经在传 `'warn'`
-   （跳过非字体文件那类"没失败、但要让你知道"的提示）—— 落回默认底色的 warn
-   与普通成功提示**长得一模一样**，用户分不出"做成了"和"跳过了一些"。 */
-.toast.warn { background:var(--tan); color:var(--ink); }
+/* ---------- Toast（右上纵列） ----------
+   ⚠️ **定位与堆叠只在这里一份**：曾经 app.css 写 `left:50%` 居中、ToastHost.vue 又写右上角容器，
+   两套各覆盖一半属性 —— 子元素仍是 `position:fixed`、脱离容器的 flex 流，
+   于是多条消息全部叠在屏幕正中。现在：容器管定位、`.toast` 只管外观，组件里不再重复定义。
+   ⚠️ 正文一律 `--ink`，语义只上左侧强调条：`--green-deep` 压白卡只有 3.26:1、
+   暗色的 `--red` 压卡面更低 —— 13px 正常文字读不清（WCAG AA 要 4.5）。 */
+.toast-wrap { position:fixed; top:16px; right:16px; z-index:220; display:flex; flex-direction:column;
+  align-items:flex-end; gap:8px; width:min(420px,calc(100vw - 32px)); pointer-events:none; }
+.toast { pointer-events:auto; max-width:100%; padding:9px 14px; border-radius:var(--r-sm);
+  background:var(--card); border:1px solid var(--line); border-left:3px solid var(--line);
+  color:var(--ink); font-size:13px; line-height:1.5; overflow-wrap:anywhere;
+  box-shadow:var(--shadow-hover); animation:toast-in .16s ease-out; }
+.toast.ok { border-left-color:var(--green); }
+.toast.err { border-left-color:var(--red); }
+.toast.warn { border-left-color:var(--amber); }
+@keyframes toast-in { from { opacity:0; transform:translateY(-6px); } to { opacity:1; transform:none; } }
+@media (prefers-reduced-motion: reduce) { .toast { animation:none; } }
+/* 小屏移到右下：顶部要留给吸顶上下文栏与「打开导航」；底部也离拇指更近 */
+@media (max-width:760px) {
+  .toast-wrap { top:auto; bottom:14px; left:12px; right:12px; width:auto; align-items:stretch; }
+}
 .dialog-modal { width:min(440px,92vw); background:var(--card); border:1px solid var(--line); border-radius:var(--r);
   box-shadow:var(--shadow-hover); padding:20px; }
 .dialog-title { font-size:15px; font-weight:700; margin-bottom:8px; }
@@ -311,7 +402,7 @@ iframe.preview { width:100%; height:75vh; border:0; border-radius:12px; backgrou
   display:flex; align-items:center; justify-content:center; font-size:22px; color:#fff; flex:none; }
 
 /* ---------- 空态 / 加载 / 错误 ---------- */
-.empty { border:1.5px dashed var(--line); border-radius:var(--r); padding:26px 16px; text-align:center;
+.empty { border:1px dashed var(--line); border-radius:var(--r-md); padding:var(--s-6) var(--s-4); text-align:center;
   /* ⚠️ 这里曾经写死 `rgba(255,255,255,.55)`：浅色下它压在 #FFFFFF 卡片上等于没有，还看不出问题；
      暗色下它压在 #2B2B2B 上变成一块 #A0A0A0 的灰白，而文字是 --ink-dim(#B0B0A6) ——
      实测对比度 **1.20**，整块"空目录"看起来就是"背景颜色不对"。
@@ -321,6 +412,9 @@ iframe.preview { width:100%; height:75vh; border:0; border-radius:12px; backgrou
 .skeleton { min-height:64px; border-radius:var(--r-sm);
   background:linear-gradient(90deg,var(--line-soft) 25%,var(--bg-soft) 50%,var(--line-soft) 75%);
   background-size:200% 100%; animation:skeleton-wave 1.2s infinite; }
+.skeleton.line { min-height:12px; height:12px; border-radius:var(--r-xs); }
+.skeleton.card { min-height:120px; border-radius:var(--r-md); }
+.skeleton.grid { min-height:0; aspect-ratio:16/10; border-radius:var(--r-md); }
 @keyframes skeleton-wave { from { background-position:200% 0; } to { background-position:-200% 0; } }
 .spinner { width:15px; height:15px; flex:none; border:2px solid var(--main-soft); border-top-color:var(--main);
   border-radius:50%; animation:spin .8s linear infinite; }
@@ -347,18 +441,26 @@ iframe.preview { width:100%; height:75vh; border:0; border-radius:12px; backgrou
    它是"这是个已有工程、将直接添加"的信号 —— 不是装饰，别挪到别的元素上。 */
 .dir-picker.has-project { border:1px solid var(--green); border-radius:var(--r-sm);
   padding:10px 12px; background:var(--green-soft); }
+/* 窄栏变体（首页「服务器文件」左栏）：输入独占一行，按钮跟在下一行；目录盒矮一档 */
+.dir-picker.compact > .row:first-child { flex-wrap:wrap; gap:6px; }
+.dir-picker.compact > .row:first-child > .flex-1 { flex:1 1 100%; min-width:0; }
+.dir-picker.compact > .row:first-child > .mini-btn { margin-top:0; }
+.dir-picker.compact .file-box { max-height:none; flex:1 1 auto; min-height:0; }
+
 .dir-picker.has-project::before { content:"已有工程 · 将直接添加（不覆盖现有配置）";
   display:block; font-size:11.5px; color:var(--green-deep); margin-bottom:6px; }
 .file-icon { flex:none; display:flex; }
 .file-row .mono { font-size:12px; word-break:break-all; }
 
 /* ---------- 布局壳（multiuser:62-104） ---------- */
-.shell { display:flex; height:100vh; }
-.side { flex:none; width:268px; background:var(--card); border-right:1px solid var(--line);
-  display:flex; flex-direction:column; z-index:10; height:100vh; position:sticky; top:0;
+/* `100vh` 是回退：移动浏览器地址栏收起/展开时 vh 不跟着变，`dvh` 才跟可视区域走。
+   ⚠️ 两行都要留，先声明的在旧浏览器里生效。 */
+.shell { display:flex; height:100vh; height:100dvh; }
+.side { flex:none; width:var(--side-w); background:var(--card); border-right:1px solid var(--line);
+  display:flex; flex-direction:column; z-index:10; height:100vh; height:100dvh; position:sticky; top:0;
   transition:width .18s ease; }
 /* 折叠成图标轨（新态，样稿无对应：宽度 64px = 40px 图标 + 两侧 12px 内边距） */
-.side.mini { width:64px; }
+.side.mini { width:var(--side-w-mini); }
 .side-brand { display:flex; align-items:center; gap:10px; padding:14px 16px 8px; cursor:pointer; }
 /* 品牌标容器：与登录页同理 —— 去掉渐变圆底，只留尺寸（正式 logo 自带留白）。 */
 /* 46px：折叠轨宽 64px，左右各留 9px；展开态 268px 更宽松。 */
@@ -386,7 +488,9 @@ iframe.preview { width:100%; height:75vh; border:0; border-radius:12px; backgrou
 .proj-steps { margin:2px 0 6px 14px; border-left:1.5px solid var(--line-soft); padding-left:8px; }
 .proj.open .proj-steps { display:block; }
 .snode { display:flex; align-items:center; gap:8px; padding:6px 8px; border-radius:var(--r-sm); cursor:pointer;
-  font-size:12.5px; color:var(--ink-dim); transition:.12s; }
+  font-size:12.5px; color:var(--ink-dim); transition:.12s;
+  /* 阶段节点是 `<button>`（键盘可达）：按钮默认居中/无宽度，这里拉回整行贴左 */
+  width:100%; text-align:left; font-family:inherit; }
 .snode:hover { background:var(--bg-soft); color:var(--ink); }
 /* 这里原有一条 `.snode.cur`（进度档高亮：走到的最远阶段 + 粉色渐变圆点）——
    用户要求**删掉**，侧栏只保留「当前位置」高亮（选中的项目 + 该项目正在看的阶段，
@@ -406,8 +510,8 @@ iframe.preview { width:100%; height:75vh; border:0; border-radius:12px; backgrou
 .foot-chip { margin-left:auto; }
 .user-chip { display:flex; align-items:center; gap:8px; padding:8px; border-radius:var(--r-sm); cursor:pointer;
   background:var(--bg-soft); margin-bottom:4px; }
-.user-chip .av { width:26px; height:26px; border-radius:50%; background:linear-gradient(135deg,var(--main),var(--pink-light));
-  color:var(--on-main); display:flex; align-items:center; justify-content:center; font-size:12px; flex:none; }
+.user-chip .av { width:26px; height:26px; border-radius:50%; background:linear-gradient(135deg,var(--action-bg),var(--action-bg-deep));
+  color:var(--on-action); display:flex; align-items:center; justify-content:center; font-size:12px; flex:none; }
 .user-chip .nm { flex:1; font-size:12px; line-height:1.3; min-width:0; }
 /* ⚠️ 本地模式（免登录）下这块只剩一句状态：没有头像、没有用户名/角色、也没有可退的会话。
    容器也别留成可点的样子。真正的标记样式在 SideNav 的 scoped 块里。 */
@@ -420,6 +524,16 @@ iframe.preview { width:100%; height:75vh; border:0; border-radius:12px; backgrou
 .pane { display:none; }
 .pane.on { display:block; animation:fadein .22s; }
 @keyframes fadein { from { opacity:0; transform:translateY(5px); } to { opacity:1; transform:none; } }
+/* 错误提示抖动一次（登录失败 / 表单缺项）。元素靠 :key 重建来重新触发；
+   减少动效时由全局 reduced-motion 块压成 0.01ms，等于不抖。 */
+@keyframes shake-x {
+  0%, 100% { transform:none; }
+  20% { transform:translateX(-6px); }
+  40% { transform:translateX(6px); }
+  60% { transform:translateX(-4px); }
+  80% { transform:translateX(3px); }
+}
+.error-banner.shake { animation:shake-x .36s var(--ease); }
 
 /* ---------- 间距工具类 ---------- */
 .flex-1 { flex:1; min-width:0; }
@@ -449,6 +563,29 @@ iframe.preview { width:100%; height:75vh; border:0; border-radius:12px; backgrou
 
 @media (max-width:1000px) {
   .cols-main, .cols-2 { grid-template-columns:1fr; }
+}
+
+/* ---------- 移动壳（≤760px）：侧栏变左侧抽屉，主区占满宽度 ----------
+   ⚠️ 层级有硬要求：遮罩(30) **低于** 抽屉(40)，否则点开导航时遮罩会盖在抽屉上、
+   整块变成灰的（点哪儿都没反应）；两者又都要高于吸顶面包屑(9)。
+   抽屉用 `translateX` 位移而不是 `display:none`：关闭动画与焦点顺序都更自然。 */
+@media (max-width:760px) {
+  .side {
+    position:fixed; top:0; left:0; bottom:0; height:100vh; height:100dvh;
+    width:min(304px,86vw); z-index:40;
+    transform:translateX(-100%); transition:transform .22s ease;
+    box-shadow:none; border-right:1px solid var(--line);
+  }
+  .side.mini { width:min(304px,86vw); }
+  .side.mobile-open { transform:translateX(0); box-shadow:var(--shadow-hover); }
+  /* 抽屉关着时不许拦住主区的点击（fixed 元素即使移出视口仍可能吃掉指针） */
+  .side:not(.mobile-open) { pointer-events:none; }
+  .side:not(.mobile-open):focus-within { pointer-events:auto; }
+  .main { width:100%; min-width:0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .side { transition:none; }
 }
 
 /* ⚠️⚠️ **属性面板的两列网格**（2026-10-16，纯 CSS 的排版优化）——

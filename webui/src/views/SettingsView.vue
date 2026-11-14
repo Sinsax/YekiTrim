@@ -1,15 +1,21 @@
 <template>
   <div>
-    <div class="page-head">
-      <div><h1>设置</h1><div class="sub">{{ active.sub }}</div></div>
-    </div>
+    <!-- 只留标题：分区说明在左侧导航里每条都有，页头再写一遍当前那条就是重复 -->
+    <UiPageHeader title="设置" />
 
-    <!-- 子页标签：每项是一条路由（settings-<key>），切页即换 URL，可直接刷新/分享。
-         标签与路由同源（utils.js 的 SETTINGS_SECTIONS），别在别处再抄一份。 -->
-    <nav class="tabs">
-      <router-link v-for="s in visibleSections" :key="s.key" :to="{ name: 'settings-' + s.key }"
-                   class="tab" :class="{ on: s.key === section }">{{ s.label }}</router-link>
-    </nav>
+    <!-- v7：顶部 tabs → **左侧二级导航 + 右侧内容**。每项仍是一条路由（`settings-<key>`），
+         切页即换 URL，可直接刷新/分享；标签与路由同源（`utils.js::SETTINGS_SECTIONS`）。
+         窄屏（≤1000px）折回横向可滚动导航，`sub` 说明隐藏只留标签。 -->
+
+    <div class="settings-wrap">
+      <nav class="settings-nav" aria-label="设置分区">
+        <router-link v-for="s in visibleSections" :key="s.key" :to="{ name: 'settings-' + s.key }"
+                     class="settings-nav-item" :class="{ on: s.key === section }">
+          <b>{{ s.label }}</b>
+          <span>{{ s.sub }}</span>
+        </router-link>
+      </nav>
+      <div class="settings-body">
 
     <!-- 程序配置：ASR / 检测 / 剪切 / Chrome（写入 .yekitrim/config.toml） -->
     <template v-if="section === 'config'">
@@ -220,34 +226,17 @@
 
     <!-- 详细表单（多接口 / 能力 / 参数 / 提示词）：默认折叠 —— 隐藏 ≠ 删除，所有入口仍可达 -->
     <details class="form-adv">
-      <summary data-cap="settings.llm-advanced">高级配置（多接口 / 能力 / 参数 / 提示词）</summary>
+      <summary data-cap="settings.llm-advanced">高级配置（{{ llmProviderMode ? '多接口 / ' : '' }}能力 / 参数 / 提示词）</summary>
     <div class="card">
-        <!-- ① 接口：填好 key → 取模型 → 选中（模型选择器见 components/llm/LlmModelPicker.vue） -->
-        <div class="form-section">
-          <div class="form-section-title">接口<span class="t-sub">{{ llmProviderMode
-            ? '多份配置 · 同一时间只展开一份' : '填好 key → 获取模型 → 选中' }}</span></div>
-          <!-- 多 provider（P3，照 DSH：列表 → 只展开一份 → 模型行 → 档位行）。
-               ⚠️ **R4**：后端没回 providers ⇒ llmProviderMode=false ⇒ 走下面这个老的单配置表单 -->
-          <LlmProviders v-if="llmProviderMode" :providers="form.llm.providers"
+        <!-- ① 多接口：**只在 provider 模式**出现（legacy 单配置由上面「快速配置」全权负责，
+             这里再摆一遍 base_url / api_key / model 就是同一件事说两遍 —— 2026-11 用户要求删掉）。
+             模型选择器见 components/llm/LlmModelPicker.vue。 -->
+        <div v-if="llmProviderMode" class="form-section">
+          <div class="form-section-title">接口<span class="t-sub">多份配置 · 同一时间只用一份</span></div>
+          <LlmProviders :providers="form.llm.providers"
                         v-model:active-id="form.llm.active"
                         :protocols="protocols" :protocols-source="protocolsSource" :caps="caps"
                         @probe="onProbeCaps" />
-          <div v-else class="form-grid">
-            <div class="span-2">
-              <label>base_url</label>
-              <input v-model="form.llm.base_url" type="text" placeholder="https://api.deepseek.com/v1">
-            </div>
-            <div class="span-2">
-              <label>api_key</label>
-              <!-- 只写不读：服务端不再回明文（P3），永远不预填；留空 = 不动这个键 -->
-              <input v-model="form.llm.api_key" type="password" autocomplete="off"
-                     :placeholder="apiKeyPlaceholder" :title="apiKeyTitle">
-            </div>
-            <div class="span-all">
-              <label>model</label>
-              <LlmModelPicker v-model="form.llm.model" :base-url="form.llm.base_url" :api-key="form.llm.api_key" @fetched="onModelsFetched" />
-            </div>
-          </div>
         </div>
 
         <!-- ② 生成（**只有 R4 单配置模式**）：能力驱动的两个旋钮 —— 输入类型 + 推理档位。
@@ -255,7 +244,7 @@
                 它们不属于接口配置，属于请求参数）；provider 模式下这里整块不渲染。
              并发数见「高级」（进程级旋钮）。 -->
         <div v-if="!llmProviderMode" class="form-section">
-          <div class="form-section-title">生成<span class="t-sub caps-src" :title="capsTitle">{{ capsText }}</span></div>
+          <div class="form-section-title">模型能力<span class="t-sub caps-src" :title="capsTitle">{{ capsText }}</span></div>
           <LlmParamFields :caps="caps" :target="llmParamsTarget" id-prefix="llm-g"
                           :fields="['input', 'reasoning']"
                           :input-text="inputText" :input-image="inputImage" :input-declared="inputDeclared"
@@ -268,7 +257,7 @@
         <!-- ③ 按链路：行由 llm_config.overrides 的键**自动生成**（后端加链路，这里一行都不用改）。
              「跟随全局」由**勾选框**表达：不勾 = 保存时发 null = 删键（别用空输入框 —— 那表达不出"没有值"）。 -->
         <div class="form-section">
-          <div class="form-section-title">按链路覆盖<span class="t-sub">勾上才覆盖，不勾 = 跟随全局</span></div>
+          <div class="form-section-title">请求参数<span class="t-sub">全局默认；勾上的链路单独覆盖</span></div>
           <div class="llm-cols">
             <!-- 全局默认（写 [llm.params]；provider 模式下 = 当前接口自己的 params）——
                  温度 / 输出上限 / JSON 从接口面板挪到这里：它们是**请求参数**，不是接口字段 -->
@@ -296,7 +285,7 @@
 
         <!-- ④ 高级：并发（进程级旋钮）· extra_params 逃逸口。⚠️「源文件」那块已删（用户：没必要有） -->
         <div class="form-section">
-          <div class="form-section-title">高级<span class="t-sub">并发 · 逃逸口</span></div>
+          <div class="form-section-title">运行时<span class="t-sub">并发 · extra_params 逃逸口</span></div>
           <div class="form-grid">
             <SliderField v-model="form.llm.max_concurrent" class="span-2" label="并发请求数"
                          :min="1" :max="32" :step="1" hint="对所有 LLM 调用生效（进程级旋钮）" />
@@ -357,33 +346,10 @@
     </div>
     </template>
 
-    <!-- 账号与模型：邀请码/注册 与 ASR 模型清单 -->
-    <template v-else-if="section === 'account'">
-    <div class="settings-block" data-cap="settings.account">
-    <div class="two-up" :class="{ 'one-up': localNoAuth }">
-      <!-- 本地模式（`--local-no-auth`）下**没有登录这回事**：邀请码与注册开关都是给
-           多用户部署用的，摆在这里只会让人以为需要它。 -->
-      <div v-if="!localNoAuth">
-        <div class="section-title">注册与邀请码</div>
-        <div class="card">
-          <InviteManager />
-        </div>
-
-        <!-- 账号配额（P5）：与邀请码同一页 —— 都是"管别人那个账号"的事。
-             ⚠️ 配额只对**普通账号**有意义（管理员豁免，他要能清理超额的账号）。 -->
-        <div class="section-title">账号配额</div>
-        <div class="card">
-          <UserQuotaManager />
-        </div>
-      </div>
-    </div>
-    </div>
-    </template>
-
-    <!-- 系统集成：录播姬采集（webhook / 导入规则）与 B 站链接下载 -->
+    <!-- 接入：录制软件 / 自动入库 / B站下载 -->
     <template v-else-if="section === 'integrations'">
     <div class="settings-block" data-cap="settings.integrations">
-    <div class="section-title">采集（录播姬 / 通用 Webhook）</div>
+    <div class="section-title">录播接入（biliLive-tools / 录播姬 二选一）</div>
     <div class="card">
       <RecorderConfig />
     </div>
@@ -395,32 +361,52 @@
     </div>
     </template>
 
-    <!-- 用量与日志：LLM 账本与运行日志 -->
-    <template v-else-if="section === 'monitor'">
-    <div class="settings-block" data-cap="settings.monitor">
-    <div class="section-title">LLM 用量</div>
-    <div class="card">
-      <LlmUsage />
+    <!-- 系统：账号/邀请（单人默认隐藏） + LLM 用量 + 运行日志。
+         ⚠️ 隐藏的是**多人相关块**，不是整页：用量与日志单人也要用。
+         判据 = `multi_user`（默认 false = 单人）+ 原来的本地免登录位（本地模式没有会话，邀请/配额无意义）。
+         两个位都在路由守卫里 await 过（`stores/health.js` 同一份缓存），首帧就是最终答案，不会先闪一下再消失。 -->
+    <template v-else-if="section === 'system'">
+    <div class="settings-block" data-cap="settings.account">
+      <div v-if="multiUser && !localNoAuth">
+        <div class="section-title">注册与邀请码</div>
+        <div class="card">
+          <InviteManager />
+        </div>
+
+        <div class="section-title">账号配额</div>
+        <div class="card">
+          <UserQuotaManager />
+        </div>
+      </div>
     </div>
 
-    <div class="section-title row spread">
-      <span>运行日志</span>
-      <!-- 日志默认**不挂载**（一进页连 SSE 会一直占着连接）；要看再点开。 -->
-      <button class="mini-btn" :aria-expanded="logsOpen ? 'true' : 'false'"
-              :title="logsOpen ? '断开实时日志（SSE）' : '连接实时日志（SSE）'"
-              @click="toggleLogs">{{ logsOpen ? '隐藏实时日志' : '显示实时日志' }}</button>
-    </div>
-    <div class="card">
-      <LogConsole v-if="logsOpen" />
-      <div v-else class="muted small">默认不连接；点上面的按钮再开始接收</div>
-    </div>
+    <div class="settings-block" data-cap="settings.monitor">
+      <div class="section-title">LLM 用量</div>
+      <div class="card">
+        <LlmUsage />
+      </div>
+
+      <div class="section-title row spread">
+        <span>运行日志</span>
+        <button class="mini-btn" :aria-expanded="logsOpen ? 'true' : 'false'"
+                :title="logsOpen ? '断开实时日志（SSE）' : '连接实时日志（SSE）'"
+                @click="toggleLogs">{{ logsOpen ? '隐藏实时日志' : '显示实时日志' }}</button>
+      </div>
+      <div class="card">
+        <LogConsole v-if="logsOpen" />
+        <div v-else class="muted small">默认不连接；点上面的按钮再开始接收</div>
+      </div>
     </div>
     </template>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
+import { onBeforeRouteLeave } from 'vue-router'
+import UiPageHeader from '../components/ui/UiPageHeader.vue'
 import { api } from '../api/client'
 import { fetchCatalog, fetchProtocols, saveLlm as putLlm } from '../api/llm'
 import { BUILTIN_PROTOCOLS } from '../components/llm/protocols.js'
@@ -429,7 +415,6 @@ import { CAPS_SOURCE_ZH, DEFAULT_INPUT, inputToArray, mergeCaps, normalizeCaps, 
 import { toast } from '../stores/toast'
 import Icon from '../components/Icon.vue'
 import SliderField from '../components/SliderField.vue'
-import LlmModelPicker from '../components/llm/LlmModelPicker.vue'
 import LlmParamFields from '../components/llm/LlmParamFields.vue'
 import LlmProviders from '../components/llm/LlmProviders.vue'
 import LlmQuickSetup from '../components/llm/LlmQuickSetup.vue'
@@ -440,8 +425,10 @@ import DownloaderConfig from '../components/DownloaderConfig.vue'
 import LlmUsage from '../components/LlmUsage.vue'
 import LogConsole from '../components/LogConsole.vue'
 import { SETTINGS_SECTIONS, settingsSection } from '../utils'
-import { localNoAuth as localNoAuthFromServer, localNoAuthKnown } from '../stores/health'
+import { authState } from '../stores/auth'
+import { localNoAuth as localNoAuthFromServer, localNoAuthKnown, multiUser as multiUserFromServer, multiUserKnown } from '../stores/health'
 import { useDisclosure } from '../composables/useDisclosure'
+import { confirmDialog } from '../stores/dialog'
 
 // 子页 key 由路由的 props 传进来（config / llm / account / integrations / monitor）。
 // 五块内容都留在这一个组件里：表单状态、/api/config 的加载与保存、源码编辑器都在这一处，
@@ -480,9 +467,19 @@ const asrModeHint = computed(() => form.asr.mode === 'hybrid' ? 'SenseVoice 打�
  * ⚠️ 读失败就当 `false`（照旧显示）—— 别默认 true，否则一次请求抖动就把整块藏了。
  */
 const localNoAuth = ref(localNoAuthKnown())
-/** 本地模式下整页不显示的那些设置子页（见 utils.js 的 `localHidden`，与路由守卫同一判据） */
+/**
+ * 多人位（`GET /api/health.multi_user`，默认 false = 单人）—— 与 `localNoAuth` **同一份缓存**。
+ * 决定「系统」页里邀请码 / 账号配额这两块渲染不渲染（隐藏 ≠ 删除：组件与接口都保留）。
+ * ⚠️ 读失败/缺字段当 `false`（单人优先）—— 与 `localNoAuth` 相反，拿不准时不露多人入口。
+ * ⚠️ 初值取 `multiUserKnown()`：路由守卫已经 await 过，首帧就是最终值，不会先显示再消失。
+ */
+const multiUser = ref(multiUserKnown())
+/** 整页不显示的那些设置子页（见 utils.js 的 `localHidden` / `multiOnly` / `adminOnly`，与路由守卫同一判据） */
 const visibleSections = computed(() =>
-  SETTINGS_SECTIONS.filter((s) => !(s.localHidden && localNoAuth.value))
+  SETTINGS_SECTIONS.filter((s) =>
+    !(s.localHidden && localNoAuth.value) && !(s.multiOnly && !multiUser.value)
+    && !(s.adminOnly && authState.user?.role !== 'admin')
+  )
 )
 /** 「运行日志」默认不挂载：一进 monitor 子页就连 SSE 会一直占着连接（P3）。 */
 const { open: logsOpen, toggle: toggleLogs } = useDisclosure('settings.logs', false)
@@ -583,12 +580,6 @@ const capsTitle = computed(() => capsError.value
   || '生成能力 / 推理档位 / 温度 / 输出上限这些旋钮由能力表决定；探针真拿到的能力会覆盖内置目录，'
   + '手填的 [llm.models] 覆盖两者')
 
-/** api_key 只写不读：占位符照实说「已设置」（P3 起 /api/config 只回 api_key_set 布尔，不回明文）。 */
-const apiKeyPlaceholder = computed(() => (form.llm.api_key_set ? '已设置（留空 = 不修改）' : 'sk-…'))
-const apiKeyTitle = computed(() => (form.llm.api_key_set
-  ? '已存有 key（服务端不回明文）。留空 = 不动它；要改就直接填新的'
-  : '还没存 key；填一个再「获取模型」'))
-
 /** 「跟随全局」那句灰字的细节（行内只留值，细节进 title —— 行内有 20 字预算）。 */
 function inheritTitle(key) {
   return '不勾 = 这条链路不写任何覆盖键（保存时发 null，服务端删键）⇒ '
@@ -680,15 +671,6 @@ function onProbeCaps(payload) {
     else if (probeCaps[id]) { delete probeCaps[id]; changed = true }
   }
   if (changed) loadCaps()
-}
-
-/** 「获取模型」回来了：候选由选择器自己显示；**带 caps 的那些存下来**（"能获取当然最好"），
- *  当前模型立刻用它覆盖内置目录。 */
-function onModelsFetched(r) {
-  for (const m of ((r && r.models) || [])) {
-    if (m && m.id && m.caps) probeCaps[String(m.id)] = normalizeCaps({ caps: m.caps })
-  }
-  if (String(form.llm.model || '').trim()) loadCaps()
 }
 
 // base_url / model 一变就重取能力（等 400ms 再发，别边打字边打接口）
@@ -1139,12 +1121,49 @@ async function loadConfig() {
     loaded.value = true
     loadFailed.value = false
     configLoadError.value = ''
+    // ⚠️ 拍基线**必须等加载期的自动补全跑完**：下面那条 watch(form.llm.model) 带 immediate，
+    // 且默认 flush:'pre' ⇒ 它在**下一个微任务**里才往 form.llm.models[id] 补一行空行
+    // （当前模型在 llm.toml 里没有 [llm.models.<id>] 时必然补）。同步拍快照 = 拍到「还没补上」的样子，
+    // 于是**刚进页面什么都没点，formDirty 就已经是 true**，切任何页面都弹「未保存的设置改动」。
+    // 真机报障就是这个形态（2026-11-14）。await nextTick() 之后 watcher 已跑完，补出来的那行进基线。
+    await nextTick()
+    snapshotFormBaseline()
   } catch (e) {
     loaded.value = false
     loadFailed.value = true
     configLoadError.value = (e && e.message) || ''
   }
 }
+
+// ---- 未保存改动守卫（U8/F3）----
+// 设置页四个子页共用一个实例键（`route.name`），切子页 = 整块重挂：改了没保存，改动**无提示消失**。
+// 做法与保存语义一致：loadConfig 成功后拍一份表单快照，离开前比对，不一致就 confirmDialog。
+// ⚠️ 快照必须盖住**所有会丢的输入**：表单四块 + 源码编辑器的 raw + 参考标题文本框（后者在 form 外）。
+const formBaseline = ref('')
+function snapshotFormBaseline() {
+  formBaseline.value = JSON.stringify({
+    f: { asr: form.asr, detection: form.detection, cutting: form.cutting, llm: form.llm },
+    raw: globalRaw.value,
+    rt: referenceTitlesText.value,
+  })
+}
+const formDirty = computed(() => {
+  if (!loaded.value || !formBaseline.value) return false
+  return JSON.stringify({
+    f: { asr: form.asr, detection: form.detection, cutting: form.cutting, llm: form.llm },
+    raw: globalRaw.value,
+    rt: referenceTitlesText.value,
+  }) !== formBaseline.value
+})
+onBeforeRouteLeave(async () => {
+  if (!formDirty.value) return true
+  // ⚠️ confirmDialog 只认 { title, danger }（stores/dialog.js），按钮文案是默认的「确认/取消」。
+  const ok = await confirmDialog(
+    '这一页有还没保存的改动，离开就会丢失。确认丢弃并离开吗？',
+    { title: '未保存的设置改动', danger: true },
+  )
+  return ok
+})
 
 
 async function toggleSource() {
@@ -1249,13 +1268,34 @@ onMounted(async () => {
   if (props.section === 'config' || props.section === 'llm') loadConfig()
   // API 协议清单只服务多 provider 的「API 协议」下拉（失败退内置清单，界面上标注）
   if (props.section === 'llm') loadProtocols()
-  // 每个子页都要：标签条靠它过滤掉本地模式下不显示的项（store 有缓存，只有首次真发请求）。
+  // 每个子页都要：标签条靠它过滤掉本地模式 / 单人下不显示的项（store 有缓存，只有首次真发请求）。
   // ⚠️ 别挪回 `account` 分支里 —— 那样只有进账号页时标签才收缩，别处照旧显示 5 个。
+  // 两个位共享同一份 `/api/health` 缓存：第二次 await 直接命中，不会多一个请求。
   localNoAuth.value = await localNoAuthFromServer()
+  multiUser.value = await multiUserFromServer()
 })
 </script>
 
 <style scoped>
+/* ── v7 设置页布局：左侧二级导航 + 右侧内容 ── */
+.settings-wrap { display:grid; grid-template-columns:196px minmax(0,1fr); gap:var(--s-5); align-items:start; }
+.settings-nav { position:sticky; top:calc(var(--header-h) + 12px); display:flex; flex-direction:column; gap:2px; }
+.settings-nav-item { display:flex; flex-direction:column; gap:1px; padding:7px 10px;
+  border-radius:var(--r-sm); border:1px solid transparent; color:var(--ink-dim); text-decoration:none;
+  transition:background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease); }
+.settings-nav-item b { font-size:var(--fs-base); font-weight:var(--fw-medium); }
+.settings-nav-item span { font-size:var(--fs-xs); color:var(--ink-faint); line-height:1.4; }
+.settings-nav-item:hover { background:var(--surface-2); color:var(--ink); }
+.settings-nav-item.on { background:var(--main-soft); border-color:var(--main-glow); }
+.settings-nav-item.on b { color:var(--pink-text); font-weight:var(--fw-semi); }
+.settings-body { min-width:0; }
+@media (max-width:1000px) {
+  .settings-wrap { grid-template-columns:1fr; gap:var(--s-3); }
+  .settings-nav { position:static; flex-direction:row; gap:6px; overflow-x:auto; scrollbar-width:none; }
+  .settings-nav::-webkit-scrollbar { display:none; }
+  .settings-nav-item { flex:none; white-space:nowrap; }
+  .settings-nav-item span { display:none; }
+}
 /* 标签条下面紧接第一个区块标题：section-title 自带 20px 上边距，这里已经翻到新的一页了 */
 .tabs { margin-bottom: 10px; }
 .tabs + .section-title { margin-top: 4px; }

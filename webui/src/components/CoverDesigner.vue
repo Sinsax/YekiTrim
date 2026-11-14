@@ -185,8 +185,8 @@
               <textarea v-model="titleLinesText" class="fld-input title-lines" rows="5" placeholder="封面标题，每行一段"></textarea>
               <div class="txt-side">
                 <button class="mini-btn" :disabled="generatingTitle" title="只用 clip.srt + polish.toml 逐个事件生成" @click="generateTitleByLlm">{{ generatingTitle ? '生成中…' : 'LLM 生成标题' }}</button>
-                <div class="mini-field"><label>X</label><input type="range" min="0" max="100" step="1" v-model.number="textX"><input class="rv-input" type="number" min="0" max="100" step="1" :value="textX" title="可直接填写（0 ~ 100）" @change="numBind(textX, (v) => (textX = v), $event, 0, 100)"></div>
-                <div class="mini-field"><label>Y</label><input type="range" min="0" max="100" step="1" v-model.number="textY"><input class="rv-input" type="number" min="0" max="100" step="1" :value="textY" title="可直接填写（0 ~ 100）" @change="numBind(textY, (v) => (textY = v), $event, 0, 100)"></div>
+                <!-- 封面标题温度（只作用于「LLM 生成标题」）：空 = 自动（0.8 起步），0 = 稳定保守，1.5 = 很放飞 -->
+                <div class="mini-field"><label>温度</label><input type="range" min="0" max="1.5" step="0.05" :value="titleTemperature ?? 0.8" @input="setTitleTemperature($event.target.value)"><input class="rv-input" type="number" min="0" max="1.5" step="0.05" :value="titleTemperature ?? ''" placeholder="自动" title="封面标题的取样温度：0 = 稳定保守，1.5 = 很放飞；清空 = 自动（0.8）" @change="setTitleTemperature($event.target.value)"></div>
                 <!-- 封面字体：字体库（程序目录 resources/fonts/）里的字体。空 = 系统字体栈。 -->
                 <div class="mini-field stacked"><label>字体</label>
                   <select :value="coverFont" :disabled="!configLoaded" :title="fontTitle" @change="onCoverFontChange">
@@ -194,9 +194,12 @@
                   </select>
                 </div>
                 <div class="mini-field"><label>字号</label><input type="range" min="24" max="240" step="2" v-model.number="fontSize"><input class="rv-input" type="number" min="24" max="240" step="2" :value="fontSize" title="可直接填写（24 ~ 240）" @change="numBind(fontSize, (v) => (fontSize = v), $event, 24, 240)"></div>
-                <!-- 封面标题温度（只作用于「LLM 生成标题」）：空 = 自动（0.8 起步），0 = 稳定保守，1.5 = 很放飞 -->
-                <div class="mini-field"><label>温度</label><input type="range" min="0" max="1.5" step="0.05" :value="titleTemperature ?? 0.8" @input="setTitleTemperature($event.target.value)"><input class="rv-input" type="number" min="0" max="1.5" step="0.05" :value="titleTemperature ?? ''" placeholder="自动" title="封面标题的取样温度：0 = 稳定保守，1.5 = 很放飞；清空 = 自动（0.8）" @change="setTitleTemperature($event.target.value)"></div>
               </div>
+            </div>
+            <!-- X / Y 一行两个（用户样稿：滑块并排，读数在各自行尾） -->
+            <div class="txt-pair mt-4">
+              <div class="mini-field"><label>X</label><input type="range" min="0" max="100" step="1" v-model.number="textX"><input class="rv-input" type="number" min="0" max="100" step="1" :value="textX" title="可直接填写（0 ~ 100）" @change="numBind(textX, (v) => (textX = v), $event, 0, 100)"></div>
+              <div class="mini-field"><label>Y</label><input type="range" min="0" max="100" step="1" v-model.number="textY"><input class="rv-input" type="number" min="0" max="100" step="1" :value="textY" title="可直接填写（0 ~ 100）" @change="numBind(textY, (v) => (textY = v), $event, 0, 100)"></div>
             </div>
             <!-- 首次拿到标题时自动排一次版并放进 4:3 安全区；放不下就在这儿说出来（不静默） -->
             <div v-if="titleFitHint" class="muted small mt-4 fit-hint">{{ titleFitHint }}</div>
@@ -216,22 +219,23 @@
             </div>
             <label class="mini-field check mt-4"><input v-model="textShadow" type="checkbox"><span>文字阴影 {{ textShadow ? '开' : '关' }}</span></label>
 
-            <!-- 高亮 tag：高亮色 与 关键词输入**同一行各占一半**（用户要求） -->
+            <!-- 高亮 tag：**第一行 高亮色 + 高亮字号**，第二行才是关键词输入 + 添加（用户 2026-11-14 口径）。
+                 原来那行「沿用「关键词过滤」里的高亮词…」的说明**已删**：回退规则挪进「高亮色」的
+                 `title`（悬停可见），不再占一行正文。 -->
             <div class="lyr-sec">高亮 tag</div>
             <div class="txt-grid mt-4">
-              <div class="mini-field"><label>高亮色</label><input v-model="hlColor" type="color"></div>
-              <div class="mini-row">
-                <input v-model="highlightInput" class="kw-input" placeholder="关键词，回车添加" @keyup.enter="addHighlightKeyword">
-                <button class="mini-btn" @click="addHighlightKeyword"><Icon name="plus" :size="11" /> 添加</button>
+              <div class="mini-field"><label :title="hlSourceTitle">高亮色</label><input v-model="hlColor" type="color"></div>
+              <!-- 高亮字号：只作用于高亮词那一段（不改字体、不改整块标题的字号）。
+                   落到 `--hl-fs`，出片模板的 `.hl` 读同一个变量 ⇒ 预览与成片同口径。 -->
+              <!-- 这一格只有一半宽（~100px），标签与控件**上下叠**才不会把读数框顶出面板 -->
+              <div class="mini-field stacked"><label>高亮字号</label>
+                <div class="mini-row"><input type="range" min="0.5" max="2" step="0.05" v-model.number="hlFontScale" title="只改高亮关键词那一段的字号，不动字体与整块标题字号"><input class="rv-input" type="number" min="0.5" max="2" step="0.05" :value="hlFontScale" title="可直接填写（0.5 ~ 2 倍）" @change="numBind(hlFontScale, (v) => (hlFontScale = v), $event, 0.5, 2)"></div>
               </div>
             </div>
-            <!-- 高亮字号：只作用于高亮词那一段（不改字体、不改整块标题的字号）。
-                 落到 `--hl-fs`，出片模板的 `.hl` 读同一个变量 ⇒ 预览与成片同口径。 -->
-            <div class="mini-field mt-4"><label>高亮字号</label><input type="range" min="0.5" max="2" step="0.05" v-model.number="hlFontScale" title="只改高亮关键词那一段的字号，不动字体与整块标题字号"><input class="rv-input" type="number" min="0.5" max="2" step="0.05" :value="hlFontScale" title="可直接填写（0.5 ~ 2 倍）" @change="numBind(hlFontScale, (v) => (hlFontScale = v), $event, 0.5, 2)"></div>
-            <!-- 高亮词：出片认的是 `cover.highlight_keywords`，**它为空时会回退用 polish.toml 的
-                 `[filter] highlight`**（`cover.rs::cover_highlight_words`）—— 所以这里必须把回退那一串
-                 也显示出来，否则"看着没设置、其实在生效"（用户报过「高亮词没有实际使用上」）。 -->
-            <div class="muted small mt-4 hl-note" :title="hlSourceTitle">{{ hlSourceHint }}</div>
+            <div class="hl-row mt-4">
+              <input v-model="highlightInput" class="kw-input" placeholder="关键词，回车添加" @keyup.enter="addHighlightKeyword">
+              <button class="mini-btn" @click="addHighlightKeyword"><Icon name="plus" :size="11" /> 添加</button>
+            </div>
             <div v-if="highlightKeywords.length" class="hl-chips mt-4">
               <span v-for="(kw, i) in highlightKeywords" :key="i" class="hl-chip">
                 {{ kw }}
@@ -360,7 +364,7 @@ import {
   fetchFonts, fetchProject,
   coverFrame, coverBackground, coverTitle, coverConfig, runCover,
 } from '../api/polish'
-import { api } from '../api/client'
+import { refreshHealth } from '../stores/health'
 import { ensureFontFace, fontInLibrary, fontLabelFor } from '../polish/fonts'
 
 const props = defineProps({
@@ -376,21 +380,29 @@ const generating = ref(false)
 // 并在卡片里**说清为什么**（宁可点不动，也别点了才在任务日志里才知道）。
 const coverCap = ref({ loaded: false, ready: false, why: "" })
 
+/**
+ * 能力位走 `stores/health.js`（F7：/api/health 只许有一个缓存）。
+ * 这里用 `refreshHealth()` 而不是读缓存值：封面能力位可能在设置页改过字体库之后变化，
+ * 每次打开封面卡重查一次（refreshHealth 在飞合并、失败回落上一份，不会打爆）。
+ */
 async function loadCoverCap() {
   try {
-    const h = await api('/api/health')
+    const h = await refreshHealth()
     const c = h && h.cover_static
     if (!c) { coverCap.value = { loaded: true, ready: false, why: "服务端没报这一位（版本不一致？）" }; return }
     const why = c.ready
       ? ""
       : (!c.compiled
         ? "这个二进制没编 `cover-takumi` feature（重编：cargo build -p yekitrim-cli --features yekitrim-polish/cover-takumi）"
-        : `字体库是空的：把字体放进 ${c.fonts_dir}`)
+        // ⚠️ 不再引用服务端的 fonts_dir 路径（B6：/api/health 不回任何路径）——
+        // 指路就行，具体位置看首页「素材库」。
+        : "字体库是空的：到首页「素材库」装字体（自带两支一键可装），装完回来重试")
     coverCap.value = { loaded: true, ready: !!c.ready, why }
   } catch (e) {
     coverCap.value = { loaded: true, ready: false, why: "读能力位失败：" + (e && e.message ? e.message : e) }
   }
 }
+// ⚠️ refreshHealth() 不抛（失败回落上一份/ null）⇒ 上面的 catch 只兜意外；`!c` 那一支照旧报"没这一位"。
 // 封面只与**另一个封面**抢 `_cover_frame.jpg`；与渲染 / 后处理 / LLM **可以并行**
 // （封面只写 `cover*` 且重名自动加 `_1`/`_2`，渲染写视频，`process` 写 `polish.toml` 全是原子写）。
 // ⚠️ 所以**别按 `clipKey` 门控**：渲染正占着那个键 —— 以前这么写的结果就是"视频导出时点不动
@@ -458,10 +470,8 @@ const highlightKeywords = ref([])
 /** 高亮词现在**是回退来的**（`cover.highlight_keywords` 为空 → 用 `[filter] highlight`）。
  *  只为了让面板说实话：用户一增删就固化成封面自己的那份。 */
 const hlFromFilter = ref(false)
-const hlSourceHint = computed(() => {
-  if (hlFromFilter.value) return '沿用「关键词过滤」里的高亮词，改一下就固化到封面'
-  return highlightKeywords.value.length ? '这些词会在标题里高亮' : '还没设置高亮词（标题不会高亮）'
-})
+// ⚠️ 面板上那行「沿用「关键词过滤」里的高亮词…」的可见文案**已删**（用户 2026-11-14）；
+// 回退规则只留在「高亮色」的 title 里（`hlSourceTitle`）。
 const hlSourceTitle = computed(() => (hlFromFilter.value
   ? '封面的 highlight_keywords 是空的，出片回退用 polish.toml 的 [filter] highlight（「设置 · 关键词过滤」那串）—— 面板照实把它们显示出来；在这里增删任意一个词，这批词就会写进封面自己的 highlight_keywords'
   : '写进 polish.toml 的 [cover] highlight_keywords；出片按它给标题上高亮色（词为空时回退 [filter] highlight）'))
@@ -1649,12 +1659,29 @@ async function persistCoverConfig() {
   if (savingConfig.value) { saveConfigPending = true; return }
   savingConfig.value = true
   try {
-    await coverConfig(props.pid, props.dir, coverConfigPayload())
-    saveError.value = ''
+    try {
+      await coverConfig(props.pid, props.dir, coverConfigPayload())
+      saveError.value = ''
+    } catch (e) {
+      // ⚠️ 429/5xx 先**原地退避重试一次**（1.2s）再报错（D6）：
+      // 全局限流是 600/min/IP，精修页一次冷加载就可能逼近额度 —— 自动保存撞上 429
+      // 不该把"保存封面设置失败"直接甩给用户（实测就是这么误报的：用户什么都没改也看到红字）。
+      const status = e && (e.status || e.statusCode)
+      if (status === 429 || (status >= 500 && status < 600)) {
+        await new Promise((r) => setTimeout(r, 1200))
+        await coverConfig(props.pid, props.dir, coverConfigPayload())
+        saveError.value = ''
+      } else {
+        throw e
+      }
+    }
   } catch (e) {
     // 以前只 `console.warn` + 一次 toast：600ms 防抖下连着改会刷屏，而且 toast 一闪就没了。
     // 改成和「保存中…」同一处的常驻文字（成功即清），失败就一直是它。
-    saveError.value = e.message || String(e)
+    const status = e && (e.status || e.statusCode)
+    saveError.value = status === 429
+      ? '请求过于频繁，稍后会自动重试（封面参数还在，没有丢）'
+      : (e.message || String(e))
     console.warn('保存封面设置失败', e)
   } finally {
     savingConfig.value = false
@@ -1896,7 +1923,8 @@ const CONTROLS_MIN_H = 380
 function syncControlsBound() {
   const ctl = controlsRef.value
   if (!ctl) return
-  if (!stageWrapRef.value || window.matchMedia('(max-width: 900px)').matches) {
+  // 与样式里的窄屏断点同源（1400）：单列布局下高度交给内容，不再绑到预览高度
+  if (!stageWrapRef.value || window.matchMedia('(max-width: 1400px)').matches) {
     ctl.style.height = ''
     return
   }
@@ -2115,24 +2143,47 @@ onUnmounted(() => {
 .txt-top { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:8px; align-items:start; }
 .txt-side { display:flex; flex-direction:column; gap:4px; min-width:0; }
 .txt-side > .mini-btn { justify-content:center; }
-.txt-grid { display:grid; grid-template-columns:1fr 1fr; gap:4px 10px; align-items:center; }
-/* 行尾的**可填**读数（紧凑版 `SliderField`）：常态与只读的 `.rv` 同貌，hover/focus 才现出输入框。
+/* 两列格子很窄（~106px/格）：格内标签↔滑块↔读数的间距收到 4px，否则「高亮字号」那格会把
+   读数框顶出面板（实测溢出约 4px，被 `.lyr-props` 的圆角裁掉半个字）。 */
+/* `minmax(0,1fr)` + 子项 `min-width:0` 缺一不可：`1fr` 的下限是 auto，格子里的标签 +
+   读数框会把轨道顶宽 → 第二列溢出面板、读数被圆角裁掉（实测「高亮字号」那格）。 */
+.txt-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:4px 10px; align-items:center; }
+.txt-pair { grid-template-columns:minmax(0,1fr) minmax(0,1fr); }
+.txt-grid > *, .txt-pair > * { min-width:0; }
+.txt-grid .mini-field, .txt-pair .mini-field { gap:4px; }
+/* X / Y 并排一行（用户样稿）：两列等宽，行尾读数各归各的 */
+.txt-pair { display:grid; grid-template-columns:1fr 1fr; gap:4px 10px; align-items:center; }
+/* 高亮 tag 第二行：关键词输入占满、添加按钮在右（色块与字号已在上一行的两列里） */
+.hl-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:6px; align-items:center; }
+/* 行尾的**可填**读数（紧凑版 `SliderField`）。⚠️ 2026-11-14 用户口径「滑块+手动输入要完善」：
+   以前常态是透明的、hover 才现出输入框 —— 用户根本不知道这里能填。现在**常驻一个浅底小框**
+   （tabular-nums 数字不抖），hover 加深、focus 主色描边；回车/失焦都提交（`numBind`）。
    为什么不用 `SliderField.vue`：那边 `@container (max-width:220px)` 会把标签挤到第二行，
    而这里的格子只有 ~170~222px（一行两列）—— 一样的"滑块 + 可填数字"，只是更紧凑。 */
-.rv-input { flex:none; width:46px; padding:1px 3px; text-align:right; font-size:10.5px; font-family:monospace;
-  color:var(--ink); background:transparent; border:1px solid transparent; border-radius:var(--r-sm); }
-.rv-input:hover { border-color:var(--line); background:var(--card); }
-.rv-input:focus { border-color:var(--main); box-shadow:0 0 0 3px var(--main-soft); }
+.rv-input { flex:none; width:46px; padding:2px 4px; text-align:right; font-size:11px;
+  font-family:var(--mono); font-variant-numeric:tabular-nums;
+  color:var(--ink); background:var(--bg-soft); border:1px solid var(--line); border-radius:6px; }
+.rv-input:hover { border-color:var(--ink-faint); background:var(--card); }
+.rv-input:focus { border-color:var(--main); background:var(--card); box-shadow:0 0 0 3px var(--main-soft); }
 /* 手填允许落在 step 栅格之外（那是"可填"的意义），别让浏览器把它画成非法状态 */
 .rv-input:invalid { box-shadow:none; }
 .rv-input:invalid:focus { box-shadow:0 0 0 3px var(--main-soft); }
 /* spinner 在 46px 宽里会把数字挤出去：步进交给 ↑/↓ 键 */
 .rv-input::-webkit-outer-spin-button, .rv-input::-webkit-inner-spin-button { -webkit-appearance:none; margin:0; }
 .rv-input { -moz-appearance:textfield; appearance:textfield; }
-.hl-note { line-height:1.5; }
 .mini-field { display:flex; align-items:center; gap:5px; min-width:0; }
 .mini-field > label { flex:none; margin:0; font-size:11px; color:var(--ink-dim); white-space:nowrap; }
-.mini-field > input[type=range] { flex:1; min-width:0; padding:0; height:18px; background:transparent; border:none; box-shadow:none; accent-color:var(--main); cursor:pointer; }
+/* 滑块外观（用户样稿：细轨 + 主色圆钮）：原生控件在不同浏览器/主题下粗细不一，
+   统一画出来才不会「设置页一套、封面面板另一套」。 */
+.mini-field > input[type=range] { flex:1; min-width:0; padding:0; height:18px; background:transparent;
+  border:none; box-shadow:none; accent-color:var(--main); cursor:pointer; -webkit-appearance:none; appearance:none; }
+.mini-field > input[type=range]::-webkit-slider-runnable-track { height:4px; border-radius:2px; background:var(--line); }
+.mini-field > input[type=range]::-webkit-slider-thumb { -webkit-appearance:none; appearance:none;
+  width:12px; height:12px; margin-top:-4px; border-radius:50%; background:var(--main);
+  border:2px solid var(--card); box-shadow:0 0 0 1px var(--main-glow); }
+.mini-field > input[type=range]::-moz-range-track { height:4px; border-radius:2px; background:var(--line); }
+.mini-field > input[type=range]::-moz-range-thumb { width:12px; height:12px; border-radius:50%;
+  background:var(--main); border:2px solid var(--card); }
 .mini-field > select { flex:1; min-width:0; width:auto; padding:2px 6px; font-size:11.5px; border-radius:6px; text-overflow:ellipsis; }
 /* ⚠️ **字体这一格标签另起一行**（2026-10-19）：同行时标签吃掉 ~30px，select 只剩 83px，
    而最长的选项要 205px ⇒ 用户看到的是「只显示『未指定 · 』」（截图
@@ -2338,14 +2389,18 @@ onUnmounted(() => {
 .lyr-props::-webkit-scrollbar-thumb { background:var(--line); border-radius:3px; }
 .lyr-props-h { font-size:12px; font-weight:700; color:var(--ink); }
 .lyr-props-note { font-size:10.5px; line-height:1.5; color:var(--ink-faint); }
-@media (max-width: 900px) {
+/* ⚠️ 断点 900 → 1400（U7）：1280 宽下 designer 右栏两栏并排每栏只剩 ~202px ——
+   字体下拉被截断、「文字阴影」落到滚动区外（review 实测）。把「上下排」的窄屏处理
+   提前到 1400：内容列 ~915px 时属性/列表各拿全宽，1280/1366/1420 都不再挤压；
+   1680 下（右栏 ~458px、每栏 ~222px）仍走并排原样。 */
+@media (max-width: 1400px) {
   .designer-grid { grid-template-columns:1fr; }
   /* 单列时不再定高/定比例：让内容自己撑（列表给个上限就够） */
   .controls { height:auto !important; overflow:visible; }
-  /* 窄屏：面板主体从「左设置 / 右列表」退回上下排（两栏并排在这点宽度下每栏只剩百来像素） */
+  /* 面板主体从「左设置 / 右列表」退回上下排（两栏并排在这点宽度下每栏只剩两百来像素） */
   .lyr-body { grid-template-columns:1fr; }
-  .lyr-props, .lyr-list { min-height:0; max-height:260px; }
-  /* 窄屏：文字面板的"文本框 + 右侧控件列"改上下排 */
+  .lyr-props, .lyr-list { min-height:0; max-height:280px; }
+  /* 文字面板的"文本框 + 右侧控件列"改上下排 */
   .txt-top { grid-template-columns:1fr; }
 }
 </style>

@@ -48,6 +48,15 @@
         {{ shownTotal }}<template v-if="filterKey !== 'all'">/{{ poolTotal }}</template> 个片段<template v-if="uncutEvents.length"> · 未剪切 {{ uncutEvents.length }}</template>
       </span>
       <span class="v-sep"></span>
+      <!-- 视图密度：大卡（默认，带缩略图）/ 紧凑（一行一条，扫条目快）。
+           偏好持久化；卡片内部结构不变，只改网格列宽与媒体区高度。 -->
+      <button class="mini-btn" :class="{ selected: density === 'compact' }"
+              :title="density === 'compact' ? '切回大卡（带缩略图）' : '切到紧凑视图（一行一条）'"
+              @click="toggleDensity">
+        <Icon :name="density === 'compact' ? 'list' : 'grid'" :size="12" />
+        {{ density === 'compact' ? '紧凑' : '大卡' }}
+      </button>
+      <span class="v-sep"></span>
       <button v-if="publishConfigured && isAdmin()" class="mini-btn" :disabled="!publishableClips.length || publishAllBusy"
               title="把当前所有已剪片段提交到 biliLive-tools 的 B站投稿队列"
               @click="publishAll">{{ publishAllBusy ? '提交中…' : '发布全部' }}</button>
@@ -57,7 +66,7 @@
          热度是数值（两边都算得出来），所以重新检测后剩下的旧片段也能一起参与排序。
          未剪切事件没有缩略图，动作是「剪切 / 编辑」，带一枚「未剪切」chip 作区分；
          已剪卡片先认自己的 clip.json（`orphan` = 独立片段），不会跟着新事件改名。 -->
-    <div class="grid cols-3">
+    <div class="grid cols-3" :class="`wall-${density}`">
       <template v-for="it in shownItems" :key="it.id">
         <div
           v-if="it.kind === 'clip'"
@@ -146,7 +155,7 @@
                     :title="polishOpening === it.view.c.dir
                       ? '正在初始化精修工程…'
                       : (clipBusyOf(it.view.c.name) ? '该片段正在' + kindText(clipBusyOf(it.view.c.name).kind) : '')"
-                    @click.stop="goPolish(it.view.c)">{{ polishOpening === it.view.c.dir ? '初始化中…' : '精修' }} <Icon name="arrow-right" :size="11" /></button>
+                    @click.stop="goPolish(it.view.c)">{{ polishOpening === it.view.c.dir ? '初始化中…' : '出片' }} <Icon name="arrow-right" :size="11" /></button>
             <button class="mini-btn danger clip-del"
                     :disabled="deletingDirs.has(it.view.c.dir)"
                     :title="deletingDirs.has(it.view.c.dir) ? '正在删除…' : '删除该片段（含精修产物）'"
@@ -349,7 +358,7 @@ import { useRouter } from 'vue-router'
 import { api } from '../api/client'
 import { projectData } from '../api/projectData'
 import { publishApi } from '../api/publish'
-import { initPolish, polishPost, runRender } from '../api/polish'
+import { initPolish, polishPost } from '../api/polish'
 import { watchJob, busyOn, clipKey, idxKey, outKey, kindText, QUEUED_HINT, isActive } from '../api/jobs'
 import { useJobs } from '../composables/useJobs'
 import { toast } from '../stores/toast'
@@ -665,7 +674,9 @@ function cmpStats(sa, sb) {
 const FILTERS = [
   { key: 'cut', label: '已剪切', hint: '已经剪出成片的片段' },
   { key: 'uncut', label: '未剪切', hint: '检测到但还没剪的事件' },
-  { key: 'all', label: '全部', hint: '已剪切 + 未剪切全部显示' }
+  // ⚠️ 一级叫「全部片段」不叫「全部」（U3）：二级筛选里也有一个「全部」（已剪里的全部），
+  // 两个同款「全部」并排出现时用户分不清哪个是"全部片段"、哪个是"已剪切里的全部"。
+  { key: 'all', label: '全部片段', hint: '已剪切 + 未剪切全部显示' }
 ]
 // 二级（只在 `cut` 档出现）：精修中 / 已导出。
 //
@@ -715,6 +726,16 @@ const savedSub = (() => {
     return LEGACY_SUB_FILTERS[v] || ''
   } catch { return '' }
 })()
+/** 视图密度：`big`（大卡，带缩略图）/ `compact`（紧凑，一行一条）。持久化到 localStorage。 */
+const DENSITY_KEY = 'yekitrim.slices.density'
+const density = ref((() => {
+  try { return localStorage.getItem(DENSITY_KEY) === 'compact' ? 'compact' : 'big' } catch { return 'big' }
+})())
+function toggleDensity() {
+  density.value = density.value === 'compact' ? 'big' : 'compact'
+  try { localStorage.setItem(DENSITY_KEY, density.value) } catch { /* 隐私模式忽略 */ }
+}
+
 const filterKey = ref(savedFilter.primary)
 /** 二级筛选：没存过就用「全部」（= 一级「已剪切」的原义）。 */
 const polishFilter = ref(savedSub || SUB_FILTERS[0].key)
@@ -1293,26 +1314,11 @@ async function load() {
     void loadPublishState()
     return
   }
-  loading.value = true
-  loadError.value = ''
-  try {
-    const [ev, cl, pl] = await Promise.all([
-      projectData.events(props.project.id, '读取事件列表').catch(() => ({ events: [] })),
-      projectData.clips(props.project.id, '读取切片列表').catch(() => []),
-      projectData.polishMap(props.project.id, '读取精修状态').catch(() => [])
-    ])
-    events.value = (ev.events || []).sort((a, b) => a.start_sec - b.start_sec)
-    clips.value = cl || []
-    const m = {}
-    ;(pl || []).forEach(p => { m[p.dir] = p })
-    polishMap.value = m
-    applyDefaultFilter()
-    void loadPublishState()
-  } catch (e) {
-    loadError.value = '片段数据加载失败：' + e.message
-  } finally {
-    loading.value = false
-  }
+  // ⚠️ **没有"读失败兜空"分支**（F5）：唯一调用点（ProjectSlicesView）总是传 :project-data，
+  // 这个分支不可达 —— 留着它就是给将来"不带 props 复用本组件"的人埋雷：
+  // 三个 .catch(() => 空) 会把读取失败伪装成干净的空卡片墙（views/AGENTS.md 明令禁止的那类事故）。
+  // 真要支持无 props 模式，就把失败置 loadError 并保留旧数组，而不是吞成空。
+  throw new Error('ProjectClipsSection 需要父页面传入 :project-data（自取数分支已删除）')
 }
 
 /** 发布状态（biliLive-tools `/task` 回填；无记录 = 还没提交）。 */
@@ -1433,18 +1439,9 @@ async function run(kind, c) {
   } catch (e) { toast(e.message, 'err') }
 }
 
-async function render(c) {
-  const out = await promptDialog(
-    '导出渲染视频的文件路径（可含文件夹，留空使用项目配置 output）。\n'
-    + '同名文件不会被覆盖：已经存在时自动加 _1 / _2（与封面同一套规则）。',
-    { title: '渲染输出', value: c.dir + '/export.mp4' }
-  )
-  if (out === null) return
-  try {
-    await runRender(props.project.id, c.dir, out || '')
-    toast('渲染已启动')
-  } catch (e) { toast(e.message, 'err') }
-}
+// ⚠️ `render(c)` 已删（review P3）：它从不在模板/expose 里被引用（死代码），而且 prompt 默认值
+//    是 `c.dir + '/export.mp4'` 绝对路径 —— 一旦被接回去，`output_file` 就会被 scope 中间件判 400。
+//    出片入口只有卡片上的「出片」（goPolish）；渲染输出名在精修页改。
 
 async function preview(c) {
   try {
@@ -1715,6 +1712,15 @@ onUnmounted(() => {
 .sort-bar { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-bottom:10px; }
 .sort-bar .sort-count { margin-left:auto; }
 /* 删除（破坏性）推到卡片右下角，离「精修」远一点，别误点 */
+/* ── 紧凑视图：一行一条。只压媒体区与内边距，卡片内部结构与动作一个不动 ── */
+.wall-compact { grid-template-columns:1fr; gap:var(--s-2); }
+.wall-compact .pcard { padding:10px 14px; }
+.wall-compact .media-slot { display:none; }
+.wall-compact .clip-card .card-title { height:auto; min-height:0; }
+.wall-compact .clip-card .card-title h2 { -webkit-line-clamp:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.wall-compact .summary-slot { max-height:40px; overflow:hidden; }
+.wall-compact .clip-card .foot { min-height:0; margin-top:6px; }
+
 .clip-card .clip-del { margin-left:auto; }
 /* ⚠️ 卡片脚现在最多**四颗**按钮（编辑 / 发布 / 精修 / 删除），而卡片内宽只有 ~230px：
    实测「删除」被卡片右缘硬裁掉半个字（发布按钮是 2026-10-30 新加的）。

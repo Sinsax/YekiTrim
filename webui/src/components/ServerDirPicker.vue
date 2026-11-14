@@ -1,7 +1,9 @@
 <template>
   <!-- `has-project` = 当前目录里已有工程标志文件 → 整块加一层绿框（用户口径：
        「当选择的目录有 yekitrim.toml 时，给目录加一层绿色的线框」） -->
-  <div class="dir-picker" :class="{ 'has-project': hasProject }">
+  <!-- `compact` = 窄栏（首页「服务器文件」左栏 260px）：
+       路径输入独占一行、按钮另起一行，否则 `minw-240` 加三颗按钮会把这一行挤爆。 -->
+  <div class="dir-picker" :class="{ 'has-project': hasProject, compact: onlyDirs }">
     <div class="row">
       <div class="flex-1 minw-240">
         <label>{{ dirLabel }}</label>
@@ -26,7 +28,7 @@
 
     <div v-if="error" class="error-banner mt-8">{{ error }}</div>
 
-    <div class="file-box mt-8">
+    <div class="file-box mt-8" :style="boxMax ? { maxHeight: boxMax } : null">
       <div v-if="loading" class="row muted small"><span class="spinner"></span> 读取中…</div>
       <template v-else>
         <div v-for="d in dirs" :key="'d-' + d" class="file-row" @click="enter(d)">
@@ -36,7 +38,7 @@
           <button v-if="mode === 'dir'" class="mini-btn" @click.stop="pickChild(d)">选择</button>
         </div>
         <div
-          v-for="f in files"
+          v-for="f in (onlyDirs ? [] : files)"
           :key="'f-' + f"
           class="file-row"
           :class="{ video: isVideoFile(f), selected: selected === f, dim: !allowed(f), project: isProjectFile(f) }"
@@ -49,7 +51,7 @@
           <span v-else-if="!allowed(f)" class="muted small">不可选</span>
           <span v-else-if="isVideoFile(f)" class="muted small">视频</span>
         </div>
-        <div v-if="!dirs.length && !files.length" class="empty small">空目录</div>
+        <div v-if="!dirs.length && (onlyDirs || !files.length)" class="empty small">{{ browsed ? '没有子目录' : '点「浏览…」加载目录' }}</div>
       </template>
     </div>
   </div>
@@ -78,6 +80,8 @@ import { listTenantFiles } from '../stores/project'
 
 const props = defineProps({
   /** `file` = 选文件（高亮 + 点击选中）；`dir` = 选目录（多一颗「选择当前目录」与行内「选择」） */
+  /** 挂载就自动读目录：首页那种"整块常驻"的用法传 false，避免每次进首页都扫盘 */
+  autoBrowse: { type: Boolean, default: true },
   mode: { type: String, default: 'file' },
   /** 初始目录；空 = 服务端给的第一个快捷入口 */
   startDir: { type: String, default: '' },
@@ -95,7 +99,15 @@ const props = defineProps({
    * ⚠️ 别给它默认值：字体库/弹幕/字幕那些选择器里 `yekitrim.toml` 没有任何含义，
    * 默认上会让它们也莫名其妙地绿。
    */
-  projectFile: { type: String, default: '' }
+  projectFile: { type: String, default: '' },
+  /**
+   * **只当目录导航用**：隐藏文件行，把"选文件"交给调用方自己渲染（首页「服务器文件」
+   * 面板是"左目录 / 右文件卡片"两栏，文件卡片要带选中态与类型标签，比这里的一行文字更清楚）。
+   * 默认 false —— 其余调用点（素材、字体、贴纸）行为一个字都不变。
+   */
+  onlyDirs: { type: Boolean, default: false },
+  /** 覆盖文件盒的 max-height（如 `'220px'`）；空 = 用样式表里的默认值 */
+  boxMax: { type: String, default: '' }
 })
 const emit = defineEmits(['update:dir', 'pick-file', 'pick-dir', 'update:listing'])
 
@@ -143,6 +155,7 @@ async function browse(target = dir.value, enter = '') {
     roots.value = d.roots || []
     dirs.value = d.dirs || []
     files.value = d.files || []
+    browsed.value = true
     // 调用方要据此判"这个目录里还有没有可用视频"（决定建项目按钮的可用性）
     emit('update:listing', { dir: dir.value, files: files.value, dirs: dirs.value })
     return d
@@ -170,7 +183,8 @@ function goUp() {
   if (parent.value) browse(parent.value)
 }
 
-onMounted(() => browse(props.startDir))
+const browsed = ref(false)
+onMounted(() => { if (props.autoBrowse) browse(props.startDir) })
 
 /**
  * ⚠️ **外部改了 `startDir` 必须跟着走**：本组件的目录框显示的是自己的 `dir`，

@@ -28,11 +28,11 @@
           :title="`把 ${uncutCount} 个还没剪出来的事件一次剪成片段`"
           @click="clipsRef?.cutAll()"
         >一键剪出全部（{{ uncutCount }}）</button>
-        <details class="more-menu">
+        <details ref="moreRef" class="more-menu" @keydown.esc="closeMore">
           <summary class="mini-btn" title="更多片段操作">⋯ 更多</summary>
           <div class="more-pop">
-            <button class="mini-btn" data-cap="slices.redetect" :disabled="!clipsRef" @click="clipsRef?.redetect()">重新检测</button>
-            <button class="mini-btn" data-cap="slices.add-clip" :disabled="!clipsRef" @click="clipsRef?.openAdd()">添加片段</button>
+            <button class="mini-btn" data-cap="slices.redetect" :disabled="!clipsRef" @click="closeMore(); clipsRef?.redetect()">重新检测</button>
+            <button class="mini-btn" data-cap="slices.add-clip" :disabled="!clipsRef" @click="closeMore(); clipsRef?.openAdd()">添加片段</button>
           </div>
         </details>
       </div>
@@ -48,9 +48,7 @@
         :to="`/p/${pid}/polish`"
       />
 
-      <div v-if="loading" class="grid cols-3">
-        <div v-for="i in 6" :key="'sk' + i" class="skeleton"></div>
-      </div>
+      <UiSkeleton v-if="loading" variant="grid" :count="6" />
       <ProjectClipsSection
         v-else-if="project"
         ref="clipsRef"
@@ -75,12 +73,21 @@ import Icon from '../components/Icon.vue'
 import AppEmptyState from '../components/AppEmptyState.vue'
 import NextStepBar from '../components/NextStepBar.vue'
 import ProjectClipsSection from '../components/ProjectClipsSection.vue'
+import UiSkeleton from '../components/ui/UiSkeleton.vue'
 
 const route = useRoute()
 const pid = route.params.pid || ''
 const project = ref(null)
 const projectDataRef = ref({ events: [], clips: [], polishMap: {} })
 const clipsRef = ref(null)
+/** 「⋯ 更多」弹层：原生 `<details>` 不会自己关 —— Esc 与点击外部都要收（否则它一直浮在卡片墙上） */
+const moreRef = ref(null)
+function closeMore() {
+  if (moreRef.value) moreRef.value.open = false
+}
+function onDocPointerDown(e) {
+  if (moreRef.value?.open && !moreRef.value.contains(e.target)) closeMore()
+}
 const loading = ref(true)
 const loadError = ref('')
 // 原片 URL：未剪切事件的「预览」要播**整场录播**（那片还没剪出来），
@@ -168,6 +175,7 @@ async function doLoad({ silent = false } = {}) {
 }
 
 onMounted(load)
+onMounted(() => document.addEventListener('pointerdown', onDocPointerDown))
 
 // 剪切/管线任务多数在别的页面（预处理、精修）发起，任务结束时页面必须跟着刷新，
 // 否则列表一直停在旧数据（如已切好的事件仍挂在「未剪切」里）。
@@ -184,11 +192,12 @@ const offJobDone = onJobDone((job) => {
   if (String(job.project) === String(pid)) load({ silent: true })
 })
 onUnmounted(offJobDone)
+onUnmounted(() => document.removeEventListener('pointerdown', onDocPointerDown))
 </script>
 
 <style scoped>
 .error-banner { margin-bottom:12px; }
-.slices-bar { align-items:center; gap:8px; margin-bottom:10px; }
+.slices-bar { align-items:center; gap:8px; margin-bottom:10px; flex-wrap:wrap; }
 button:disabled { opacity:.45; cursor:not-allowed; }
 /* 「⋯ 更多」= 二级操作披露：贴右边，弹层浮在上层、不挤动操作条与卡片墙 */
 .more-menu { position:relative; margin-left:auto; }
