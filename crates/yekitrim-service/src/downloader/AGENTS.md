@@ -81,9 +81,17 @@ B站链接通道（P4）的**引擎侧**：引擎无关的端口（trait + 纯�
   **别照抄 `yekitrim-core/download.rs::ensure_one_model` 的 marker 判定**（那是"某个文件存在"）。
 - ⚠️ **换版本时必须三件事一起做**：改 `VERSION`、改这里每个平台的 `sha256` 与 `size`、
   并**重新实测**（下下来跑一次 `--version`）。只改版本号会让校验失败 → 下载通道整个不可用。
-- ⚠️ **只有 Windows** 那份 `yt-dlp.exe` 是实测校验过的（下载后与官方 `SHA2-256SUMS` 逐字节一致），
-  所以只有它带 sha256。其它平台**不允许自动下载** —— 那些平台上 `ensure_ytdlp` 会明确报错，
-  让管理员用 `[ingest] ytdlp_path` 指定自备的那份（或装到 PATH）。这是刻意的：**只钉我们真正验证过的东西。**
+- **四个平台都钉住了**（2026-11）：Windows x64 / Linux x86_64 / Linux aarch64 / macOS。哈希一律取自
+  官方 `SHA2-256SUMS`（同一条 release，TLS 取回）。**没钉的架构仍拒绝自动下载**（`sha256` 留空 =
+  `ensure_ytdlp` 明确报错并给出该平台的安装命令，见 `install_hint()`）—— 只钉我们真正验证过的东西。
+- ⚠️ **下载走 core 的 `download_resumable`，别退回单流手写**：单流在这类网络上被限到 ~30 KB/s
+  且会在中途 `Connection timed out`（实测 40 MB 卡在 33 MB）。它提供断点续传 + 每段独立重试 +
+  连接/读取/总时长三层超时。
+- **镜像兜底**（`MIRRORS`）只在直连与 API 直链都失败时用：**能用它的唯一前提是 sha256 校验**，
+  所以引入镜像不降低供应链强度（投毒/截断都会在校验那步被拒并删临时文件）。
+- ⚠️ **找可执行文件不能只看 `PATH`**（`candidate_dirs`）：systemd 用户服务的 `PATH` 极简，用户按文档
+  装到 `~/.local/bin`（pipx / `pip --user`）就永远找不到 —— 症状是"装了却说没装"。回归钉子：
+  `candidate_dirs_cover_common_install_locations`。
 - 查找顺序（`find_ytdlp`，纯查找不下载）：**`[ingest] ytdlp_path` → 托管目录（必须哈希匹配）→ PATH**。
   配置指定**不校验**哈希（否则管理员换新版就被拦下了）；托管目录里的那份如果哈希不对，
   `find_in_path` 也可能命中它 —— 要排除掉，避免把一份损坏的托管副本当成"PATH 上的 yt-dlp"用。

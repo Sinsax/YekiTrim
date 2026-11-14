@@ -747,6 +747,29 @@ pub struct Db {
         })
     }
 
+    /// 按 `yekitrim.toml` 路径反查**某账号名下**的项目（2026-11-14 后端 review B2）：
+    /// `/api/recorder/recordings` 的 `added`/`project_id` 只反映调用者自己的登记 ——
+    /// 别人在同一目录登记的项目，id 不许回给普通用户。
+    pub fn project_by_config_for(
+        &self,
+        config_file: &Path,
+        owner_id: i64,
+    ) -> Result<Option<ProjectRow>> {
+        self.with(|conn| {
+            let row = conn
+                .query_row(
+                    &format!(
+                        "SELECT {} FROM projects WHERE config_file = ?1 AND owner_id = ?2",
+                        Self::PROJECT_COLS
+                    ),
+                    params![config_file.to_string_lossy(), owner_id],
+                    Self::project_from_row,
+                )
+                .optional()?;
+            Ok(row)
+        })
+    }
+
     /// `owner=None` = 全部项目（仅 admin 用）。
     pub fn list_projects(&self, owner: Option<i64>) -> Result<Vec<ProjectRow>> {
         self.with(|conn| {
@@ -1483,9 +1506,42 @@ pub struct Db {
     }
 
     /// 整体替换某用户的房间规则（前端 PUT 的语义）。
-    pub fn replace_channel_map(&self, user_id: i64, rules: &[(String, String, bool)]) -> Result<()> {
+    ///
+    /// 返回 **被别的账号占着的房间号**：非空时**整批不生效**（事务不提交），调用方回 409。
+    /// `allow_takeover = true`（admin）时不做这项检查 —— 与 `POST /api/rooms` 同一口径
+    /// （那里 admin 也能接管别人的登记）。
+    ///
+    /// ⚠️ **为什么必须查这一下**：`room_id` 是 `channel_map` 的**全局主键**，而 upsert 的
+    /// `DO UPDATE SET user_id = excluded.user_id` 原来是无条件的 ⇒ 任何账号发一条
+    /// `PUT /api/channel-map {"rules":[{"room_id":"<别人的房间>"}]}` 就能把归属改到自己名下
+    /// （2026-11-14 后端 review 的 P1：之后那台机器的录像会入库到抢的人账号里，
+    /// 或者被 `enabled:false` 直接掐掉）。**未被任何人登记**的房间仍然允许自助登记。
+    pub fn replace_channel_map(
+        &self,
+        user_id: i64,
+        allow_takeover: bool,
+        rules: &[(String, String, bool)],
+    ) -> Result<Vec<String>> {
         self.with(|conn| {
             let tx = conn.unchecked_transaction()?;
+            if !allow_takeover {
+                let mut conflicts: Vec<String> = Vec::new();
+                {
+                    let mut stmt = tx.prepare("SELECT room_id FROM channel_map WHERE user_id != ?1")?;
+                    let taken: std::collections::HashSet<String> = stmt
+                        .query_map(params![user_id], |r| r.get::<_, String>(0))?
+                        .collect::<rusqlite::Result<_>>()?;
+                    for (room_id, _, _) in rules {
+                        if taken.contains(room_id) {
+                            conflicts.push(room_id.clone());
+                        }
+                    }
+                }
+                if !conflicts.is_empty() {
+                    // 直接返回 ⇒ 事务未提交（Drop 即回滚），本次一条规则都不动
+                    return Ok(conflicts);
+                }
+            }
             tx.execute("DELETE FROM channel_map WHERE user_id = ?1", params![user_id])?;
             for (room_id, pipeline, enabled) in rules {
                 tx.execute(
@@ -1498,7 +1554,7 @@ pub struct Db {
                 )?;
             }
             tx.commit()?;
-            Ok(())
+            Ok(Vec::new())
         })
     }
 
@@ -1849,6 +1905,75 @@ mod tests {
         assert_eq!(db.room_delete("12345", Some(bob)).unwrap(), 1);
         assert!(db.channel_for_room("12345").unwrap().is_none());
         assert_eq!(db.room_delete("777", None).unwrap(), 1, "admin 可删任意");
+    }
+
+    /// **`PUT /api/channel-map` 不许抢走别人已登记的房间**（2026-11-14 后端 review 的 P1）。
+    ///
+    /// 判据四条：
+    /// ① 别人的房间 → 返回冲突列表、**整批不生效**（连自己本来合法的规则也不动，避免"半保存"）；
+    /// ② 未被任何人登记的房间 → 照旧可以自助登记（先到先得）；
+    /// ③ 改**自己**的房间 → 正常覆盖，不误报冲突；
+    /// ④ admin（`allow_takeover = true`）→ 可接管，与 `POST /api/rooms` 的 admin 口径一致。
+    #[test]
+    fn replace_channel_map_never_steals_another_users_room() {
+        let (_d, db) = tmp_db();
+        let alice = db.create_user("alice", "h", "user", false, 0).unwrap();
+        let bob = db.create_user("bob", "h", "user", false, 0).unwrap();
+
+        // alice 先登记 26320007
+        assert!(db.replace_channel_map(alice, false, &[("26320007".into(), "detect".into(), true)])
+            .unwrap()
+            .is_empty());
+
+        // ② bob 登记**未登记**的房间：允许（自助登记照旧）
+        let conflicts = db
+            .replace_channel_map(bob, false, &[("18001".into(), "cut".into(), true)])
+            .unwrap();
+        assert!(conflicts.is_empty(), "没被登记过的房间该允许自助登记：{conflicts:?}");
+        assert_eq!(db.channel_for_room("18001").unwrap().unwrap().user_id, bob);
+
+        // ① bob 试图接管 alice 的 26320007 —— 而且把自己那条合法规则一起带上（验"整批不生效"）
+        let conflicts = db
+            .replace_channel_map(
+                bob,
+                false,
+                &[
+                    ("26320007".into(), "cut".into(), true),
+                    ("18002".into(), "detect".into(), true),
+                ],
+            )
+            .unwrap();
+        assert_eq!(conflicts, vec!["26320007".to_string()], "该且只该报这一条冲突：{conflicts:?}");
+        let stolen = db.channel_for_room("26320007").unwrap().unwrap();
+        assert_eq!(stolen.user_id, alice, "归属绝不能被改到 bob");
+        assert!(stolen.enabled, "也不能被 enabled:false 掐掉");
+        assert_eq!(stolen.auto_pipeline, "detect", "pipeline 不能被别人改");
+        assert!(
+            db.channel_for_room("18002").unwrap().is_none(),
+            "冲突时整批不生效：同批的 18002 也不该被写进去"
+        );
+        assert_eq!(
+            db.channel_for_room("18001").unwrap().unwrap().user_id,
+            bob,
+            "冲突的那次替换不该把 bob 原有规则删掉（事务未提交）"
+        );
+
+        // ③ 改自己的：正常覆盖
+        assert!(db
+            .replace_channel_map(bob, false, &[("18001".into(), "none".into(), false)])
+            .unwrap()
+            .is_empty());
+        let own = db.channel_for_room("18001").unwrap().unwrap();
+        assert_eq!(own.user_id, bob);
+        assert_eq!(own.auto_pipeline, "none");
+        assert!(!own.enabled);
+
+        // ④ admin 可以接管（与 /api/rooms 的 admin 口径一致）
+        assert!(db
+            .replace_channel_map(alice, true, &[("26320007".into(), "cut".into(), true)])
+            .unwrap()
+            .is_empty());
+        assert_eq!(db.channel_for_room("26320007").unwrap().unwrap().user_id, alice);
     }
 
     /// 注册的两步必须原子：**一个码只能绑一个账号**（第二个拿到的是"已被使用"）。

@@ -241,12 +241,21 @@ pub fn refresh_bytes(db: &Db, project: &ProjectRow) -> Result<(u64, u64)> {
 }
 
 /// 全量刷新所有项目的占用（启动时一次；项目少，成本可接受）。
+///
+/// 顺带**双向校准 `missing` 标记**（2026-11-14 后端 review B4/P3）：这条是后台/启动路径，
+/// 适合做写库；读接口（`/api/projects`）只按磁盘当场算、不再顺手写库。
+/// 校准两个方向都要：目录没了置 true，**目录回来要能回 false**（以前只有置 true 的一侧，
+/// 一旦标上就永远显示缺失）。
 pub fn refresh_all_bytes(db: &Db) -> usize {
     let projects = db.list_projects(None).unwrap_or_default();
     let mut n = 0;
     for p in &projects {
         if refresh_bytes(db, p).is_ok() {
             n += 1;
+        }
+        let missing_now = !p.root_dir.is_dir();
+        if missing_now != p.missing {
+            let _ = db.set_project_missing(p.id, missing_now);
         }
     }
     n
@@ -316,6 +325,16 @@ pub fn quota_exceeded(used: u64, incoming: u64, quota: u64) -> bool {
 }
 
 /// `/api/projects` 的单行摘要（阶段来自项目配置的推导，见 `config::current_stage`）。
+///
+/// ⚠️ **`missing` 以磁盘为准**（2026-11-14 后端 review B4）：以前是
+/// `project.missing || missing_config` —— 而 `Workspace::load` 对"配置文件不存在"是**容忍**的，
+/// 于是"目录被删/被移走"根本不会让 `missing_config` 为真，界面的「缺失」标记永远不亮；
+/// 反过来 DB 里那个列一旦被置上又没有清的地方，就再也回不去。
+/// 现在改成"盘上目录还在不在"这条**当场判据**（`root_dir.is_dir()`），DB 列只作为上次扫描的
+/// 结论由调用方维护（列表 handler 会双向校准）。
+///
+/// ⚠️ 含一次 `is_dir()`（网络盘上可能是几百毫秒）：调用方必须在 blocking 池里
+/// （`api::projects::projects_list` 已经这么做了）。
 pub fn summary_json(project: &ProjectRow, owner_name: Option<&str>) -> serde_json::Value {
     let (stage, has_clips, missing_config) = match Workspace::load(Some(&project.config_file)) {
         Ok(ws) => {
@@ -326,7 +345,9 @@ pub fn summary_json(project: &ProjectRow, owner_name: Option<&str>) -> serde_jso
         }
         Err(_) => (0, false, true),
     };
-    let missing = project.missing || missing_config;
+    // 目录本身不在了 = 缺失（配置解析失败也算）。**不 OR 上 `project.missing`**：
+    // 那是历史结论，会让"目录回来了"永远显示缺失（见上面的说明）。
+    let missing = missing_config || !project.root_dir.is_dir();
     serde_json::json!({
         "id": project.id,
         "name": project.name,
@@ -406,6 +427,53 @@ mod tests {
         assert!(!quota_exceeded(99, 1, 100));
         // 求和溢出不许回绕成"没超"（`saturating_add`）
         assert!(quota_exceeded(u64::MAX, 1, 100));
+    }
+
+    /// **`missing` 以磁盘为准，且能双向回退**（2026-11-14 后端 review B4）。
+    ///
+    /// 旧实现 `missing = project.missing || missing_config` 有两个方向都错：
+    /// ① 目录被移走后 `Workspace::load` 仍然成功（它对缺文件是容忍的）⇒ 界面**永远不报缺失**；
+    /// ② DB 那列只有"置 true"的一侧 ⇒ 目录回来后也**回不到 false**。
+    #[test]
+    fn missing_follows_the_disk_and_can_go_back_to_false() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("proj");
+        std::fs::create_dir_all(root.join("output")).unwrap();
+        let cfg = root.join("yekitrim.toml");
+        std::fs::write(&cfg, "input_file = \"a.mp4\"\n").unwrap();
+        let db = crate::db::Db::open(&dir.path().join("yekitrim.db")).unwrap();
+        let uid = db.create_user("u1", "h", "admin", false, 0).unwrap();
+        let id = db
+            .create_project(uid, "proj", None, "local", Some("测试"), &root, &cfg, None)
+            .unwrap();
+
+        // ① 目录在 → 不缺失
+        let row = db.project_by_id(id).unwrap().unwrap();
+        assert_eq!(summary_json(&row, None)["missing"], serde_json::json!(false));
+
+        // ② 目录被移走 → 当场就是 true（不等后台刷新）
+        let away = dir.path().join("proj-gone");
+        std::fs::rename(&root, &away).unwrap();
+        let row = db.project_by_id(id).unwrap().unwrap();
+        assert_eq!(
+            summary_json(&row, None)["missing"],
+            serde_json::json!(true),
+            "目录不在了就必须报缺失（旧实现这里恒 false）"
+        );
+
+        // ③ 启动/后台刷新把 DB 标记校准成 true
+        refresh_all_bytes(&db);
+        assert!(db.project_by_id(id).unwrap().unwrap().missing, "刷新要落库 true");
+
+        // ④ 目录回来 → 当场 false，刷新把 DB 标记也收回去
+        std::fs::rename(&away, &root).unwrap();
+        let row = db.project_by_id(id).unwrap().unwrap();
+        assert_eq!(summary_json(&row, None)["missing"], serde_json::json!(false));
+        refresh_all_bytes(&db);
+        assert!(
+            !db.project_by_id(id).unwrap().unwrap().missing,
+            "目录回来必须能回 false（旧实现只置 true、永不回退）"
+        );
     }
 
     #[test]

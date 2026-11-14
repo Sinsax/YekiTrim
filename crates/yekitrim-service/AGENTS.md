@@ -36,10 +36,13 @@ LLM 用量账本（`usage`）、运行日志总线（`logbus`）、单实例锁�
 - **诊断**：`doctor::{DEFAULT_PORT, DEFAULT_URL, cmd_doctor, probe_health}`；`disk::{space_bytes, writable, human_bytes}`；
   `instancelock::{InstanceLock, lock_path, read_lock, process_alive, LockInfo}`。
 - **日志**：`logbus::{bus, LogBus, LogBusLayer, enable_file_log, file_log_path, snapshot, subscribe}`。
-- **采集**：`ingest::{cmd_token, cmd_status, generate_token}`；`recorder::{RecorderClient, RecorderRoom,
-  room_id_from_dir_name, room_id_from_rel_path}`。
+- **采集**：`ingest::{cmd_token, cmd_status, generate_token}`；`recorder::{RecorderBackend, RecorderClient,
+  BiliLiveToolsClient, RecorderRoom, room_id_from_dir_name, room_id_from_rel_path}`（`RecorderBackend` 按
+  `[ingest.recorder].kind` 选后端：录播姬 `/api/room` + Basic；biliLive-tools `/recorder/list` +
+  `Authorization: <passkey>`）。
 - **配置**：`init_config::{init_project, init_global_config, ensure_global_config, validate_toml, show_config,
-  download_models}`。CLI 侧 `yekitrim user *` / `yekitrim usage` / `yekitrim doctor` / `yekitrim ingest *` 的实现都在本 crate。
+  download_models}`。⚠️ 程序配置只有一个位置 = `config::global_config_path()`（`users/<uid>/.yekitrim/`，
+  2026-11-13 收敛；顶层那两份已退役）—— 别在别处拼 `.yekitrim/config.toml`。CLI 侧 `yekitrim user *` / `yekitrim usage` / `yekitrim doctor` / `yekitrim ingest *` 的实现都在本 crate。
 
 ## 边界
 

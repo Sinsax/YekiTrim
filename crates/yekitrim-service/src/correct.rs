@@ -38,13 +38,8 @@ pub async fn run_correct(
         yekitrim_core::srt::parse_srt(&content)?
     };
 
-    let danmaku = load_danmaku(&cfg, &ws);
-    let checkpoint = output.join("correct.checkpoint.json");
-    let partial_path = output.join("correct.partial.json");
-    if !resume && checkpoint.exists() {
-        let _ = std::fs::remove_file(&checkpoint);
-    }
-    let checkpoint_path = if checkpoint.exists() { Some(checkpoint.as_path()) } else { None };
+    let danmaku = load_danmaku_for_correct(&cfg, &ws);
+    let (checkpoint, partial_path) = prepare_correction_state(&output, resume);
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<yekitrim_llm::agent::AgentProgress<Vec<yekitrim_llm::agent::AgentOutput>>>(64);
     let partial_writer = partial_path.clone();
@@ -70,7 +65,8 @@ pub async fn run_correct(
         &cfg.llm,
         &cfg.correct,
         output.parent(),
-        checkpoint_path,
+        // ⚠️ **恒定传 Some**：断点写不写由这里决定，续不续由 `resume` 决定（见 prepare_correction_state）
+        Some(checkpoint.as_path()),
         Some(tx),
         cancel,
     ).await;
@@ -98,12 +94,23 @@ pub async fn run_correct(
     }
 }
 
-fn load_danmaku(cfg: &Config, ws: &Workspace) -> Vec<yekitrim_core::danmaku::DanmakuEntry> {
-    if let Some(p) = cfg.project.danmaku_file.as_ref().filter(|s| !s.is_empty()) {
-        let p = ws.resolve(p);
-        if p.exists() { return yekitrim_core::danmaku::load_danmaku(&p).unwrap_or_default(); }
+/// 订正用的弹幕：走 `Workspace::danmaku_path`（`danmaku_file` → 视频同目录 `danmu.ass`/`danmaku.ass`）
+/// + `load_danmaku_auto`（XML / ASS / SRT 都认）。
+///
+/// ⚠️ 以前这里用 ASS-only 的 `danmaku::load_danmaku`：预处理页选的是录播姬 `danmaku.xml` 或 `.srt` 时
+/// **吐 0 条且不报错**，订正 prompt 里的「弹幕高频词 / 当前时段弹幕」两段整段消失（静默降级）。
+/// 与 `core_pipeline::load_danmaku_for_correct` 同一口径 —— 两条入口不许再各写一份。
+fn load_danmaku_for_correct(cfg: &Config, ws: &Workspace) -> Vec<yekitrim_core::danmaku::DanmakuEntry> {
+    let Some(path) = ws.danmaku_path(cfg) else {
+        return Vec::new();
+    };
+    match yekitrim_core::danmaku::load_danmaku_auto(&path) {
+        Ok(entries) => entries,
+        Err(e) => {
+            tracing::warn!("订正：弹幕解析失败（{}），本次不带弹幕上下文: {e:#}", path.display());
+            Vec::new()
+        }
     }
-    Vec::new()
 }
 
 fn rel_for_config(config_file: &Path, path: &Path) -> String {
@@ -111,4 +118,82 @@ fn rel_for_config(config_file: &Path, path: &Path) -> String {
         if let Ok(rel) = path.strip_prefix(dir) { return rel.to_string_lossy().into_owned(); }
     }
     path.to_string_lossy().into_owned()
+}
+
+/// 订正的断点 / 中间产物路径。`resume = false` 时**先删旧断点**（用户明确要求重跑）。
+///
+/// ⚠️ **返回的断点路径必须恒传给 `Agent`（`Some`）**，绝不能写成
+/// `if checkpoint.exists() { Some(path) } else { None }` —— 那样首次运行传 `None`，
+/// `Agent::run_windows` 就不写盘 ⇒ 文件永不出现 ⇒ 第二次仍然 `None`……**自锁**。
+/// 后果是订正（分钟级链路，长片重跑很贵）的断点续传从未生效过。
+/// 「要不要续传」只由 `resume` 决定，与「要不要写断点」无关。
+pub(crate) fn prepare_correction_state(output: &Path, resume: bool) -> (PathBuf, PathBuf) {
+    let checkpoint = output.join("correct.checkpoint.json");
+    let partial = output.join("correct.partial.json");
+    if !resume {
+        let _ = std::fs::remove_file(&checkpoint);
+    }
+    (checkpoint, partial)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **回归钉子**：断点路径与「文件在不在」**无关**（旧实现就是在这一步返回 `None` 的，
+    /// 于是 Agent 永远不写断点，续传形同虚设）。
+    #[test]
+    fn correction_checkpoint_path_is_reported_even_when_absent() {
+        let tmp = tempfile::TempDir::new().expect("临时目录");
+        let output = tmp.path().join("output");
+        std::fs::create_dir_all(&output).unwrap();
+
+        // 文件还不存在（首次运行）⇒ 仍必须给出路径
+        let (checkpoint, partial) = prepare_correction_state(&output, true);
+        assert!(!checkpoint.exists(), "前提：首次运行时断点还不存在");
+        assert_eq!(checkpoint.file_name().unwrap(), "correct.checkpoint.json");
+        assert_eq!(partial.file_name().unwrap(), "correct.partial.json");
+
+        // resume = false ⇒ 旧断点被删（用户选了「重新开始」），路径照样给出
+        std::fs::write(&checkpoint, "{}").unwrap();
+        let (checkpoint2, _) = prepare_correction_state(&output, false);
+        assert!(!checkpoint2.exists(), "resume=false 要先清掉旧断点");
+        assert_eq!(checkpoint2, checkpoint);
+
+        // resume = true ⇒ 旧断点留着（这就是续传的输入）
+        std::fs::write(&checkpoint, "{}").unwrap();
+        let (checkpoint3, _) = prepare_correction_state(&output, true);
+        assert!(checkpoint3.exists(), "resume=true 不许动旧断点");
+    }
+
+    /// **回归钉子**：用户弹幕是录播姬 XML 时订正也必须读到（ASS-only 解析器对它吐 0 条且不报错）。
+    #[test]
+    fn load_danmaku_for_correct_reads_bililive_xml() {
+        let tmp = tempfile::TempDir::new().expect("临时目录");
+        let dir = tmp.path();
+        let xml = dir.join("danmaku.xml");
+        std::fs::write(
+            &xml,
+            r#"<?xml version="1.0" encoding="utf-8"?><i><d p="1.5,1,25,16777215,0,0,0,0">测试弹幕一</d></i>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("video.mp4"),
+            b"x",
+        )
+        .unwrap();
+        // 工程配置：danmaku_file 相对工程根（`yekitrim init` 的写法）
+        let cfg_path = dir.join("yekitrim.toml");
+        std::fs::write(
+            &cfg_path,
+            "[project]\ninput_file = \"video.mp4\"\ndanmaku_file = \"danmaku.xml\"\n",
+        )
+        .unwrap();
+        let cfg = yekitrim_core::config::load_config_at(&cfg_path).expect("读工程配置");
+        let ws = Workspace::load(Some(&cfg_path)).expect("加载 Workspace");
+
+        let entries = load_danmaku_for_correct(&cfg, &ws);
+        assert_eq!(entries.len(), 1, "XML 弹幕必须解析出 1 条（ASS-only 会给 0）");
+        assert_eq!(entries[0].text, "测试弹幕一");
+    }
 }

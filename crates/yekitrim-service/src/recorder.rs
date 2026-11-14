@@ -14,13 +14,15 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-use yekitrim_core::config::RecorderConfig;
+use yekitrim_core::config::{IngestConfig, RecorderConfig};
 
 /// 一个房间的实时状态。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecorderRoom {
     /// 直播间号（录播姬给的 long id）
     pub room_id: i64,
+    /// 平台标识（录播姬固定 `Bilibili`；biliLive-tools 用它自己的 `providerId`）
+    pub platform: String,
     /// 房间标题（拿不到就是空串）
     pub title: String,
     /// 是否正在直播
@@ -51,6 +53,7 @@ impl From<RoomDto> for RecorderRoom {
     fn from(d: RoomDto) -> Self {
         Self {
             room_id: d.room_id,
+            platform: "Bilibili".into(),
             title: d.title.filter(|s| !s.trim().is_empty()).or(d.name).unwrap_or_default(),
             streaming: d.streaming,
             recording: d.recording,
@@ -148,6 +151,266 @@ impl RecorderClient {
             .with_context(|| format!("连不上录播姬（{}）", self.base))?;
         let v: serde_json::Value = self.json(resp, "读取版本").await?;
         Ok(v.as_str().map(|s| s.to_string()).unwrap_or_else(|| v.to_string()))
+    }
+}
+
+/// biliLive-tools 的一条录像记录（`GET /record-history/list`）。
+#[derive(Debug, Clone)]
+pub struct RecordHistoryItem {
+    pub title: String,
+    /// 接口给的文件路径（容器内路径，例 `/app/video/Bilibili/…/x.flv`）
+    pub video_file: String,
+    pub duration_secs: u64,
+    pub danma_num: u64,
+    pub record_start_ms: i64,
+}
+
+/// biliLive-tools HTTP API 客户端（v3.x）。
+///
+/// 和录播姬**不是一套接口**：
+/// - 鉴权是 `Authorization: <passkey>`（**原样，不是 Bearer**）
+/// - 录制用户：`GET /recorder/list` → `payload.data[]`（`channelId`/`providerId`/`remarks`/`state`）
+/// - 每场录像：`GET /record-history/list?room_id=&platform=&page=&pageSize=` → `data[].video_file`
+/// - 文件浏览：`GET /files/list?path=`（本项目只读用不到）
+pub struct BiliLiveToolsClient {
+    base: String,
+    http: reqwest::Client,
+}
+
+impl BiliLiveToolsClient {
+    pub fn from_config(cfg: &RecorderConfig) -> Option<Self> {
+        let base = cfg.api_base.trim().trim_end_matches('/').to_string();
+        if base.is_empty() {
+            return None;
+        }
+        let mut headers = reqwest::header::HeaderMap::new();
+        if !cfg.api_key.trim().is_empty() {
+            let mut v = reqwest::header::HeaderValue::from_str(cfg.api_key.trim())
+                .unwrap_or_else(|_| reqwest::header::HeaderValue::from_static(""));
+            v.set_sensitive(true);
+            headers.insert(reqwest::header::AUTHORIZATION, v);
+        }
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(15))
+            .default_headers(headers)
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+        Some(Self { base, http })
+    }
+
+    pub fn base(&self) -> &str {
+        &self.base
+    }
+
+    async fn json<T: serde::de::DeserializeOwned>(
+        &self,
+        resp: reqwest::Response,
+        what: &str,
+    ) -> Result<T> {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            let brief = text.trim();
+            let brief = if brief.len() > 200 { &brief[..200] } else { brief };
+            anyhow::bail!(
+                "biliLive-tools{what}失败（HTTP {}）{}",
+                status.as_u16(),
+                if brief.is_empty() { String::new() } else { format!(": {brief}") }
+            );
+        }
+        serde_json::from_str::<T>(&text)
+            .with_context(|| format!("biliLive-tools{what}返回的不是预期 JSON: {}", &text[..text.len().min(200)]))
+    }
+
+    /// 录制用户（= 它的 recorder 列表）。`state` 只有 `recording` 才算正在录。
+    pub async fn list_rooms(&self) -> Result<Vec<RecorderRoom>> {
+        let resp = self
+            .http
+            .get(format!("{}/recorder/list", self.base))
+            .send()
+            .await
+            .with_context(|| format!("连不上 biliLive-tools（{}），检查 api_base / 密钥", self.base))?;
+        let dto: BltRecorderListResp = self.json(resp, "读取录制用户").await?;
+        Ok(dto
+            .payload
+            .data
+            .into_iter()
+            .map(|r| RecorderRoom {
+                room_id: r.channel_id.as_deref().unwrap_or("").parse().unwrap_or(0),
+                platform: r
+                    .provider_id
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or_else(|| "Bilibili".into()),
+                title: r.remarks.unwrap_or_default(),
+                streaming: false,
+                recording: r
+                    .state
+                    .as_deref()
+                    .map(|s| s.eq_ignore_ascii_case("recording"))
+                    .unwrap_or(false),
+                auto_record: true,
+            })
+            .collect())
+    }
+
+    /// 某个房间的录像历史（新版在前）。`platform` = `Bilibili` / `DouYu` / ...
+    pub async fn list_history(&self, room_id: &str, platform: &str) -> Result<Vec<RecordHistoryItem>> {
+        let resp = self
+            .http
+            .get(format!("{}/record-history/list", self.base))
+            .query(&[
+                ("room_id", room_id),
+                ("platform", platform),
+                ("page", "1"),
+                ("pageSize", "200"),
+            ])
+            .send()
+            .await
+            .with_context(|| format!("连不上 biliLive-tools（{}）", self.base))?;
+        let dto: BltHistoryResp = self.json(resp, "读取录像历史").await?;
+        if dto.code != 0 && dto.code != 200 {
+            anyhow::bail!("biliLive-tools 读取录像历史失败：{}", dto.message.unwrap_or_default());
+        }
+        Ok(dto
+            .data
+            .into_iter()
+            .map(|h| RecordHistoryItem {
+                title: h.title.unwrap_or_default(),
+                video_file: h.video_file.unwrap_or_default(),
+                duration_secs: h.video_duration.unwrap_or(0),
+                danma_num: h.danma_num.unwrap_or(0),
+                record_start_ms: h.record_start_time.unwrap_or(0),
+            })
+            .collect())
+    }
+
+    /// 版本（自检用；biliLive-tools 没有 `/api/version`，读 `/config` 只证明"连通且鉴权过"）。
+    pub async fn version(&self) -> Result<String> {
+        let resp = self
+            .http
+            .get(format!("{}/config", self.base))
+            .send()
+            .await
+            .with_context(|| format!("连不上 biliLive-tools（{}）", self.base))?;
+        let v: serde_json::Value = self.json(resp, "读取配置").await?;
+        Ok(v.get("version").and_then(|x| x.as_str()).unwrap_or("biliLive-tools").to_string())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct BltRecorderListResp {
+    payload: BltRecorderListPayload,
+}
+#[derive(Debug, Deserialize)]
+struct BltRecorderListPayload {
+    #[serde(default)]
+    data: Vec<BltRecorderDto>,
+}
+#[derive(Debug, Deserialize)]
+struct BltRecorderDto {
+    // 这些字段在它那边可能是 null：一律 Option，缺/空都按"没给"处理
+    #[serde(default, rename = "providerId")]
+    provider_id: Option<String>,
+    #[serde(default, rename = "channelId")]
+    channel_id: Option<String>,
+    #[serde(default)]
+    remarks: Option<String>,
+    #[serde(default)]
+    state: Option<String>,
+}
+#[derive(Debug, Deserialize)]
+struct BltHistoryResp {
+    #[serde(default)]
+    code: i64,
+    #[serde(default)]
+    message: Option<String>,
+    #[serde(default)]
+    data: Vec<BltHistoryDto>,
+}
+#[derive(Debug, Deserialize)]
+struct BltHistoryDto {
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default, rename = "video_file")]
+    video_file: Option<String>,
+    #[serde(default, rename = "video_duration")]
+    video_duration: Option<u64>,
+    #[serde(default, rename = "danma_num")]
+    danma_num: Option<u64>,
+    #[serde(default, rename = "record_start_time")]
+    record_start_time: Option<i64>,
+}
+
+/// 录制软件后端：按 `[ingest.recorder] kind` 选一套实现。
+pub enum RecorderBackend {
+    Bililive(RecorderClient),
+    BiliLiveTools(BiliLiveToolsClient),
+}
+
+impl RecorderBackend {
+    /// 录播模块**二选一**：`[ingest.recorder].kind` 决定用哪套 API（同一张配置表）。
+    pub fn from_config(cfg: &IngestConfig) -> Option<Self> {
+        match cfg.recorder.kind.trim().to_ascii_lowercase().replace('_', "-").as_str() {
+            "none" => None,
+            "bililive-tools" | "blt" => {
+                BiliLiveToolsClient::from_config(&cfg.recorder).map(Self::BiliLiveTools)
+            }
+            _ => RecorderClient::from_config(&cfg.recorder).map(Self::Bililive),
+        }
+    }
+
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Bililive(_) => "bililive",
+            Self::BiliLiveTools(_) => "bililive-tools",
+        }
+    }
+
+    pub fn is_bililive_tools(&self) -> bool {
+        matches!(self, Self::BiliLiveTools(_))
+    }
+
+    pub fn base(&self) -> &str {
+        match self {
+            Self::Bililive(c) => c.base(),
+            Self::BiliLiveTools(c) => c.base(),
+        }
+    }
+
+    pub async fn list_rooms(&self) -> Result<Vec<RecorderRoom>> {
+        match self {
+            Self::Bililive(c) => c.list_rooms().await,
+            Self::BiliLiveTools(c) => c.list_rooms().await,
+        }
+    }
+
+    pub async fn version(&self) -> Result<String> {
+        match self {
+            Self::Bililive(c) => c.version().await,
+            Self::BiliLiveTools(c) => c.version().await,
+        }
+    }
+
+    pub async fn add_room(&self, room_id: i64) -> Result<RecorderRoom> {
+        match self {
+            Self::Bililive(c) => c.add_room(room_id).await,
+            Self::BiliLiveTools(_) => anyhow::bail!("biliLive-tools 不支持在 YekiTrim 里加录制用户"),
+        }
+    }
+
+    pub async fn remove_room(&self, room_id: i64) -> Result<()> {
+        match self {
+            Self::Bililive(c) => c.remove_room(room_id).await,
+            Self::BiliLiveTools(_) => Ok(()),
+        }
+    }
+
+    /// 仅 biliLive-tools 有意义：录播姬的录像归属靠目录名解析，不需要历史接口。
+    pub async fn list_history(&self, room_id: &str, platform: &str) -> Result<Vec<RecordHistoryItem>> {
+        match self {
+            Self::BiliLiveTools(c) => c.list_history(room_id, platform).await,
+            Self::Bililive(_) => Ok(Vec::new()),
+        }
     }
 }
 
@@ -271,6 +534,117 @@ mod tests {
 
     /// 对着一个"假录播姬"跑一遍：Basic 头带上了、body 是 `{roomId, autoRecord}`、
     /// 响应解析成 RecorderRoom（字段名按它的 DTO 给，容错别名也顺带验一下）。
+    /// 对着一个"假 biliLive-tools"跑一遍：`Authorization` 是**原样的密钥**（不是 Bearer）、
+    /// 录制用户/录像历史的字段名按它 v3.x 的返回解析。
+    #[tokio::test]
+    async fn blt_client_reads_recorders_and_history() {
+        use axum::extract::Query;
+        use axum::routing::get;
+        use axum::{Json, Router};
+        use std::collections::HashMap;
+
+        let seen_auth = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let auth_slot = seen_auth.clone();
+        let app = Router::new()
+            .route(
+                "/recorder/list",
+                get(move |headers: axum::http::HeaderMap| {
+                    let auth_slot = auth_slot.clone();
+                    async move {
+                        *auth_slot.lock().unwrap() = headers
+                            .get(axum::http::header::AUTHORIZATION)
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or_default()
+                            .to_string();
+                        Json(serde_json::json!({
+                            "payload": { "data": [
+                                { "providerId": "Bilibili", "channelId": "237926", "remarks": "Sinsa", "state": "idle" }
+                            ] }
+                        }))
+                    }
+                }),
+            )
+            .route(
+                "/record-history/list",
+                get(|Query(q): Query<HashMap<String, String>>| async move {
+                    assert_eq!(q.get("room_id").map(String::as_str), Some("237926"));
+                    assert_eq!(q.get("platform").map(String::as_str), Some("Bilibili"));
+                    Json(serde_json::json!({
+                        "code": 200,
+                        "data": [
+                            {
+                                "title": "测试",
+                                "video_file": "/app/video/Bilibili/Sinsa/x.flv",
+                                "video_duration": 253,
+                                "danma_num": 7,
+                                "record_start_time": 1779115900962i64
+                            },
+                            // 它那边的可选字段会是 null（真实数据里踩过：反序列化直接 500）
+                            {
+                                "title": null,
+                                "video_file": "/app/video/Bilibili/Sinsa/y.flv",
+                                "video_duration": null,
+                                "danma_num": null,
+                                "record_start_time": null
+                            }
+                        ]
+                    }))
+                }),
+            )
+            .route("/config", get(|| async { Json(serde_json::json!({ "version": "3.22.2" })) }));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let cfg = RecorderConfig {
+            api_base: format!("http://{addr}/"),
+            api_key: "sekret-key".into(),
+            ..Default::default()
+        };
+        let client = BiliLiveToolsClient::from_config(&cfg).unwrap();
+
+        let rooms = client.list_rooms().await.unwrap();
+        assert_eq!(rooms.len(), 1);
+        assert_eq!(rooms[0].room_id, 237926);
+        assert_eq!(rooms[0].platform, "Bilibili");
+        assert_eq!(rooms[0].title, "Sinsa");
+        assert_eq!(*seen_auth.lock().unwrap(), "sekret-key", "Authorization 必须是原样密钥");
+
+        let history = client.list_history("237926", "Bilibili").await.unwrap();
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].video_file, "/app/video/Bilibili/Sinsa/x.flv");
+        assert_eq!(history[0].duration_secs, 253);
+        assert_eq!(history[0].danma_num, 7);
+        // null 字段按 0/空串处理，不能整个列表反序列化失败
+        assert_eq!(history[1].video_file, "/app/video/Bilibili/Sinsa/y.flv");
+        assert_eq!(history[1].duration_secs, 0);
+        assert_eq!(history[1].danma_num, 0);
+        assert_eq!(history[1].title, "");
+
+        assert_eq!(client.version().await.unwrap(), "3.22.2");
+    }
+
+    /// kind 选后端：默认仍是录播姬；`bililive-tools` 只在有 api_base 时建得出来。
+    #[test]
+    fn backend_kind_selects_client() {
+        let mut cfg = IngestConfig::default();
+        assert!(RecorderBackend::from_config(&cfg).is_none(), "两套都没配就不接");
+
+        // 二选一：kind = bililive-tools
+        cfg.recorder.kind = "bililive-tools".into();
+        cfg.recorder.api_base = "http://127.0.0.1:18010".into();
+        let b = RecorderBackend::from_config(&cfg).unwrap();
+        assert_eq!(b.kind(), "bililive-tools");
+        assert!(b.is_bililive_tools());
+
+        // kind = bililive
+        cfg.recorder.kind = "bililive".into();
+        cfg.recorder.api_base = "http://127.0.0.1:2356".into();
+        let b = RecorderBackend::from_config(&cfg).unwrap();
+        assert_eq!(b.kind(), "bililive");
+    }
+
     #[tokio::test]
     async fn client_talks_to_a_fake_recorder() {
         use axum::extract::Path;

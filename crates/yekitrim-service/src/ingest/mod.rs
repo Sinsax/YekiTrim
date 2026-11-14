@@ -24,8 +24,11 @@ use super::auth;
 pub mod capacity;
 pub mod landing;
 
+/// 程序配置的唯一位置（见 `crate::init_config::global_config_path` 的说明）。
+///
+/// ⚠️ 2026-11-13 起是 **owner 路径**（`users/<uid>/.yekitrim/config.toml`），不再是顶层那份。
 fn global_config_path() -> PathBuf {
-    yekitrim_core::path::yekitrim_home().join("config.toml")
+    yekitrim_core::config::global_config_path()
 }
 
 /// 录播姬 webhook token 的前缀。
