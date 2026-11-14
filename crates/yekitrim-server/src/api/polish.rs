@@ -226,7 +226,7 @@ pub(super) async fn polish_spawn(
                     // 窗口进度（spec §1 P2）：桥透传进 cmd_llm_for → Agent 折成 stage_progress
                     yekitrim_polish::commands::cmd_llm_for(owner, &path, opts.full, cancel.clone(), Some(bridge.clone())).await?;
                     jobs.log(&job_id, "info", "LLM 完成，自动执行 process 后处理…").await;
-                    yekitrim_polish::process::cmd_process(&path).await
+                    yekitrim_polish::process::cmd_process_with(&path, Some(&bridge)).await
                 }
                 // 只重做某一段的事件（编辑器：时间轴 → 分段属性）。失败会**保留该段原有事件**，
                 // 所以这里 fail 掉任务不会让用户丢东西；后处理照跑（别的段不动，幂等）。
@@ -237,9 +237,9 @@ pub(super) async fn polish_spawn(
                     jobs.log(&job_id, "info", format!("只重做分段 #{idx} 的事件…")).await;
                     yekitrim_polish::commands::cmd_llm_segment_for(owner, &path, idx, cancel.clone(), Some(bridge.clone())).await?;
                     jobs.log(&job_id, "info", "完成，自动执行 process 后处理…").await;
-                    yekitrim_polish::process::cmd_process(&path).await
+                    yekitrim_polish::process::cmd_process_with(&path, Some(&bridge)).await
                 }
-                "process" => yekitrim_polish::process::cmd_process(&path).await,
+                "process" => yekitrim_polish::process::cmd_process_with(&path, Some(&bridge)).await,
                 "render" => {
                     // 输出文件名在**真开跑之后**才落到 polish.toml（排队期间写会覆盖别人
                     // 的改动，而且任务可能还要等很久）。update_polish_toml 自己带路径锁。

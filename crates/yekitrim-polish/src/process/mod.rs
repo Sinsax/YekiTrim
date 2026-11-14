@@ -31,8 +31,25 @@ pub use download::*;
 pub use fx::*;
 use self::download::try_resolve_sticker;
 
+/// `cmd_process` 的薄包装（无进度出口）：CLI 与既有测试用。
 pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
+    cmd_process_with(project_path, None).await
+}
+
+/// 带**任务文案出口**的版本（spec §1 P3）：后处理整体是秒级，但 Step 4 的素材下载
+/// 走网络、素材多时可能上百秒 —— 在少数里程碑上报 note()，让任务行活着、
+/// 120s 卡住提示只在真卡住时响。进度语义 = 阶段内明细（note ≠ 失败）。
+pub async fn cmd_process_with(
+    project_path: &Path,
+    progress: Option<&std::sync::Arc<dyn yekitrim_core::progress::ProgressReporter>>,
+) -> anyhow::Result<()> {
+    let note = |msg: &str| {
+        if let Some(p) = progress {
+            yekitrim_core::progress::ProgressReporter::note(p.as_ref(), msg);
+        }
+    };
     tracing::info!("🔧  Post-processing...");
+    note("后处理进行中…");
 
     let mut config = project::load_project(project_path)?;
     let data_dir = project_path.join("data");
@@ -1083,8 +1100,10 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
     config.decisions = decisions;
 
     // Step 4: 自动下载 sticker + SFX
+    note("下载贴纸 / 音效素材…");
     let downloader = assets::downloader::AssetDownloader::new(project_path);
     download_keyword_assets(&downloader, &config, &sfx_blacklist).await;
+    note("素材就绪 · 收尾写回…");
 
     // Step 5: 冷开场 / 回忆回溯意图 → `edl.clips`（第 5 批）。
     //
