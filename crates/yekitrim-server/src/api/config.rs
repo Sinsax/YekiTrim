@@ -1341,7 +1341,7 @@ mod tests {
     /// PowerShell 跑法（key 从 llm.toml 现取，**别写进代码/日志**）：
     /// ```text
     /// $k = (Select-String -Path target/debug/users/1/.yekitrim/llm.toml -Pattern 'api_key\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
-    /// $env:VT_LLM_BASE = "http://192.168.0.107:7863/v1"; $env:VT_LLM_KEY = $k
+    /// $env:VT_LLM_BASE = "http://127.0.0.1:7863/v1"; $env:VT_LLM_KEY = $k
     /// cargo test -p yekitrim-server --lib -- real_endpoint --ignored --nocapture
     /// ```
     #[tokio::test]

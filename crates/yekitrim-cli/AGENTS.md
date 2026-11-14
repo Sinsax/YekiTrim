@@ -150,7 +150,7 @@
 ## 验证
 
 ```bash
-export SHERPA_ONNX_LIB_DIR=/home/toki/project/sherpa-onnx-prebuilt-no-tts/build/cmake-build/install/lib
+export SHERPA_ONNX_LIB_DIR=<你的 sherpa-onnx（TTS-off）安装前缀>/lib
 cargo check -p yekitrim-cli --all-targets   # 0 warnings
 cargo test -p yekitrim-cli                  # 纯函数单测（路由拼装 / status 标记 / 项目 id 查询）
 ```

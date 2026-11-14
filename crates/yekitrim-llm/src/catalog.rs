@@ -383,7 +383,7 @@ fn probe_wins_over_catalog_for_the_same_model() {
 /// 表里**没有**这个 id ⇒ 给"未收录"，**不许猜一个数**（尤其别照同后缀的公开版猜）。
 #[test]
 fn unknown_id_gets_no_guessed_limits() {
-    for base in ["http://192.168.0.107:7863/v1", "https://api.deepseek.com/v1"] {
+    for base in ["http://127.0.0.1:7863/v1", "https://api.deepseek.com/v1"] {
         let v = caps_json(base, "cn:deepseek-v4.1-flash");
         assert_eq!(v["hit"], serde_json::json!(false), "{base}: {v}");
         assert!(v["max_output_ceiling"].is_null(), "不许猜上限：{base}: {v}");
