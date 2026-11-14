@@ -82,3 +82,6 @@ events.json
 loudness.json
 clip.json
 initial-admin-password.txt
+
+# ---- AI 会话技能（本地工具链，不进公开仓）----
+/.dsh/
