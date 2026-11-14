@@ -129,7 +129,6 @@
         >
           <Icon :name="e.icon" :size="14" />
           {{ e.label }}
-          <span v-if="e.key === 'home' && hasRunning" class="dot" title="有任务正在运行"></span>
         </button>
         <!-- 主题切换：浅色（哥特浅色）/ 暗色（哥特暗色） -->
         <button class="foot-item theme-toggle" :title="themeTitle" @click="toggleTheme()">
@@ -142,7 +141,6 @@
         <button v-for="e in entries" :key="e.key" class="rail-item" :class="{ on: current === e.key }"
                 :title="e.label" @click="go(e.path)">
           <Icon :name="e.icon" :size="16" />
-          <span v-if="e.key === 'home' && hasRunning" class="rdot"></span>
         </button>
         <button class="rail-item" :title="themeTitle" @click="toggleTheme()">
           <Icon :name="ui.theme === 'dark' ? 'moon' : 'sun'" :size="16" />
@@ -176,7 +174,7 @@ const emit = defineEmits(['open', 'remove', 'logout', 'open-jobs', 'close-mobile
 
 const route = useRoute()
 const router = useRouter()
-const { jobs, hasRunning } = useJobs()
+const { jobs } = useJobs()
 
 /** 折叠态：只留品牌 / 项目标识 / 全局入口图标（状态在 stores/ui.js，localStorage 持久化）
  *  ⚠️ 移动抽屉打开时**强制展开**：抽屉只有 304px 宽，图标轨那 64px 在那里没有意义；
