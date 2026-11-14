@@ -25,9 +25,15 @@ pub struct Transcriber;
 
 /// 全局 qwen3 recognizer，用 Mutex 保证同一时间只有一个识别任务在跑。
 /// 超时/异常后丢弃，下次调用会重建，避免状态污染。
-static QWEN3_RECOGNIZER: OnceLock<Mutex<Option<sherpa_onnx::OfflineRecognizer>>> = OnceLock::new();
+///
+/// 缓存键 = 模型目录 + `max_new_tokens` + 解码线程数（`local::Qwen3RecognizerKey`）：
+/// 进程里先后跑两个工程时，配置一变就**重建**，不再拿上一个工程的模型/参数接着用。
+static QWEN3_RECOGNIZER: OnceLock<
+    Mutex<Option<(local::Qwen3RecognizerKey, sherpa_onnx::OfflineRecognizer)>>,
+> = OnceLock::new();
 
-fn qwen3_recognizer_lock() -> &'static Mutex<Option<sherpa_onnx::OfflineRecognizer>> {
+fn qwen3_recognizer_lock(
+) -> &'static Mutex<Option<(local::Qwen3RecognizerKey, sherpa_onnx::OfflineRecognizer)>> {
     QWEN3_RECOGNIZER.get_or_init(|| Mutex::new(None))
 }
 
@@ -49,12 +55,17 @@ async fn transcribe_segment_with_qwen3(
     sample_rate: usize,
     timeout: std::time::Duration,
 ) -> Result<String> {
+    let key = local::qwen3_recognizer_key(cfg);
     let mut guard = qwen3_recognizer_lock().lock().await;
-    if guard.is_none() {
-        *guard = Some(local::create_qwen3_recognizer(cfg)?);
+    // 配置变了（换工程 / 换模型 / 改 max_new_tokens）⇒ 重建，别拿旧的凑合。
+    if !matches!(guard.as_ref(), Some((k, _)) if *k == key) {
+        if guard.is_some() {
+            tracing::info!("qwen3 识别器配置变了（{}），丢弃旧的重新加载", key.label());
+        }
+        *guard = Some((key.clone(), local::create_qwen3_recognizer(cfg)?));
     }
 
-    let rec = guard.take().expect("recognizer 已初始化");
+    let (key, rec) = guard.take().expect("recognizer 已初始化");
     let (tx, rx) = tokio::sync::oneshot::channel();
     std::thread::spawn(move || {
         let r = local::transcribe_qwen3_samples(&rec, &samples, sample_rate);
@@ -63,7 +74,7 @@ async fn transcribe_segment_with_qwen3(
 
     match tokio::time::timeout(timeout, rx).await {
         Ok(Ok((rec, Ok(text)))) => {
-            *guard = Some(rec);
+            *guard = Some((key, rec));
             Ok(text)
         }
         Ok(Ok((_rec, Err(e)))) => {
@@ -189,9 +200,14 @@ impl Stage for Transcriber {
             // ========== 识别/填词 ==========
             const MAX_QWEN_SEGMENT_SECS: f64 = 60.0;
             let mut segs: Vec<TranscriptSegment> = Vec::new();
-            let mut total_items = 0usize;
-            // 解码余量（`[asr] segment_padding`，默认 0.3s）：这个旋钮以前没人读，
+            // 对齐命中率的**加权**累计（权重 = 文本字数）：用来算真实的 `anchor_coverage`。
+            // 以前这里直接写 1.0，`yekitrim status` 于是永远印「锚点覆盖率 100%」。
+            let mut anchor_hit_chars = 0.0f64;
+            let mut anchor_total_chars = 0usize;
+            // 解码余量（`[asr] segment_padding`，**默认 0.0 = 关**）：这个旋钮以前没人读，
             // 现在就是在干它名字上的事 —— 给切给识别器的音频留白。
+            // ⚠️ 默认关是有实测依据的：0.3s 会让对齐命中率反而下降（见 `decode_span` 的说明），
+            // 别凭"多给点上下文总没坏处"把它改成非 0。
             let pad = ctx.config.asr.segment_padding.max(0.0);
 
             for (i, seg) in speech_segments.iter().enumerate() {
@@ -257,6 +273,9 @@ impl Stage for Transcriber {
                             alignment.map.iter().filter(|m| m.is_some()).count() as f64
                                 / alignment.map.len() as f64
                         };
+                        let text_chars = text.chars().count();
+                        anchor_hit_chars += hit_rate * text_chars as f64;
+                        anchor_total_chars += text_chars;
                         let pieces = align::split_text_on_timeline(
                             &text,
                             &slice,
@@ -271,7 +290,6 @@ impl Stage for Transcriber {
                                 text: text.clone(),
                                 confidence: 1.0,
                             });
-                            total_items += 1;
                         } else {
                             windows.push(artifacts::WindowRecord {
                                 window_index: i,
@@ -304,7 +322,6 @@ impl Stage for Transcriber {
                                     confidence: 1.0,
                                 });
                             }
-                            total_items += 1;
                         }
                     }
                     sub_start = sub_end;
@@ -321,9 +338,16 @@ impl Stage for Transcriber {
             segs.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap());
             segs = drop_contained(segs);
             all_segments = segs;
+            // `anchor_coverage` = **真算**出来的加权对齐命中率（qwen3 的字有多少在 SenseVoice 字轴上
+            // 找得到位置）。1.0 是以前写死的假数（status 永远印 100%）。
+            let anchor_coverage = if anchor_total_chars == 0 {
+                0.0
+            } else {
+                (anchor_hit_chars / anchor_total_chars as f64).clamp(0.0, 1.0)
+            };
             metadata = AsrMetadata {
-                anchors: total_items,
-                anchor_coverage: 1.0,
+                anchors: anchor_hit_chars.round() as usize,
+                anchor_coverage,
                 max_interp_span: 0,
                 fallback_reason: None,
                 model: "qwen3-asr".into(),

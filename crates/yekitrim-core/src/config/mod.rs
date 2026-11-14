@@ -180,9 +180,10 @@ prompt_template = ""
 [cutting]
 # 输出目录
 output_dir = "./output"
-# 是否覆盖已有文件
+# 已有片段要不要覆盖：false = 目标目录里已经是这条事件的成片就**跳过**（不覆盖、不重剪，
+# 日志里汇总一句）；true = 一律重剪。切片页点「剪切」的单条重切**不受它约束**（永远覆盖）。
+# 别人的片段（标题与区间都对不上）无论这个开关怎样都会被拦下，不会覆盖。
 overwrite = false
-# 静音检测噪声门限 (dB)，越低越敏感
 
 [sfx]
 # 音效屏蔽列表 (yekitrim polish 使用, 全局共享)
@@ -235,15 +236,35 @@ cookie_file = ""
 # 下载卡死判定：连续这么多秒一行输出都没有就 kill（唯一的子进程兜底）
 download_idle_timeout_secs = 120
 
+# 出网代理（下载 yt-dlp 二进制这类境外大文件用；留空 = 直连）
+#   支持 http:// / https:// / socks5:// / socks5h://（socks5h = 远程 DNS，墙外建议用它）
+#   例：proxy = "socks5h://127.0.0.1:20170"
+proxy = ""
+
 [ingest.recorder]
-# 录播姬输出目录（必须与 yekitrim server 同机或同可读盘）
+# 录制软件：bililive（录播姬）| bililive-tools
+#   bililive      → api_base + api_user/api_pass（HTTP Basic），目录按路径里的房间号归属
+#   bililive-tools → api_base + api_key（Authorization: <key>）+ container_root，用户/录像走它的接口
+kind = "bililive"
+# 录像根目录（必须与 yekitrim server 同机或同可读盘）
 root = ""
-# 录播姬 HTTP API（用户端「配置直播间」靠它加房间）：
-#   api_base 例 "http://127.0.0.1:2356"（桌面版/容器默认端口），**留空 = 未对接**
-#   api_user/api_pass = 录播姬容器的 BREC_HTTP_BASIC_USER / BREC_HTTP_BASIC_PASS（没设就都留空）
+# 录制软件的 HTTP API（用户端「配置直播间 / 列录像」靠它）：
+#   bililive: api_base 例 "http://127.0.0.1:2356"；api_user/api_pass = BREC_HTTP_BASIC_USER/PASS
+#   bililive-tools: api_base 例 "http://127.0.0.1:18010"；api_key = 它的访问密钥（Authorization 原样）
 api_base = ""
 api_user = ""
 api_pass = ""
+api_key = ""
+# 仅 bililive-tools：它接口里的容器路径前缀（例 /app/video），剥掉后拼到 root 上
+container_root = ""
+
+[ingest.bililive_tools]
+# biliLive-tools（另一个录制软件，只读对接）：填 API 地址 + 访问密钥即可列录制用户与录像；
+# root/container_root 用于把它的容器路径映射到宿主机（YekiTrim 要读得到）
+api_base = ""
+api_key = ""
+root = ""
+container_root = ""
 # 兜底扫描间隔（分钟，0 = 关闭）：覆盖漏推送 / 录播姬重启 / 历史录播导入
 watch_interval_mins = 10
 # SessionEnded 之后再等多久没有新 FileClosed 就认为本场结束
@@ -289,6 +310,9 @@ uid = 0
 # 但**必须**有可用邀请码才能注册成功 —— 码本身才是凭证，这里只是总闸。
 # 邀请码用 `yekitrim user invite` 生成（只显示一次明文，库里只存 selector + 哈希）
 registration_enabled = false
+# 多人形态（默认 false = 单人优先）：关着时界面隐藏邀请码 / 账号配额 / 注册入口 / 任务指派对象
+# （接口与 CLI 全都还在，只是不露出）。一个人用就别开 —— 前端经 /api/health.multi_user 读它。
+multi_user = false
 "#;
 
 /// LLM 配置模板（`yekitrim config init` 生成 .yekitrim/llm.toml 用）。
@@ -421,8 +445,9 @@ fn project_config_body(global_text: &str, output_dir: Option<&str>) -> Result<St
     for section in ["llm", "correct", "auth", "publish", "storage", "ingest"] {
         doc.remove(section);
     }
-    // 工程配置也带版本号（拷全局那份时通常已经带了；这里兜住"全局配置没构建过"的情形）
-    doc.insert(VERSION_KEY, toml_edit::value(CONFIG_VERSION as i64));
+    // ⚠️ **版本键不在这里插**：本函数的输出会被拼在 `[project]` 表头**之后**，而 TOML 里
+    // 表头之后的键一律归那张表 —— 版本键会落成 `project.config_version`，根层反而没有。
+    // 根层那一行由 `write_project_config_inner_with` 统一负责（并顺手摘掉这里残留的旧键）。
 
     // 移除 [detection] 中的 prompt 字段，仅保留在 config.toml
     if let Some(detection) = doc.get_mut("detection") {
@@ -451,21 +476,69 @@ fn write_project_config_inner(
     output_dir: Option<&str>,
     auto_discover_danmaku: bool,
 ) -> Result<()> {
-    // 优先从全局配置复制，不存在则使用内建默认
-    let global_path = crate::path::yekitrim_home().join("config.toml");
-    let global_body = if global_path.exists() {
-        tracing::info!("从全局配置复制: {}", global_path.display());
-        std::fs::read_to_string(&global_path)?
+    write_project_config_inner_with(
+        cfg_path,
+        input,
+        danmaku,
+        output_dir,
+        auto_discover_danmaku,
+        &project_global_config_text(),
+    )
+}
+
+/// 生成工程配置时「从哪份程序配置抄」——**唯一权威** = `config::global_config_path()`
+/// （= 当前 owner 的 `users/<uid>/.yekitrim/config.toml`）。
+///
+/// ⚠️ 这里以前读的是**已退役的顶层** `<数据>/.yekitrim/config.toml`（`path::yekitrim_home()`）：
+/// 那份在 2026-11-13 收敛时已改名成 `*.migrated-<日期>.bak`，于是新建工程永远回退内建模板；
+/// 而模板里 `[asr] mode = "hybrid"` 这类**字符串**在 `merge()` 里是「非空即覆盖」⇒ 用户全局设的
+/// `single` 会被新工程顶回去（实测）。来源必须与读写两侧同一个函数，别再自己拼路径。
+fn project_global_config_text() -> String {
+    project_global_config_text_from(&global_config_path())
+}
+
+/// [`project_global_config_text`] 的可注入版本（单测用：不碰环境变量与真实数据目录）。
+fn project_global_config_text_from(path: &Path) -> String {
+    if path.is_file() {
+        match std::fs::read_to_string(path) {
+            Ok(text) => {
+                tracing::info!("从程序配置复制: {}", path.display());
+                return text;
+            }
+            Err(e) => tracing::warn!(
+                "读取程序配置失败（{}），工程模板回退内建默认: {e:#}",
+                path.display()
+            ),
+        }
     } else {
-        GLOBAL_CONFIG_TOML.to_string()
+        tracing::info!("程序配置尚不存在（{}），工程模板回退内建默认", path.display());
     }
-    .replace(
+    GLOBAL_CONFIG_TOML.to_string()
+}
+
+fn write_project_config_inner_with(
+    cfg_path: &Path,
+    input: &Path,
+    danmaku: Option<&Path>,
+    output_dir: Option<&str>,
+    auto_discover_danmaku: bool,
+    global_config_text: &str,
+) -> Result<()> {
+    let global_body = global_config_text.replace(
         "# YekiTrim 全局默认配置 — 所有工程共享\n# 相同参数会被 yekitrim.toml 覆盖",
         "",
     );
     // ⚠️ **只保留允许工程覆盖的段**（安全：程序级凭证不许抄进工程文件；逻辑：
     // 项目段会在 merge() 里盖住全局，管理员改全局口令后老工程拿旧副本顶回去）。
-    let body = project_config_body(&global_body, output_dir)?;
+    // 程序配置语法坏掉不该让 init 整体失败（`ensure_global_config` 那边是备份后重建）：
+    // 告警并回退内建模板，至少工程建得出来。
+    let body = match project_config_body(&global_body, output_dir) {
+        Ok(body) => body,
+        Err(e) => {
+            tracing::warn!("程序配置无法用作工程模板（{e:#}），回退内建模板");
+            project_config_body(GLOBAL_CONFIG_TOML, output_dir)?
+        }
+    };
 
     // 构建 [project] 块（带注释），放在最前面
     let config_dir = cfg_path.parent().unwrap_or(Path::new("."));
@@ -529,6 +602,17 @@ fn write_project_config_inner(
         project_str.trim()
     ) + "\n\n"
         + body.trim();
+    // ⚠️ **`config_version` 必须在根层**：TOML 里表头之后的键一律归那张表，而 `[project]` 在前面
+    // —— 直接拼就会写成语义上的 `project.config_version`，根层反而没有（`version_of` 读到 0，
+    // 每次读都被当成 v0 重跑迁移，且「文件版本更高就不动」那道保护永不触发）。
+    // 所以拼完解析一遍：把 `[project]` 里可能残留的版本键摘掉，再补到**根层最前面**。
+    let mut doc: toml_edit::DocumentMut = full
+        .parse()
+        .context("生成的工程配置不是合法 TOML（内部错误）")?;
+    if let Some(project) = doc.get_mut("project").and_then(|v| v.as_table_mut()) {
+        project.remove(VERSION_KEY);
+    }
+    let full = version::ensure_version_line(&doc.to_string());
     std::fs::write(cfg_path, full)?;
     Ok(())
 }
@@ -547,6 +631,12 @@ fn load_from_file(path: &PathBuf, kind: ConfigKind) -> Result<Option<Config>> {
 }
 
 fn merge(base: &mut Config, overlay: Config) {
+    // ⚠️ 默认值一律从类型自己拿（`*Config::default()`），**别再写字面量**：改默认值时漏改这里，
+    // 症状是「配置里写了也不生效 / 默认值把用户值打回去」，而且一声不响（没有报错、没有日志）。
+    let audio_d = crate::config::types::AudioConfig::default();
+    let asr_d = crate::config::types::AsrConfig::default();
+    let det_d = crate::config::types::DetectionConfig::default();
+    let correct_d = crate::config::types::CorrectConfig::default();
     // Project fields
     if overlay.project.input_file.is_some() {
         base.project
@@ -589,10 +679,10 @@ fn merge(base: &mut Config, overlay: Config) {
             .clone_from(&overlay.project.materials.danmaku);
     }
 
-    if overlay.audio.sample_rate != 16000 {
+    if overlay.audio.sample_rate != audio_d.sample_rate {
         base.audio.sample_rate = overlay.audio.sample_rate;
     }
-    if overlay.audio.channels != 1 {
+    if overlay.audio.channels != audio_d.channels {
         base.audio.channels = overlay.audio.channels;
     }
 
@@ -605,13 +695,13 @@ fn merge(base: &mut Config, overlay: Config) {
     if overlay.asr.num_workers != 0 {
         base.asr.num_workers = overlay.asr.num_workers;
     }
-    if overlay.asr.chunk_duration != 60.0 {
+    if overlay.asr.chunk_duration != asr_d.chunk_duration {
         base.asr.chunk_duration = overlay.asr.chunk_duration;
     }
-    if overlay.asr.chunk_overlap != 10.0 {
+    if overlay.asr.chunk_overlap != asr_d.chunk_overlap {
         base.asr.chunk_overlap = overlay.asr.chunk_overlap;
     }
-    if overlay.asr.segment_gap != 1.0 {
+    if overlay.asr.segment_gap != asr_d.segment_gap {
         base.asr.segment_gap = overlay.asr.segment_gap;
     }
     if let Some(v) = overlay.asr.llm_correct {
@@ -625,25 +715,25 @@ fn merge(base: &mut Config, overlay: Config) {
     }
     // `segment_padding` = 切给识别器的音频余量，**默认 0（关）**：
     // 实测 0.3s 会扰动文本、对齐命中率反而下降，净效果不明（见 types.rs 的字段注释）
-    if overlay.asr.segment_padding != 0.0 {
+    if overlay.asr.segment_padding != asr_d.segment_padding {
         base.asr.segment_padding = overlay.asr.segment_padding;
     }
-    if overlay.asr.max_new_tokens != 256 {
+    if overlay.asr.max_new_tokens != asr_d.max_new_tokens {
         base.asr.max_new_tokens = overlay.asr.max_new_tokens;
     }
     if !overlay.asr.mode.is_empty() {
         base.asr.mode = overlay.asr.mode.clone();
     }
-    if overlay.asr.breath_gap != 0.25 {
+    if overlay.asr.breath_gap != asr_d.breath_gap {
         base.asr.breath_gap = overlay.asr.breath_gap;
     }
-    if overlay.asr.soft_cut_secs != 6.0 {
+    if overlay.asr.soft_cut_secs != asr_d.soft_cut_secs {
         base.asr.soft_cut_secs = overlay.asr.soft_cut_secs;
     }
-    if overlay.asr.max_segment_chars != 30 {
+    if overlay.asr.max_segment_chars != asr_d.max_segment_chars {
         base.asr.max_segment_chars = overlay.asr.max_segment_chars;
     }
-    if overlay.asr.snap_window != 0.3 {
+    if overlay.asr.snap_window != asr_d.snap_window {
         base.asr.snap_window = overlay.asr.snap_window;
     }
     // VAD：`Option<bool>` 与 `llm_correct` 同款 —— 只有**显式写了**才覆盖，
@@ -651,13 +741,13 @@ fn merge(base: &mut Config, overlay: Config) {
     if let Some(v) = overlay.asr.vad {
         base.asr.vad = Some(v);
     }
-    if overlay.asr.vad_threshold != 0.5 {
+    if overlay.asr.vad_threshold != asr_d.vad_threshold {
         base.asr.vad_threshold = overlay.asr.vad_threshold;
     }
-    if overlay.asr.vad_rescue_db != 16.0 {
+    if overlay.asr.vad_rescue_db != asr_d.vad_rescue_db {
         base.asr.vad_rescue_db = overlay.asr.vad_rescue_db;
     }
-    if overlay.detection.danmaku_window_secs != 10.0 {
+    if overlay.detection.danmaku_window_secs != det_d.danmaku_window_secs {
         base.detection.danmaku_window_secs = overlay.detection.danmaku_window_secs;
     }
     if !overlay.detection.system_prompt.is_empty() {
@@ -672,7 +762,7 @@ fn merge(base: &mut Config, overlay: Config) {
     if !overlay.detection.reference_titles.is_empty() {
         base.detection.reference_titles = overlay.detection.reference_titles.clone();
     }
-    if overlay.detection.llm_score_weight != 0.3 {
+    if overlay.detection.llm_score_weight != det_d.llm_score_weight {
         base.detection.llm_score_weight = overlay.detection.llm_score_weight;
     }
     // Option 字段：Some 才覆盖（None = 跟随 llm.toml 的全局并发）
@@ -739,7 +829,7 @@ fn merge(base: &mut Config, overlay: Config) {
     if overlay.correct.thinking {
         base.correct.thinking = true;
     }
-    if overlay.correct.window_size != 25 {
+    if overlay.correct.window_size != correct_d.window_size {
         base.correct.window_size = overlay.correct.window_size;
     }
     if overlay.correct.max_concurrent.is_some() {
@@ -801,8 +891,18 @@ fn merge(base: &mut Config, overlay: Config) {
             base.ingest.allow_ips.push(ip.clone());
         }
     }
+    // `kind` 的默认是 "bililive"（不是空串）⇒ 只有写成另一家才覆盖，否则默认值会把值打回去
+    if !overlay.ingest.recorder.kind.trim().is_empty() && overlay.ingest.recorder.kind != "bililive" {
+        base.ingest.recorder.kind = overlay.ingest.recorder.kind.clone();
+    }
     if !overlay.ingest.recorder.root.is_empty() {
         base.ingest.recorder.root = overlay.ingest.recorder.root.clone();
+    }
+    if !overlay.ingest.recorder.api_key.is_empty() {
+        base.ingest.recorder.api_key = overlay.ingest.recorder.api_key.clone();
+    }
+    if !overlay.ingest.recorder.container_root.is_empty() {
+        base.ingest.recorder.container_root = overlay.ingest.recorder.container_root.clone();
     }
     if overlay.ingest.recorder.watch_interval_mins != 10 {
         base.ingest.recorder.watch_interval_mins = overlay.ingest.recorder.watch_interval_mins;
@@ -825,6 +925,23 @@ fn merge(base: &mut Config, overlay: Config) {
     }
     if overlay.ingest.recorder.auto_pipeline != "detect" {
         base.ingest.recorder.auto_pipeline = overlay.ingest.recorder.auto_pipeline.clone();
+    }
+    // biliLive-tools（独立于录播姬）：非空才覆盖
+    if !overlay.ingest.bililive_tools.api_base.is_empty() {
+        base.ingest.bililive_tools.api_base = overlay.ingest.bililive_tools.api_base.clone();
+    }
+    if !overlay.ingest.bililive_tools.api_key.is_empty() {
+        base.ingest.bililive_tools.api_key = overlay.ingest.bililive_tools.api_key.clone();
+    }
+    if !overlay.ingest.bililive_tools.root.is_empty() {
+        base.ingest.bililive_tools.root = overlay.ingest.bililive_tools.root.clone();
+    }
+    if !overlay.ingest.bililive_tools.container_root.is_empty() {
+        base.ingest.bililive_tools.container_root = overlay.ingest.bililive_tools.container_root.clone();
+    }
+    // 出网代理：非空才覆盖
+    if !overlay.ingest.proxy.is_empty() {
+        base.ingest.proxy = overlay.ingest.proxy.clone();
     }
     // 通用 webhook（与录播姬是两套根目录；`root` 空 = 未启用）
     if !overlay.ingest.webhook.root.is_empty() {
@@ -884,6 +1001,11 @@ fn merge(base: &mut Config, overlay: Config) {
     // 真正生效的是全局配置，工程配置一般不该碰它。
     if overlay.auth.registration_enabled {
         base.auth.registration_enabled = true;
+    }
+    // 多人形态开关同理：**只认 true**（默认单人）。写反了（非空/!= false 才覆盖）会让
+    // `Config::default()` 的 false 在合并时把用户设的 true 打回去 —— 前端会静默退回单人界面。
+    if overlay.auth.multi_user {
+        base.auth.multi_user = true;
     }
 }
 
@@ -961,28 +1083,14 @@ pub fn validate_llm_toml(text: &str) -> Result<(), String> {
     toml::from_str::<LlmFile>(text).map(|_| ()).map_err(|e| redact_secrets(&e.to_string()))
 }
 
-/// 从 .yekitrim/llm.toml 加载 LLM 配置（独立于工程配置和全局配置）
+/// 从 `llm.toml` 加载 LLM 配置（独立于工程配置和全局配置）。
+///
+/// ⚠️ **按 owner 读**（2026-11-13）：`llm.toml` 住在 `users/<uid>/.yekitrim/`，而这里的
+/// `Owner` 由 `YEKITRIM_OWNER` 继承（server 进程里是 `Local` = 当前管理员）。
+/// **别再退回顶层 `<数据>/.yekitrim/llm.toml`** —— 那份是单人时代的旧位置，
+/// 设置页早就不写了，读它 = 管线的 `cfg.llm` 永远没有 key（检测静默退化成"一个整段"）。
 pub fn load_llm_config() -> LlmConfig {
-    let path = crate::path::yekitrim_home().join("llm.toml");
-    if !path.exists() {
-        return LlmConfig::default();
-    }
-    // 读之前先跑版本迁移（老 llm.toml 缺 config_version ⇒ 补上；程序级会写回 + 备份）
-    let content = match version::prepare(&path, ConfigKind::Llm) {
-        Ok(p) => p.text,
-        Err(e) => {
-            tracing::warn!("读取 {} 失败: {}，使用默认 LLM 配置", path.display(), e);
-            return LlmConfig::default();
-        }
-    };
-    toml::from_str::<LlmFile>(&content)
-        .map(|f| f.llm)
-        .unwrap_or_else(|e| {
-            // ⚠️ **脱敏**：TOML 错误文本带出错那一行的原文 —— 一行写全的 `[llm]` 就是明文 key。
-            let why = redact_secrets(&e.to_string());
-            tracing::warn!("解析 {} 失败: {}，使用默认 LLM 配置", path.display(), why);
-            LlmConfig::default()
-        })
+    load_llm_config_for(crate::owner::Owner::from_env())
 }
 
 #[derive(Deserialize)]
@@ -997,13 +1105,18 @@ pub fn load_config() -> Result<Config> {
 /// 从指定项目配置文件加载合并配置。
 ///
 /// 与 `load_config()` 语义一致：
-/// - 先加载全局 `.yekitrim/config.toml`
+/// - 先加载**程序配置**（`global_config_path()` = 当前 owner 的 `config.toml`）
 /// - 再用指定项目文件覆盖（项目文件不存在时按空项目处理，不报错）
-/// - 最后独立加载 `.yekitrim/llm.toml`
+/// - 最后独立加载该 owner 的 `llm.toml`
+///
+/// ⚠️ **2026-11-13 收敛**：程序配置只有一个位置（`owner::config_path`），不再是顶层
+/// `<数据>/.yekitrim/config.toml`。这条同时是**管线**（转写/检测/剪切/订正）的读路径 ——
+/// 以前它读顶层，于是「设置 → 处理」保存的参考标题、以及账号 `llm.toml` 里的 key
+/// **管线一样都拿不到**（检测静默退化成"一个整段"，界面却显示配好了）。
 pub fn load_config_at(project_file: &Path) -> Result<Config> {
     let mut config = Config::default();
 
-    let global = crate::path::yekitrim_home().join("config.toml");
+    let global = global_config_path();
     if let Some(overlay) = load_from_file(&global, ConfigKind::Global)? {
         merge(&mut config, overlay);
     }
@@ -1020,6 +1133,18 @@ pub fn load_config_at(project_file: &Path) -> Result<Config> {
     Ok(config)
 }
 
+/// **程序配置的唯一位置**（`config.toml`）—— `owner::config_path(Owner::from_env())`。
+///
+/// 单人/托盘/CLI = `Local` = **当前管理员**（`users/<uid>/.yekitrim/config.toml`）；
+/// 多人的子进程经 `YEKITRIM_OWNER` 继承身份。写侧（设置页 / 接入页 / `config init`）与
+/// 读侧（`load_global_config` / `load_config_at` / `ensure_global_config`）**必须都用它** ——
+/// 这就是 2026-11-13「两个位置、各被一半消费者读到」那族 bug 的收口点。
+///
+/// ⚠️ **别再新增"顶层 `.yekitrim/config.toml`"的第二个候选位置**：那正是这次要消灭的东西。
+pub fn global_config_path() -> PathBuf {
+    crate::owner::config_path(crate::owner::Owner::from_env())
+}
+
 /// 校验 `.yekitrim/config.toml` / `.yekitrim/llm.toml` 能否解析，报出**第一个**出错的文件与原因。
 ///
 /// 为什么需要它：`load_global_config` / `load_llm_config` 都把解析失败**吞掉**换成默认值
@@ -1029,27 +1154,20 @@ pub fn load_config_at(project_file: &Path) -> Result<Config> {
 /// 所以设置页的写入门闸（`SettingsView.vue::configError`）读的就是它，
 /// 而这条错误**必须指向真实文件**（以前报的是 merged 配置的错误，指向不明）。
 /// 两份都不存在 = 正常（`ensure_global_config` 会补齐），不算错。
+///
+/// ⚠️ 与 [`config_parse_error_for`] 同一形状，只是它用**当前进程的 owner**（`YEKITRIM_OWNER`）。
 pub fn global_config_parse_error() -> Option<String> {
-    let home = crate::path::yekitrim_home();
-    for (name, what) in [("config.toml", "程序配置"), ("llm.toml", "LLM 配置")] {
-        let path = home.join(name);
-        let Ok(raw) = std::fs::read_to_string(&path) else { continue };
-        if let Err(e) = toml::from_str::<toml::Value>(&raw) {
-            return Some(format!("{}（{}）解析失败，本次使用的是内建默认值: {e}", what, path.display()));
-        }
-    }
-    None
+    config_parse_error_for(crate::owner::Owner::from_env())
 }
 
-/// 只读全局配置 (.yekitrim/config.toml), 不合并 yekitrim.toml。
-/// 供不依赖项目 yekitrim.toml 的模块 (如 yekitrim-polish) 读取全局共享配置。
+/// 只读**程序配置**（当前 owner 的 `config.toml`），不合并 `yekitrim.toml`。
+/// 供不依赖项目 `yekitrim.toml` 的模块（接入 / 发布 / 容量 / 精修 / doctor …）读取。
+///
+/// ⚠️ **2026-11-13 起读的是 owner 路径**（`global_config_path()`），不再是顶层那份。
+/// 以前它读顶层，而设置页写账号树 ⇒ 一半设置"保存成功但不生效"。
+/// 等价的注入版是 [`load_config_for`]（单测用它，不碰环境变量）。
 pub fn load_global_config() -> Config {
-    let mut config = Config::default();
-    let global = crate::path::yekitrim_home().join("config.toml");
-    if let Ok(Some(overlay)) = load_from_file(&global, ConfigKind::Global) {
-        merge(&mut config, overlay);
-    }
-    config
+    load_config_for(crate::owner::Owner::from_env())
 }
 
 // ============================================================================
@@ -1116,6 +1234,143 @@ pub fn config_parse_error_for(owner: crate::owner::Owner) -> Option<String> {
         }
     }
     None
+}
+
+// ============================================================================
+// 单人 → 「一个 owner 一个位置」的一次性迁移（2026-11-13，方案 A）
+// ============================================================================
+//
+// 背景：2026-10-10 起设置页把程序配置写进 `users/<uid>/.yekitrim/`，但 `ensure_global_config`
+// 仍在生成**顶层** `<数据>/.yekitrim/config.toml`，接入页也写它 —— 两份由同一个模板长出、
+// 都带全部 section，各被一半消费者读到。症状是「设置保存成功、行为完全没变」
+// （用户实测：参考标题配了 6 条，检测一直用内建默认；llm.toml 账号那份有 key、管线读顶层那份空的）。
+//
+// 本轮的口径：**程序配置只有一个位置**（`global_config_path()` = `owner::config_path`）。
+// 顶层那两份由本函数一次性搬走（**合并**后 rename 留档，不删用户数据）。
+
+/// 顶层那份里**以它为准**的 section（运行时一直读顶层，用户在那里配的是真值）。
+///
+/// 其余 section（`[asr]` / `[detection]` / `[cutting]` / `[correct]` / `[audio]` /
+/// `[project]` / `[sfx]`）以**账号那份**为准，只补账号缺的键 —— 设置页一直写的是它。
+const TOP_LEVEL_WINS_SECTIONS: [&str; 4] = ["ingest", "storage", "publish", "auth"];
+
+/// 把一条顶层配置文本合并进目标文本（**纯函数**，单测直接打它）。
+///
+/// - `dst = None`（目标不存在）⇒ 原样返回 `src`（整份搬过去，注释也保留）；
+/// - 目标存在 ⇒ 逐键合并：
+///   * [`TOP_LEVEL_WINS_SECTIONS`] 里的段：**src 的键覆盖 dst**（同名覆盖、缺的补上），
+///     dst 独有的键保留（不丢新版本字段）；
+///   * 其余段 / 顶层标量：**只补 dst 缺的键**（dst 赢）。
+///
+/// 为什么不是"整段覆盖"：`[ingest]` 下还有 `[ingest.recorder]` 这类子表，整段覆盖会把
+/// 目标里更新版本的字段一起抹掉。逐键最保守。
+fn merge_top_level_into(src_text: &str, dst_text: Option<&str>) -> Result<String> {
+    let src: toml_edit::DocumentMut = src_text
+        .parse()
+        .context("顶层配置文件不是合法 TOML（保持原状，不迁移）")?;
+    let Some(dst_text) = dst_text else {
+        return Ok(src_text.to_string());
+    };
+    let mut dst: toml_edit::DocumentMut = dst_text
+        .parse()
+        .context("目标配置文件不是合法 TOML（保持原状，不迁移）")?;
+
+    for (key, src_item) in src.iter() {
+        let top_wins = TOP_LEVEL_WINS_SECTIONS.contains(&key);
+        match (src_item.as_table(), dst.get_mut(key).and_then(|i| i.as_table_mut())) {
+            (Some(src_tbl), Some(dst_tbl)) => {
+                // 契约：先收集再写，避免同时持有 src 的借用与 dst 的可变借用
+                let pairs: Vec<(String, toml_edit::Item)> = src_tbl
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.clone()))
+                    .collect();
+                for (k, v) in pairs {
+                    if top_wins || !dst_tbl.contains_key(&k) {
+                        dst_tbl.insert(&k, v);
+                    }
+                }
+            }
+            // 目标没有这一段 ⇒ 整段搬（含子表与注释）
+            _ => {
+                if top_wins || !dst.contains_key(key) {
+                    dst.insert(key, src_item.clone());
+                }
+            }
+        }
+    }
+    Ok(dst.to_string())
+}
+
+/// 迁移时给顶层文件起的留档名：`config.toml.migrated-20261113.bak`（重名追加 `-2`、`-3`……）。
+fn migration_archive_path(src: &Path) -> PathBuf {
+    let name = src
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "config.toml".into());
+    let stamp = chrono::Local::now().format("%Y%m%d");
+    let dir = src.parent().unwrap_or_else(|| Path::new("."));
+    let base = format!("{name}.migrated-{stamp}.bak");
+    let mut candidate = dir.join(&base);
+    let mut n = 1;
+    while candidate.exists() && n < 100 {
+        n += 1;
+        candidate = dir.join(format!("{name}.migrated-{stamp}-{n}.bak"));
+    }
+    candidate
+}
+
+/// 把单人时代的**顶层** `<data>/.yekitrim/{config,llm}.toml` 归到 `owner` 名下。
+///
+/// ## 语义（幂等、不删数据、失败可回滚）
+///
+/// 1. 顶层文件不在 ⇒ 直接返回（跑第二遍是 no-op；全新安装天然满足）；
+/// 2. 与目标**合并**（规则见 [`merge_top_level_into`]：平台段顶层赢、内容段账号赢）；
+/// 3. 顶层文件 **rename** 成 `*.migrated-<日期>.bak` —— 不删除，出问题改回来就是旧形态；
+/// 4. 目标文件不存在时整份搬过去（注释一并保留）。
+///
+/// ⚠️ **只处理 `Owner::User`**：`Local` 就是"当前管理员"，没有独立目录可归；
+/// 调用方先 `set_local_admin(uid)` 再传 `Owner::User(uid)`，避免默认 uid=1 写错人。
+/// ⚠️ 失败时**调用方只该 warn**：迁移不动数据，启动必须照常。
+pub fn migrate_top_level_config_to(
+    owner: crate::owner::Owner,
+    data_home: &Path,
+) -> Result<Vec<PathBuf>> {
+    if !matches!(owner, crate::owner::Owner::User(_)) {
+        return Ok(Vec::new());
+    }
+    let top = crate::path::yekitrim_home_at(data_home);
+    let dest = crate::owner::state_dir_at(owner, data_home);
+    if top == dest {
+        return Ok(Vec::new());
+    }
+    let mut archived = Vec::new();
+    for name in ["config.toml", "llm.toml"] {
+        let src = top.join(name);
+        if !src.is_file() {
+            continue;
+        }
+        let src_text = std::fs::read_to_string(&src)
+            .with_context(|| format!("读取 {} 失败", src.display()))?;
+        let dst = dest.join(name);
+        let dst_text = std::fs::read_to_string(&dst).ok();
+        let merged = merge_top_level_into(&src_text, dst_text.as_deref())?;
+        std::fs::create_dir_all(&dest)
+            .with_context(|| format!("创建配置目录失败: {}", dest.display()))?;
+        // 只有真变了才写：没变化时一个字节都不动（用户的格式/注释原样保留）
+        if dst_text.as_deref() != Some(merged.as_str()) {
+            // 先写临时文件再 rename —— 写一半的文件会让**整份**配置被当成解析失败
+            let tmp = dst.with_extension("toml.migrating");
+            std::fs::write(&tmp, &merged)
+                .with_context(|| format!("写入 {} 失败", tmp.display()))?;
+            std::fs::rename(&tmp, &dst)
+                .with_context(|| format!("落盘 {} 失败", dst.display()))?;
+        }
+        let bak = migration_archive_path(&src);
+        std::fs::rename(&src, &bak)
+            .with_context(|| format!("留档 {} 失败", src.display()))?;
+        archived.push(bak);
+    }
+    Ok(archived)
 }
 
 /// 用 toml_edit 将 events_file 写入当前目录的 yekitrim.toml
@@ -1447,6 +1702,14 @@ pub fn normalize_project_paths_in(project_file: &Path) -> Result<()> {
         }
     })
 }
+
+/// **改 `YEKITRIM_DATA_DIR` 的测试必须持这把锁**（进程级环境变量 + 测试并行跑）。
+///
+/// ⚠️ 2026-11-13 实测：`global_config_parse_error_…` 与 `load_config_at_reads_the_owner_config_and_llm`
+/// 各自声明了一把 `static LOCK` —— **两个不同的 Mutex 等于没锁**，于是并行跑时互相把
+/// `YEKITRIM_DATA_DIR` 指到对方目录，偶发红（跑了三次红一次）。锁必须只有一把、放在父模块。
+#[cfg(test)]
+pub(crate) static DATA_DIR_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
 mod vad_merge_tests {
@@ -1831,14 +2094,19 @@ max_tokens = 32768
 /// 一旦点了保存，内建默认值就覆盖到真实文件上）。
 #[test]
 fn global_config_parse_error_points_at_the_real_file_and_needs_a_real_break() {
-    // 这份 helper 读的是 `yekitrim_home()`，而它跟着 `YEKITRIM_DATA_DIR` 走 ——
-    // 测试里指到一个临时目录，避免碰开发机上那份真实配置。
+    // 这份 helper 读的是 **owner 路径**（`users/<uid>/.yekitrim/`），而 `data_dir` 跟着
+    // `YEKITRIM_DATA_DIR` 走 —— 测试里指到一个临时目录，避免碰开发机上那份真实配置。
+    //
+    // ⚠️ 2026-11-13 起文件位置是 `users/<admin>/.yekitrim/`（不再是顶层 `.yekitrim/`）：
+    // 顶层的两份已退役，写成顶层的话这条判据**测的是一份没人读的文件**。
     //
     // ⚠️ **改全局环境变量必须持锁**：测试是并行跑的，`set_var` 是进程级的 ——
     // 不持锁就会踩到同期读配置的用例（`llm::tests` 那两条就是这么被偶发打红的）。
-    // 同 `yekitrim-service/src/user.rs` 的专门警告，锁形态同 `service/src/db.rs`。
-    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // ⚠️ 锁必须是 **`super::DATA_DIR_ENV_LOCK`（全文件唯一一把）**：自己再 `static` 一把
+    // 等于没锁（2026-11-13 与迁移用例互相踩，三次红一次）。
+    let _guard = super::DATA_DIR_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     // ⚠️ **目录名必须每轮唯一，不能只用 pid**：pid 会被系统回收，而本目录是**留在盘上的**
     // ⇒ 复用同一个 pid 的下一次运行会**继承上一轮写坏的 `llm.toml`**，
     // 于是"② 合法 TOML = 不报错"这一步会读到上一轮的残留、**偶发**报错
@@ -1853,8 +2121,12 @@ fn global_config_parse_error_points_at_the_real_file_and_needs_a_real_break() {
     ));
     // 起点干净（同 pid 同 seq 理论上不会撞，这里是纵深防御）
     let _ = std::fs::remove_dir_all(&dir);
-    let home = dir.join(".yekitrim");
+    let uid = crate::owner::local_admin_uid();
+    let home = dir.join("users").join(uid.to_string()).join(".yekitrim");
     std::fs::create_dir_all(&home).unwrap();
+    // 顶层那份已退役：放一份**坏**的进去，确认它不再参与判定（否则这条判据会假绿/假红）
+    std::fs::create_dir_all(dir.join(".yekitrim")).unwrap();
+    std::fs::write(dir.join(".yekitrim/config.toml"), "顶层已退役 [[[\n").unwrap();
     let old = std::env::var_os("YEKITRIM_DATA_DIR");
     std::env::set_var("YEKITRIM_DATA_DIR", &dir);
 
@@ -2021,6 +2293,98 @@ merge_gap_secs = 90.0
 mod project_template_tests {
     use super::*;
 
+    /// 临时工程目录（并行跑也不撞名：tag + pid + 纳秒）。
+    fn tmp_project(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "yekitrim-projcfg-{tag}-{}-{nanos}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建临时工程目录");
+        dir
+    }
+
+    /// **回归钉子**：生成的 `yekitrim.toml` 必须在**根层**带 `config_version`。
+    ///
+    /// 现场：`[project]` 表头在前面，而版本键夹在 body 的最前面 ⇒ TOML 语义下它变成
+    /// `project.config_version`，根层没有版本键。后果不是"读不出来"而是**更隐蔽的**：
+    /// 工程级配置 `persists()=false`（只在内存里升），`version_of` 恒读到 0 ⇒ 每次读都被当 v0
+    /// 重跑迁移，且「文件版本更高 ⇒ 一个字节都不动」那道保护对这类文件永不触发。
+    #[test]
+    fn generated_project_file_has_root_level_config_version() {
+        let dir = tmp_project("version-root");
+        let cfg = dir.join("yekitrim.toml");
+        let input = dir.join("video.mp4");
+        std::fs::write(&input, b"x").unwrap();
+        write_project_config_inner_with(&cfg, &input, None, None, false, GLOBAL_CONFIG_TOML)
+            .expect("生成工程配置");
+        let text = std::fs::read_to_string(&cfg).unwrap();
+        let doc: toml_edit::DocumentMut = text.parse().expect("生成的配置必须是合法 TOML");
+        assert_eq!(
+            version::version_of(&doc),
+            CONFIG_VERSION,
+            "根层必须是当前版本（落进 [project] 就相当于没有）:\n{text}"
+        );
+        assert!(
+            !doc["project"]
+                .as_table()
+                .expect("[project] 必须是表")
+                .contains_key(VERSION_KEY),
+            "版本键不许留在 [project] 里:\n{text}"
+        );
+        // 版本行摆第一行（与 polish.toml 同口径）：一眼能看出这份文件是哪个结构版本。
+        assert!(
+            text.starts_with(VERSION_KEY),
+            "第一行应是 config_version:\n{text}"
+        );
+        // 读路径也要看见它：新生成的工程配置不该再触发迁移。
+        let prepared = version::prepare(&cfg, ConfigKind::Project).expect("读工程配置");
+        assert!(!prepared.changed, "新生成的工程配置不该再触发迁移:\n{text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **回归钉子**：工程配置模板来自**账号树那份**程序配置（`global_config_path()`），
+    /// 不是已退役的顶层 `<数据>/.yekitrim/config.toml`，也不是内建模板。
+    ///
+    /// 现场：设置页把 `[asr] mode` 改成 `single`（写账号树），新建工程却写进内建模板的
+    /// `hybrid`；而 `merge()` 对字符串是「非空即覆盖」⇒ 用户的 single 被新工程顶回去。
+    #[test]
+    fn project_template_copies_the_account_tree_global_config() {
+        let dir = tmp_project("global-src");
+        let global = dir.join("users").join("1").join(".yekitrim").join("config.toml");
+        std::fs::create_dir_all(global.parent().unwrap()).unwrap();
+        std::fs::write(&global, "[asr]\nmode = \"single\"\n").unwrap();
+
+        // ① 来源：读的就是这一份（存在就读它）
+        let text = project_global_config_text_from(&global);
+        assert!(
+            text.contains("mode = \"single\""),
+            "程序配置来源必须读账号树那份:\n{text}"
+        );
+        // ② 缺失时回退内建模板（新装机 / 刚迁走）
+        let missing = project_global_config_text_from(&dir.join("nope.toml"));
+        assert!(
+            missing.contains("mode = \"hybrid\""),
+            "程序配置缺失时应回退内建模板:\n{missing}"
+        );
+
+        // ③ 落盘：生成出来的工程配置里也是 single（用户全局设置没被顶掉）
+        let cfg = dir.join("yekitrim.toml");
+        let input = dir.join("video.mp4");
+        std::fs::write(&input, b"x").unwrap();
+        write_project_config_inner_with(&cfg, &input, None, None, false, &text).expect("生成工程配置");
+        let written = std::fs::read_to_string(&cfg).unwrap();
+        assert!(
+            written.contains("mode = \"single\""),
+            "新建工程必须继承用户全局的 ASR 模式:\n{written}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// 新建工程配置**不许带程序级/凭证段**（安全回归，2026-10-30）。
     ///
     /// 根因：生成器把**整份全局 config.toml** 复制进 `yekitrim.toml`，只删了 `llm` / `correct`
@@ -2093,5 +2457,215 @@ registration_enabled = true
                 "新建工程配置里不许出现程序级/凭证内容 {needle:?}:\n{body}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod recorder_backend_merge_tests {
+    use super::*;
+
+    /// `[ingest.recorder]` 的**新字段**必须进 `merge()`：漏一条的后果是文件里写了、
+    /// `load_global_config()` 却永远读成默认值（设置页保存成功、行为完全没变）。
+    #[test]
+    fn merge_copies_bililive_tools_fields() {
+        let mut base = Config::default();
+        let mut overlay = Config::default();
+        overlay.ingest.recorder.kind = "bililive-tools".into();
+        overlay.ingest.recorder.api_key = "key".into();
+        overlay.ingest.recorder.container_root = "/app/video".into();
+        overlay.ingest.bililive_tools.api_base = "http://127.0.0.1:18010".into();
+        overlay.ingest.bililive_tools.api_key = "k".into();
+        overlay.ingest.bililive_tools.root = "/v".into();
+        overlay.ingest.bililive_tools.container_root = "/app/video".into();
+        merge(&mut base, overlay);
+        assert_eq!(base.ingest.recorder.kind, "bililive-tools");
+        assert_eq!(base.ingest.recorder.api_key, "key");
+        assert_eq!(base.ingest.recorder.container_root, "/app/video");
+        assert_eq!(base.ingest.bililive_tools.api_base, "http://127.0.0.1:18010");
+        assert_eq!(base.ingest.bililive_tools.api_key, "k");
+        assert_eq!(base.ingest.bililive_tools.root, "/v");
+
+        // 默认值（bililive / 空）不能把已有的值打回去
+        let mut base2 = Config::default();
+        base2.ingest.recorder.kind = "bililive-tools".into();
+        merge(&mut base2, Config::default());
+        assert_eq!(base2.ingest.recorder.kind, "bililive-tools");
+    }
+}
+
+#[cfg(test)]
+mod config_migration_tests {
+    use super::*;
+    use crate::owner::Owner;
+
+    /// 临时数据目录（core 没有 tempfile 依赖，与 `patch_config_tests` 同一套做法）。
+    fn tmp_home(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "yekitrim-cfg-migrate-{tag}-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(dir.join(".yekitrim")).unwrap();
+        dir
+    }
+
+    /// **核心判据**：平台段（接入/发布/容量/账号）以**顶层**为准，内容段（检测/ASR/剪切）以**账号**为准。
+    ///
+    /// 这条就是 2026-11-13 那次事故的正面描述：
+    /// - 顶层 `webhook_enabled = true` + token 是真值 ⇒ 迁移后必须还在；
+    /// - 账号那份的 6 条参考标题是真值 ⇒ 不能被顶层的 `[]` 打回空。
+    #[test]
+    fn platform_sections_follow_top_level_content_sections_follow_account() {
+        let top = "config_version = 3\n[ingest]\nwebhook_enabled = true\n[ingest.recorder]\nkind = \"bililive-tools\"\nroot = \"/v\"\n[detection]\nreference_titles = []\n[asr]\nmode = \"hybrid\"\n";
+        let account = "config_version = 3\n[detection]\nreference_titles = [\"标题A\", \"标题B\"]\n[asr]\nmodel = \"sensevoice\"\n";
+        let merged = merge_top_level_into(top, Some(account)).unwrap();
+        let v: toml::Value = toml::from_str(&merged).unwrap();
+        // 平台段：顶层赢（账号那份根本没见过这些键）
+        assert_eq!(v["ingest"]["webhook_enabled"].as_bool(), Some(true));
+        assert_eq!(v["ingest"]["recorder"]["kind"].as_str(), Some("bililive-tools"));
+        assert_eq!(v["ingest"]["recorder"]["root"].as_str(), Some("/v"));
+        // 内容段：账号赢 —— 顶层的空数组**不许**把用户配的 6 条打回去
+        let titles = v["detection"]["reference_titles"].as_array().unwrap();
+        assert_eq!(titles.len(), 2, "账号那份的参考标题被顶层覆盖了");
+        // 账号缺的键由顶层补齐
+        assert_eq!(v["asr"]["mode"].as_str(), Some("hybrid"));
+        assert_eq!(v["asr"]["model"].as_str(), Some("sensevoice"));
+    }
+
+    /// 目标不存在 ⇒ 整份搬（连注释一起），一个字节都不该丢。
+    #[test]
+    fn missing_target_is_a_verbatim_copy() {
+        let src = "# 注释要保住\nconfig_version = 3\n[ingest]\nwebhook_enabled = true\n";
+        assert_eq!(merge_top_level_into(src, None).unwrap(), src);
+    }
+
+    /// **LLM 那条更要命**：账号那份有真 key，顶层那份的 `api_key = ""` **不能**覆盖它。
+    #[test]
+    fn top_level_llm_never_clobbers_the_real_key() {
+        let top = "[llm]\napi_key = \"\"\nmodel = \"\"\nmax_concurrent = 3\n";
+        let account = "[llm]\napi_key = \"sk-real\"\nmodel = \"cn:deepseek\"\n";
+        let merged = merge_top_level_into(top, Some(account)).unwrap();
+        let v: toml::Value = toml::from_str(&merged).unwrap();
+        assert_eq!(v["llm"]["api_key"].as_str(), Some("sk-real"));
+        assert_eq!(v["llm"]["model"].as_str(), Some("cn:deepseek"));
+        // 账号缺的键由顶层补
+        assert_eq!(v["llm"]["max_concurrent"].as_integer(), Some(3));
+    }
+
+    /// 文件级：搬完顶层文件**改名留档**（不删），跑第二遍是 no-op。
+    #[test]
+    fn migration_archives_top_level_files_and_is_idempotent() {
+        let home = tmp_home("archive");
+        let uid = 7;
+        let dest = crate::owner::state_dir_at(Owner::User(uid), &home);
+        std::fs::create_dir_all(&dest).unwrap();
+        // 顶层（运行时真读的那份）
+        std::fs::write(
+            home.join(".yekitrim/config.toml"),
+            "[ingest]\nwebhook_enabled = true\n[detection]\nreference_titles = []\n",
+        )
+        .unwrap();
+        std::fs::write(home.join(".yekitrim/llm.toml"), "[llm]\napi_key = \"\"\n").unwrap();
+        // 账号那份（设置页写的那份）
+        std::fs::write(
+            dest.join("config.toml"),
+            "[detection]\nreference_titles = [\"A\"]\n[ingest]\nwebhook_enabled = false\n",
+        )
+        .unwrap();
+        std::fs::write(dest.join("llm.toml"), "[llm]\napi_key = \"sk-real\"\n").unwrap();
+
+        let archived = migrate_top_level_config_to(Owner::User(uid), &home).unwrap();
+        assert_eq!(archived.len(), 2, "config 与 llm 各留档一份");
+        for bak in &archived {
+            assert!(bak.exists(), "留档文件必须真的在: {}", bak.display());
+        }
+        // 顶层不再有 config.toml / llm.toml（否则 `ensure_global_config` 会以为还没迁完）
+        assert!(!home.join(".yekitrim/config.toml").exists());
+        assert!(!home.join(".yekitrim/llm.toml").exists());
+        // 合并结果：平台段顶层赢、内容段账号赢、key 没被抹
+        let cfg: toml::Value = toml::from_str(&std::fs::read_to_string(dest.join("config.toml")).unwrap()).unwrap();
+        assert_eq!(cfg["ingest"]["webhook_enabled"].as_bool(), Some(true));
+        assert_eq!(cfg["detection"]["reference_titles"].as_array().unwrap().len(), 1);
+        let llm: toml::Value = toml::from_str(&std::fs::read_to_string(dest.join("llm.toml")).unwrap()).unwrap();
+        assert_eq!(llm["llm"]["api_key"].as_str(), Some("sk-real"));
+
+        // 幂等：第二遍什么都不做
+        let again = migrate_top_level_config_to(Owner::User(uid), &home).unwrap();
+        assert!(again.is_empty(), "第二遍必须 no-op");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// **管线读的就是 owner 那份**（这条是整轮收敛的目的）：`load_config_at` 的全局层与 `config.llm`
+    /// 必须来自 `users/<uid>/.yekitrim/`，顶层那份（已退役）放同样的键做诱饵、值不同 ——
+    /// 读到了诱饵就说明又退回旧位置了。
+    #[test]
+    fn load_config_at_reads_the_owner_config_and_llm() {
+        // 改全局环境变量必须持**全文件唯一**的那把锁（自己再 static 一把等于没锁）
+        let _guard = super::DATA_DIR_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let home = tmp_home("load-at");
+        let uid = crate::owner::local_admin_uid();
+        let state = home.join("users").join(uid.to_string()).join(".yekitrim");
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(
+            state.join("config.toml"),
+            "[detection]\nreference_titles = [\"账号标题\"]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            state.join("llm.toml"),
+            "[llm]\napi_key = \"sk-owner\"\nbase_url = \"http://owner/v1\"\nmodel = \"m\"\n",
+        )
+        .unwrap();
+        // 诱饵：已退役的顶层那份（值不同）
+        std::fs::write(
+            home.join(".yekitrim/config.toml"),
+            "[detection]\nreference_titles = [\"顶层标题\"]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            home.join(".yekitrim/llm.toml"),
+            "[llm]\napi_key = \"sk-top\"\nbase_url = \"http://top/v1\"\n",
+        )
+        .unwrap();
+        let proj = home.join("proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        let proj_file = proj.join("yekitrim.toml");
+        std::fs::write(&proj_file, "input_file = \"a.mp4\"\n").unwrap();
+
+        let old = std::env::var_os("YEKITRIM_DATA_DIR");
+        std::env::set_var("YEKITRIM_DATA_DIR", &home);
+        let cfg = load_config_at(&proj_file).unwrap();
+        match old {
+            Some(v) => std::env::set_var("YEKITRIM_DATA_DIR", v),
+            None => std::env::remove_var("YEKITRIM_DATA_DIR"),
+        }
+
+        assert_eq!(
+            cfg.detection.reference_titles,
+            vec!["账号标题".to_string()],
+            "管线还在读顶层那份（诱饵）—— 设置页的参考标题因此不生效"
+        );
+        assert_eq!(
+            cfg.llm.effective_api_key(),
+            "sk-owner",
+            "管线的 cfg.llm 必须来自账号 llm.toml，否则检测静默不调模型"
+        );
+        assert_eq!(cfg.llm.effective_base_url(), "http://owner/v1");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// `Owner::Local` 没有独立目录可归 —— 直接 no-op（防呆：别让调用方把数据搬进 users/1）。
+    #[test]
+    fn local_owner_is_a_no_op() {
+        let home = tmp_home("local");
+        std::fs::write(home.join(".yekitrim/config.toml"), "[asr]\nmode = \"single\"\n").unwrap();
+        assert!(migrate_top_level_config_to(Owner::Local, &home).unwrap().is_empty());
+        assert!(home.join(".yekitrim/config.toml").exists(), "Local 不该动顶层文件");
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

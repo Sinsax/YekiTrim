@@ -865,8 +865,11 @@ pub async fn call_with_progress(
         pass,
     };
     // 链路解析：窗口调用走 `[llm.overrides.detect]`（Agent 的 llm 会传给 `process_window` 建客户端）
+    // 库内 indicatif 进度条关掉：调用方自带进度面（CLI 的 IndicatifProgress / server 的任务进度），
+    // 再画一根会互相覆盖；窗口进度照常经 progress_tx 桥接出去。
     let agent = Agent::new(llm.for_link(crate::config::LlmLink::Detect))
-        .with_max_concurrent(max_concurrent);
+        .with_max_concurrent(max_concurrent)
+        .without_internal_progress();
     let agent = match cancel {
         Some(probe) => agent.with_cancel(probe),
         None => agent,

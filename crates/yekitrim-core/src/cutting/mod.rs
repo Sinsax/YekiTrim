@@ -24,6 +24,66 @@ use crate::types::{EventRange, PipelineContext};
 
 pub struct Cutter;
 
+/// 一条事件的剪切结果：剪成 / 按配置跳过 —— **都不算失败**。
+enum ClipOutcome {
+    Cut(ClipInfo),
+    Skipped(String),
+}
+
+/// 「已有片段要不要覆盖」的最终判据。
+///
+/// - `[cutting] overwrite = true` ⇒ 覆盖（老行为，用户显式要求）。
+/// - `false` / 没写 ⇒ **批量与 `process` 不覆盖**：目标 `clip.json` 与本条事件匹配（同一条事件）
+///   且 `clip.mp4` 已存在 ⇒ 跳过并 warn（对应设置页「覆盖已有文件」没勾）。
+/// - **单条剪切例外**：`ctx.events.len() <= 1` 就是用户在切片页点的那一条
+///   （server 的 `run_single_cut_event` 只塞一个 event 进来），"点剪切"本身就是显式要求重剪，
+///   没有别的通道能表达它，所以这时永远覆盖。
+fn effective_overwrite(ctx: &PipelineContext) -> bool {
+    if ctx.config.cutting.overwrite == Some(true) {
+        return true;
+    }
+    ctx.events.len() <= 1
+}
+
+/// 把一条**非致命**的阶段结论落三处：tracing（运行日志/CLI 终端）+ `progress.note`
+/// （任务消息通道，server 任务框可见）+ `notes`（= `ctx.pipeline_notes`，程序化消费方）。
+///
+/// ⚠️ 绝不能走 `progress.error`：server 的 error = 整条任务 fail，而「部分失败但其余已出片」
+/// 按产品口径仍算成功（见 review D9 / P2-5）。
+/// ⚠️ 参数拆开收 `notes` 与 `progress`，**不收 `&mut ctx`**：`Cutter::run` 里 `video`
+/// 长期借用着 `ctx.input_path`，整借 ctx 会撞 E0502（字段级分离借用没事）。
+fn push_pipeline_note(progress: &dyn crate::progress::ProgressReporter, notes: &mut Vec<String>, msg: String) {
+    tracing::warn!("{msg}");
+    progress.note(&msg);
+    notes.push(msg);
+}
+
+/// `overwrite = false` 且目标目录里已经是**这条事件自己的**成片 ⇒ 返回一句跳过原因。
+///
+/// 判据与 `foreign_clip_conflict` 同源（`clip_meta_matches`：标题相同 或 原片区间 IoU ≥ 0.5）：
+/// 别人的片段由 conflict 那条**报错**跳过，自己的成片在这里按配置**安静**跳过；
+/// 没有 `clip.json` 的老目录照旧重剪（信息不足，不能当成"已经剪过"）。
+fn skip_reason(
+    clip_dir: &Path,
+    label: &str,
+    start: crate::types::Timestamp,
+    end: crate::types::Timestamp,
+    overwrite: bool,
+) -> Option<String> {
+    if overwrite || !clip_dir.join("clip.mp4").is_file() {
+        return None;
+    }
+    let raw = std::fs::read_to_string(clip_dir.join("clip.json")).ok()?;
+    let meta: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    if !clip_meta_matches(label, start.to_seconds(), end.to_seconds(), &meta) {
+        return None;
+    }
+    Some(format!(
+        "跳过已剪好的片段（[cutting] overwrite = false，要覆盖请设成 true 或单条重切）: {}",
+        clip_dir.display()
+    ))
+}
+
 #[async_trait]
 impl Stage for Cutter {
     fn name(&self) -> &'static str {
@@ -65,6 +125,32 @@ impl Stage for Cutter {
         let max_concurrent = 3;
         let total_events = ctx.events.len();
         let mut clip_infos: Vec<ClipInfo> = Vec::new();
+        // 跳过 / 失败都是**非致命**结果：成片照常出，但要汇总给用户（→ `ctx.pipeline_notes`）。
+        let mut skipped: Vec<String> = Vec::new();
+        let mut failures: Vec<String> = Vec::new();
+        let overwrite = effective_overwrite(ctx);
+        // 同一个 `clip_dir` 被两条事件占用 ⇒ 两条 ffmpeg 抢写同一个 clip.mp4（成片互相截断）。
+        // 派发前先按事件顺序认领目录，后来的跳过并记一条。检测侧 `assign_clip_dirs` 本该唯一，
+        // 但手写/外部生成的 events.json 不受它管。
+        let mut taken_dirs: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut duplicate_idx: Vec<usize> = Vec::new();
+        for (i, event) in ctx.events.iter().enumerate() {
+            if !taken_dirs.insert(clip_dir_name_for_event(event)) {
+                duplicate_idx.push(i);
+            }
+        }
+        if !duplicate_idx.is_empty() {
+            let names: Vec<String> = duplicate_idx
+                .iter()
+                .map(|&i| clip_dir_name_for_event(&ctx.events[i]))
+                .collect();
+            let msg = format!(
+                "事件清单里有 {} 条重复的片段目录（{}）：只剪第一个，其余跳过（否则两条 ffmpeg 会抢写同一个 clip.mp4）",
+                duplicate_idx.len(),
+                names.join(" / ")
+            );
+            push_pipeline_note(ctx.progress.as_ref(), &mut ctx.pipeline_notes, msg);
+        }
 
         for batch_start in (0..total_events).step_by(max_concurrent) {
             // 取消在批次边界生效（进行中的 ffmpeg 不会被中断）
@@ -73,10 +159,14 @@ impl Stage for Cutter {
             }
             let batch_end = (batch_start + max_concurrent).min(total_events);
 
-            let batch_results: Vec<Result<ClipInfo>> = std::thread::scope(|scope| {
+            let batch_results: Vec<Result<ClipOutcome>> = std::thread::scope(|scope| {
                 let mut handles = Vec::with_capacity(batch_end - batch_start);
 
-                for event in &ctx.events[batch_start..batch_end] {
+                for (offset, event) in ctx.events[batch_start..batch_end].iter().enumerate() {
+                    // 目录已被本批/前一批的另一条事件认领 —— 不剪（note 已记过一条）。
+                    if duplicate_idx.binary_search(&(batch_start + offset)).is_ok() {
+                        continue;
+                    }
                     let start = event.start.to_seconds();
                     let end = event.end.to_seconds();
                     let dir_name = clip_dir_name_for_event(event);
@@ -106,6 +196,14 @@ impl Stage for Cutter {
                         if let Some(reason) = foreign_clip_conflict(&clip_dir, &t, ts_start, ts_end) {
                             return Err(anyhow::anyhow!(reason));
                         }
+                        // `[cutting] overwrite = false` 且目标已经是**这条事件自己的**成片 ⇒ 跳过
+                        // （用户勾了「不覆盖已有文件」）。单条剪切不受它约束，见 `effective_overwrite`。
+                        if let Some(reason) =
+                            skip_reason(&clip_dir, &t, ts_start, ts_end, overwrite)
+                        {
+                            tracing::info!("{reason}");
+                            return Ok(ClipOutcome::Skipped(reason));
+                        }
                         std::fs::create_dir_all(&clip_dir)
                             .with_context(|| format!("创建目录失败: {}", clip_dir.display()))?;
 
@@ -131,10 +229,15 @@ impl Stage for Cutter {
                             }
                         }
 
+                        // ⚠️ `has_danmaku` 必须**逐条**判：这一段没有弹幕时 `generate_clip_danmaku_ranges`
+                        // 什么都不写（不会留一个空文件），用全局 `!danmaku.is_empty()` 会让
+                        // `publish_config.json` 指向一个不存在的 `clip.dm.srt`（实测 demo 的 clip-03）。
+                        let mut has_danmaku = false;
                         if !danmaku.is_empty() {
                             let dm_path = clip_dir.join("clip.dm.srt");
-                            if let Err(e) = generate_clip_danmaku_ranges(&danmaku, &ranges, &dm_path) {
-                                tracing::warn!("弹幕生成失败 ({}): {}", dir_name, e);
+                            match generate_clip_danmaku_ranges(&danmaku, &ranges, &dm_path) {
+                                Ok(()) => has_danmaku = dm_path.is_file(),
+                                Err(e) => tracing::warn!("弹幕生成失败 ({}): {}", dir_name, e),
                             }
                         }
 
@@ -145,7 +248,7 @@ impl Stage for Cutter {
                             tracing::warn!("写入 clip.json 失败 ({}): {}", dir_name, e);
                         }
 
-                        Ok(ClipInfo {
+                        Ok(ClipOutcome::Cut(ClipInfo {
                             dir_name,
                             title: t.clone(),
                             summary: s,
@@ -154,8 +257,9 @@ impl Stage for Cutter {
                             rank,
                             start: ts_start,
                             end: ts_end,
-                            has_danmaku: !danmaku.is_empty(),
-                        })
+                            has_danmaku,
+                            content_secs,
+                        }))
                     }));
                 }
 
@@ -173,15 +277,40 @@ impl Stage for Cutter {
 
             for result in batch_results {
                 match result {
-                    Ok(info) => clip_infos.push(info),
-                    Err(e) => tracing::error!("剪切失败: {}", e),
+                    Ok(ClipOutcome::Cut(info)) => clip_infos.push(info),
+                    Ok(ClipOutcome::Skipped(reason)) => {
+                        tracing::info!("{reason}");
+                        skipped.push(reason);
+                    }
+                    Err(e) => {
+                        tracing::error!("剪切失败: {e:#}");
+                        failures.push(format!("{e:#}"));
+                    }
                 }
             }
 
             ctx.progress.stage_progress(batch_end as u64, total_events as u64);
         }
 
-        if clip_infos.is_empty() {
+        // 跳过 / 部分失败都要让用户看见，但不该把已经出片的任务判成失败（tracing + note + ctx 三落地）。
+        if !skipped.is_empty() {
+            let msg = format!(
+                "按 [cutting] overwrite = false 跳过 {} 条已有片段（要重剪就把它设成 true，或在切片页单条重切）：{}",
+                skipped.len(),
+                skipped.join("; ")
+            );
+            push_pipeline_note(ctx.progress.as_ref(), &mut ctx.pipeline_notes, msg);
+        }
+        if !failures.is_empty() {
+            let msg = format!(
+                "{} 条片段剪切失败（其余已出片，失败条目不会进发布清单）：{}",
+                failures.len(),
+                failures.join(" | ")
+            );
+            push_pipeline_note(ctx.progress.as_ref(), &mut ctx.pipeline_notes, msg);
+        }
+        // 全部失败才算失败；「全部被跳过」是合法的空跑（发布清单按磁盘旧索引保留）。
+        if clip_infos.is_empty() && !failures.is_empty() {
             anyhow::bail!("所有剪切任务均失败");
         }
 
@@ -935,6 +1064,11 @@ struct ClipInfo {
     start: crate::types::Timestamp,
     #[serde(serialize_with = "serialize_timestamp")]
     end: crate::types::Timestamp,
+    /// 这条片段实际剪出来的**内容时长**（多段 = 各段之和）。
+    ///
+    /// ⚠️ 与 `end - start`（跨度）不是一回事：`Event.ranges` 多段时成片长度是各段之和，
+    /// 而跨度把段间空隙也算了进去 —— 发布清单里的 `duration` 必须用这个。
+    content_secs: f64,
     has_danmaku: bool,
 }
 
@@ -989,6 +1123,12 @@ impl PublishConfig {
                 let start = c.start.to_seconds();
                 let end = c.end.to_seconds();
                 let dir_name = c.dir_name.clone();
+                // 多段片段的成片时长 = 各段之和（跨度会把段间空隙算进去，上传/校验脚本对不上）。
+                let duration = if c.content_secs.is_finite() && c.content_secs > 0.0 {
+                    c.content_secs
+                } else {
+                    (end - start).max(0.0)
+                };
                 ClipEntry {
                     file: format!("clips/{}/clip.mp4", dir_name),
                     subtitle: format!("clips/{}/clip.srt", dir_name),
@@ -1007,7 +1147,7 @@ impl PublishConfig {
                     rank: c.rank,
                     start,
                     end,
-                    duration: (end - start).max(0.0),
+                    duration,
                     directory: dir_name,
                 }
             })
@@ -1050,6 +1190,19 @@ impl PublishConfig {
             }
             out_dir.join(&c.file).is_file()
         });
+        // 老的 publish_config 可能是"全局 has_danmaku"那个 bug 写出来的（指向不存在的
+        // `clip.dm.srt` / `clip.srt`）。顺手静默纠正：文件不在就把那个字段清成 None，
+        // 别让发布链路拿着一个 404 的路径去取字幕。
+        for c in merged.iter_mut() {
+            if let Some(dm) = c.danmaku.clone() {
+                if !out_dir.join(&dm).is_file() {
+                    c.danmaku = None;
+                }
+            }
+            if !c.subtitle.trim().is_empty() && !out_dir.join(&c.subtitle).is_file() {
+                c.subtitle = String::new();
+            }
+        }
         merged.extend(fresh.clips);
         merged.sort_by_key(|c| c.rank);
         Self { video_source: video, clips: merged }
@@ -1125,6 +1278,7 @@ mod tests {
             rank: 2,
             start: ts(2.0),
             end: ts(4.0),
+            content_secs: 2.0,
             has_danmaku: false,
         };
         let p = PublishConfig::merge_from_disk(
@@ -1136,6 +1290,149 @@ mod tests {
         let dirs: Vec<&str> = p.clips.iter().map(|c| c.directory.as_str()).collect();
         assert_eq!(dirs, vec!["clip-01", "clip-02"], "老条目要保留、被删文件的条目要丢、新条目要进");
     }
+
+    // ---------------------------------------------------------------- overwrite（D1）
+
+    fn event_at(label: &str, start: f64, end: f64, rank: u32) -> crate::types::Event {
+        crate::types::Event {
+            start: crate::types::Timestamp::from_seconds(start),
+            end: crate::types::Timestamp::from_seconds(end),
+            label: label.into(),
+            summary: String::new(),
+            event_type: crate::types::EventType::Chat,
+            source: crate::types::EventSource::LLM,
+            confidence: 1.0,
+            popularity: 0.5,
+            rank,
+            clip_dir: None,
+            enabled: true,
+            ranges: Vec::new(),
+            topic: None,
+        }
+    }
+
+    fn ctx_with_events_and_overwrite(
+        root: &Path,
+        events: Vec<crate::types::Event>,
+        overwrite: Option<bool>,
+    ) -> PipelineContext {
+        let mut config = crate::config::Config::default();
+        config.cutting.overwrite = overwrite;
+        let mut ctx = PipelineContext::new(root.join("video.mp4"), root.join("output"));
+        ctx.config = Arc::new(config);
+        ctx.events = events;
+        ctx
+    }
+
+    /// **批量 / `process`（多条事件）默认不覆盖**；显式 `overwrite = true` 才覆盖。
+    #[test]
+    fn effective_overwrite_defaults_to_false_for_batch() {
+        let t = TmpDir::new("ow-batch");
+        let events = vec![event_at("A", 0.0, 10.0, 1), event_at("B", 10.0, 20.0, 2)];
+        for ow in [None, Some(false)] {
+            let ctx = ctx_with_events_and_overwrite(t.0.as_path(), events.clone(), ow);
+            assert!(
+                !effective_overwrite(&ctx),
+                "overwrite = {ow:?} 且批量（2 条）⇒ 不覆盖"
+            );
+        }
+        let ctx = ctx_with_events_and_overwrite(t.0.as_path(), events.clone(), Some(true));
+        assert!(effective_overwrite(&ctx), "显式 true ⇒ 覆盖（老行为）");
+    }
+
+    /// **单条剪切永远覆盖**：切片页点"剪切"本身就是显式要求重剪，没有别的通道能表达它
+    /// （server 的 `run_single_cut_event` 只塞一个 event 进来）。
+    #[test]
+    fn effective_overwrite_single_recut_always_overrides() {
+        let t = TmpDir::new("ow-single");
+        let events = vec![event_at("A", 0.0, 10.0, 1)];
+        for ow in [None, Some(false)] {
+            let ctx = ctx_with_events_and_overwrite(t.0.as_path(), events.clone(), ow);
+            assert!(
+                effective_overwrite(&ctx),
+                "单条（1 个事件）+ overwrite = {ow:?} ⇒ 仍覆盖"
+            );
+        }
+    }
+
+    /// 非致命结论**三落地**（D9 / P2-5）：tracing（运行日志/CLI 终端）+ `progress.note`
+    /// （任务消息通道，server 任务框可见）+ `ctx.pipeline_notes`（程序化消费方）。
+    /// server 的 `error()` = 整条任务 fail，"部分失败但其余已出片"绝不能走它。
+    #[test]
+    fn partial_failures_reach_note_channel_and_pipeline_notes() {
+        use std::sync::Mutex;
+
+        #[derive(Default)]
+        struct Recording {
+            notes: Mutex<Vec<String>>,
+        }
+        impl crate::progress::ProgressReporter for Recording {
+            fn stage_started(&self, _: &str) {}
+            fn stage_progress(&self, _: u64, _: u64) {}
+            fn stage_completed(&self, _: &str) {}
+            fn error(&self, _: &str) {}
+            fn note(&self, msg: &str) {
+                self.notes.lock().unwrap().push(msg.to_string());
+            }
+        }
+
+        let rec = Arc::new(Recording::default());
+        let mut ctx = PipelineContext::new(PathBuf::from("/tmp/v.mp4"), PathBuf::from("/tmp/out"));
+        ctx.progress = rec.clone() as Arc<dyn crate::progress::ProgressReporter>;
+
+        push_pipeline_note(ctx.progress.as_ref(), &mut ctx.pipeline_notes, "2 条片段剪切失败（其余已出片，失败条目不会进发布清单）：a / b".into());
+        assert_eq!(ctx.pipeline_notes.len(), 1, "结论要进 ctx.pipeline_notes");
+        let got = rec.notes.lock().unwrap().clone();
+        assert_eq!(got.len(), 1, "结论要经 progress.note 进任务消息通道");
+        assert!(got[0].contains("2 条片段剪切失败"), "{}", got[0]);
+    }
+
+    /// `overwrite = false` 且目标已是**这条事件自己的**成片 ⇒ 跳过；
+    /// 别人的片段（对不上）不归它管（那是 foreign_clip_conflict 的报错路径）。
+    #[test]
+    fn skip_reason_skips_only_own_existing_clip() {
+        let t = TmpDir::new("ow-skip");
+        let own = t.0.join("own");
+        std::fs::create_dir_all(&own).unwrap();
+        std::fs::write(own.join("clip.mp4"), b"x").unwrap();
+        write_meta(&own, serde_json::json!({
+            "title": "同一条", "original_start": 0.0, "original_end": 10.0
+        }));
+
+        // 自己的成片 + 不覆盖 ⇒ 跳过
+        let msg = skip_reason(&own, "同一条", ts(0.0), ts(10.0), false);
+        assert!(msg.is_some(), "自己的成片且 overwrite=false ⇒ 跳过");
+        assert!(msg.unwrap().contains("overwrite = false"));
+
+        // 显式覆盖 ⇒ 不跳
+        assert!(skip_reason(&own, "同一条", ts(0.0), ts(10.0), true).is_none());
+
+        // 没有 clip.mp4（上次剪到一半）⇒ 不跳，照常重剪
+        let half = t.0.join("half");
+        std::fs::create_dir_all(&half).unwrap();
+        write_meta(&half, serde_json::json!({
+            "title": "同一条", "original_start": 0.0, "original_end": 10.0
+        }));
+        assert!(skip_reason(&half, "同一条", ts(0.0), ts(10.0), false).is_none(),
+                "没有成片就不算已剪好，要照常重剪");
+
+        // 别人的片段（标题/区间都对不上）⇒ 不在这里跳（foreign_clip_conflict 负责报错）
+        let foreign = t.0.join("foreign");
+        std::fs::create_dir_all(&foreign).unwrap();
+        std::fs::write(foreign.join("clip.mp4"), b"x").unwrap();
+        write_meta(&foreign, serde_json::json!({
+            "title": "老片段标题", "original_start": 6000.0, "original_end": 6200.0
+        }));
+        assert!(skip_reason(&foreign, "新事件标题", ts(100.0), ts(300.0), false).is_none(),
+                "别人的片段不走这条安静跳过的路径");
+
+        // 老目录没有 clip.json ⇒ 信息不足，照旧重剪
+        let legacy = t.0.join("legacy");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("clip.mp4"), b"x").unwrap();
+        assert!(skip_reason(&legacy, "随便", ts(0.0), ts(10.0), false).is_none());
+    }
+
     /// 重新检测后新事件撞上老片段的序号：标题/区间都对不上就不能覆盖（成片要保住）。
     #[test]
     fn foreign_clip_conflict_blocks_unrelated_clip() {

@@ -655,8 +655,15 @@ async fn process_scattered_with_llm(
     Ok((kept, stat))
 }
 
-/// 提取弹幕热点区间：密度 ≥ 0.5 的窗口按密度降序取 top N，相邻窗口合并为连续区间。
-/// 用于注入 LLM prompt，提示名场面位置。
+/// 「弹幕爆发时刻」的**绝对条数下限**。
+///
+/// 密度是**相对量**（按全片最热窗口归一）：全片只有个位数弹幕时，每条弹幕自己所在的
+/// 窗口密度就是 1.0 ⇒ 全部窗口都过 `density >= 0.5` 这道门，三两条弹幕就被当成
+/// 「名场面位置」整批注进 prompt。要配上「爆发」这个词，窗口里**真的得有几条**弹幕。
+const HOT_WINDOW_MIN_COUNT: u64 = 5;
+
+/// 提取弹幕热点区间：密度 ≥ 0.5 **且**条数 ≥ HOT_WINDOW_MIN_COUNT 的窗口按密度降序取 top N，
+/// 相邻窗口合并为连续区间。用于注入 LLM prompt，提示名场面位置。
 fn extract_hot_windows(
     heatmap: &[DensityWindow],
     window_secs: f64,
@@ -666,7 +673,10 @@ fn extract_hot_windows(
         return Vec::new();
     }
 
-    let mut hot: Vec<&DensityWindow> = heatmap.iter().filter(|w| w.density >= 0.5).collect();
+    let mut hot: Vec<&DensityWindow> = heatmap
+        .iter()
+        .filter(|w| w.density >= 0.5 && w.count >= HOT_WINDOW_MIN_COUNT)
+        .collect();
     hot.sort_by(|a, b| {
         b.density
             .partial_cmp(&a.density)
@@ -1063,12 +1073,19 @@ pub fn load_events(path: &std::path::Path) -> Result<Vec<Event>> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("无法读取事件文件: {}", path.display()))?;
     // 支持旧格式 (Vec<Event>) 和新格式 (EventStore)
-    if let Ok(store) = serde_json::from_str::<EventStore>(&content) {
-        Ok(store.events.into_iter().filter(|e| e.enabled).collect())
-    } else if let Ok(events) = serde_json::from_str::<Vec<Event>>(&content) {
-        Ok(events)
-    } else {
-        anyhow::bail!("解析事件 JSON 失败: {}", path.display());
+    match serde_json::from_str::<EventStore>(&content) {
+        Ok(store) => return Ok(store.events.into_iter().filter(|e| e.enabled).collect()),
+        Err(store_err) => {
+            match serde_json::from_str::<Vec<Event>>(&content) {
+                Ok(events) => return Ok(events),
+                // 两种形状都失败：**把两条原因都带上**。只报「解析失败」等于让用户自己猜
+                // （实测最冤的一种是 `{"events":[…]}` 缺 `titles`，以前报的就是这句话）。
+                Err(vec_err) => anyhow::bail!(
+                    "解析事件 JSON 失败: {}\n  · 按 EventStore（{{\"events\":[…]}}）：{store_err}\n  · 按 Vec<Event>（[…]）：{vec_err}",
+                    path.display()
+                ),
+            }
+        }
     }
 }
 
@@ -1104,6 +1121,40 @@ mod tests {
                 confidence: 1.0,
             })
             .collect()
+    }
+
+    // ---------- 弹幕爆发时刻的绝对条数下限（review P2-3 / D10）----------
+
+    fn win(start: f64, count: u64) -> DensityWindow {
+        // density 按"全片最热窗口"归一 ⇒ 个位数弹幕自己所在的窗口密度就是 1.0
+        //（老 bug 的现场：三条弹幕分处三个窗口 ⇒ 三处全是「名场面」）
+        DensityWindow { start, density: 1.0, count }
+    }
+
+    /// 全片只有个位数弹幕：密度归一成 1.0，但「爆发时刻」不许被造出来。
+    #[test]
+    fn hot_windows_require_an_absolute_count_floor() {
+        let heatmap = vec![win(0.0, 1), win(10.0, 2), win(20.0, 1)];
+        assert!(
+            extract_hot_windows(&heatmap, 10.0, 20).is_empty(),
+            "条数不足的窗口不能被当成名场面注进 prompt"
+        );
+    }
+
+    /// 真的密集的窗口照常提取，相邻窗口仍合并；条数不足的那段丢弃。
+    #[test]
+    fn hot_windows_keep_dense_windows_and_merge_neighbors() {
+        let heatmap = vec![win(0.0, 6), win(10.0, 9), win(20.0, 2)];
+        let out = extract_hot_windows(&heatmap, 10.0, 20);
+        assert_eq!(out, vec![(0.0, 20.0)], "0-10 与 10-20 相邻合并；20-30 条数不足丢弃");
+    }
+
+    /// 密度门仍是必要条件：条数够但密度归一后 < 0.5 的窗口不提取。
+    #[test]
+    fn hot_windows_still_require_relative_density() {
+        let mut heatmap = vec![win(0.0, 6)];
+        heatmap[0].density = 0.3; // 条数 ≥ 5，但相对密度不够 ⇒ 不算爆发
+        assert!(extract_hot_windows(&heatmap, 10.0, 20).is_empty());
     }
 
     #[test]
@@ -1455,6 +1506,51 @@ mod tests {
         assert_eq!(result[1].label, "同一个话题（2/3）");
         assert_eq!(result[2].label, "同一个话题（3/3）");
         assert_eq!(result[3].label, "另一个话题");
+    }
+
+    /// 临时文件：测试目录 + 进程号 + 纳秒（并行跑时避免同名）。
+    fn tmp_events_file(tag: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("yekitrim-events-{tag}-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        dir.join("events.json")
+    }
+
+    /// **回归钉子**：`events.json` 缺 `titles` 必须照样读得进来。
+    ///
+    /// 现场：`.workbuddy/demo/stream/output/events.json`（仓库自带的演示工程）就是这种形状
+    /// —— 只有 `events`，没有 `titles`。以前 `EventStore.titles` 没有 `serde(default)`，
+    /// 于是 `cut` / `process` 直接 `Error: 解析事件 JSON 失败: …/events.json` 并且退出码 1，
+    /// 用户完全看不出是缺了个附属字段。下文的 fixture 是那份文件的**逐字拷贝**
+    /// （`.workbuddy/` 已 gitignore，单测不能依赖它，所以内联）。
+    #[test]
+    fn load_events_accepts_event_store_without_titles() {
+        let path = tmp_events_file("no-titles");
+        let demo = r#"{"events":[
+ {"start":{"h":0,"m":0,"s":1,"ms":0},"end":{"h":0,"m":0,"s":9,"ms":0},"label":"开场测试","summary":"测试切片工具的第一次爆点","event_type":"intro","source":"LLM","confidence":0.9,"popularity":88.0,"rank":1,"enabled":true,"clip_dir":"clip-01"},
+ {"start":{"h":0,"m":0,"s":20,"ms":0},"end":{"h":0,"m":0,"s":26,"ms":0},"label":"第二次爆点","summary":"哈哈哈大笑的片段","event_type":"reaction","source":"LLM","confidence":0.88,"popularity":75.5,"rank":2,"enabled":true,"clip_dir":"clip-02"},
+ {"start":{"h":0,"m":0,"s":30,"ms":0},"end":{"h":0,"m":0,"s":36,"ms":0},"label":"正经内容","summary":"第三段正经内容","event_type":"discussion","source":"LLM","confidence":0.8,"popularity":60.0,"rank":3,"enabled":true,"clip_dir":"clip-03"}
+]}"#;
+        std::fs::write(&path, demo).expect("写 fixture");
+        let events = load_events(&path).expect("缺 titles 的 EventStore 必须能读");
+        assert_eq!(events.len(), 3, "三条事件都要在");
+        assert_eq!(events[0].label, "开场测试");
+        assert_eq!(events[2].clip_dir.as_deref(), Some("clip-03"));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// 两种形状都解析失败时，错误里要**同时**带上两条原因（以前只有一句「解析失败」）。
+    #[test]
+    fn load_events_error_names_both_shapes() {
+        let path = tmp_events_file("broken");
+        std::fs::write(&path, r#"{"events":"不是数组"}"#).expect("写坏文件");
+        let err = format!("{:#}", load_events(&path).expect_err("坏 events.json 必须报错"));
+        assert!(err.contains("EventStore"), "错误要指出试过 EventStore 形状: {err}");
+        assert!(err.contains("Vec<Event>"), "错误要指出试过 Vec<Event> 形状: {err}");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     /// 只读诊断（不写任何文件）：在**真实** events.json 上干跑 `merge_split_events`，

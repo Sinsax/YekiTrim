@@ -281,6 +281,13 @@ fn default_enabled() -> bool { true }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventStore {
+    /// 「出现过的标题」这份**附属索引**（`save_events` 用它做重名判断）。
+    ///
+    /// ⚠️ **必须宽容缺失**：它只是一个去重辅助，不是事件的载荷。以前没有
+    /// `#[serde(default)]`，于是「手写 / 外部工具 / demo 工程」那种只有 `events` 的
+    /// `events.json` 两种形状都解析失败 ⇒ `cut` / `process` 直接报「解析事件 JSON 失败」，
+    /// 而错误里一个字都没说缺了 `titles`。
+    #[serde(default)]
     pub titles: std::collections::BTreeMap<String, bool>,
     pub events: Vec<Event>,
 }
@@ -300,6 +307,13 @@ pub struct PipelineContext {
     pub events: Vec<Event>,
     pub started_at: DateTime<Utc>,
     pub progress: Arc<dyn ProgressReporter>,
+    /// 阶段内**非致命**的结果记录（跳过 / 部分失败 / 冲突），由 stage 经
+    /// `cutting::push_pipeline_note` 统一登记（tracing + `progress.note` 任务消息通道 + 本清单三落地）。
+    ///
+    /// 用途：剪切「按 `overwrite = false` 跳过 N 条」「M 条失败」这类信息必须让用户看到，
+    /// 但它们又**不该**把整条任务判成失败（成片已经出来了）—— 绝不能走 `progress.error`
+    ///（server 的 error = 整条任务 fail）。server 侧任务框的落点是 `ProgressReporter::note`。
+    pub pipeline_notes: Vec<String>,
 }
 
 impl PipelineContext {
@@ -327,6 +341,7 @@ impl PipelineContext {
             events: Vec::new(),
             started_at: Utc::now(),
             progress: Arc::new(NoopProgress) as Arc<dyn ProgressReporter>,
+            pipeline_notes: Vec::new(),
         }
     }
 }

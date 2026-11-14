@@ -199,6 +199,37 @@ fn decode_threads() -> i32 {
         .unwrap_or(1) as i32
 }
 
+/// qwen3 识别器的**缓存键**：同一份模型 + 同一套解码参数才算"可复用"。
+///
+/// 以前进程里只有一个 `Mutex<Option<OfflineRecognizer>>`、只在第一次创建：两个工程先后转写时，
+/// 第二个工程用的是**第一个工程的** `[asr] local_model_dir` / `max_new_tokens`（配置串味），
+/// 而且换模型后必须重启进程才生效。键里带上这三项即可"配置变了就重建"。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Qwen3RecognizerKey {
+    pub model_dir: String,
+    pub max_new_tokens: u32,
+    pub threads: i32,
+}
+
+impl Qwen3RecognizerKey {
+    /// 日志用（变了会打一条 INFO，方便排查"为什么这次重建了"）。
+    pub fn label(&self) -> String {
+        format!(
+            "dir={} max_new_tokens={} threads={}",
+            self.model_dir, self.max_new_tokens, self.threads
+        )
+    }
+}
+
+/// [`Qwen3RecognizerKey`] 的唯一来源 —— 必须与 `create_qwen3_recognizer` 真正读的字段一致。
+pub fn qwen3_recognizer_key(cfg: &AsrConfig) -> Qwen3RecognizerKey {
+    Qwen3RecognizerKey {
+        model_dir: model_dir_for(cfg, "qwen3-asr").to_string_lossy().into_owned(),
+        max_new_tokens: cfg.max_new_tokens,
+        threads: decode_threads(),
+    }
+}
+
 /// 创建 qwen3-asr recognizer（用于双模型识别填词）。
 pub fn create_qwen3_recognizer(cfg: &AsrConfig) -> Result<OfflineRecognizer> {
     let mdir = model_dir_for(cfg, "qwen3-asr");
@@ -404,11 +435,14 @@ pub fn transcribe_sensevoice(
             .collect(),
     );
 
+    // 单模式（`single`）下**文本与时间轴同源**：每个字都自带时间戳 = 每个字都是锚点，
+    // 不存在"对不齐"这回事。以前这里写 0 个锚点 / 0% 覆盖率 / 「降级原因: sensevoice_single」，
+    // `yekitrim status` 于是印出一个假的 0%（hybrid 那边印的是假的 100%）。
     let metadata = AsrMetadata {
-        anchors: 0,
-        anchor_coverage: 0.0,
+        anchors: timeline.len(),
+        anchor_coverage: if timeline.is_empty() { 0.0 } else { 1.0 },
         max_interp_span: 0,
-        fallback_reason: Some("sensevoice_single".into()),
+        fallback_reason: None,
         model: "sensevoice".into(),
         mode: cfg.mode.trim().to_ascii_lowercase(),
     };
@@ -976,8 +1010,11 @@ fn cleanup_segments(all_segments: Vec<TranscriptSegment>) -> Vec<TranscriptSegme
 
 pub fn ensure_ready(cfg: &AsrConfig) -> Result<()> {
     let mdir = model_dir(cfg);
-    find_model(&mdir, "sensevoice")?;
-    require_file(&mdir, "tokens.txt")?;
+    // ⚠️ 报错必须**可行动**：`find_model` / `require_file` 只说"缺哪个文件"，
+    // 而用户真正需要的是"怎么补"。这里统一补一句下载指引（与 qwen3 那条同口径）。
+    const HINT: &str = "；在设置页「模型管理」里下载，或跑 `yekitrim download`";
+    find_model(&mdir, "sensevoice").with_context(|| format!("SenseVoice 模型不可用{HINT}"))?;
+    require_file(&mdir, "tokens.txt").with_context(|| format!("SenseVoice 模型不完整{HINT}"))?;
 
     tracing::info!(
         "本地 ASR 就绪: model=sensevoice, 模型目录: {}",

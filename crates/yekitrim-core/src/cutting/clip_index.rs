@@ -174,6 +174,12 @@ pub fn reconcile_index(output_dir: &Path) -> ClipIndex {
         if !is_safe_component(&dir_name) {
             continue;
         }
+        // **只收真片段**：剪切失败/被冲突拦下会留下一个空目录（`create_dir_all` 打在
+        // `cut_event` 之前），那种目录进索引就会变成 title/rank 全空的幽灵条目
+        // （发布清单有 is_file 过滤，索引没有）。有 clip.mp4 或 clip.json 才算数。
+        if !path.join("clip.mp4").exists() && !path.join("clip.json").exists() {
+            continue;
+        }
         let meta = read_clip_meta(&path);
         let mut item = old.clips.remove(&dir_name).unwrap_or_default();
         item.dir = dir_name.clone();
@@ -659,6 +665,32 @@ mod tests {
         let idx = reconcile_index(&t.0);
         assert!(idx.clips.contains_key("标题片段"));
         assert_eq!(idx.clips["标题片段"].rank, 3);
+    }
+
+    /// **空目录不许进索引**（review P2-9）：剪切失败 / 被 foreign_clip_conflict 拦下会留下
+    /// `create_dir_all` 打出来的空目录（连 clip.mp4 都没有），收进索引就是 title/rank 全空的幽灵条目。
+    /// 有 clip.mp4（老片段，meta 丢失）或 clip.json（成片还在剪）都算数。
+    #[test]
+    fn reconcile_index_skips_empty_directories() {
+        let t = TmpDir::new("reconcile-empty");
+        let clips = t.0.join("clips");
+        // 剪切失败留下的空目录
+        std::fs::create_dir_all(clips.join("ghost")).unwrap();
+        // 只有 clip.mp4（老片段、meta 丢了）—— 算真片段
+        std::fs::create_dir_all(clips.join("legacy")).unwrap();
+        std::fs::write(clips.join("legacy").join("clip.mp4"), b"x").unwrap();
+        // 只有 clip.json —— 也算（刚剪完、mp4 尚未合并完成的窗口）
+        std::fs::create_dir_all(clips.join("meta-only")).unwrap();
+        std::fs::write(
+            clips.join("meta-only").join("clip.json"),
+            r#"{"title":"meta-only","original_start":0.0,"original_end":1.0,"rank":1}"#,
+        )
+        .unwrap();
+
+        let idx = reconcile_index(&t.0);
+        assert!(!idx.clips.contains_key("ghost"), "空目录不许进索引");
+        assert!(idx.clips.contains_key("legacy"), "只有 clip.mp4 的老片段要保留");
+        assert!(idx.clips.contains_key("meta-only"), "只有 clip.json 的片段要保留");
     }
 }
 

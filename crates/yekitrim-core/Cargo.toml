@@ -21,7 +21,9 @@ toml = "0.8"
 toml_edit = "0.22"
 tracing = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
-reqwest = { version = "0.12", features = ["json"] }
+# socks：`[ingest] proxy` 要能填 socks5://（reqwest 默认不带这个 feature，
+# 缺了它 `Proxy::all("socks5://…")` 会静默失败 —— 症状是"配了代理还是直连超时"）
+reqwest = { version = "0.12", features = ["json", "socks"] }
 async-trait = "0.1"
 tar = "0.4"
 bzip2 = "0.5"

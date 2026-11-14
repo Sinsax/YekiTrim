@@ -230,14 +230,43 @@ pub struct AuthConfig {
     /// —— 码本身才是凭证，开关只是总闸。
     #[serde(default)]
     pub registration_enabled: bool,
+    /// **多人形态开关**（2026-11-13 用户拍板：默认单人）。
+    ///
+    /// 默认 `false` = **单人优先**：界面隐藏邀请码 / 账号配额 / 注册入口 / 任务指派对象
+    /// （接口与 CLI 全部保留，只是不露出）。置 `true` 才把多用户那套 UI 拿出来。
+    ///
+    /// ⚠️ 前端经 `/api/health.multi_user` 读它（health 是公开接口，只回布尔）。
+    /// ⚠️ **不是权限开关**：`true` 也不会让普通账号变成管理员；它只回答"这部署按几人用"。
+    #[serde(default)]
+    pub multi_user: bool,
 }
 
 impl Default for AuthConfig {
     fn default() -> Self {
         Self {
             registration_enabled: false,
+            multi_user: false,
         }
     }
+}
+
+/// `[ingest.bililive_tools]` — biliLive-tools 的**只读**对接（列录制用户 + 录像历史）。
+///
+/// 与 `[ingest.recorder]`（录播姬）**分开配置**：两套 API 不兼容，界面上也是两块独立的设置。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BiliLiveToolsConfig {
+    /// 它的 HTTP API 地址（例 `http://127.0.0.1:18010`）。**空 = 未对接**。
+    #[serde(default)]
+    pub api_base: String,
+    /// 访问密钥：原样放进 `Authorization`（不是 Bearer）。
+    #[serde(default)]
+    pub api_key: String,
+    /// 录像根目录（宿主机路径，YekiTrim 要读得到）。
+    #[serde(default)]
+    pub root: String,
+    /// 它接口里的容器路径前缀（例 `/app/video`），剥掉后拼到 `root` 上。
+    #[serde(default)]
+    pub container_root: String,
 }
 
 /// `[ingest]` — 采集通道（录播姬 webhook + 兜底扫描）。
@@ -254,9 +283,19 @@ pub struct IngestConfig {
     pub allow_ips: Vec<String>,
     #[serde(default)]
     pub recorder: RecorderConfig,
+    /// biliLive-tools 的只读对接（独立于录播姬）
+    #[serde(default)]
+    pub bililive_tools: BiliLiveToolsConfig,
     /// 通用 webhook（任意录制软件把"录制完成"推过来，不要求它长得像录播姬）。
     #[serde(default)]
     pub webhook: WebhookConfig,
+    /// **出网代理**（下载 yt-dlp 二进制这类境外大文件用；留空 = 直连）。
+    ///
+    /// 支持 `http://` / `https://` / `socks5://` / `socks5h://`（远程 DNS，墙外建议用它）。
+    /// ⚠️ **不能只靠环境变量**：WebUI 服务常由 systemd / 计划任务拉起，环境里没有你 shell
+    /// 里 `export` 的那份代理 —— 症状是"我明明配了代理，它还是直连超时"。这里是显式配置项。
+    #[serde(default)]
+    pub proxy: String,
     /// **B站链接通道（P4）**：下载器引擎。
     ///
     /// `"yt-dlp"` = 内置引擎（版本 + sha256 钉死在 `yekitrim_service::downloader::registry`，
@@ -317,7 +356,9 @@ impl Default for IngestConfig {
             token_hash: String::new(),
             allow_ips: Vec::new(),
             recorder: RecorderConfig::default(),
+            bililive_tools: BiliLiveToolsConfig::default(),
             webhook: WebhookConfig::default(),
+            proxy: String::new(),
             downloader: default_downloader(),
             ytdlp_path: String::new(),
             max_quality: default_max_quality(),
@@ -344,6 +385,12 @@ pub fn quality_height(raw: &str) -> Option<u32> {
 /// `[ingest.recorder]` — 录播姬工作目录与入库策略。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecorderConfig {
+    /// 录制软件：`bililive`（录播姬，默认）| `bililive-tools`。
+    ///
+    /// 两者 API 不兼容：录播姬是 `/api/room` + HTTP Basic；biliLive-tools 是 `/recorder/list` +
+    /// `Authorization: <passkey>`。**目录语义一样**（`root` 是录像根），其余字段按 kind 取用。
+    #[serde(default = "default_recorder_kind")]
+    pub kind: String,
     /// 录播姬输出目录（必须与 `yekitrim server` 同机/同可读盘）
     #[serde(default)]
     pub root: String,
@@ -357,6 +404,12 @@ pub struct RecorderConfig {
     /// 录播姬 HTTP Basic 密码（对应 `BREC_HTTP_BASIC_PASS`）
     #[serde(default)]
     pub api_pass: String,
+    /// biliLive-tools 的 API 密钥：原样放进 `Authorization`（**不是 Bearer**）
+    #[serde(default)]
+    pub api_key: String,
+    /// biliLive-tools 的容器路径前缀（例 `/app/video`）：接口返回的路径按它剥掉再拼 `root`。
+    #[serde(default)]
+    pub container_root: String,
     /// 兜底扫描间隔（分钟，0 = 关闭）：覆盖漏推送 / 录播姬重启 / 历史录播导入
     #[serde(default = "default_watch_interval_mins")]
     pub watch_interval_mins: u32,
@@ -377,6 +430,9 @@ pub struct RecorderConfig {
     pub auto_pipeline: String,
 }
 
+fn default_recorder_kind() -> String {
+    "bililive".into()
+}
 fn default_watch_interval_mins() -> u32 {
     10
 }
@@ -396,10 +452,13 @@ fn default_auto_pipeline() -> String {
 impl Default for RecorderConfig {
     fn default() -> Self {
         Self {
+            kind: default_recorder_kind(),
             root: String::new(),
             api_base: String::new(),
             api_user: String::new(),
             api_pass: String::new(),
+            api_key: String::new(),
+            container_root: String::new(),
             watch_interval_mins: default_watch_interval_mins(),
             finalize_idle_mins: default_finalize_idle_mins(),
             move_into_managed: true,
@@ -1390,6 +1449,12 @@ pub struct LlmLevel {
 pub struct CuttingConfig {
     #[serde(default = "default_output_dir")]
     pub output_dir: String,
+    /// 已有片段要不要**覆盖**（设置页「覆盖已有文件」）。`None` = 跟随默认（不覆盖）。
+    ///
+    /// 判据在 `cutting::effective_overwrite`：`true` 一律重剪；`false`/未写时，目标目录里
+    /// 已经是**这条事件自己的**成片（`clip.json` 的标题相同或区间 IoU ≥ 0.5，且 `clip.mp4` 在）
+    /// ⇒ 跳过并 warn，不覆盖。**单条剪切例外**（切片页点「剪切」= 显式重剪，永远覆盖）。
+    /// 别人的片段无论这个开关怎样都由 `foreign_clip_conflict` 拦下。
     #[serde(default)]
     pub overwrite: Option<bool>,
 }
