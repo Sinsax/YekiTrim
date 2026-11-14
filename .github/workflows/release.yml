@@ -1,0 +1,72 @@
+name: release
+
+# 打 tag（v*）时构建并附到该 Release；也可手动触发只产出 artifact。
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: linux
+          - os: windows-latest
+            target: windows
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # WebUI：dist 已入库，但 CI 里重建一遍才知道前端源码没坏
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+      - name: Build WebUI
+        run: |
+          npm --prefix webui ci --no-audit --no-fund
+          npm --prefix webui run build
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # sherpa-onnx 的预编译库由 vendor/sherpa-onnx-sys/build.rs 自己按平台下载
+      # （Sinsax/sherpa-onnx-prebuilt-no-tts 的 release，sha256 钉死），不需要额外环境变量。
+      - name: Build
+        run: cargo build --release -p yekitrim-cli --locked
+
+      # 打包：zip（Windows）/ tar.gz（Linux）+ espeak-ng 产物门禁。
+      # --no-dhampir：Dhampir 底座是独立仓，CI 里没有它的产物；本仓的包按「不带底座」出。
+      # 不加 --smoke-test：CI 上起服务要占端口、Windows 上还依赖无头环境，留给本地发版验。
+      - name: Package
+        run: cargo xtask package --target ${{ matrix.target }} --skip-build --no-dhampir
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: yekitrim-${{ matrix.target }}-x64
+          path: release/*
+          if-no-files-found: error
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for f in release/*; do
+            gh release upload "${{ github.ref_name }}" "$f" --clobber
+          done
+
