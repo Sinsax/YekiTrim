@@ -50,7 +50,7 @@
   ⚠️ **托盘不再用它**：薄启动器不能链接 `yekitrim-service`（`LogBusLayer` 在那儿），
   否则 ASR 被一起拉回来。它自己往 `<数据目录>/logs/tray.log` 追加几行（`tray.rs::log`）。
 - **命令面**（`cli.rs` 的 `Cli` / `Command`，改命令先改这里）：
-  `init <video> [--danmaku <file>]` / `extract [-i] [-o]` / `process [-i] [-o] [--dry-run]` /
+  `init <video> [--danmaku <file>] [--force]` / `extract [-i] [-o]` / `process [-i] [-o] [--dry-run]` /
   `transcribe [-i]` / `detect [-t <transcript>]` / `cut [-i] [-e <events>] [-o]` /
   `silence [files...] [--duration 3.5] [--threshold]` / `download` / `status` / `usage [--days N]` /
   `doctor [--url <base>]` / `ingest token [--disable]` / `ingest status` /

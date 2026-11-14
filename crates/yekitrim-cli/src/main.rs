@@ -195,11 +195,38 @@ async fn run_polish_preview(input: &std::path::Path, mode: Option<&str>) -> anyh
     yekitrim_server::run(args).await
 }
 
+/// 把「当前管理员是谁」装进 `owner`（`Owner::Local` 靠它解析配置路径）。
+///
+/// 2026-11-13 起程序配置只住在 `users/<uid>/.yekitrim/`，而 CLI 没有会话、只知道 `Local` ——
+/// `Local` 解析成**首个管理员**，所以要先从账本里把那个 uid 读出来。
+///
+/// - 账本不存在（还没初始化过 WebUI）⇒ 什么都不做：全新库的首个账号必然是 1，与默认值一致；
+/// - 打开失败 ⇒ 只 warn，按默认 uid=1 继续（纯 CLI 命令不该因为账本坏了就跑不了）；
+/// - **只读**：`Db::open` 会跑迁移，但 CLI 用的永远是已经存在的库（上面那道 `is_file` 挡着）。
+fn install_local_admin_from_db() {
+    let path = yekitrim_service::db::db_path();
+    if !path.is_file() {
+        return;
+    }
+    let Ok(db) = yekitrim_service::db::Db::open(&path) else {
+        tracing::warn!("打开账号账本失败（按默认 uid=1 读配置）: {}", path.display());
+        return;
+    };
+    if let Ok(users) = db.list_users() {
+        if let Some(u) = users.iter().filter(|u| u.role == "admin").min_by_key(|u| u.id) {
+            yekitrim_core::owner::set_local_admin(u.id);
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_setup::setup(true);
 
     let cli = Cli::parse();
+    // ⚠️ **必须在任何读配置之前**：程序配置按 owner 取路径，而 CLI 只有 `Local`
+    //（= 首个管理员）。没装解析器时会按默认 uid=1 读 —— 首个管理员不是 1 的库就读错人。
+    install_local_admin_from_db();
     let global_config = &cli.config;
 
     let progress: Arc<dyn yekitrim_core::progress::ProgressReporter> = Arc::new(IndicatifProgress::new());
@@ -210,15 +237,19 @@ async fn main() -> anyhow::Result<()> {
             danmaku,
             output,
             config: cfg_path,
+            force,
         } => {
             let out = cfg_path.clone().or_else(|| {
                 input.parent().map(|p| p.join(yekitrim_core::path::PROJECT_CONFIG_FILE))
             }).unwrap_or_else(|| PathBuf::from(yekitrim_core::path::PROJECT_CONFIG_FILE));
+            // ⚠️ 已存在的工程配置默认**拒绝覆盖**（`--force` 才重建，且先备份）：
+            // 整份重写会把素材清单 / transcript_file / output_dir 一起换回模板值。
             yekitrim_service::init_project(
                 input,
                 danmaku.as_deref(),
                 output.as_deref().map(|d| d.to_string_lossy().to_string()).as_deref(),
                 &out,
+                *force,
             )?;
             tracing::info!("视频工程已初始化: {}", input.display());
             tracing::info!("配置文件: {}", out.display());
@@ -425,9 +456,12 @@ Command::Config(action) => match action {
                 //    ⚠️ 清之前每个文件都会留 `.bak-v<旧>`（原样回退的唯一手段）。
                 let mut targets: Vec<std::path::PathBuf> = Vec::new();
                 if paths.is_empty() {
-                    let home = yekitrim_core::path::yekitrim_home();
-                    targets.push(home.join("config.toml"));
-                    targets.push(home.join("llm.toml"));
+                    // 程序配置只有一处（2026-11-13 收敛）：owner 路径，不再是顶层 `<数据>/.yekitrim/`
+                    let cfg = yekitrim_core::config::global_config_path();
+                    if let Some(dir) = cfg.parent() {
+                        targets.push(dir.join("llm.toml"));
+                    }
+                    targets.push(cfg);
                 } else {
                     for p in paths {
                         if p.is_dir() {
