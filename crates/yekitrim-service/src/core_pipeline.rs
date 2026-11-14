@@ -361,7 +361,21 @@ async fn run_process(
             yekitrim_core::config::save_audio_path_in(config_file, &rel_to_config(config_file, ap))?;
         }
     } else {
-        tracing::info!("音频已提取，跳过");
+        // ⚠️ 文案必须跟事实一致：只有**真有音频产物**（audio_file / output/video.wav）才是"已提取"。
+        // 只上传字幕（或别的原因跳过 Stage 1）的工程没有 wav —— 此时说"已提取"是假的；
+        // 功能上无害（Cutter/检测直接用原视频），但要把这条讲明白。
+        let audio_file = cfg.project.audio_file.as_ref()
+            .filter(|s| !s.is_empty())
+            .map(|s| ws.resolve(s));
+        let has_audio = audio_file.is_some_and(|p| p.is_file())
+            || output.join("video.wav").is_file();
+        if has_audio {
+            tracing::info!("音频已提取，跳过");
+        } else {
+            tracing::info!(
+                "没有已提取的音频（audio_file / output/video.wav 都不存在），跳过 Stage 1；后续阶段直接使用原视频"
+            );
+        }
     }
 
     if current < STAGE_TRANSCRIBE {
@@ -401,12 +415,10 @@ async fn run_process(
         if !already_corrected {
             if let Some(segments) = ctx.transcript.as_ref().map(|t| t.segments.clone()) {
                 let danmaku = load_danmaku_for_correct(&cfg, &ws);
-                let checkpoint = ctx.output_dir.join("correct.checkpoint.json");
-                let partial_path = ctx.output_dir.join("correct.partial.json");
-                if !resume && checkpoint.exists() {
-                    let _ = std::fs::remove_file(&checkpoint);
-                }
-                let checkpoint_path = if checkpoint.exists() { Some(checkpoint.as_path()) } else { None };
+                // 断点路径与「文件在不在」无关（旧写法 `if checkpoint.exists() { Some } else { None }`
+                // 会自锁：首次传 None ⇒ Agent 不写盘 ⇒ 文件永不出现 ⇒ 续传从未生效）。
+                let (checkpoint, partial_path) =
+                    crate::correct::prepare_correction_state(&ctx.output_dir, resume);
                 let (tx, mut rx) = tokio::sync::mpsc::channel::<yekitrim_llm::agent::AgentProgress<Vec<yekitrim_llm::agent::AgentOutput>>>(64);
                 let partial_path_writer = partial_path.clone();
                 let partial_task = tokio::spawn(async move {
@@ -426,7 +438,7 @@ async fn run_process(
                 });
                 let result = yekitrim_core::asr::correct::correct_transcript_with_checkpoint(
                     &segments, &danmaku, &cfg.llm, &cfg.correct,
-                    ctx.output_dir.parent(), checkpoint_path, Some(tx), cancel,
+                    ctx.output_dir.parent(), Some(checkpoint.as_path()), Some(tx), cancel,
                 ).await;
                 let _ = partial_task.await;
                 if let Ok(corrected) = result {

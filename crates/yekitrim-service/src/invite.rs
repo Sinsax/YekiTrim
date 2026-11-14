@@ -17,8 +17,10 @@ use super::auth;
 use super::db::{self, Db, InviteRow};
 use super::user::fmt_time;
 
+/// 程序配置的唯一位置（见 `crate::init_config::global_config_path`）。
+/// ⚠️ 2026-11-13 起是 owner 路径，不再是顶层那份。
 fn global_config_path() -> PathBuf {
-    yekitrim_core::path::yekitrim_home().join("config.toml")
+    yekitrim_core::config::global_config_path()
 }
 
 /// 把 `[auth]` 的若干键合并写进全局配置（保留注释与其他 section）。

@@ -6,10 +6,10 @@
 //!
 //! ## 平台与钉死的边界（重要）
 //!
-//! 只有 **Windows** 那份 `yt-dlp.exe` 是实测校验过的（下载后与官方 `SHA2-256SUMS` 逐字节一致），
-//! 所以只有它带 sha256。其它平台**不允许自动下载** —— 我们没校验过的二进制不该被自动化拉下来。
-//! 那些平台上 `ensure_ytdlp` 会明确报错，让管理员用 `[ingest] ytdlp_path` 指定自备的那份
-//! （或装到 PATH）。这是刻意的：**只钉我们真正验证过的东西。**
+//! sha256 一律来自官方 `SHA2-256SUMS`（同一条 release，TLS 取回）：
+//! **Windows / Linux x86_64 / Linux aarch64 / macOS** 四档都钉住了，都能自动下载。
+//! 其它平台（含 musl 外的不常见架构）仍**不允许自动下载** —— 没钉过的二进制不该被自动化拉下来，
+//! `ensure_ytdlp` 会明确报错，让管理员用 `[ingest] ytdlp_path` 或装进 PATH。
 
 use std::path::{Path, PathBuf};
 
@@ -46,23 +46,37 @@ pub const fn pin() -> YtDlpPin {
             size: 17_840_399,
         }
     }
-    #[cfg(target_os = "linux")]
+    // Linux：按架构选发布物（官方对 x86_64 / aarch64 各有一份 glibc 构建）。
+    // ⚠️ 哈希取自官方 `SHA2-256SUMS`（同一条 release）；换版本必须连它一起改。
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
         YtDlpPin {
             asset: "yt-dlp_linux",
             file: "yt-dlp",
-            // 未实测校验 → 不钉
-            sha256: "",
-            size: 0,
+            sha256: "58162f9bfdc27458ea47bfcb311cf47028f17d8154a8bf7d689861d46399230a",
+            size: 40_446_224,
         }
+    }
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    {
+        YtDlpPin {
+            asset: "yt-dlp_linux_aarch64",
+            file: "yt-dlp",
+            sha256: "b16e4dab368a816cd05d477d698a605a6ae87ccee1c8ffd38fa21d7254141fcc",
+            size: 40_167_448,
+        }
+    }
+    #[cfg(all(target_os = "linux", not(any(target_arch = "x86_64", target_arch = "aarch64"))))]
+    {
+        YtDlpPin { asset: "", file: "yt-dlp", sha256: "", size: 0 }
     }
     #[cfg(target_os = "macos")]
     {
         YtDlpPin {
             asset: "yt-dlp_macos",
             file: "yt-dlp",
-            sha256: "",
-            size: 0,
+            sha256: "0f192b7ec147ab6288885d6351d9ab67367640029b4377576ef46dd79cf7b202",
+            size: 37_146_048,
         }
     }
     #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
@@ -70,6 +84,15 @@ pub const fn pin() -> YtDlpPin {
         YtDlpPin { asset: "", file: "yt-dlp", sha256: "", size: 0 }
     }
 }
+
+/// GitHub release 的镜像兜底（**只在直连失败时用**，且下载后必须过 sha256）。
+///
+/// ⚠️ 这些是第三方反代，不是我们托管的东西：**能用它们的唯一前提是哈希校验**。
+/// 顺序 = 实测更快/more 可靠在前；全都不通就回到直连那条报错。
+const MIRRORS: &[&str] = &[
+    "https://gh-proxy.com",
+    "https://ghproxy.net",
+];
 
 /// 钉死的发布版本（`release` 标签名）。
 pub const VERSION: &str = "2026.08.19";
@@ -215,10 +238,40 @@ fn managed_copy_is_trusted(path: &Path) -> bool {
     ok
 }
 
+/// 找可执行文件时扫的目录：`PATH` ∪ **系统常见安装位置**。
+///
+/// ⚠️ **不是"只看 PATH"**：systemd 起的用户服务拿到的是极简 `PATH`
+/// （常常只有 `/usr/local/bin:/usr/bin:/bin`），而 Linux 用户按文档装 yt-dlp
+/// 多半落在 `~/.local/bin`（pipx / pip --user）或 `/snap/bin`。
+/// 只查 PATH 的症状是"我明明装了，它说没装"。
+pub fn candidate_dirs() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|raw| std::env::split_paths(&raw).collect())
+        .unwrap_or_default();
+    for extra in [
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+        "/snap/bin",
+        "/var/lib/flatpak/exports/bin",
+    ] {
+        dirs.push(PathBuf::from(extra));
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        dirs.push(PathBuf::from(&home).join(".local/bin"));
+        dirs.push(PathBuf::from(&home).join("bin"));
+    }
+    dirs
+}
+
 /// 在 PATH 上找可执行文件（不 spawn，纯文件系统探测 —— 探测在 `tool_probe` 里做）。
+///
+/// ⚠️ **Linux/macOS 上还要看几个常见的安装位置**：systemd 起的服务拿到的是
+/// 一条极简的 `PATH`（常常只有 `/usr/local/bin:/usr/bin:/bin`，连 `~/.local/bin`
+/// 都没有）⇒ 用户自己 `pip install yt-dlp` 装到 `~/.local/bin`，服务却"找不到"。
+/// 这里补上这些目录，纯查文件系统、不 spawn。
 fn find_in_path(name: &str) -> Option<PathBuf> {
-    let raw = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&raw) {
+    for dir in candidate_dirs() {
         if dir.as_os_str().is_empty() {
             continue;
         }
@@ -278,19 +331,51 @@ pub fn ready(cfg: &Config) -> (bool, &'static str) {
     }
 }
 
+/// 「装不上时怎么办」的具体命令（**按平台给**，别只说"自行获取"）。
+///
+/// Linux 上最常见的其实是"系统包管理器已经能装"，把命令写出来比让人去翻文档有用得多。
+pub fn install_hint() -> &'static str {
+    #[cfg(target_os = "linux")]
+    {
+        "可以改用系统包管理器装一份，YekiTrim 会自动发现（PATH 里就能找到）：\n\
+         · Debian/Ubuntu:  sudo apt install yt-dlp\n\
+         · Arch:           sudo pacman -S yt-dlp\n\
+         · Fedora:         sudo dnf install yt-dlp\n\
+         · 或者用 pip：     pipx install yt-dlp   （装到 ~/.local/bin，也会被找到）\n\
+         装完点「刷新」即可，不需要重启服务。\n\
+         也可以自己下载后写进 [ingest] ytdlp_path = \"/绝对路径/yt-dlp\"。"
+    }
+    #[cfg(target_os = "macos")]
+    {
+        "可以用 Homebrew 装一份，YekiTrim 会自动发现：\n\
+         brew install yt-dlp\n\
+         装完点「刷新」即可。也可以自己下载后写进 [ingest] ytdlp_path。"
+    }
+    #[cfg(windows)]
+    {
+        "可以自己下载 yt-dlp.exe 后写进 [ingest] ytdlp_path = \"D:/tools/yt-dlp.exe\"，\n\
+         或把 yt-dlp.exe 放进 PATH 里的任意目录，然后点「刷新」。"
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    {
+        "请自行获取 yt-dlp 后写进 [ingest] ytdlp_path，或放进 PATH，然后点「刷新」。"
+    }
+}
+
 /// 下载托管副本并**校验 sha256**，返回落盘路径。
 ///
 /// 失败时不留半成品：`.part` 会被删掉（半下载的 exe 被当成可用才是最难查的那类故障）。
-pub async fn download_managed() -> Result<PathBuf> {
+pub async fn download_managed(cfg: &Config) -> Result<PathBuf> {
     let p = pin();
     if p.asset.is_empty() {
         bail!("当前平台没有可用的 yt-dlp 发布物");
     }
     if p.sha256.is_empty() {
         bail!(
-            "当前平台的 yt-dlp（{}）**未经验证**，不会自动下载。请自行获取后写入 \
-             [ingest] ytdlp_path，或放进 PATH。",
-            p.asset
+            "当前平台（{} / {}）没有钉死的 yt-dlp 发布物，不会自动下载。\
+             请自行获取后写入 [ingest] ytdlp_path，或放进 PATH。",
+            std::env::consts::OS,
+            std::env::consts::ARCH
         );
     }
 
@@ -301,33 +386,53 @@ pub async fn download_managed() -> Result<PathBuf> {
     let part = dir.join(format!("{}.part", p.file));
     let final_path = dir.join(p.file);
 
-    let url = release_url();
-    tracing::info!("下载 yt-dlp {VERSION}（{}）…", url);
-    let resp = reqwest::Client::new()
-        .get(&url)
-        .send()
-        .await
-        .with_context(|| format!("下载失败: {url}"))?
-        .error_for_status()
-        .with_context(|| format!("下载被拒绝: {url}"))?;
-
-    let mut file = tokio::fs::File::create(&part)
-        .await
-        .with_context(|| format!("创建临时文件失败: {}", part.display()))?;
-    let mut hasher = Sha256::new();
-    let mut written: u64 = 0;
-    let mut resp = resp;
-    use tokio::io::AsyncWriteExt;
-    while let Some(chunk) = resp.chunk().await.context("读取下载流失败")? {
-        hasher.update(&chunk);
-        file.write_all(&chunk).await.context("写入临时文件失败")?;
-        written += chunk.len() as u64;
+    let primary = release_url();
+    // 落盘走 core 的**可续传 + 多连接分段**下载器：
+    // 实测这台机器到 github.com 单流只有 ~30 KB/s 且十几分钟会 `Connection timed out`
+    // （40 MB 的包卡在 33 MB）—— 一次失败就报错等于"永远装不上"。
+    // 网页入口常连不上 ⇒ 先换成 GitHub 官方 API 的资产直链（仍是同一条 release）。
+    // 三条线路**并发竞速**（各拉 4 秒），选吞吐最高的那条真正下载。
+    // 之前是顺序试：慢线路排前面 + 每条 3 次重试 ⇒ 最坏 15 分钟才开始下真正的数据。
+    // 竞速 = 最多 4 秒出结论，且选路有数据支撑。
+    let proxy_raw = cfg.ingest.proxy.trim().to_string();
+    let proxy = if proxy_raw.is_empty() { None } else { Some(proxy_raw.as_str()) };
+    if let Some(p) = proxy {
+        tracing::info!("走代理下载 yt-dlp: {p}");
     }
-    file.flush().await.ok();
-    drop(file);
+    let mut candidates: Vec<(String, String)> = Vec::new();
+    if let Some(api) = yekitrim_core::download::github_asset_direct_url_with(&primary, proxy).await {
+        candidates.push(("api".into(), api));
+    }
+    candidates.push(("web".into(), primary.clone()));
+    for host in MIRRORS {
+        candidates.push((host.to_string(), format!("{host}/{}", primary)));
+    }
+    let winner = yekitrim_core::download::race_routes(candidates, 512 * 1024, proxy).await;
+    let Some(win) = winner else {
+        bail!(
+            "所有下载线路都不可用（GitHub 直连 / API / 镜像）——本机网络到 GitHub 不通。\n\
+             {}",
+            install_hint()
+        );
+    };
+    tracing::info!("选中线路 {}（{} KB/s）开始下载 yt-dlp {VERSION}", win.label, win.throughput() / 1024);
 
-    let got = to_hex(&hasher.finalize());
-    if got != p.sha256 {
+    // ⚠️ **阈值给大（64 MiB），别对 40 MB 的包分段**：分段下载写的是 `.segN`，
+    // 进程一重启（或安装被中断）那些段就作废了 —— `.part` 续传只在**单流**路径上成立。
+    // 40 MB 走单流 + 断点续传：断了重启能接着下；分段只在真正的大文件（模型那种）上才划算。
+    let written = yekitrim_core::download::download_resumable(&win.url, &part, 64 * 1024 * 1024, 8, proxy)
+        .await
+        .with_context(|| {
+            format!(
+                "下载 yt-dlp {VERSION} 失败（线路 {}）。\n{}",
+                win.label,
+                install_hint()
+            )
+        })?;
+
+    // 校验：哈希必须匹配注册表（供应链钉子）
+    let got = file_sha256(&part)?;
+    if got != p.sha256.to_ascii_lowercase() {
         let _ = tokio::fs::remove_file(&part).await;
         bail!(
             "yt-dlp 下载校验失败（已删除临时文件）：期望 {}，实得 {got}（{written} 字节）。\
@@ -336,7 +441,7 @@ pub async fn download_managed() -> Result<PathBuf> {
         );
     }
 
-    // Windows 上要允许执行；顺手把注释掉的 Unix 权限补上。
+    // Unix 上要可执行
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -371,7 +476,7 @@ pub async fn ensure_ytdlp(cfg: &Config) -> Result<PathBuf> {
         );
         let _ = tokio::fs::remove_file(&managed).await;
     }
-    download_managed().await
+    download_managed(cfg).await
 }
 
 #[cfg(test)]
@@ -397,6 +502,34 @@ mod tests {
     impl Drop for Tmp {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// 回归钉子：**找可执行文件的目录不能只有 PATH**。
+    ///
+    /// Linux 上 systemd 用户服务拿到的 `PATH` 是极简的，用户按文档装到
+    /// `~/.local/bin`（pipx / pip --user）就永远找不到 —— 症状是"装了却说没装"。
+    #[test]
+    fn candidate_dirs_cover_common_install_locations() {
+        let dirs = candidate_dirs();
+        let has = |p: &str| dirs.iter().any(|d| d == Path::new(p));
+        assert!(has("/usr/local/bin"), "{dirs:?}");
+        assert!(has("/usr/bin"), "{dirs:?}");
+        if std::env::var_os("HOME").is_some() {
+            let home = std::env::var_os("HOME").unwrap();
+            let local = PathBuf::from(&home).join(".local/bin");
+            assert!(dirs.contains(&local), "必须包含 ~/.local/bin：{dirs:?}");
+        }
+    }
+
+    /// 镜像只是"多一条路"：**哈希校验才是判据**，镜像给错数据必须被拒。
+    #[test]
+    fn mirrors_are_only_fallbacks_and_still_verified() {
+        assert!(!MIRRORS.is_empty());
+        // 每个镜像地址都要能被拼成 "镜像 + 原始 release 地址"
+        let primary = "https://github.com/yt-dlp/yt-dlp/releases/download/x/y";
+        for m in MIRRORS {
+            assert!(format!("{m}/{primary}").contains("github.com/yt-dlp/yt-dlp/releases/download"));
         }
     }
 

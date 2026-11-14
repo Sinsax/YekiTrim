@@ -82,8 +82,14 @@ pub fn process_alive(pid: u32) -> bool {
         if Path::new("/proc").join(pid.to_string()).exists() {
             return true;
         }
+        // ⚠️ 探针的 stderr 必须关掉（2026-11-14 后端 review P3）：`kill -0` 对不存在的
+        // pid 会往 stderr 打一行 "kill: cannot find process …"（instancelock 的单测
+        // 专挑 u32::MAX 这种"一定不存在"的 pid），cargo test 的输出里看起来像失败。
+        // 判据只认退出码，输出没有任何消费者。
         yekitrim_core::process::cmd("kill")
             .args(["-0", &pid.to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .status()
             .map(|s| s.success())
             .unwrap_or(false)

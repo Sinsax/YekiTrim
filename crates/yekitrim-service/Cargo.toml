@@ -25,7 +25,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1", features = ["rt", "sync", "macros"] }
 
 # 录播姬 HTTP API 客户端（房间增删查）+ B站 view API / 弹幕 XML
-reqwest = { version = "0.12", features = ["json"] }
+# socks：`[ingest] proxy` 要能填 socks5://（reqwest 默认不带这个 feature，
+# 缺了它 `Proxy::all("socks5://…")` 会静默失败 —— 症状是"配了代理还是直连超时"）
+reqwest = { version = "0.12", features = ["json", "socks"] }
 
 # B站弹幕响应是**裸 deflate**（wbits=-15，非 zlib 包装），而 `Accept-Encoding: identity`
 # 会被服务端忽略 —— 手工解压是必须的。两者都已在 Cargo.lock 里（经 png/ureq/zip 引入），
