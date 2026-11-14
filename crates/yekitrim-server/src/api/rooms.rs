@@ -492,7 +492,6 @@ pub(super) async fn recorder_recordings(
     let container_root = cfg.ingest.recorder.container_root.clone();
 
     let mut rows: Vec<serde_json::Value> = Vec::new();
-    let mut seen_dirs = std::collections::HashSet::new();
 
     if blt {
         let rooms = client
@@ -506,23 +505,42 @@ pub(super) async fn recorder_recordings(
             .list_history(&room_id, &st.platform)
             .await
             .map_err(|e| err(StatusCode::BAD_GATEWAY, format!("{e:#}")))?;
+        // 一场录像 = **一个目录**：size = 目录内全部视频之和（多分段录像以前只显示
+        // 最后一段的大小，跟资源管理器里的目录大小对不上 —— 2026-11-15 用户报障），
+        // mtime = 最新一段的修改时间（= 录完时间）。
+        let mut agg: std::collections::HashMap<
+            std::path::PathBuf,
+            (u64, i64),
+        > = std::collections::HashMap::new();
+        let mut seen_files = std::collections::HashSet::new();
         for it in items {
             let Ok(abs) = crate::ingest::map_webhook_path(&root, &container_root, &it.video_file) else {
                 continue;
             };
-            let Ok(md) = std::fs::metadata(&abs) else { continue };
-            let Some(dir) = abs.parent() else { continue };
-            if !seen_dirs.insert(dir.to_path_buf()) {
+            if !seen_files.insert(abs.clone()) {
                 continue;
             }
+            let Ok(md) = std::fs::metadata(&abs) else { continue };
+            let Some(dir) = abs.parent() else { continue };
+            let mtime = md
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            let e = agg.entry(dir.to_path_buf()).or_insert((0, 0));
+            e.0 += md.len();
+            e.1 = e.1.max(mtime);
+        }
+        for (dir, (size, mtime)) in agg {
             let rel = dir.strip_prefix(&root).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
             let (added, project_id) = added_project_of(db, is_admin, user.id, &dir.join("yekitrim.toml"));
             rows.push(serde_json::json!({
                 "name": dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
-                "dir": yekitrim_core::path::display(dir),
+                "dir": yekitrim_core::path::display(&dir),
                 "rel": rel,
-                "size": md.len(),
-                "mtime": md.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs() as i64).unwrap_or(0),
+                "size": size,
+                "mtime": mtime,
                 "added": added,
                 "project_id": project_id,
             }));
@@ -533,19 +551,34 @@ pub(super) async fn recorder_recordings(
             .await
             .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("扫描线程失败: {e}")))?
             .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+        // 与 blt 分支同口径：按目录聚合（size 求和、mtime 取最新一段）
+        let mut agg: std::collections::HashMap<
+            std::path::PathBuf,
+            (u64, i64, String),
+        > = std::collections::HashMap::new();
         for f in scanned.iter().filter(|f| f.room.as_deref() == Some(room_id.as_str())) {
             let abs = root.join(&f.rel);
             let Some(dir) = abs.parent() else { continue };
-            if !seen_dirs.insert(dir.to_path_buf()) {
-                continue;
+            let e = agg
+                .entry(dir.to_path_buf())
+                .or_insert((0, 0, String::new()));
+            e.0 += f.size;
+            e.1 = e.1.max(f.mtime);
+            if e.2.is_empty() {
+                e.2 = dir
+                    .strip_prefix(&root)
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default();
             }
+        }
+        for (dir, (size, mtime, rel)) in agg {
             let (added, project_id) = added_project_of(db, is_admin, user.id, &dir.join("yekitrim.toml"));
             rows.push(serde_json::json!({
                 "name": dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
-                "dir": yekitrim_core::path::display(dir),
-                "rel": f.rel,
-                "size": f.size,
-                "mtime": f.mtime,
+                "dir": yekitrim_core::path::display(&dir),
+                "rel": rel,
+                "size": size,
+                "mtime": mtime,
                 "added": added,
                 "project_id": project_id,
             }));
