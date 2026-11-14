@@ -30,9 +30,8 @@ set YEKITRIM_DATA_DIR=F:\yekitrim-data
 <data_dir>/                       # 出厂 = 程序目录
 ├── yekitrim.exe
 ├── .yekitrim/
-│   ├── config.toml               # 程序配置（全局默认，被 yekitrim.toml 覆盖）
-│   ├── llm.toml                  # LLM 配置（API key 在这里）
-│   ├── server.toml               # 当前工程 + 端口等
+│   ├── server.toml               # 当前工程 + 端口等（账号无关）
+│   │                             # ⚠️ 2026-11-13 起这里**没有** config.toml / llm.toml —— 见「程序配置只有一个位置」
 │   ├── cloud/                    # ← 账号与运行态（db::data_dir）
 │   │   ├── yekitrim.db              # 账号账本（用户 / 会话 / 项目 / 审计 / 用量）
 │   │   └── logs/                 # 运行日志
@@ -76,14 +75,20 @@ set YEKITRIM_DATA_DIR=F:\yekitrim-data
 |---|---|---|
 | 素材根 | `<data>/resources/` | `<data>/users/<uid>/resources/` |
 | 字体 / 贴纸 / 视频 | `<data>/resources/{fonts,stickers,videos}/` | `<data>/users/<uid>/resources/{fonts,stickers,videos}/` |
-| 配置（`config.toml` / `llm.toml`） | `<data>/.yekitrim/` | `<data>/users/<uid>/.yekitrim/` |
+| 配置（`config.toml` / `llm.toml`） | `<data>/users/<首个管理员>/.yekitrim/`（**2026-11-13 起**；以前是顶层） | `<data>/users/<uid>/.yekitrim/` |
 | **账本**（`users` / `sessions` / `invites` / `yekitrim.db`） | `<data>/yekitrim.db` | **同一份，永远全局** |
 
 ⚠️ **账本永远不按用户分** —— 它是**身份的来源**，按用户分就是"登录前先得知道你是谁"的循环依赖。
 项目按 **行级** `projects.owner_id` 归属（本来就是对的形状，未改）。
 
-单人那一列**逐字等于**上面那张老表 ⇒ **单人升级零迁移**、目录形状不变。
+素材那一列**逐字等于**上面那张老表 ⇒ 素材**单人升级零迁移**、目录形状不变。
 判据：`owner::tests::local_owner_resolves_to_exactly_todays_locations`。
+
+⚠️ **配置例外（2026-11-13，方案 A）**：程序配置**不再有第二个位置**。`Owner::Local` 也解析到
+`users/<首个管理员>/.yekitrim/`；顶层 `<data>/.yekitrim/{config,llm}.toml` **已退役**，
+启动时由 `config::migrate_top_level_config_to` 合并过去并把旧文件改名成 `*.migrated-<日期>.bak`。
+起因：两份由同一模板生成、各被一半消费者读到（"设置保存成功、行为完全没变"）。
+正文：`docs/plan/single-user-config.md`。**别再往顶层放配置** —— 那是这次要消灭的东西。
 
 ⚠️ **升级到多用户时，单人存量的归属**：`owner::migrate_legacy_assets_to` 把
 `<data>/resources/*` 与 `<data>/.yekitrim/{config,llm}.toml` **移动**（不是复制 ——

@@ -83,9 +83,15 @@ yekitrim server --open          # 默认 127.0.0.1:26320
 ## B. 内网 / 可信小圈子
 
 ```bash
-yekitrim user passwd admin              # 先把初始密码改掉
+yekitrim user passwd admin              # 先把初始密码改掉（账本默认在 exe 旁边，见下）
 yekitrim server --host 0.0.0.0 --allow-remote
 ```
+
+> ⚠️ **改密码与启动必须是同一份账本**：`yekitrim user passwd` 是**另一个进程**，它没有 `--data-dir`
+> 参数，只认环境变量 `YEKITRIM_DATA_DIR`。所以如果服务端要带 `--data-dir`（容器、系统目录部署都要），
+> 改密那条命令也得带上同一个值 —— 否则改的是 exe 旁边那份，服务器上这份还是初始密码，启动照样被拒，
+> 而命令行里 `yekitrim user list` 看起来一切正常（"我明明改了密码"的报障形态）。
+> 拒绝启动时**日志会直接把整条命令打出来**（含这个变量），照抄即可。
 
 - `--allow-remote` 是必须的：不加它服务会拒绝监听非 loopback 地址。
 - **仍在用初始密码时，只要对外暴露就拒绝启动** —— 判据是「非 loopback 监听 **或** 显式加了
@@ -109,6 +115,23 @@ yekitrim.example.com {
 }
 ```
 
+#### 只放行一个端口时（单端口方案，2026-11-14 实践）
+
+有些机器（内网防火墙只开 26320、或云安全组只映射了这一个端口）开不了第二个 https 端口。
+这时**把 TLS 搬到 26320 本身**，应用退到 loopback 的另一个端口：
+
+```
+浏览器 ──https://<host>:26320──▶ Caddy(TLS) ──▶ 127.0.0.1:26321  (yekitrim)
+```
+
+- 应用侧：`--host 127.0.0.1 --port 26321 --allow-remote --trust-proxy`
+  （`listening` 会变成 `loopback`；`--trust-proxy` 必须有，否则 cookie 不带 `Secure`）
+- Caddy 侧：`https://<host>:26320 { tls internal \n reverse_proxy 127.0.0.1:26321 { flush_interval -1 } }`
+- 代价：旧的 `http://<host>:26320` 会回 **400**（把 HTTP 发到 TLS 端口），书签要改成 https；
+  自签证书首次要手动信任一次（或导入 Caddy 的 `pki/authorities/local/root.crt`）。
+- 为什么值得：WebGPU（`navigator.gpu`）**只在安全上下文**（https / localhost）里存在，
+  `http://<内网IP>:26320` 里它根本不存在 —— 浏览器端实时预览会静默退回近似预览。
+
 nginx 要点：`proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`
 与 `proxy_set_header X-Forwarded-Proto $scheme;`，并且**不要**做响应缓冲以外的改写
 （SSE 端点 `/api/stream`、`/api/admin/logs/events`、`/api/jobs/:id/events` 需要
@@ -117,11 +140,20 @@ nginx 要点：`proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`
 ### 2. 启动参数
 
 ```bash
-yekitrim user passwd admin                        # 强口令，别用初始密码
+export YEKITRIM_DATA_DIR=/var/lib/yekitrim      # ⚠️ 必须与下面 --data-dir 同值（见「为什么」）
+yekitrim user passwd admin --password-file /root/yekitrim-admin.pw   # 强口令，别用初始密码
+
 yekitrim server --host 127.0.0.1 --allow-remote \
              --trust-proxy \
              --data-dir /var/lib/yekitrim
 ```
+
+> ⚠️ **为什么改密要带 `YEKITRIM_DATA_DIR`**：`--data-dir` 只作用于 `yekitrim server` 那个进程
+> （它把值 `set_var` 进自己的环境）；`yekitrim user passwd` 是**另一个进程**，没有 `--data-dir` 参数，
+> 只认这个环境变量。不带它 = 改的是 exe 旁边那份账本，服务器上这份仍是初始密码 ——
+> `yekitrim user list` 一切正常、重启却被护栏拒绝。
+> 全新机器可以**省掉这一步**：启动时直接 `--admin-password-file /root/yekitrim-admin.pw`
+> （账本为空时生效，且视为已改密，见 `ensure_admin_bootstrap`）。
 
 | 参数 | 为什么 |
 |---|---|
@@ -152,7 +184,7 @@ yekitrim server --host 127.0.0.1 --allow-remote \
 ### 4. 上线前检查清单
 
 - [ ] HTTPS 反代生效，浏览器地址栏是 https
-- [ ] `--allow-remote` 已加，且**初始密码已改**（未改会被拒绝启动）
+- [ ] `--allow-remote` 已加，且**初始密码已改**（未改会被拒绝启动；拒绝时的那段日志里直接印着完整改密命令，含 `YEKITRIM_DATA_DIR`）
 - [ ] `--trust-proxy` 已加（反代后面）
 - [ ] `yekitrim doctor --url https://你的域名` 输出里 `listening=remote`、`tls_terminated=true`
 - [ ] 注册开关的状态是你想要的（`yekitrim user invites`；不需要自助注册就用 `--disable`）
