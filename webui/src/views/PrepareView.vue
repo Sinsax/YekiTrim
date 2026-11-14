@@ -76,7 +76,8 @@
               <b>{{ kindText(job.kind) }}</b>
               <span class="chip" :class="statusClass(job.status)">{{ statusText(job.status) }}</span>
             </div>
-            <div class="muted small mt-2">{{ job.message || '运行中' }}</div>
+            <!-- 进行时行与任务抽屉同口径（jobLine 唯一实现）；无内容时退回「运行中」 -->
+            <div class="muted small mt-2">{{ jobLine(job) || '运行中' }}</div>
             <div v-if="job.total > 0" class="progress mt-6"><div :style="{ width: jobPct + '%' }"></div></div>
             <div class="row mt-6" style="gap:6px">
               <button class="mini-btn flex-none" @click="openJobs()">查看任务</button>
@@ -421,7 +422,7 @@ import { projectData } from '../api/projectData'
 import { healthPayload, refreshHealth } from '../stores/health'
 import { humanBytes } from '../stores/project'
 import { isAdmin } from '../stores/auth'
-import { watchJob, jobsApi, kindText, statusClass, statusText, busyOn, outKey, QUEUED_HINT } from '../api/jobs'
+import { watchJob, jobsApi, kindText, statusClass, statusText, busyOn, outKey, jobLine, QUEUED_HINT } from '../api/jobs'
 import { useJobs, onJobDone } from '../composables/useJobs'
 import { useDisclosure } from '../composables/useDisclosure'
 import { toast } from '../stores/toast'

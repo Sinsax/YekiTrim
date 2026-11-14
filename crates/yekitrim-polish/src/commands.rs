@@ -324,6 +324,7 @@ pub async fn cmd_llm(
         project_path,
         full,
         cancel,
+        None,
     )
     .await
 }
@@ -338,6 +339,8 @@ pub async fn cmd_llm_for(
     project_path: &Path,
     full: bool,
     cancel: Option<yekitrim_llm::agent::CancelProbe>,
+    // 窗口进度出口（spec §1 P2）：server 传 WebProgress 桥，CLI 传 None（不接进度条）
+    progress: Option<std::sync::Arc<dyn yekitrim_core::progress::ProgressReporter>>,
 ) -> anyhow::Result<()> {
     tracing::info!("🤖  LLM config generation... (full={full})");
 
@@ -437,6 +440,7 @@ pub async fn cmd_llm_for(
         &config.rhythm.auto_events,
         Some(&project_path.join(yekitrim_core::path::PROJECT_STATE_DIR_NAME)),
         cancel,
+        progress.clone(),
     ).await?;
 
     // 屏蔽区间**不切段、不删事件**（用户要求：屏蔽只做标记）—— 出片时 `Ffmpeg::cut_ranges`
@@ -520,6 +524,7 @@ pub async fn cmd_llm_segment(
         project_path,
         index,
         cancel,
+        None,
     )
     .await
 }
@@ -530,6 +535,7 @@ pub async fn cmd_llm_segment_for(
     project_path: &Path,
     index: usize,
     cancel: Option<yekitrim_llm::agent::CancelProbe>,
+    progress: Option<std::sync::Arc<dyn yekitrim_core::progress::ProgressReporter>>,
 ) -> anyhow::Result<()> {
     tracing::info!("🤖  重做分段 #{index} 的事件...");
 
@@ -575,6 +581,7 @@ pub async fn cmd_llm_segment_for(
         Some(project_path),
         &config.mute_ranges,
         cancel,
+        progress.clone(),
     )
     .await?;
 

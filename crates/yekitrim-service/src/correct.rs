@@ -43,13 +43,19 @@ pub async fn run_correct(
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<yekitrim_llm::agent::AgentProgress<Vec<yekitrim_llm::agent::AgentOutput>>>(64);
     let partial_writer = partial_path.clone();
+    // 窗口进度（spec §1 P2）：每个窗口完成折成 stage_progress(完成窗, 总窗)。
+    // 窗口以几十秒计，无需节流；reporter 为 None（CLI）时行为与旧版逐字节一致。
+    let progress_for_pump = progress.clone();
     let partial_task = tokio::spawn(async move {
         use std::collections::BTreeMap;
         let mut partial: BTreeMap<usize, String> = BTreeMap::new();
-        while let Some(progress) = rx.recv().await {
-            if let Some(outputs) = progress.output {
+        while let Some(ap) = rx.recv().await {
+            if let Some(outputs) = ap.output {
                 for out in outputs { partial.insert(out.index, out.text); }
                 let _ = std::fs::write(&partial_writer, serde_json::to_string_pretty(&partial).unwrap_or_default());
+            }
+            if let Some(p) = progress_for_pump.as_ref() {
+                p.stage_progress(ap.completed_windows as u64, ap.total_windows as u64);
             }
         }
     });

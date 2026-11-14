@@ -57,6 +57,8 @@ pub async fn run_llm_pipeline(
     rhythm_ledger: &[crate::project::RhythmAuto],
     checkpoint_dir: Option<&PathBuf>,
     cancel: Option<yekitrim_llm::agent::CancelProbe>,
+    // 窗口进度出口（spec §1 P2）：透传给 events::run_event_agent；CLI 走 None。
+    progress: Option<std::sync::Arc<dyn yekitrim_core::progress::ProgressReporter>>,
 ) -> anyhow::Result<(
     Vec<Segment>,
     Vec<String>,
@@ -158,6 +160,7 @@ pub async fn run_llm_pipeline(
         project.as_deref(),
         checkpoint_path.as_deref(),
         cancel.clone(),
+        progress.clone(),
     ).await?;
     println!(
         "  ✓ {} / {} 段生成成功",
@@ -332,6 +335,8 @@ pub async fn regenerate_segment_events(
     project: Option<&Path>,
     mute_ranges: &[crate::project::MuteRange],
     cancel: Option<yekitrim_llm::agent::CancelProbe>,
+    // 窗口进度出口（同 run_llm_pipeline；单段 = 一个窗口）
+    progress: Option<std::sync::Arc<dyn yekitrim_core::progress::ProgressReporter>>,
 ) -> anyhow::Result<SegmentGenStatus> {
     let Some(seg) = segments.get(index) else {
         anyhow::bail!("分段下标越界: {index}（当前只有 {} 段）", segments.len());
@@ -384,6 +389,7 @@ pub async fn regenerate_segment_events(
         project,
         None,
         cancel.clone(),
+        progress.clone(),
     )
     .await?;
     let status = statuses

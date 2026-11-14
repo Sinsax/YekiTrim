@@ -204,8 +204,11 @@ pub(super) async fn polish_spawn(
         let token = jobs.cancel_token(&job_id).await;
         // 精修 llm 无管线阶段框架：expected 空 → 任务行不显示 i/N（窗口进度走 Agent）
         let bridge = super::core::progress_bridge(job_id.clone(), jobs.clone(), token, Vec::new());
+        // 取消闭包捕获**克隆**：bridge 本体还要以 Some(bridge.clone()) 传进 cmd_llm_for
+        // 当窗口进度出口（2026-11-15 P2）—— 先 move 后 clone 就是 use-after-move。
+        let bridge_for_cancel = bridge.clone();
         let cancel: Option<yekitrim_llm::agent::CancelProbe> = Some(std::sync::Arc::new(move || {
-            yekitrim_core::progress::ProgressReporter::cancelled(&*bridge)
+            yekitrim_core::progress::ProgressReporter::cancelled(&*bridge_for_cancel)
         }));
         let result = async {
             match kind.as_str() {
@@ -220,7 +223,8 @@ pub(super) async fn polish_spawn(
                     // ⚠️ **必须带 owner**：本条在 server 进程内直接跑（不是拉子进程），
                     // 所以 `YEKITRIM_OWNER` 那套对它无效 —— 用 `cmd_llm` 会去读
                     // **单人库**的贴纸索引，症状是多用户下"自己传的贴纸包选不中"。
-                    yekitrim_polish::commands::cmd_llm_for(owner, &path, opts.full, cancel.clone()).await?;
+                    // 窗口进度（spec §1 P2）：桥透传进 cmd_llm_for → Agent 折成 stage_progress
+                    yekitrim_polish::commands::cmd_llm_for(owner, &path, opts.full, cancel.clone(), Some(bridge.clone())).await?;
                     jobs.log(&job_id, "info", "LLM 完成，自动执行 process 后处理…").await;
                     yekitrim_polish::process::cmd_process(&path).await
                 }
@@ -231,7 +235,7 @@ pub(super) async fn polish_spawn(
                         .segment_index
                         .ok_or_else(|| anyhow::anyhow!("缺少 segment_index"))?;
                     jobs.log(&job_id, "info", format!("只重做分段 #{idx} 的事件…")).await;
-                    yekitrim_polish::commands::cmd_llm_segment_for(owner, &path, idx, cancel.clone()).await?;
+                    yekitrim_polish::commands::cmd_llm_segment_for(owner, &path, idx, cancel.clone(), Some(bridge.clone())).await?;
                     jobs.log(&job_id, "info", "完成，自动执行 process 后处理…").await;
                     yekitrim_polish::process::cmd_process(&path).await
                 }

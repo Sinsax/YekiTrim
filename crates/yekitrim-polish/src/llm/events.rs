@@ -287,6 +287,9 @@ pub async fn run_event_agent(
     project: Option<&Path>,
     checkpoint_path: Option<&Path>,
     cancel: Option<yekitrim_llm::agent::CancelProbe>,
+    // 窗口进度出口（spec §1 P2）：Some 时每个窗口完成折成 stage_progress(完成窗, 总窗)。
+    // server 侧传 WebProgress（通道版桥），CLI 传 None（保持现状，不接进度条）。
+    progress: Option<std::sync::Arc<dyn yekitrim_core::progress::ProgressReporter>>,
 ) -> anyhow::Result<Vec<SegmentGenStatus>> {
     // 链路解析：精修这条链路（见 [llm.overrides.polish]）。
     // 幂等：从 `run_llm_pipeline` 传进来的可能已经是解析过的配置。
@@ -314,9 +317,28 @@ pub async fn run_event_agent(
         None => agent,
     };
 
+    // 窗口进度：AgentProgress 经通道折成 stage_progress。窗口以几十秒计，无需节流；
+    // reporter 为 None 时通道照建（发不出去就算了），行为与旧版逐字节一致。
+    let (progress_tx, mut progress_rx) =
+        tokio::sync::mpsc::channel::<AgentProgress<Vec<Event>>>(16);
+    let pump = progress.map(|p| {
+        tokio::spawn(async move {
+            while let Some(ap) = progress_rx.recv().await {
+                yekitrim_core::progress::ProgressReporter::stage_progress(
+                    p.as_ref(),
+                    ap.completed_windows as u64,
+                    ap.total_windows as u64,
+                );
+            }
+        })
+    });
+
     let completed = agent
-        .run_windows(task, windows, checkpoint_path, None::<tokio::sync::mpsc::Sender<AgentProgress<Vec<Event>>>>)
+        .run_windows(task, windows, checkpoint_path, Some(progress_tx))
         .await?;
+    if let Some(handle) = pump {
+        let _ = handle.await;
+    }
 
     // 将输出写回调用方持有的 segments
     // 因为 run_event_agent 拿的是 &mut [Segment]，需要先构造一个临时 Vec 再回填
