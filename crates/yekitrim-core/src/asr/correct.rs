@@ -250,10 +250,12 @@ pub async fn correct_transcript_with_checkpoint(
     };
 
     // 链路解析：订正走 `[llm.overrides.correct]`（Agent 的 llm 会传给默认的 `process_window` 建客户端）
+    // 库内 indicatif 进度条关掉：调用方（CLI/server）自带进度面，窗口进度经 progress_tx 桥接出去。
     let llm = llm.for_link(crate::config::LlmLink::Correct);
     let agent = Agent::new(llm.clone())
         .with_window_size(correct.window_size.max(1))
-        .with_max_concurrent(llm.concurrency(correct.max_concurrent));
+        .with_max_concurrent(llm.concurrency(correct.max_concurrent))
+        .without_internal_progress();
     // ⚠️ 探针必须真的交给 Agent：只在阶段边界查一次等于"用户点了停止、后台仍把窗口一个个跑完"。
     // 订正是分钟级链路（窗口多、每次调用几十秒），这条以前漏了 —— 与检测链路同一个坑。
     let agent = match cancel {
@@ -348,5 +350,123 @@ mod tests {
     #[test]
     fn extract_json_strips_code_fence() {
         assert_eq!(extract_json("```json\n{\"1\":\"你好\"}\n```"), "{\"1\":\"你好\"}");
+    }
+}
+
+#[cfg(test)]
+mod checkpoint_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// 极简假 OpenAI 服务：每个请求回一条固定订正结果，并计数。
+    ///
+    /// `Arc<TcpListener>` 由调用方持到测试结束（否则端口可能被同期别的 listener 拿走，
+    /// 表现为偶发的「连上了但没人应答」—— 与 `yekitrim-llm` 的 fake_server 同一个坑）。
+    async fn fake_correct_server(hits: Arc<AtomicUsize>) -> (Arc<tokio::net::TcpListener>, String) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("绑定本地端口");
+        let addr = listener.local_addr().expect("取地址");
+        let listener = Arc::new(listener);
+        let serve = listener.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = serve.accept().await else { break };
+                hits.fetch_add(1, Ordering::SeqCst);
+                let mut buf = [0u8; 8192];
+                let _ = sock.read(&mut buf).await;
+                let body = serde_json::json!({
+                    "choices": [{ "message": { "content": serde_json::json!({ "1": "甲" }).to_string() } }],
+                    "usage": { "prompt_tokens": 10, "completion_tokens": 5 }
+                })
+                .to_string();
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.as_bytes().len(),
+                    body
+                );
+                let _ = sock.write_all(resp.as_bytes()).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+        (listener, format!("http://{addr}/v1"))
+    }
+
+    /// **回归钉子**：订正的断点续传必须端到端真的生效。
+    ///
+    /// 两个失败面各钉一半：① 传了路径就**必须写盘**（`Agent::run_windows` 的契约）；
+    /// ② 同一份断点再跑一次**一个请求都不发**（续传的意义）。
+    /// 上层（`core_pipeline` / `service::correct`）曾经把路径算成 `if exists { Some } else { None }`，
+    /// 于是首次运行传 None、文件永不出现 —— 这条用例把「传了就必须写」这一半钉死。
+    #[tokio::test]
+    async fn correction_writes_checkpoint_and_resumes_without_calling_again() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let (_srv, base) = fake_correct_server(hits.clone()).await;
+
+        let mut llm = LlmConfig::default();
+        llm.base_url = base;
+        llm.api_key = "test-key".into();
+        llm.model = "test-model".into();
+        let correct = CorrectConfig::default();
+        let segments = vec![
+            TranscriptSegment { start: 0.0, end: 1.0, text: "你好".into(), confidence: 1.0 },
+            TranscriptSegment { start: 1.0, end: 2.0, text: "世界".into(), confidence: 1.0 },
+        ];
+
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "yekitrim-correct-ckpt-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let checkpoint = dir.join("correct.checkpoint.json");
+
+        // ① 首跑：必须写断点（两个段落在一个窗口 ⇒ 恰好一次调用）
+        let first = correct_transcript_with_checkpoint(
+            &segments,
+            &[],
+            &llm,
+            &correct,
+            None,
+            Some(&checkpoint),
+            None,
+            None,
+        )
+        .await
+        .expect("首跑应成功");
+        assert!(
+            checkpoint.exists(),
+            "传了断点路径就必须写盘: {}",
+            checkpoint.display()
+        );
+        assert_eq!(hits.load(Ordering::SeqCst), 1, "一个窗口 = 一次调用");
+        assert_eq!(first[0].text, "甲", "订正结果要落到第 1 条");
+
+        // ② 续传：同一份断点再跑 ⇒ 一个请求都不发
+        let second = correct_transcript_with_checkpoint(
+            &segments,
+            &[],
+            &llm,
+            &correct,
+            None,
+            Some(&checkpoint),
+            None,
+            None,
+        )
+        .await
+        .expect("续传应成功");
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "断点命中就不许再发请求（以前这里会翻倍到 2）"
+        );
+        assert_eq!(second[0].text, "甲", "续传结果与首跑一致");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

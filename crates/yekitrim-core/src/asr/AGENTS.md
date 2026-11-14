@@ -1,4 +1,4 @@
-﻿# yekitrim-core/src/asr — 转写（SenseVoice 打轴 / qwen3 填词 / VAD / 断句 / 文本后处理）
+# yekitrim-core/src/asr — 转写（SenseVoice 打轴 / qwen3 填词 / VAD / 断句 / 文本后处理）
 
 > 范围：`crates/yekitrim-core/src/asr`/** ｜ 上游：`pipeline::PipelineRunner`（Stage 2）、`yekitrim-service::core_pipeline` ｜ 验证：`cargo test -p yekitrim-core --lib asr`
 
@@ -6,7 +6,10 @@
 
 把 `output/video.wav` 转成 `video.srt` + `transcript.json`：sherpa-onnx 本地识别（CPU only）→
 逐字时间轴 `CharTimeline` → 断句切分（标点/强停顿/气口/字数）→ 文本后处理 `text::normalize`。
-三种模式：`single`（SenseVoice）/ `qwen3-asr` / `hybrid`（sensevoice 打轴 + qwen3-asr 填词）。
+两种模式：`single`（纯 SenseVoice，配 VAD）/ `hybrid`（sensevoice 打轴 + qwen3-asr 填词）。
+⚠️ 2026-11-14 review 订正：**没有第三种「qwen3-asr 单模型」模式** —— 代码只有
+`if mode == "single" else hybrid` 两岔；`[asr] model` 只影响**下载清单**
+（且 hybrid/未知 mode 一律连带 sensevoice，见 `download.rs::required_models`），运行时不按它选模型。
 
 ## 入口
 
@@ -22,7 +25,9 @@
 
 ## 边界
 
-- sherpa-onnx 库 (CPU only)，模型按 `[asr] model` 选择: `sensevoice` (默认) | `qwen3-asr` (Qwen3-ASR 0.6B int8, 最准最慢)；hybrid 模式固定 = sensevoice 打轴 + qwen3-asr 填词。**firered-zh 已下线**（CTC 时间戳在 BGM 段造幽灵时间戳，见 ROADMAP）：注册表、下载清单、界面都不再有它
+- sherpa-onnx 库 (CPU only)。**运行时的模型选择是写死的两条链**：single = SenseVoice；
+  hybrid = sensevoice 打轴 + qwen3-asr（0.6B int8）填词 —— `[asr] model` **不参与运行时选择**（见上）。
+  **firered-zh 已下线**（CTC 时间戳在 BGM 段造幽灵时间戳，见 ROADMAP）：注册表、下载清单、界面都不再有它
 - **断句 = 「SenseVoice 出时间、文本出切点」**（`asr/align.rs`）：
   - **分工**：**标点（来自最终文本，hybrid 下是 qwen3 的）+ 强停顿（`segment_gap`）决定切成几条**，
     **气口（`breath_gap`）决定切在哪一刻**，**字数（`max_segment_chars`）只做硬上限**。

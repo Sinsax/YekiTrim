@@ -213,6 +213,12 @@ pub struct Agent {
     max_concurrent: usize,
     /// 取消探针（不给 = 不支持取消，跑完为止）。
     cancel: Option<CancelProbe>,
+    /// 库内 indicatif 进度条开关（默认开，行为与从前一致）。
+    ///
+    /// 调用方**自己有进度面**（CLI 的 `IndicatifProgress` / server 的任务进度）时应该关掉：
+    /// 库里再画一根会跟 CLI 那根互相覆盖（两行进度条打架），在非 tty 的 server 侧则是
+    /// 100ms 一次的空转 tick。
+    internal_progress: bool,
 }
 
 impl Agent {
@@ -226,6 +232,7 @@ impl Agent {
             window_size: 25,
             max_concurrent,
             cancel: None,
+            internal_progress: true,
         }
     }
 
@@ -247,6 +254,15 @@ impl Agent {
 
     pub fn with_max_concurrent(mut self, n: usize) -> Self {
         self.max_concurrent = n.max(1);
+        self
+    }
+
+    /// 关掉库内的 indicatif 进度条（调用方有自己的进度面时用）。
+    ///
+    /// 关闭后窗口进度仍照常上报给调用方（`AgentProgress` 回调），只是不再自画一根；
+    /// 内部用 `ProgressBar::hidden()`，所有 `inc/finish/abandon` 调用都是 no-op，调用点不用分支。
+    pub fn without_internal_progress(mut self) -> Self {
+        self.internal_progress = false;
         self
     }
 
@@ -399,13 +415,20 @@ impl Agent {
             guard.iter().filter(|w| w.output.is_some()).count()
         };
 
-        let pb = indicatif::ProgressBar::new(total_windows as u64);
-        if let Ok(style) = indicatif::ProgressStyle::with_template(
-            "{spinner:.green} [{elapsed_precise}] {} {bar:40} {percent}%",
-        ) {
-            pb.set_style(style.progress_chars("##-"));
-        }
-        pb.enable_steady_tick(std::time::Duration::from_millis(100));
+        // 进度条开关：调用方自带进度面（`without_internal_progress`）时用 hidden bar ——
+        // 全部操作都是 no-op，下面的 inc/finish/abandon 调用点不需要任何分支。
+        let pb = if self.internal_progress {
+            let pb = indicatif::ProgressBar::new(total_windows as u64);
+            if let Ok(style) = indicatif::ProgressStyle::with_template(
+                "{spinner:.green} [{elapsed_precise}] {} {bar:40} {percent}%",
+            ) {
+                pb.set_style(style.progress_chars("##-"));
+            }
+            pb.enable_steady_tick(std::time::Duration::from_millis(100));
+            pb
+        } else {
+            indicatif::ProgressBar::hidden()
+        };
         pb.inc(completed_initial as u64);
 
         // 收集需要处理的窗口索引（已完成的不 spawn）
@@ -839,6 +862,100 @@ mod tests {
 
         assert!(err.to_string().contains("任务已取消"), "错误应是取消而不是失败: {err}");
         assert_eq!(completed.load(Ordering::SeqCst), 1, "取消后剩下的窗口不该再跑完");
+    }
+
+    /// `without_internal_progress`（CLI 自带进度条 ⇒ 库内那根要能关掉）：
+    /// 关掉后整批窗口照常跑完 —— hidden bar 的 inc/finish/abandon 必须是 no-op 而不是 panic。
+    #[tokio::test]
+    async fn run_windows_completes_without_internal_progress_bar() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        #[derive(Clone)]
+        struct FakeTask {
+            calls: Arc<AtomicUsize>,
+        }
+
+        #[async_trait]
+        impl AgentTask<AgentOutput> for FakeTask {
+            fn name(&self) -> &str {
+                "fake"
+            }
+
+            fn build_global_context(&self, _items: &[AgentItem]) -> String {
+                String::new()
+            }
+
+            fn build_window_context(
+                &self,
+                _items: &[AgentItem],
+                _window: &[AgentItem],
+                _global: &str,
+            ) -> String {
+                String::new()
+            }
+
+            fn system_prompt(&self) -> String {
+                String::new()
+            }
+
+            fn user_prompt(
+                &self,
+                _global: &str,
+                _window_context: &str,
+                _window: &[AgentItem],
+            ) -> String {
+                String::new()
+            }
+
+            fn parse_output(&self, content: &str, _window: &[AgentItem]) -> Result<AgentOutput> {
+                Ok(AgentOutput { index: content.parse()?, text: String::new() })
+            }
+
+            async fn process_window(
+                &self,
+                _all_items: &[AgentItem],
+                window: &AgentWindow<AgentOutput>,
+                _global: &str,
+                _llm_cfg: &LlmParams,
+            ) -> Result<AgentOutput> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Ok(AgentOutput { index: window.items[0].index, text: "done".into() })
+            }
+
+            fn save_windows(
+                &self,
+                windows: &[AgentWindow<AgentOutput>],
+            ) -> Result<serde_json::Value> {
+                Ok(serde_json::to_value(windows)?)
+            }
+
+            fn load_windows(
+                &self,
+                value: serde_json::Value,
+            ) -> Result<Vec<AgentWindow<AgentOutput>>> {
+                Ok(serde_json::from_value(value)?)
+            }
+        }
+
+        let items: Vec<AgentItem> = (1..=3)
+            .map(|i| AgentItem {
+                index: i,
+                start: i as f64,
+                end: i as f64 + 1.0,
+                text: format!("seg{i}"),
+            })
+            .collect();
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let task = FakeTask { calls: calls.clone() };
+        let agent = Agent::new(LlmParams::default())
+            .with_window_size(1)
+            .without_internal_progress();
+        let windows = agent.build_windows(&items);
+        let out = agent.run_windows(task, windows, None, None).await.unwrap();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 3, "关掉库内进度条不该影响窗口执行");
+        assert!(out.iter().all(|w| w.output.is_some()), "每个窗口都该有结果");
     }
 
     #[tokio::test]

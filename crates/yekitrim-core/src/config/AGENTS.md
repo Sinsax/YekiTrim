@@ -118,7 +118,8 @@ base_url = ""              # OpenAI 兼容 API 地址
 api_key = ""
 model = ""
 max_concurrent = 3
-extra_params = { seed = 42, thinking = { type = "disabled" } }   # 逃逸口，优先级最低
+# ⚠️ 下面这行样例 2026-11-14 已与 LLM_CONFIG_TOML 模板对齐（旧文档写 disabled 且没有 response_format）
+extra_params = { seed = 42, thinking = { type = "enabled" }, response_format = { type = "json_object" } }   # 逃逸口，优先级最低
 
 # **请求参数面**（省略 = 不发送）；链路没覆盖就跟随这里
 [llm.params]
@@ -163,7 +164,7 @@ reasoning = "off"          # 精修默认关思考（链路代码默认给的就
 | `cutting.silence_noise_db` | 静音阈值实际走 `cutting::DEFAULT_NOISE_DB` 常量或 CLI `--threshold`（`service::silence::run_silence`），**从来不看配置里这个值** |
 
 审计口径（复现用）：对每个字段在 `crates/` 里找 `.<字段名>` 的读取点，**必须排除 `config/` 自身**
-—— 那里只有定义 / `merge` / 模板文本，会把"死的"伪装成"在用的"（我第一次没排除，得出"全是在用"）。
+—— 那里只有定义 / `merge` / 模板文本，会把"死的"伪装成"在用的"（实测踩过）。
 
 ⚠️ **老 toml 里还留着这几行不会炸**：`Config` / `AsrConfig` / `CuttingConfig` **都没有**
 `deny_unknown_fields`（只有 polish 的 `polish.toml` 有）。这条由
@@ -173,6 +174,22 @@ reasoning = "off"          # 精修默认关思考（链路代码默认给的就
 ⚠️ 它们**已经从设置页表单里摘掉**（表单不再写回，字段本身留在文件里、仍可用「编辑源文件」改）。
 真正的清理（从 `Config` 结构体里删）要走「新增配置字段步骤」的反向流程，且要确认旧文件里的
 多余键不会让反序列化失败（serde 默认忽略未知字段）—— **本次没做，留给你拍板**。
+
+### ⚠️ 程序配置只有一个位置（2026-11-13，方案 A）
+
+**唯一路径** = `config::global_config_path()` = `<数据>/users/<uid>/.yekitrim/config.toml`。
+读写两侧都用它：`load_global_config` /
+`load_config_at` / `load_llm_config` / `ensure_global_config` / 设置页与接入页的写通道。
+
+为什么：设置页写账号树，而启动初始化与接入页还写**顶层** —— 两份同模板、各被一半消费者读
+（实测：参考标题不生效、检测静默不调模型）。
+启动迁移 `migrate_top_level_config_to`：`[ingest] [storage] [publish] [auth]` 顶层赢，其余段与
+`llm.toml` 账号赢（只补缺失），旧文件改名 `*.migrated-<日期>.bak`；幂等、fail-soft。
+判据 `config::config_migration_tests`；正文 `docs/plan/single-user-config.md`。
+**别再新增"顶层 config.toml"候选位置。**
+
+`[auth] multi_user`（默认 false = 单人优先）：前端藏邀请码/配额/注册入口/入库指派下拉，
+经 `/api/health.multi_user` 读；`merge()` **只认 true**。
 
 ### 版本号与读时迁移（2026-10-05）
 
@@ -253,6 +270,11 @@ reasoning = "off"          # 精修默认关思考（链路代码默认给的就
 下次读配置才发现值没了）。回归钉子：`config::patch_config_tests`（含"兄弟键与注释不丢"）。
 新增需要写嵌套 section 的表单时直接用这个通道，不必再开专用端点。
 
+⚠️ **`[ingest.recorder]` 的新字段（`kind` / `api_key` / `container_root`）必须同步进 `merge()`**（2026-11）：
+`merge` 是逐字段手写的，漏一条的症状是**文件里写了、`load_global_config()` 永远读默认值**（设置页保存成功、
+行为完全没变，还没有任何报错）。`kind` 的默认是 `"bililive"`，判断要写成"**≠ bililive 才覆盖**" ——
+写成"非空才覆盖"会让默认值在合并时把已选的值打回去。回归钉子：`config::recorder_backend_merge_tests`。
+
 ⚠️ **写 `llm.toml` 之前必须"反序列化验一遍"**（P0 事故 2026-10-19）：保存路径曾把 `json_mode = ""`
 （字符串）写进布尔字段 —— 文件**是合法 TOML**，只有反序列化到 `LlmConfig` 才炸，而炸的后果是
 **整份 LLM 配置回退默认值**。守卫 = `config::validate_llm_toml`（server 写通道：先写同目录临时文件 →
@@ -290,11 +312,6 @@ reasoning = "off"          # 精修默认关思考（链路代码默认给的就
   留空即跟随全局）——别再在代码里写死 `3`，也别让某条链路偷偷用自己的。设置页「LLM 配置」块有输入框。
   **实测中转站允许并发且接近线性**（3 路并发墙钟 ≈ 单发 1.3 倍），所以它是批处理速度的第一杠杆。
 
-### 死旋钮（别再加回界面）
-
-⚠️ **`[asr]` 的 `align_model` / `max_segment_duration` / `segment_merge_gap` 已整条删除**
-（从来没有读取方），别再往结构体或界面加回来；老 toml 里的残留行会被忽略（见「死字段」一节）。
-
 ### ⚠️ 设置页数值项（配置字段的前端出口）
 
 ⚠️ **设置页的数值项走 `components/SliderField.vue`**（滑块 + 标签行右端可直填的数字框，16 处）。
@@ -305,10 +322,8 @@ reasoning = "off"          # 精修默认关思考（链路代码默认给的就
 ⚠️ **滑块宽度 = 所在格子的 1/3**（`.slf-range` 的 `flex:0 0 33.333%`，以前吃满整格；`input[type=range]` 的
 `width:100%` 会被 flex-basis 盖掉，别再改回 100%）——三样东西因此能在**一行**里读完，行高从「标签行 + 整宽滑块」
 两行压成一行。窄格（LLM 那几列，格子 ≤220px）由 `@container` 把标签挤到独占一行，**别改成媒体查询**
-（量的是格子宽而不是视口宽）。实测（1600 宽 + 真实 Chrome）：格宽 400 → 滑块 133，数字框右缘与格子右缘齐平（spill 0），
-820/980/1100/1280 各档都没有横向溢出。改完要么重建 `webui/dist`，否则 `yekitrim server` 端出的还是旧界面。
-⚠️ **ASR 的 `Mode` 与它的说明挤成一行**（`.mode-field`）：说明原本另起一行，把那一格撑到 **81px**，而同一行的
-数值行只有 23px —— 那一行右侧空出 58px 竖向留白（实测）。改成「标签 · 下拉（`width:auto`）· 说明」后那一行 31px。
+（量的是格子宽而不是视口宽）。实测 820/1280/1600 各档均无横向溢出。改完要重建 `webui/dist`（否则 server 端出的还是旧界面）。
+⚠️ **ASR 的 `Mode` 与它的说明挤成一行**（`.mode-field`，「标签 · 下拉（`width:auto`）· 说明」，实测 31px）：
 其他页（PolishView / CoverDesigner / DownloaderConfig）仍是旧写法，要用就自己换。
 ⚠️ **LLM 配置的「按链路覆盖」同样是 SliderField**（一行一条链路：勾选框 + 两个滑块 + reasoning 下拉）。
 "这一项没有值"用**勾选框**表达、不是空输入框：不勾 = 整条链路发 `null`（= 删键、跟随全局）；
