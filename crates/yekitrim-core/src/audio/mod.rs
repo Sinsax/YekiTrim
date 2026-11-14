@@ -35,8 +35,15 @@ impl Stage for AudioExtractor {
         );
         ctx.video_info = Some(info);
 
+        // 进度分母 = ffprobe 时长；拿不到（或 ≤0）就不报数值进度 —— 别拿 0 当分母。
+        let total_secs = ctx
+            .video_info
+            .as_ref()
+            .map(|info| info.duration_secs)
+            .filter(|secs| *secs > 0.0);
+
         tracing::info!("提取音频 → {}", audio_path.display());
-        extract::extract_audio(&ctx.input_path, &audio_path)?;
+        extract::extract_audio(&ctx.input_path, &audio_path, ctx.progress.as_ref(), total_secs)?;
         ctx.audio_path = Some(audio_path);
 
         tracing::info!("音频提取完成");

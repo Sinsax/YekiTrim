@@ -93,6 +93,35 @@ export function queueDetail(job) {
   return `${cls}任务（${cap}）${pos}${src} · 轮到时自动开始`
 }
 
+/**
+ * 进行时行的统一拼装（docs/plan/job-progress-spec-2026-11-15.md §1 范本）——
+ * JobList 的运行/失败行与任务抽屉（整块复用 JobList）共用这一个实现，别抄第二份。
+ *
+ * 段间用 ` · ` 连接，从左到右：
+ * - 阶段段（只有服务端给了 `stage_zh` 才有）：`stage_index` 与 `stage_total` **都在** →
+ *   `阶段 {i}/{N} · {stage_zh}`；任一缺失 → 只 `{stage_zh}`。这三个都是服务端可选增量字段，
+ *   没上之前整段缺席 —— 行为与旧版逐字节一致（只有 message，百分比同旧式追加）；
+ * - `message` 非空且 ≠ `stage_zh` → 追加（语义 = 阶段内一句话明细；与阶段名相同就不重复说）；
+ * - `total > 0` → 追加 `{Math.round(current*100/total)}%`，与进度条同口径、只在行尾出现一次。
+ *
+ * queued 行（queueDetail）、卡住提示（stuckNote）与终态的静默规则不归它管 —— JobList 另有分支。
+ */
+export function jobLine(job) {
+  if (!job) return ''
+  const parts = []
+  const zh = job.stage_zh
+  if (zh) {
+    parts.push(
+      job.stage_index != null && job.stage_total != null
+        ? `阶段 ${job.stage_index}/${job.stage_total} · ${zh}`
+        : zh
+    )
+  }
+  if (job.message && job.message !== zh) parts.push(job.message)
+  if (job.total > 0) parts.push(`${Math.round(job.current * 100 / job.total)}%`)
+  return parts.join(' · ')
+}
+
 export function kindText(kind) {
   if (KIND_ZH[kind]) return KIND_ZH[kind]
   if (kind && kind.startsWith('stage_')) return `预处理 · ${kind.slice(6)}`

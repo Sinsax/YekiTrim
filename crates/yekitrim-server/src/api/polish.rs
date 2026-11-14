@@ -202,7 +202,8 @@ pub(super) async fn polish_spawn(
         // 轮询它 —— 只在阶段边界查一次 = 用户点了停止、后台仍把剩下的窗口成批跑完。
         // 判据与管线/贴纸构建同源：Job 的取消令牌 → `ProgressReporter::cancelled()`。
         let token = jobs.cancel_token(&job_id).await;
-        let bridge = super::core::progress_bridge(job_id.clone(), jobs.clone(), token);
+        // 精修 llm 无管线阶段框架：expected 空 → 任务行不显示 i/N（窗口进度走 Agent）
+        let bridge = super::core::progress_bridge(job_id.clone(), jobs.clone(), token, Vec::new());
         let cancel: Option<yekitrim_llm::agent::CancelProbe> = Some(std::sync::Arc::new(move || {
             yekitrim_core::progress::ProgressReporter::cancelled(&*bridge)
         }));

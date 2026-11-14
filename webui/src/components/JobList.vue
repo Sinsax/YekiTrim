@@ -15,9 +15,8 @@
       </div>
       <!-- 排队中的任务：报档位/上限/同档名次，替掉那句没信息量的 create 文案（"准备中"） -->
       <div v-if="j.status === 'queued'" class="small muted">{{ queueDetail(j) }}</div>
-      <div v-else-if="showLine(j)" class="small muted">
-        {{ j.message }}{{ j.total > 0 ? ' · ' + Math.round(j.current * 100 / j.total) + '%' : '' }}
-      </div>
+      <!-- 进行时行统一走 api/jobs.js::jobLine（spec §1：唯一实现，别在这里再拼一遍） -->
+      <div v-else-if="showLine(j)" class="small muted">{{ jobLine(j) }}</div>
       <!-- 运行中但久无进展：底下多半有个进程挂住了（外部 ffmpeg / 网络盘），明说出来 -->
       <div v-if="stuckNote(j)" class="small muted">{{ stuckNote(j) }}</div>
       <div v-if="j.status === 'running' && j.total > 0" class="progress mt-6">
@@ -37,7 +36,7 @@
 import { computed } from 'vue'
 import { toast } from '../stores/toast'
 import { useJobs } from '../composables/useJobs'
-import { classTitle, isActive, jobsApi, kindText, queueDetail, statusClass, statusText, stuckNote } from '../api/jobs'
+import { classTitle, isActive, jobLine, jobsApi, kindText, queueDetail, statusClass, statusText, stuckNote } from '../api/jobs'
 
 const props = defineProps({
   actions: { type: Boolean, default: false },

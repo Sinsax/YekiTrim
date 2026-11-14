@@ -282,6 +282,12 @@ pub struct JobSummary {
     pub status: String,
     pub message: String,
     pub stage: Option<String>,
+    /// 阶段中文名（服务端映射好；前端 jobLine 直接用，不再自己翻英文类名）。
+    pub stage_zh: Option<String>,
+    /// 复合任务当前第几阶段（1 起）。
+    pub stage_index: Option<u32>,
+    /// 复合任务总阶段数（None/0 = 不显示 i/N）。
+    pub stage_total: Option<u32>,
     pub current: u64,
     pub total: u64,
     /// 失败原因（成功/取消时为 None）。前端 `onDone` 会读它。
@@ -329,6 +335,12 @@ pub struct Job {
     pub status: JobStatus,
     pub message: String,
     pub stage: Option<String>,
+    /// 阶段中文名（服务端唯一映射 `api/core.rs::stage_zh`，前端 jobLine 直接显示）。
+    pub stage_zh: Option<String>,
+    /// 复合任务当前第几阶段（1 起；单段任务恒 1）。
+    pub stage_index: Option<u32>,
+    /// 复合任务总阶段数（None/0 = 不显示 i/N —— 非管线任务没有"共几步"的概念）。
+    pub stage_total: Option<u32>,
     pub current: u64,
     pub total: u64,
     pub error: Option<String>,
@@ -372,6 +384,9 @@ impl Job {
             status: JobStatus::Queued,
             message: spec.message,
             stage: None,
+            stage_zh: None,
+            stage_index: None,
+            stage_total: None,
             current: 0,
             total: 0,
             error: None,
@@ -479,6 +494,9 @@ impl Job {
             status: self.status.as_str().to_string(),
             message: self.message.clone(),
             stage: self.stage.clone(),
+            stage_zh: self.stage_zh.clone(),
+            stage_index: self.stage_index,
+            stage_total: self.stage_total,
             current: self.current,
             total: self.total,
             error: self.error.clone(),
@@ -524,12 +542,21 @@ pub struct JobManager {
     last_blocked_warn: AtomicU64,
     /// 建任务频率（每账号每分钟，见 [`MAX_CREATE_PER_MINUTE`]）。
     create_rate: super::ratelimit::RateLimiter,
+    /// 创建时的 runtime 句柄（= server 的主 runtime / 测试的测试 runtime）。
+    ///
+    /// 进度桥的**事件消费者在这里跑**：管线体在专用线程的 current-thread runtime 上
+    /// 整段阻塞（ffmpeg `output()`、转写……），事件若 spawn 到"当前"runtime 就会被
+    /// 饿死 —— 桥把事件投进通道，消费者经这个句柄常驻主 runtime（2026-11-15
+    /// 「准备中」悬案的结构修，见 docs/plan/job-progress-spec-2026-11-15.md）。
+    handle: tokio::runtime::Handle,
 }
 
 impl Default for JobManager {
     fn default() -> Self {
         let (all, _) = tokio::sync::broadcast::channel(1024);
         Self {
+            handle: tokio::runtime::Handle::try_current()
+                .expect("JobManager 必须在 tokio runtime 里创建（server 启动 / #[tokio::test] 都是）"),
             jobs: RwLock::new(Vec::new()),
             all,
             last_blocked_warn: AtomicU64::new(0),
@@ -541,6 +568,11 @@ impl Default for JobManager {
 impl JobManager {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// 进度桥消费者要用的主 runtime 句柄（见 [`Self::handle`] 的说明）。
+    pub(crate) fn runtime_handle(&self) -> tokio::runtime::Handle {
+        self.handle.clone()
     }
 
     /// 历史任务裁剪：只淘汰"已终态且不再占资源"的，最多留 50 条。
@@ -787,11 +819,28 @@ impl JobManager {
         }
     }
 
-    pub async fn stage_started(&self, id: &str, stage: &str, num: u32) {
+    /// 阶段开始：登记稳定键 + 中文名 + 在本任务里的序位。
+    ///
+    /// ⚠️ `message` 在这里**重置为空**：它的语义是"阶段内一句话明细"（进度桥的 note /
+    /// 模型下载的"正在下载 xxx"），不是状态回显 —— 状态由状态 chip 与「阶段 i/N · 中文名」
+    /// 表达（同一件事不说三遍）。旧实现把创建文案「准备中」原样带进阶段里，就是这个
+    /// 语义没分家（2026-11-15「准备中」悬案的帮凶之一）。
+    pub async fn stage_started(
+        &self,
+        id: &str,
+        stage: &str,
+        num: u32,
+        zh: &str,
+        index: u32,
+        total: u32,
+    ) {
         let mut jobs = self.jobs.write().await;
         if let Some(job) = jobs.iter_mut().find(|j| j.id == id) {
             job.stage = Some(stage.to_string());
-            job.message = format!("{} 运行中", stage);
+            job.stage_zh = Some(zh.to_string());
+            job.stage_index = Some(index);
+            job.stage_total = Some(total);
+            job.message = String::new();
             job.push(
                 JobEvent::StageStarted {
                     stage: stage.to_string(),
@@ -831,10 +880,12 @@ impl JobManager {
         }
     }
 
+    /// 阶段完成。事件载荷保持稳定英文键（SSE 消费者不感知翻译）；message 重置口径：
+    /// 完成后到下一阶段开始之间不回显状态（状态由 chip 与阶段行表达）。
     pub async fn stage_completed(&self, id: &str, stage: &str) {
         let mut jobs = self.jobs.write().await;
         if let Some(job) = jobs.iter_mut().find(|j| j.id == id) {
-            job.message = format!("{} 完成", stage);
+            job.message = String::new();
             job.push(
                 JobEvent::StageCompleted {
                     stage: stage.to_string(),

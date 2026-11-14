@@ -111,7 +111,8 @@ async fn spawn_build(
     let jobs = state.jobs.clone();
     let job_id = id.clone();
     let cancel = jobs.cancel_token(&id).await;
-    let progress = super::api::core::progress_bridge(job_id.clone(), jobs.clone(), cancel);
+    // 表情包构建无管线阶段框架：expected 空（它经 stage_started("表情包标签") 自报阶段）
+    let progress = super::api::core::progress_bridge(job_id.clone(), jobs.clone(), cancel, Vec::new());
     let pack = pack.to_string();
     // 贴纸标签构建要读整个包 + 跑多批 LLM（同步段很长）→ 专用任务线程
     super::api::spawn_job(jobs.clone(), job_id.clone(), move || async move {
