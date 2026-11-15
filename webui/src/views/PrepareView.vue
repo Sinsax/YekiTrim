@@ -151,6 +151,19 @@
 
       <!-- 右：识别（一块卡，高级项默认折叠）。主按钮紧跟状态 chips，其余收进「处理选项」。 -->
       <div class="side-col">
+        <!-- 运行任务日志（用户口径：右侧搬日志方便盯进度）：详情回填最近 50 行 + SSE Log 事件实时追加 -->
+        <div class="card joblog-card">
+          <div class="row spread mb-8">
+            <b class="t m-0">任务日志</b>
+            <span class="muted small" v-if="jobLogs.length">{{ jobLogs.length }} 行</span>
+          </div>
+          <div class="joblog" ref="joblogEl">
+            <div v-if="!jobLogs.length" class="empty small">暂无任务日志 —— 起一个任务后这里会实时滚动</div>
+            <div v-for="(l, i) in jobLogs" :key="i" class="joblog-line" :class="l.level">
+              <span class="mono">{{ l.message }}</span>
+            </div>
+          </div>
+        </div>
         <div class="card">
           <!-- 处理选项：ASR 模式 / 主播名 / 分步处理 / 弹幕与字幕清单 / 重新处理。默认收起。 -->
           <details class="adv-blk materials-blk" :open="materialsOpen" @toggle="syncMaterials">
@@ -396,7 +409,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import Icon from '../components/Icon.vue'
 import AppModal from '../components/AppModal.vue'
@@ -1278,16 +1291,33 @@ function stageText(name) {
   return map[name] || '处理'
 }
 
+/** 右栏「任务日志」：当前任务的日志行（详情回填最近 50 行 + SSE Log 事件实时追加，上限 200 行）。 */
+const jobLogs = ref([])
+const joblogEl = ref(null)
+watch(() => jobLogs.value.length, async () => {
+  await nextTick()
+  if (joblogEl.value) joblogEl.value.scrollTop = joblogEl.value.scrollHeight
+})
+
 function attachJob(id, kind, queued = false) {
   Object.assign(job, { id, kind, status: queued ? 'queued' : 'running', current: 0, total: 0, message: queued ? '排队中' : '已启动' })
   stageNow.value = ''
+  // 右栏日志：先清空，再用任务详情回填最近日志（SSE Log 事件随后实时追加）
+  jobLogs.value = []
+  jobsApi.detail(id).then((j) => {
+    jobLogs.value = (j?.logs || []).slice(-200).map((l) => ({ level: l.level, message: l.message }))
+  }).catch(() => {})
   // `watchJob()` 返回 `{ close() }` 对象（不是函数）：当函数调会抛错，
   // 且下面的订阅就不会执行 → 任务永远停在「运行中」。
   jobClose?.close?.()
   jobClose = watchJob(id, {
     onEvent(e) {
       if (e.type === 'progress') { job.current = e.current; job.total = e.total }
-      if (e.type === 'log') job.message = e.message
+      if (e.type === 'log') {
+        job.message = e.message
+        jobLogs.value.push({ level: e.level, message: e.message })
+        if (jobLogs.value.length > 200) jobLogs.value.splice(0, jobLogs.value.length - 200)
+      }
       if (e.type === 'stage_started') {
         stageNow.value = e.stage || ''
         job.message = stageText(e.stage) + ' 运行中'
@@ -1530,11 +1560,19 @@ onUnmounted(() => {
 /* 识别流程卡：一行 = 复选节点 + 主按钮；运行中第二行 = 进度 + 停止/任务（旧四层堆叠已压扁）。 */
 /* ── 步骤条（识别 → 查找事件 → 剪出片段）：flow-card 内可伸缩的一段，不是独立卡片 ── */
 .prep-steps { display:flex; align-items:center; gap:6px; flex:0 1 auto; min-width:0; flex-wrap:wrap; }
-.prep-run { display:flex; align-items:center; gap:8px; flex-basis:100%; }
-.prep-run-label { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.prep-run { display:flex; align-items:center; gap:8px; flex:1 1 240px; min-width:220px; }
+.prep-run-label { font-size:13px; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* 右栏任务日志：mono 小字滚动区（详情回填 + SSE Log 事件实时追加，自动滚到底） */
+.joblog { max-height:320px; overflow-y:auto; padding:6px 8px;
+  font-family:var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size:11px; line-height:1.6;
+  border:1px solid var(--line-soft); border-radius:var(--r-sm); background:var(--bg-soft); }
+.joblog-line { padding:1px 0; border-bottom:1px dashed var(--line-soft); overflow-wrap:anywhere; }
+.joblog-line:last-child { border-bottom:none; }
+.joblog-line.error { color:var(--red-deep); }
+.joblog-line.warn { color:var(--amber-deep); }
 .pstep { display:flex; align-items:center; min-width:0; flex:none; }
 /* 阶段开关 pill：亮（主色底+粉字+实线）= 纳入；暗（灰字+虚线框）= 排除 —— 变亮变暗即设置 */
-.pstep-tag { padding:4px 14px; border-radius:var(--r-full); font-size:12.5px; font-weight:var(--fw-semi);
+.pstep-tag { padding:5px 16px; border-radius:var(--r-full); font-size:13.5px; font-weight:var(--fw-semi);
   border:1.5px solid var(--line); background:transparent; color:var(--ink-faint);
   cursor:pointer; transition:border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
   line-height:1.4; white-space:nowrap; }
