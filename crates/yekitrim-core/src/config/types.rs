@@ -1457,6 +1457,27 @@ pub struct CuttingConfig {
     /// 别人的片段无论这个开关怎样都由 `foreign_clip_conflict` 拦下。
     #[serde(default)]
     pub overwrite: Option<bool>,
+    /// **磁盘预检阈值（GB，1024³）**：管线每个阶段开工前（`PipelineRunner`）与切片的每个
+    /// 批次边界（`Cutter`）都会检查 `output_dir` 所在卷的可用空间，低于它就**停止整个阶段**
+    /// 并明确报错，剩余片段不再派发（已剪的保留；重跑会跳过已有 clip.mp4 自动续作）。
+    ///
+    /// 宁可停批也不能把盘写穿 —— 2026-11-15 事故：一键全切把数据盘写到 13.88 GB，
+    /// 机器上的外部看门狗（diskguard，min_free 15 GB）按最旧优先删掉了 6 场录播的源文件，
+    /// 其中两场正是正在处理的工程输入。**机器上还跑着别的看门狗时，这个值必须设得
+    /// 比看门狗的阈值更高才拦得住。** `0` = 关闭预检。
+    #[serde(default = "default_min_free_gb")]
+    pub min_free_gb: u64,
+}
+
+fn default_min_free_gb() -> u64 {
+    2
+}
+
+impl CuttingConfig {
+    /// 阈值换算成字节（饱和乘法：`u64::MAX` 的 GB 值不会溢出成小数）。
+    pub fn min_free_bytes(&self) -> u64 {
+        self.min_free_gb.saturating_mul(1024 * 1024 * 1024)
+    }
 }
 
 impl Default for CuttingConfig {
@@ -1464,6 +1485,7 @@ impl Default for CuttingConfig {
         Self {
             output_dir: default_output_dir(),
             overwrite: None,
+            min_free_gb: default_min_free_gb(),
         }
     }
 }

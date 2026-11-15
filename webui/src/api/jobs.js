@@ -211,11 +211,28 @@ export function idleSecs(job, nowMs = Date.now()) {
   return Math.max(0, Math.floor(nowMs / 1000) - job.updated_at)
 }
 
-/** 运行中但久无进展时的提示文案（否则空串）。 */
+/** 运行中但久无进展时的提示文案（否则空串）。
+ *
+ * ⚠️ **两档必须分开**（v2 L3，2026-11-15）：
+ * - `job.stalled`（后端判定：**有可量化进度且连续 5 分钟没变**）⇒ 真卡，给完整提示 + 醒目样式；
+ * - 只是"没有新事件" ⇒ 弱提示，**不再断言"可能卡住"**。
+ *   依据：静默 ≠ 卡住 —— 检测阶段曾整条链路零事件，那时这条判据让每个长任务都误报一次
+ *   （实测「查找事件 · 已 3 分钟没有新进展 · 可能卡住」而检测正在正常跑）。
+ *   后端心跳（`HEARTBEAT_SECS`=30s）会刷新 `updated_at`，所以这里通常也触发不了。
+ */
 export function stuckNote(job, nowMs = Date.now()) {
+  if (!job || job.status !== 'running') return ''
+  if (job.stalled === true) {
+    return `⚠ 进度已很久没变 —— 可能卡在外部进程或网络盘上，可看任务日志最后一行，或取消后重试`
+  }
   const idle = idleSecs(job, nowMs)
   if (idle < IDLE_WARN_SECS) return ''
-  return `已 ${Math.floor(idle / 60)} 分钟没有新进展 —— 可能卡在外部进程或网络盘上，可看任务日志最后一行，或取消后重试`
+  return `已 ${Math.floor(idle / 60)} 分钟没有新事件 —— 任务仍在运行中（该阶段可能不上报进度）`
+}
+
+/** 卡住提示是不是"真卡"（决定样式：只对 stalled 用醒目色）。 */
+export function isStalled(job) {
+  return !!(job && job.status === 'running' && job.stalled === true)
 }
 
 /**

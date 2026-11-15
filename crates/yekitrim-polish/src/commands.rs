@@ -6,6 +6,7 @@
 use crate::{cover, process, render};
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::project::ProjectFile;
 use crate::{llm, parse, project};
@@ -13,7 +14,25 @@ use crate::{llm, parse, project};
 
 // init
 // ============================================================
+/// `cmd_init` 的薄包装（无进度出口）：CLI、service、测试都用它。
 pub async fn cmd_init(path: &Path) -> anyhow::Result<()> {
+    cmd_init_with(path, None).await
+}
+
+/// 带**进度出口**的 init（v2 L1，2026-11-15）：预览代理是 720p 转码，长视频分钟级，
+/// 这段此前**零事件** —— 界面 120s 后误报「可能卡住」（实测踩到）。
+///
+/// 只在这一处报 `note`（"生成预览代理…"），因为它是 init 里唯一的长阻塞段；
+/// 其余步骤是毫秒级文件读写。CLI 走上面的 `cmd_init`（None），行为逐字节不变。
+pub async fn cmd_init_with(
+    path: &Path,
+    progress: Option<&Arc<dyn yekitrim_core::progress::ProgressReporter>>,
+) -> anyhow::Result<()> {
+    let note = |msg: &str| {
+        if let Some(p) = progress {
+            yekitrim_core::progress::ProgressReporter::note(p.as_ref(), msg);
+        }
+    };
     tracing::info!("📁  Initializing project at: {}", path.display());
     let config_path = path.join("polish.toml");
     if config_path.exists() {
@@ -106,7 +125,15 @@ pub async fn cmd_init(path: &Path) -> anyhow::Result<()> {
     // **预览代理**（720p / GOP10）：预览定位从"长 GOP 源每次重解"变成"最近的 10 帧"，
     // 实测 165ms → 18ms；体积约源的一半。**只给预览那条腿读**，出片永远用源。
     // 失败只 warn、绝不阻断 init（预览回落源，功能不受影响）。
-    let _ = crate::render::proxy::ensure_preview_proxy(path, &example.source.video);
+    //
+    // v2 L1：这条是 init 里唯一的长阻塞（720p 转码），前后各 note 一次 ——
+    // 否则任务卡在这分钟级的一步时，界面只能显示"运行中"，120s 后还会误报卡住。
+    let proxy_src = example.source.video.clone();
+    if let Some(p) = progress {
+        yekitrim_core::progress::ProgressReporter::note(p.as_ref(), "生成预览代理（720p 转码）…");
+    }
+    let _ = crate::render::proxy::ensure_preview_proxy(path, &proxy_src);
+    note("预览代理完成，工程就绪");
 
     tracing::info!("");
     tracing::info!("Next steps:");

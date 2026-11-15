@@ -7,11 +7,11 @@
 整条切片的领域内核：把「录播视频 + 弹幕文件」变成「按事件分割的片段 + 字幕 + 事件清单」。
 四个 Stage 的实现在这里（AudioExtractor → Transcriber → EventDetector → Cutter），编排器
 `PipelineRunner` 也在这里；`yekitrim-service::core_pipeline` 是 CLI 与 `yekitrim-server` 共用的装配层，
-它按 `-i`/`-o`/`-t`/`-e` 覆盖参数后驱动本 crate。此外还兜住工具模块：`types` / `path` / `srt` /
+它按 `-i`/`-o`/`-t`/`-e` 覆盖参数后驱动本 crate。此外还兜住工具模块：`types` / `path` / `disk` / `srt` /
 `fonts` / `download` / `progress` / `filelock` / `tenant`（没有专卡的都看这里）。
 
 `lib.rs` 的模块表（**就是全表，新增模块必须在这里登记**）：
-`types` / `config` / `fonts` / `path` / `srt` / `pipeline` / `audio` / `asr` / `download` /
+`types` / `config` / `disk` / `fonts` / `path` / `srt` / `pipeline` / `audio` / `asr` / `download` /
 `detection` / `danmaku` / `cutting` / `progress` / `filelock` / `tenant` / `owner`。
 
 ## 入口

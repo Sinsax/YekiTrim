@@ -85,6 +85,14 @@ impl PipelineRunner {
         }
     }
 
+    /// **阶段预检**：输出盘（`output_dir` 所在卷）的可用空间必须 ≥ `[cutting] min_free_gb`
+    /// （`0` = 关闭）。不达标就在这里**停下整个阶段**（`disk::FreeSpaceError`，批量调用方
+    /// 可 downcast 识别后停整批），而不是让 stage 切到一半把盘写穿、被外部磁盘看门狗
+    /// 按最旧优先把源录播删掉（2026-11-15 事故：一键全切写穿数据盘 → diskguard 删源）。
+    fn ensure_stage_disk_free(&self, ctx: &PipelineContext) -> Result<()> {
+        crate::disk::ensure_free(&ctx.output_dir, self.config.cutting.min_free_bytes())
+    }
+
     /// `PipelineContext` 里**已经装好**的输入能证明的最高阶段。
     ///
     /// 服务层在调 `run()` 之前会把 `-t` / `-e` 覆盖或用户选中的素材读进 ctx
@@ -125,6 +133,8 @@ impl PipelineRunner {
             if ctx.progress.cancelled() {
                 bail!("任务已取消");
             }
+            // 阶段预检：空间不足 = 整个阶段不开工（自动处理也一样，见 `ensure_stage_disk_free`）
+            self.ensure_stage_disk_free(ctx)?;
             ctx.progress.stage_started(name);
             tracing::info!("[{}] started", name);
             stage.run(ctx).await?;
@@ -148,6 +158,8 @@ impl PipelineRunner {
             if ctx.progress.cancelled() {
                 bail!("任务已取消");
             }
+            // 阶段预检：空间不足 = 整个阶段不开工（自动处理也一样，见 `ensure_stage_disk_free`）
+            self.ensure_stage_disk_free(ctx)?;
             ctx.progress.stage_started(name);
             tracing::info!("[{}] started", name);
             stage.run(ctx).await?;
@@ -184,6 +196,8 @@ impl PipelineRunner {
             if ctx.progress.cancelled() {
                 bail!("任务已取消");
             }
+            // 阶段预检：空间不足 = 整个阶段不开工（自动处理也一样，见 `ensure_stage_disk_free`）
+            self.ensure_stage_disk_free(ctx)?;
             ctx.progress.stage_started(name);
             tracing::info!("[{}] started", name);
             stage.run(ctx).await?;
@@ -412,5 +426,55 @@ mod tests {
             .await
             .expect("ctx.events 已就位，cut 不该被门槛拦下");
         assert_eq!(*ran_cut.lock().unwrap(), vec![4]);
+    }
+
+    /// **阶段预检**：输出盘余量低于 `[cutting] min_free_gb` ⇒ runner 在 stage 开工前就停，
+    /// stage 一次都不执行，错误是可 downcast 的 `disk::FreeSpaceError`
+    /// （一键全切等批量调用方靠它把「没让剪」与「剪切失败」分开，然后停整批）。
+    #[tokio::test]
+    async fn runner_aborts_stage_before_it_runs_when_disk_precheck_fails() {
+        let dir = std::env::temp_dir().join(format!("yekitrim-disk-guard-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let ran = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut config = Config::default();
+        // 阈值拉满（saturating 乘法不回绕）⇒ 任何真实磁盘都必然不足
+        config.cutting.min_free_gb = u64::MAX;
+        let mut runner = PipelineRunner::new(config);
+        runner.add_stage(Box::new(FakeStage { num: 1, ran: ran.clone() }));
+        let mut ctx = ctx_in(&dir);
+        let err = runner
+            .run_all(&mut ctx)
+            .await
+            .expect_err("阈值 u64::MAX ⇒ 预检必失败");
+        // ⚠️ 查**整条错误链**（to_string() 只有最外层 context）
+        assert!(format!("{err:#}").contains("磁盘空间不足"), "{err:#}");
+        assert!(
+            err.downcast_ref::<crate::disk::FreeSpaceError>().is_some(),
+            "必须是可识别的 FreeSpaceError"
+        );
+        assert!(
+            ran.lock().unwrap().is_empty(),
+            "预检不过 ⇒ stage 一次都不能执行"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 健康磁盘（默认阈值）上预检必须放行 —— 守卫不能把正常管线拦死。
+    #[tokio::test]
+    async fn runner_disk_precheck_passes_on_healthy_disk() {
+        let ran = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut runner = PipelineRunner::new(Config::default());
+        runner.add_stage(Box::new(FakeStage { num: 1, ran: ran.clone() }));
+        let mut ctx = PipelineContext::new(
+            PathBuf::from("/nonexistent/video.mp4"),
+            std::env::temp_dir().join("yekitrim-disk-guard-ok"),
+        );
+        runner
+            .run_all(&mut ctx)
+            .await
+            .expect("默认阈值下 temp 盘应放行");
+        assert_eq!(*ran.lock().unwrap(), vec![1]);
     }
 }

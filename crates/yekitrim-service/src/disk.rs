@@ -1,53 +1,14 @@
 //! 磁盘空间与可写性探测（`yekitrim doctor` 用）。
 //!
-//! 不引入额外依赖：Windows 直接调 `GetDiskFreeSpaceExW`，其它平台退回 `df -k`。
+//! 空间查询的实现在 `yekitrim_core::disk`（2026-11-15 下沉到 core：管线阶段预检与
+//! 切片批次边界要用同一份，而 core 不许反向依赖本 crate）—— 这里只是委托转发。
 //! 探测失败一律返回 `None`（诊断命令不该因为拿不到空间而失败）。
 
 use std::path::Path;
 
 /// 目标路径所在卷的 `(可用字节, 总字节)`。
-#[cfg(windows)]
 pub fn space_bytes(path: &Path) -> Option<(u64, u64)> {
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn GetDiskFreeSpaceExW(
-            lpdirectoryname: *const u16,
-            lpfreebytesavailabletocaller: *mut u64,
-            lptotalnumberofbytes: *mut u64,
-            lptotalnumberoffreebytes: *mut u64,
-        ) -> i32;
-    }
-
-    let mut wide: Vec<u16> = path.as_os_str().to_string_lossy().encode_utf16().collect();
-    wide.push(0);
-    let mut avail: u64 = 0;
-    let mut total: u64 = 0;
-    let mut free: u64 = 0;
-    // SAFETY: 传入的是以 NUL 结尾的 UTF-16 路径与三个有效可写指针
-    let ok = unsafe {
-        GetDiskFreeSpaceExW(wide.as_ptr(), &mut avail, &mut total, &mut free)
-    };
-    if ok == 0 {
-        None
-    } else {
-        Some((avail, total))
-    }
-}
-
-/// 非 Windows：解析 `df -k <path>` 的第 2 行（可用 KB / 总 KB）。
-#[cfg(not(windows))]
-pub fn space_bytes(path: &Path) -> Option<(u64, u64)> {
-    let out = yekitrim_core::process::cmd("df").arg("-k").arg(path).output().ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&out.stdout);
-    let line = text.lines().nth(1)?;
-    let cols: Vec<&str> = line.split_whitespace().collect();
-    // Filesystem 1K-blocks Used Available Capacity Mounted-on
-    let total: u64 = cols.get(1)?.parse().ok()?;
-    let avail: u64 = cols.get(3)?.parse().ok()?;
-    Some((avail.saturating_mul(1024), total.saturating_mul(1024)))
+    yekitrim_core::disk::space_bytes(path)
 }
 
 /// 目录是否可写（真实写一个探针文件再删掉；不存在会先创建）。
@@ -67,18 +28,7 @@ pub fn writable(dir: &Path) -> bool {
 
 /// 人类可读字节数（`1.2 GB` / `512 MB` / `900 B`）。
 pub fn human_bytes(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1024.0 && unit + 1 < UNITS.len() {
-        value /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{bytes} B")
-    } else {
-        format!("{value:.1} {}", UNITS[unit])
-    }
+    yekitrim_core::disk::human_bytes(bytes)
 }
 
 #[cfg(test)]

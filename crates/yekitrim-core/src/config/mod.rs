@@ -184,6 +184,12 @@ output_dir = "./output"
 # 日志里汇总一句）；true = 一律重剪。切片页点「剪切」的单条重切**不受它约束**（永远覆盖）。
 # 别人的片段（标题与区间都对不上）无论这个开关怎样都会被拦下，不会覆盖。
 overwrite = false
+# 磁盘预检阈值（GB）：管线每个阶段开工前、以及切片的每个批次边界，都会检查输出盘
+# （output_dir 所在卷）的可用空间；低于它就**停止整个阶段**并明确报错，剩余片段不派发
+# —— 宁可停批也不能把盘写穿、被外部磁盘看门狗按最旧优先把源录播删掉
+# （2026-11-15 事故：全切写穿数据盘 → diskguard 删源）。机器上还跑着别的看门狗时，
+# 这个值必须设得**比看门狗阈值更高**才拦得住。0 = 关闭预检。
+min_free_gb = 2
 
 [sfx]
 # 音效屏蔽列表 (yekitrim polish 使用, 全局共享)
@@ -849,6 +855,10 @@ fn merge(base: &mut Config, overlay: Config) {
     }
     if let Some(v) = overlay.cutting.overwrite {
         base.cutting.overwrite = Some(v);
+    }
+    // 磁盘预检阈值：非默认才覆盖 —— 写 0 是"显式关闭"，要能盖过全局的开启
+    if overlay.cutting.min_free_gb != CuttingConfig::default().min_free_gb {
+        base.cutting.min_free_gb = overlay.cutting.min_free_gb;
     }
 
     // 音效屏蔽列表: 追加合并 (全局 + 项目)
@@ -2490,6 +2500,49 @@ mod recorder_backend_merge_tests {
         base2.ingest.recorder.kind = "bililive-tools".into();
         merge(&mut base2, Config::default());
         assert_eq!(base2.ingest.recorder.kind, "bililive-tools");
+    }
+}
+
+#[cfg(test)]
+mod cutting_min_free_gb_merge_tests {
+    use super::*;
+
+    /// `[cutting] min_free_gb`（磁盘预检阈值）的合并口径：非默认才覆盖 ——
+    /// 写 `0` 是"显式关闭"，必须能盖过全局的开启；缺席 = 不改。
+    #[test]
+    fn merge_follows_non_default_and_zero_overrides() {
+        let mut base = Config::default();
+        let mut overlay = Config::default();
+        overlay.cutting.min_free_gb = 20;
+        merge(&mut base, overlay);
+        assert_eq!(base.cutting.min_free_gb, 20, "调高阈值要生效");
+
+        let mut base = Config::default();
+        base.cutting.min_free_gb = 20;
+        let mut overlay = Config::default();
+        overlay.cutting.min_free_gb = 0;
+        merge(&mut base, overlay);
+        assert_eq!(base.cutting.min_free_gb, 0, "显式 0 = 关闭预检，要能盖过开启");
+
+        let mut base = Config::default();
+        base.cutting.min_free_gb = 20;
+        merge(&mut base, Config::default());
+        assert_eq!(base.cutting.min_free_gb, 20, "缺席 = 不改（不能被默认值打回去）");
+    }
+
+    /// 模板里的默认值必须可解析、与代码默认一致；字节换算要饱和
+    /// （runner/cutter 测试用 `u64::MAX` 当"必失败"阈值，不能回绕成小数）。
+    #[test]
+    fn template_default_and_byte_conversion() {
+        let parsed: Config = toml::from_str(GLOBAL_CONFIG_TOML).unwrap();
+        assert_eq!(parsed.cutting.min_free_gb, 2, "模板默认 = 代码默认");
+        assert_eq!(
+            CuttingConfig::default().min_free_bytes(),
+            2 * 1024 * 1024 * 1024
+        );
+        let mut maxed = CuttingConfig::default();
+        maxed.min_free_gb = u64::MAX;
+        assert_eq!(maxed.min_free_bytes(), u64::MAX, "饱和乘法不许回绕");
     }
 }
 

@@ -124,6 +124,7 @@ impl Stage for EventDetector {
                 &ctx.output_dir,
                 ctx.detect_resume,
                 cancel.clone(),
+                Some(ctx.progress.clone()),
             )
             .await?
         };
@@ -147,6 +148,7 @@ impl Stage for EventDetector {
                 cancel.clone(),
                 heatmap.as_deref(),
                 video_duration,
+                Some(ctx.progress.clone()),
             )
             .await
             {
@@ -498,6 +500,8 @@ async fn process_with_llm(
     output_dir: &std::path::Path,
     resume: Option<bool>,
     cancel: Option<yekitrim_llm::agent::CancelProbe>,
+    // 阶段进度出口（v2 L1）：透传给 llm::call_with_progress 的转发器
+    progress: Option<std::sync::Arc<dyn crate::progress::ProgressReporter>>,
 ) -> Result<Vec<Event>> {
     // 预合并：相邻短段（间距 <2s）合并，减少 LLM 输入量
     let merged = merge_segments_for_detection(segments);
@@ -545,6 +549,7 @@ async fn process_with_llm(
         cancel.clone(),
         Some(partial_tx),
         llm::DetectPass::Main,
+        progress.clone(),
     );
 
     let partial_task = tokio::spawn(async move {
@@ -590,6 +595,8 @@ async fn process_scattered_with_llm(
     cancel: Option<yekitrim_llm::agent::CancelProbe>,
     heatmap: Option<&[DensityWindow]>,
     video_duration: Option<f64>,
+    // 阶段进度出口（v2 L1）：透传给 llm::call_with_progress 的转发器
+    progress: Option<std::sync::Arc<dyn crate::progress::ProgressReporter>>,
 ) -> Result<(Vec<Event>, ScatteredMergeStat)> {
     let merged = merge_segments_for_detection(segments);
     let checkpoint_path = output_dir.join("events.scattered.checkpoint.json");
@@ -619,6 +626,7 @@ async fn process_scattered_with_llm(
         cancel.clone(),
         None,
         llm::DetectPass::Scattered,
+        progress.clone(),
     )
     .await?;
 
@@ -1696,6 +1704,7 @@ mod scatter_diag {
             None,
             None,
             None,
+            None,
         )
         .await
         .expect("第二趟跑通");
@@ -1927,6 +1936,7 @@ mod scatter_stage_diag {
             None,
             None,
             llm::DetectPass::Scattered,
+            None,
         )
         .await
         .expect("第二趟跑通");

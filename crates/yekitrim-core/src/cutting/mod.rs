@@ -157,6 +157,10 @@ impl Stage for Cutter {
             if ctx.progress.cancelled() {
                 anyhow::bail!("任务已取消");
             }
+            // 磁盘预检也在批次边界：余量跌破 `[cutting] min_free_gb` ⇒ **整个阶段停止**，
+            // 剩余片段不再派发（已剪的保留；重跑会跳过已有 clip.mp4 自动续作）。
+            // 宁可停批也不能切到把盘写穿、被外部看门狗把源录播删掉（2026-11-15 事故）。
+            crate::disk::ensure_free(&ctx.output_dir, ctx.config.cutting.min_free_bytes())?;
             let batch_end = (batch_start + max_concurrent).min(total_events);
 
             let batch_results: Vec<Result<ClipOutcome>> = std::thread::scope(|scope| {
@@ -1330,6 +1334,40 @@ mod tests {
         ctx.config = Arc::new(config);
         ctx.events = events;
         ctx
+    }
+
+    /// **磁盘预检（批次边界）**：余量低于 `[cutting] min_free_gb` ⇒ 整个阶段停止，
+    /// 一条都不剪（预检挡在 ffmpeg 之前）。2026-11-15 事故：全切写穿数据盘，
+    /// 外部看门狗把源录播删了 —— 从此宁停不切。
+    #[tokio::test]
+    async fn cutter_stops_entire_stage_when_disk_precheck_fails() {
+        let t = TmpDir::new("disk-guard");
+        std::fs::write(t.0.as_path().join("video.mp4"), b"x").unwrap();
+        let events = vec![event_at("A", 0.0, 10.0, 1), event_at("B", 10.0, 20.0, 2)];
+        let mut ctx = ctx_with_events_and_overwrite(t.0.as_path(), events, None);
+        // 阈值拉满（saturating 乘法不回绕）⇒ 预检必失败
+        let mut config = crate::config::Config::default();
+        config.cutting.min_free_gb = u64::MAX;
+        ctx.config = Arc::new(config);
+
+        let err = Cutter
+            .run(&mut ctx)
+            .await
+            .expect_err("阈值 u64::MAX ⇒ 预检必失败");
+        // ⚠️ 查**整条错误链**：to_string() 只有最外层 context（"...所在卷预检未过"），
+        // "磁盘空间不足"在 FreeSpaceError 那一层。
+        assert!(format!("{err:#}").contains("磁盘空间不足"), "{err:#}");
+        assert!(
+            err.downcast_ref::<crate::disk::FreeSpaceError>().is_some(),
+            "必须可 downcast，一键全切靠它停整批"
+        );
+
+        // 一条都没剪：clips 下没有任何 clip.mp4
+        let clips = t.0.as_path().join("output/clips");
+        let cut_any = std::fs::read_dir(&clips)
+            .map(|rd| rd.flatten().any(|e| e.path().join("clip.mp4").exists()))
+            .unwrap_or(false);
+        assert!(!cut_any, "预检失败 ⇒ 不得剪出任何片段");
     }
 
     /// **批量 / `process`（多条事件）默认不覆盖**；显式 `overwrite = true` 才覆盖。

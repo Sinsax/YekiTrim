@@ -800,6 +800,29 @@ const DETECT_WINDOW_OVERLAP: usize = 5;
 ///   中断后至少保留已完成窗口的结果）。
 /// - `cancel`：取消探针。给了就在**每个窗口派发前**与每收一个窗口后检查，命中即中止
 ///   （含 abort 在飞的窗口），返回「任务已取消」而不是继续把剩下的窗口跑完。
+/// 桥接 Agent 进度到两个出口：调用方的事件流（边分析边保存）与**阶段进度**（窗口 i/N）。
+///
+/// 抽成独立函数是为了单测 —— 真实链路要发 LLM 调用，转发逻辑本身不该只能靠"跑一遍检测"验证。
+/// 两个出口都可选（任一为 None 只是少一路），通道关闭即退出。
+async fn forward_agent_progress(
+    mut rx: tokio::sync::mpsc::Receiver<AgentProgress<Vec<Event>>>,
+    events_tx: Option<tokio::sync::mpsc::Sender<Vec<Event>>>,
+    progress: Option<std::sync::Arc<dyn crate::progress::ProgressReporter>>,
+) {
+    while let Some(ap) = rx.recv().await {
+        if let Some(p) = progress.as_ref() {
+            p.stage_progress(ap.completed_windows as u64, ap.total_windows as u64);
+        }
+        if let Some(events) = ap.output {
+            if let Some(tx) = events_tx.as_ref() {
+                if tx.send(events).await.is_err() {
+                    break;
+                }
+            }
+        }
+    }
+}
+
 pub async fn call_with_progress(
     segments: &[TranscriptSegment],
     llm: &LlmConfig,
@@ -810,6 +833,9 @@ pub async fn call_with_progress(
     cancel: Option<yekitrim_llm::agent::CancelProbe>,
     progress_tx: Option<tokio::sync::mpsc::Sender<Vec<Event>>>,
     pass: DetectPass,
+    // 阶段进度出口（2026-11-15 v2 L1）：Agent 的窗口计数折成 stage_progress(完成窗, 总窗)。
+    // ⚠️ 这条以前**完全没接** —— 检测是分钟级链路，界面只能靠"没有事件"猜它卡住（实测误报）。
+    progress: Option<std::sync::Arc<dyn crate::progress::ProgressReporter>>,
 ) -> Result<Vec<Event>> {
     if segments.is_empty() {
         return Ok(Vec::new());
@@ -875,19 +901,15 @@ pub async fn call_with_progress(
         None => agent,
     };
 
-    // 桥接通用 Agent 进度 → 调用方的事件流（spawn 转发，避免 send 阻塞 Agent）
-    let (agent_progress_tx, mut agent_progress_rx) = if let Some(tx) = progress_tx {
+    // 桥接通用 Agent 进度 → 调用方的事件流 / 阶段进度（spawn 转发，避免 send 阻塞 Agent）
+    //
+    // ⚠️ 2026-11-15（v2 L1）：转发器原来**只转发 output**，把 completed_windows/total_windows
+    // 丢掉了 —— 于是检测阶段全程零 stage_progress，界面靠"没有事件"判定卡住（实测误报 3 分钟）。
+    // 现在同一条通道顺手把窗口计数折成阶段进度；两个出口互不影响（任一侧为 None 都只是少一路）。
+    let need_forwarder = progress_tx.is_some() || progress.is_some();
+    let (agent_progress_tx, mut agent_progress_rx) = if need_forwarder {
         let (agent_tx, agent_rx) = tokio::sync::mpsc::channel::<AgentProgress<Vec<Event>>>(64);
-        let forwarder = tokio::spawn(async move {
-            let mut rx = agent_rx;
-            while let Some(progress) = rx.recv().await {
-                if let Some(events) = progress.output {
-                    if tx.send(events).await.is_err() {
-                        break;
-                    }
-                }
-            }
-        });
+        let forwarder = tokio::spawn(forward_agent_progress(agent_rx, progress_tx, progress));
         (Some(agent_tx), Some(forwarder))
     } else {
         (None, None)
@@ -1424,6 +1446,78 @@ pub fn create_default_event(segments: &[TranscriptSegment]) -> Event {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// 假 reporter：记录 `stage_progress` 调用（v2 L1 验收判据）。
+    #[derive(Default)]
+    struct RecordingProgress {
+        calls: std::sync::Mutex<Vec<(u64, u64)>>,
+    }
+
+    impl crate::progress::ProgressReporter for RecordingProgress {
+        fn stage_started(&self, _: &str) {}
+        fn stage_progress(&self, current: u64, total: u64) {
+            if let Ok(mut v) = self.calls.lock() {
+                v.push((current, total));
+            }
+        }
+        fn stage_completed(&self, _: &str) {}
+        fn error(&self, _: &str) {}
+    }
+
+    /// **v2 L1 验收判据**：检测的转发器必须把 Agent 的窗口计数折成 `stage_progress`。
+    ///
+    /// 这条以前**完全没接** —— 转发器只转发了 `output`，检测是分钟级链路却全程零事件，
+    /// 界面只能靠"没有事件"判定卡住（实测误报「已 3 分钟没有新进展 · 可能卡住」）。
+    /// 变异自证：删掉 `forward_agent_progress` 里的 `stage_progress` 调用 ⇒ 本测试红。
+    #[tokio::test]
+    async fn window_counts_become_stage_progress() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<AgentProgress<Vec<Event>>>(8);
+        let recorder = std::sync::Arc::new(RecordingProgress::default());
+        let sink: std::sync::Arc<dyn crate::progress::ProgressReporter> = recorder.clone();
+        let handle = tokio::spawn(forward_agent_progress(rx, None, Some(sink)));
+
+        for (done, total) in [(1usize, 3usize), (2, 3), (3, 3)] {
+            tx.send(AgentProgress {
+                completed_windows: done,
+                total_windows: total,
+                output: None,
+            })
+            .await
+            .unwrap();
+        }
+        drop(tx);
+        handle.await.unwrap();
+
+        let calls = recorder.calls.lock().unwrap().clone();
+        assert_eq!(
+            calls,
+            vec![(1, 3), (2, 3), (3, 3)],
+            "窗口计数必须逐条折成阶段进度（完成窗, 总窗）"
+        );
+    }
+
+    /// 两个出口互不影响：只给事件通道、不给 reporter 时，事件照常转发且不 panic。
+    #[tokio::test]
+    async fn events_still_flow_without_progress_sink() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<AgentProgress<Vec<Event>>>(8);
+        let (ev_tx, mut ev_rx) = tokio::sync::mpsc::channel::<Vec<Event>>(8);
+        let handle = tokio::spawn(forward_agent_progress(rx, Some(ev_tx), None));
+
+        tx.send(AgentProgress {
+            completed_windows: 1,
+            total_windows: 1,
+            output: Some(vec![]),
+        })
+        .await
+        .unwrap();
+        drop(tx);
+        handle.await.unwrap();
+
+        assert!(
+            ev_rx.recv().await.is_some(),
+            "事件出口不受进度出口缺失影响"
+        );
+    }
+
 
     #[test]
     fn test_parse_event_type_english_keys() {
@@ -1923,6 +2017,7 @@ mod tests {
             None,
             None,
             DetectPass::Main,
+            None,
         )
         .await
         .unwrap();

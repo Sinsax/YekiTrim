@@ -1456,20 +1456,38 @@ pub(super) async fn event_cut_all_impl(
             }));
         }
         let mut failures = 0usize;
+        // 被磁盘预检挡下的条数（含触发那条）：这不是"剪切失败"，是**没让剪** ——
+        // 阶段预检（runner）对每条 run_single_cut 都会先查 `[cutting] min_free_gb`，
+        // 一旦不达标整批就此打住，剩余条目留给"腾出空间后重跑"自动补剪。
+        let mut blocked = 0usize;
         let mut done = 0u64;
         for handle in handles {
             match handle.await {
                 Ok((_, Ok(()))) => {}
                 Ok((rank, Err(e))) => {
-                    failures += 1;
-                    let _ = jobs_handle.log(&job_id, "error", format!("clip-{:02} 剪切失败: {e:#}", rank)).await;
+                    if e.downcast_ref::<yekitrim_core::disk::FreeSpaceError>().is_some() {
+                        blocked += 1;
+                    } else {
+                        failures += 1;
+                        let _ = jobs_handle.log(&job_id, "error", format!("clip-{:02} 剪切失败: {e:#}", rank)).await;
+                    }
                 }
                 Err(_) => failures += 1,
             }
             done += 1;
             jobs_handle.progress(&job_id, done, total).await;
         }
-        if failures == 0 {
+        if blocked > 0 {
+            let ok = total.saturating_sub(failures as u64 + blocked as u64);
+            jobs_handle
+                .fail(
+                    &job_id,
+                    format!(
+                        "磁盘空间不足，已停止剪切：成功 {ok} 条、失败 {failures} 条、{blocked} 条未处理；腾出空间后重新「一键全切」会自动补剪缺失的片段（只剪还没有 clip.mp4 的目录）"
+                    ),
+                )
+                .await;
+        } else if failures == 0 {
             jobs_handle.complete(&job_id).await;
         } else {
             jobs_handle.fail(&job_id, format!("{} 个事件剪切失败", failures)).await;
@@ -2456,6 +2474,69 @@ async fn clip_danmaku_count_falls_back_to_source_and_delete_prunes_index() {
     let res = t.call(t.req("DELETE", "/project-data/clips/abc?project=1").body(Body::empty()).unwrap()).await;
     assert_eq!(res.status(), StatusCode::NOT_FOUND, "不存在的目录名 → 404");
     assert!(clips.join("clip-01").is_dir(), "不存在的名字不能误删");
+}
+
+/// **磁盘预检把一键全切拦停**（2026-11-15 事故回归钉）：`[cutting] min_free_gb` 拉满时，
+/// 每条 `run_single_cut` 都在 runner 的阶段预检处失败（`FreeSpaceError`）——
+/// 任务必须以「磁盘空间不足」收场（**不是**"N 个事件剪切失败"），且一条片段都没剪出来；
+/// 腾出空间后重跑只剪缺失的目录（全切的既有语义）＝天然续作。
+#[tokio::test]
+async fn cut_all_stops_and_reports_when_disk_precheck_fails() {
+    let t = test_app().await;
+    let root = t.root.clone();
+
+    // 两个 enabled 事件，都没有 clip.mp4 ⇒ 全切两条都要剪
+    let events = serde_json::json!({
+        "titles": {},
+        "events": [
+            {"start": {"h":0,"m":0,"s":0,"ms":0}, "end": {"h":0,"m":0,"s":10,"ms":0},
+             "label": "A", "summary": "", "event_type": "chat", "source": "LLM",
+             "confidence": 1.0, "popularity": 0.5, "rank": 1, "clip_dir": "clip-a", "enabled": true},
+            {"start": {"h":0,"m":0,"s":10,"ms":0}, "end": {"h":0,"m":0,"s":20,"ms":0},
+             "label": "B", "summary": "", "event_type": "chat", "source": "LLM",
+             "confidence": 1.0, "popularity": 0.4, "rank": 2, "clip_dir": "clip-b", "enabled": true}
+        ]
+    });
+    std::fs::create_dir_all(root.join("output")).unwrap();
+    std::fs::write(root.join("output").join("events.json"), serde_json::to_string(&events).unwrap()).unwrap();
+    // 阈值拉满（9223372036854775807 = i64::MAX，TOML 整数上限；换算字节后饱和成
+    // u64::MAX）⇒ 任何真实磁盘都必然不足
+    std::fs::write(
+        root.join("yekitrim.toml"),
+        "[project]\ninput_file = \"a.mp4\"\n\n[cutting]\nmin_free_gb = 9223372036854775807\n",
+    ).unwrap();
+
+    let res = t.call(
+        t.req("POST", "/project-data/events/cut-all?project=1")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from("{}"))
+            .unwrap(),
+    ).await;
+    assert_eq!(res.status(), StatusCode::OK, "cut-all 照常受理成任务");
+    let v = body_json(res).await;
+    let job_id = v["id"].as_str().unwrap_or("").to_string();
+    assert!(!job_id.is_empty(), "{v}");
+
+    // 轮询到终态（任务体跑在专用线程上，这里给它足够的时间）
+    let mut error_msg = String::new();
+    for _ in 0..200 {
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        let res = t.call(t.req("GET", &format!("/jobs/{job_id}")).body(Body::empty()).unwrap()).await;
+        let v = body_json(res).await;
+        let status = v["status"].as_str().unwrap_or("").to_string();
+        if ["failed", "completed", "cancelled"].contains(&status.as_str()) {
+            assert_eq!(status, "failed", "预检拦停 ⇒ 任务必须失败: {v}");
+            error_msg = v["error"].as_str().unwrap_or("").to_string();
+            break;
+        }
+    }
+    assert!(error_msg.contains("磁盘空间不足"), "失败原因必须点名空间不足: {error_msg}");
+    assert!(error_msg.contains("未处理"), "要把没剪的条数说清: {error_msg}");
+    assert!(!error_msg.contains("个事件剪切失败"), "空间拦停不能伪装成剪切失败: {error_msg}");
+
+    // 一条都没剪出来（预检挡在 ffmpeg 之前）
+    assert!(!root.join("output/clips/clip-a/clip.mp4").exists());
+    assert!(!root.join("output/clips/clip-b/clip.mp4").exists());
 }
 
 /// `resolve_clip_dir`：数字 rank（老契约 `2` → `clip-02`）与**目录名**（`clip-out` 这类

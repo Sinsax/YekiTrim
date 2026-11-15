@@ -57,6 +57,11 @@
   的顺序拼绝对路径，两个基准都试一遍。
   ⚠️ 少了这一步，相对路径会被当成"相对进程 CWD"：弹幕永远找不到，热度静默退化成纯字幕密度、
   切片也不会生成 `clip.dm.srt`。反过来，**别在 stage 里再各写一份路径拼接**。
+- **阶段预检（2026-11-15）**：每个 stage 开工前 runner 都跑 `disk::ensure_free` ——
+  `output_dir` 所在卷的可用空间 ≥ `[cutting] min_free_gb`（`0` = 关）才派发；不达标
+  **整个阶段在此停下**（`disk::FreeSpaceError`，可 downcast，一键全切的收尾据此把
+  「没让剪」与「剪切失败」分开并停整批）。起因：全切写穿数据盘 → 外部磁盘看门狗删源。
+  判据 `runner_aborts_stage_before_it_runs_when_disk_precheck_fails`（stage 一次都不执行）。
 - **`asr/artifacts::reset` 必须先清目录**：`raw/` 按块编号命名，换过 `chunk_duration` 后残留会冒充
   本次结果 —— 管线在开跑 ASR 前调它，别绕过（细节见 `src/asr/AGENTS.md`）。
 - 单 stage 命令与 `process` 走的是**同一个 runner**（`yekitrim-service::core_pipeline` 装配），

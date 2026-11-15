@@ -212,7 +212,16 @@ pub(super) async fn polish_spawn(
         }));
         let result = async {
             match kind.as_str() {
-                "init" => yekitrim_polish::commands::cmd_init(&path).await,
+                "init" => {
+                    // v2 L1：init 里要转 720p 预览代理（长视频分钟级），原来**零事件** ⇒
+                    // 界面 120s 后误报"可能卡住"。前后各一条 log，配合 L2 心跳兜底。
+                    jobs.log(&job_id, "info", "初始化精修工程…").await;
+                    let r = yekitrim_polish::commands::cmd_init_with(&path, Some(&bridge)).await;
+                    if r.is_ok() {
+                        jobs.log(&job_id, "info", "精修工程就绪（含预览代理与响度缓存）").await;
+                    }
+                    r
+                }
                 // LLM 是显式步骤，process 隐式：完成后同一 job 内自动执行后处理
                 "llm" => {
                     jobs.log(&job_id, "info", if opts.full {

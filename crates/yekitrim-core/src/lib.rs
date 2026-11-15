@@ -5,6 +5,7 @@
 
 pub mod types;
 pub mod config;
+pub mod disk;
 pub mod fonts;
 pub mod path;
 pub mod srt;

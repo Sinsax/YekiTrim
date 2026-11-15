@@ -17,8 +17,11 @@
       <div v-if="j.status === 'queued'" class="small muted">{{ queueDetail(j) }}</div>
       <!-- 进行时行统一走 api/jobs.js::jobLine（spec §1：唯一实现，别在这里再拼一遍） -->
       <div v-else-if="showLine(j)" class="small muted">{{ jobLine(j) }}</div>
-      <!-- 运行中但久无进展：底下多半有个进程挂住了（外部 ffmpeg / 网络盘），明说出来 -->
-      <div v-if="stuckNote(j)" class="small muted">{{ stuckNote(j) }}</div>
+      <!-- 久无进展分两档（v2 L3）：真卡（stalled = 进度值连续 5 分钟没动）用醒目色；
+           只是"没有新事件"用弱提示 —— 静默不等于卡住（检测阶段曾整条链路零事件）。 -->
+      <div v-if="stuckNote(j)" class="small" :class="isStalled(j) ? 'stuck-hard' : 'muted'">
+        {{ stuckNote(j) }}
+      </div>
       <div v-if="j.status === 'running' && j.total > 0" class="progress mt-6">
         <div :style="{ width: Math.round(j.current * 100 / j.total) + '%' }"></div>
       </div>
@@ -36,7 +39,7 @@
 import { computed } from 'vue'
 import { toast } from '../stores/toast'
 import { useJobs } from '../composables/useJobs'
-import { classTitle, isActive, jobLine, jobsApi, kindText, queueDetail, statusClass, statusText, stuckNote } from '../api/jobs'
+import { classTitle, isActive, isStalled, jobLine, jobsApi, kindText, queueDetail, statusClass, statusText, stuckNote } from '../api/jobs'
 
 const props = defineProps({
   actions: { type: Boolean, default: false },
@@ -63,3 +66,8 @@ async function cancel(j) {
   }
 }
 </script>
+
+<style scoped>
+/* 真卡（stalled）：进度值连续 5 分钟没动 —— 用醒目色，区别于"只是没事件"的弱提示 */
+.stuck-hard { color: var(--amber-deep); }
+</style>

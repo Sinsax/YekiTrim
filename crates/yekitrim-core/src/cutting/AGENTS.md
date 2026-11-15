@@ -36,6 +36,10 @@
   `cut_segment` 的 `libx264` 重试兜住 —— 这才是"自动降级"的完整含义。
   守门测试 `encoder_config_never_returns_an_unusable_hardware_encoder`（变异验证过）。
 - `ffmpeg -ss {start} -i {input} -t {duration} -c:v {auto_encoder} -preset {auto_preset} {qparam} 23 -pix_fmt yuv420p -c:a aac -movflags +faststart {output}`
+- ⚠️ **磁盘预检在批次边界**（与取消同一个位置）：余量 < `[cutting] min_free_gb` ⇒
+  `ensure_free` 失败、**整个阶段停止**，剩余片段不再派发（已剪的保留；重跑跳过已有
+  clip.mp4 自动续作）。宁停不切 —— 2026-11-15 全切写穿数据盘、外部看门狗删源的事故。
+  判据 `cutter_stops_entire_stage_when_disk_precheck_fails`。
 - ⚠️ **字幕/弹幕取用一律按"重叠"，不许用"完全包含"**（2026-10-05 修）：
   `generate_clip_subtitle` 原判据 `s.start >= start && s.end <= end` 会因
   **转写全精度 f64 vs 事件毫秒精度**的误差把边界字幕判掉（实测差 5.7e-8），

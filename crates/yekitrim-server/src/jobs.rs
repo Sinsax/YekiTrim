@@ -219,6 +219,19 @@ pub const SCHED_TICK: Duration = Duration::from_secs(5);
 /// 排队任务被挡住多久之后告警（同时是告警的限流间隔：最多这么久一条）。
 pub const BLOCKED_WARN: Duration = Duration::from_secs(120);
 
+/// 心跳间隔（v2 L2，2026-11-15）：running 任务静默这么久就补一条心跳事件。
+///
+/// 为什么必须有：`stuckNote` 原来的判据是"运行中且 120s 没有新事件"，而"没有事件"
+/// 既可能是**真卡**，也可能是**这个阶段本来就不上报**（检测阶段曾整条链路零事件 ——
+/// 实测误报「已 3 分钟没有新进展 · 可能卡住」）。心跳把两者分开：静默不再等于卡住。
+pub const HEARTBEAT_SECS: u64 = 30;
+
+/// 判"真卡"的阈值（v2 L2）：进度三元组 `(stage, current, total)` 连续这么久没变。
+///
+/// ⚠️ **只有当 `total > 0` 时才用它** —— 该阶段没有可量化进度就没有可比对的值，
+/// 不该拿"进度没动"去质疑它（否则又变回误报）。
+pub const STALL_SECS: u64 = 300;
+
 /// 某个资源域已被占用（同步接口没有排队能力，只能当场拒绝）。
 #[derive(Debug, Clone)]
 pub struct BusyJob {
@@ -314,6 +327,9 @@ pub struct JobSummary {
     pub queue_position: u32,
     /// 任务来源（`foreground` 用户点按 / `background` 系统自动）。
     pub priority: String,
+    /// **进度真的不动了**（v2 L2）：只有"有可量化进度且连续 5 分钟没变"才为 true。
+    /// 前端据此显示"可能卡住" —— 单纯的"没事件"不再算卡（那可能是该阶段本来就不上报）。
+    pub stalled: bool,
     /// 仅在 `/api/jobs/:id` 返回；列表接口为空（避免 50 个任务各带 200 行日志）。
     pub logs: Vec<LogLine>,
 }
@@ -349,6 +365,13 @@ pub struct Job {
     pub(crate) created_secs: u64,
     /// 最后一次事件时刻的 epoch 秒（`summary.updated_at` 的来源）。
     pub(crate) updated_secs: u64,
+    /// 进度三元组最近一次**变化**的时刻（epoch 秒；0 = 还没上报过进度）。
+    /// 心跳用它区分"没事件但阶段不上报"与"进度真的不动了"（v2 L2）。
+    pub(crate) progress_changed_secs: u64,
+    /// 最近一次看到的进度三元组（识别"变了没有"）。
+    pub(crate) progress_key: (Option<String>, u64, u64),
+    /// 是否被判为"进度不动"（心跳写入，`JobSummary.stalled` 读它）。
+    pub(crate) stalled: bool,
     pub events: Vec<JobEvent>,
     pub logs: VecDeque<LogLine>,
     pub notify: tokio::sync::broadcast::Sender<JobEvent>,
@@ -393,6 +416,9 @@ impl Job {
             created_at: now_str(),
             created_secs: epoch_secs(),
             updated_secs: epoch_secs(),
+            progress_changed_secs: 0,
+            progress_key: (None, 0, 0),
+            stalled: false,
             events: Vec::new(),
             logs: VecDeque::new(),
             notify: tx,
@@ -403,6 +429,18 @@ impl Job {
             priority: spec.priority,
             start: None,
             worker_done: false,
+        }
+    }
+
+    /// 记一次**进度**变化（v2 L2）：只有 `stage_started` / `progress` 走这里 ——
+    /// `log` / `message` 会刷新 `updated_secs` 但**不算进度前进**，
+    /// 否则"一直在打日志、进度一动不动"就永远判不出卡住。
+    fn note_progress_change(&mut self, stage: Option<String>, current: u64, total: u64) {
+        let key = (stage, current, total);
+        if key != self.progress_key {
+            self.progress_key = key;
+            self.progress_changed_secs = epoch_secs();
+            self.stalled = false;
         }
     }
 
@@ -509,6 +547,7 @@ impl Job {
             class_cap: self.class.cap(),
             queue_position,
             priority: self.priority.as_str().to_string(),
+            stalled: self.stalled,
             logs: if with_logs {
                 self.logs.iter().rev().take(50).cloned().collect()
             } else {
@@ -722,6 +761,9 @@ impl JobManager {
     pub async fn tick(&self) {
         let mut jobs = self.jobs.write().await;
         Self::schedule_locked(&mut jobs);
+        // v2 L2：静默心跳 —— 必须排在下面的 blocked_record 限流 return **之前**，
+        // 否则那条限流会让心跳跟着停掉。
+        Self::heartbeat_running(&mut jobs, epoch_secs());
         // 限流：tick 是 5 秒一次，不限流会把日志刷满
         let now = epoch_secs();
         if now.saturating_sub(self.last_blocked_warn.load(Ordering::Relaxed)) < BLOCKED_WARN.as_secs() {
@@ -737,6 +779,50 @@ impl JobManager {
                 lines.join("；")
             );
             self.last_blocked_warn.store(now, Ordering::Relaxed);
+        }
+    }
+
+    /// 静默心跳（v2 L2）：running 且 30s 没事件的补一条心跳，刷新 `updated_secs`。
+    ///
+    /// 判"真卡"的**唯一**依据是进度三元组连续 `STALL_SECS` 没变，且 `total > 0` ——
+    /// "没有事件"本身不算证据（检测阶段曾经整条链路零事件，那时这个判据会误报）。
+    /// 心跳写成 `message`（不推 Log 事件：5s tick 会把它刷爆运行日志），
+    /// 但它**刷新 updated_secs**，所以前端 `stuckNote` 不再误报。
+    fn heartbeat_running(jobs: &mut [Job], now: u64) {
+        for job in jobs.iter_mut() {
+            if job.status != JobStatus::Running {
+                continue;
+            }
+            let idle = now.saturating_sub(job.updated_secs);
+            if idle < HEARTBEAT_SECS {
+                continue;
+            }
+            // 真卡：有可量化进度（total>0）且它连续 STALL_SECS 没变
+            let stalled = job.total > 0
+                && job.progress_changed_secs > 0
+                && now.saturating_sub(job.progress_changed_secs) >= STALL_SECS;
+            job.stalled = stalled;
+            let stage = job
+                .stage_zh
+                .clone()
+                .or_else(|| job.stage.clone())
+                .unwrap_or_default();
+            let detail = if job.total > 0 {
+                format!(" · {stage} {}/{}", job.current, job.total)
+            } else if !stage.is_empty() {
+                format!(" · {stage}")
+            } else {
+                String::new()
+            };
+            job.message = if stalled {
+                format!(
+                    "⚠ 进度已 {} 分钟未变{detail} —— 可能卡在外部进程或网络盘上",
+                    job.progress_changed_secs.abs_diff(now) / 60
+                )
+            } else {
+                format!("运行中 · 已 {idle}s{detail}")
+            };
+            job.updated_secs = now;
         }
     }
 
@@ -841,6 +927,7 @@ impl JobManager {
             job.stage_index = Some(index);
             job.stage_total = Some(total);
             job.message = String::new();
+            job.note_progress_change(Some(stage.to_string()), 0, total as u64);
             job.push(
                 JobEvent::StageStarted {
                     stage: stage.to_string(),
@@ -869,6 +956,7 @@ impl JobManager {
         if let Some(job) = jobs.iter_mut().find(|j| j.id == id) {
             job.current = current;
             job.total = total;
+            job.note_progress_change(job.stage.clone(), current, total);
             job.push(
                 JobEvent::Progress {
                     stage: job.stage.clone(),
@@ -1067,6 +1155,116 @@ fn time_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+
+    /// 造一个 running 任务，并把它的时间戳拨到 `idle` 秒前，
+    /// `progress_age` = 进度三元组多久没变（`None` = 从没上报过进度）。
+    #[allow(clippy::too_many_arguments)]
+    async fn running_job_with_clock(
+        jm: &JobManager,
+        kind: &str,
+        (current, total): (u64, u64),
+        idle: u64,
+        progress_age: Option<u64>,
+    ) -> String {
+        let h = jm
+            .create(1, JobSpec::new(kind, "x", keys(&["p1:out"]), JobClass::Medium))
+            .await;
+        let id = h.id.clone();
+        let _ = h.wait_start().await;
+        let now = epoch_secs();
+        let mut jobs = jm.jobs.write().await;
+        let job = jobs.iter_mut().find(|j| j.id == id).unwrap();
+        job.updated_secs = now.saturating_sub(idle);
+        job.current = current;
+        job.total = total;
+        job.progress_changed_secs = match progress_age {
+            Some(age) => now.saturating_sub(age),
+            None => 0,
+        };
+        job.progress_key = (Some(kind.to_string()), current, total);
+        id
+    }
+
+    /// **v2 L2 验收①**：静默 31s 的 running 任务，tick() 必须补心跳并刷新 `updated_at`。
+    ///
+    /// 这是"没事件不再等于卡住"的地基：`stuckNote` 的判据是 120s 无事件，
+    /// 而心跳每 30s 就能把它刷新一次。变异自证：把 `heartbeat_running` 从 tick 里去掉 ⇒ 本测试红。
+    #[tokio::test]
+    async fn heartbeat_refreshes_silent_running_job() {
+        let jm = JobManager::new();
+        // ⚠️ 覆盖**真风险场景**：total = 0（该阶段没有可量化进度）但 progress_changed_secs
+        // 是很久以前（stage_started 曾记过一次 —— 管线外任务的 stage_total 就是 0）。
+        // 此时若没有 `total > 0` 守卫就会被判卡，而那类任务本来就没有"进度"可言。
+        // 变异自证：去掉守卫 ⇒ 本测试红（已实测）。
+        let id = running_job_with_clock(
+            &jm,
+            "stage_detect",
+            (0, 0),
+            HEARTBEAT_SECS + 1,
+            Some(STALL_SECS + 5),
+        )
+        .await;
+        let before = jm.get(&id).await.unwrap().updated_at;
+
+        jm.tick().await;
+
+        let s = jm.get(&id).await.unwrap();
+        assert!(
+            s.updated_at > before,
+            "心跳必须刷新 updated_at（{before} → {}）",
+            s.updated_at
+        );
+        assert!(s.message.contains("运行中"), "心跳文案应说明还在跑：{}", s.message);
+        assert!(
+            !s.stalled,
+            "total=0 时没有可比对的进度值，**不许**判卡：{}",
+            s.message
+        );
+    }
+
+    /// **v2 L2 验收②**：`total > 0` 且进度三元组连续 5 分钟没变 ⇒ 判卡，文案点名"进度未变"。
+    #[tokio::test]
+    async fn stall_reported_when_progress_value_frozen() {
+        let jm = JobManager::new();
+        let id = running_job_with_clock(
+            &jm,
+            "stage_detect",
+            (3, 7),
+            HEARTBEAT_SECS + 1,
+            Some(STALL_SECS + 5),
+        )
+        .await;
+
+        jm.tick().await;
+
+        let s = jm.get(&id).await.unwrap();
+        assert!(s.stalled, "进度 5 分钟没动必须判卡");
+        assert!(
+            s.message.contains("进度已"),
+            "判卡文案要点名「进度已 N 分钟未变」：{}",
+            s.message
+        );
+    }
+
+    /// **v2 L2 验收③**（反向）：同样静默、但进度**刚动过** ⇒ 不判卡，只报"运行中"。
+    ///
+    /// 这条与上一条成对：光有"静默很久"不够，必须"进度也不动"才算卡。
+    #[tokio::test]
+    async fn no_stall_while_progress_is_moving() {
+        let jm = JobManager::new();
+        let id = running_job_with_clock(&jm, "stage_detect", (5, 7), 600, Some(10)).await;
+
+        jm.tick().await;
+
+        let s = jm.get(&id).await.unwrap();
+        assert!(
+            !s.stalled,
+            "静默 10 分钟但进度 10 秒前刚动过 —— 不许判卡：{}",
+            s.message
+        );
+        assert!(s.message.contains("运行中"), "应报运行中：{}", s.message);
+    }
 
     fn keys(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()
