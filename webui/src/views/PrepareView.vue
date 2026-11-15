@@ -40,10 +40,6 @@
       <!-- 左：播放器 + 字幕轨道 + 切片标记 -->
       <div>
         <div class="card player-card">
-          <div class="row spread mb-8">
-            <b class="t m-0">原视频</b>
-            <span class="muted small mono">{{ inputName || '未记录输入文件' }}</span>
-          </div>
           <div v-if="src" class="video-shell">
             <video
               ref="videoRef"
@@ -69,11 +65,10 @@
           </div>
         </div>
 
-        <!-- 字幕轨道：默认展开（用户口径）；收起后只留标题行，要拖块/改字再展开。
+        <!-- 字幕轨道：默认展开（用户口径）；收起后只留工具行（保存状态 + 展开编辑），要拖块/改字再展开。
              展开状态首帧同步读 localStorage（`useDisclosure`）—— 别改成 v-show，轨道挂载时要量宽度。 -->
         <div class="card mt-12">
-          <div class="row spread mb-6">
-            <b class="t m-0">字幕 {{ segments.length }} 条</b>
+          <div class="row mb-6" style="justify-content:flex-end">
             <span class="row" style="gap:8px">
               <span class="muted small" :class="{ err: saveState === 'error' }">{{ saveHint }}</span>
               <button
@@ -428,7 +423,6 @@ const pid = computed(() => route.params.pid || '')
 const ownPid = String(route.params.pid || '')
 
 const src = ref('')
-const inputName = ref('')
 const videoDuration = ref(0)
 const videoRef = ref(null)
 const currentTime = ref(0)
@@ -875,7 +869,6 @@ async function load() {
     notFound.value = false
     statusLoading.value = false
     status.value = st
-    inputName.value = st.input_file || ''
     src.value = mediaUrl(pid.value, st.input_file)
   } catch (e) {
     // ⚠️ **404 = 项目不存在/无权访问**：走整页空态（回首页 / 重新导入），别再接着读配置/字幕 ——
@@ -885,7 +878,6 @@ async function load() {
       status.value = null
       segments.value = []
       src.value = ''
-      inputName.value = ''
       statusLoading.value = false
       return
     }
