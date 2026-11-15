@@ -156,12 +156,22 @@ async function doLoad({ silent = false } = {}) {
     //    现在让 Promise.all 直接 reject ⇒ 下面 catch 置 `loadError`，**上一次的数据原样留着** + 错误条。
     //    ⚠️ 状态（原片地址）是附带的：它挂了只影响「预览整场录播」那颗按钮，
     //    不值得把整面墙判成失败；而且 `api()` 自己已经把失败写进控制台与运行日志了。
-    const [ev, cl, pl, st] = await Promise.all([
+    // ⚠️ 用 allSettled 而不是 all（2026-11-15）：四个接口里任何一个失败都会让
+    // Promise.all 整体 reject，**连已经读到的数据也一起丢掉** —— 实测症状是
+    // 「切片数据加载失败：暂无 clips」，而事件其实读到了、只是被同一个 catch 吞了。
+    // 现在：**事件与片段是主数据**（任一失败才报错），精修状态与项目状态是辅助（失败降级）。
+    const [evR, clR, plR, stR] = await Promise.allSettled([
       projectData.events(pid, '读取事件列表'),
       projectData.clips(pid, '读取切片列表'),
       projectData.polishMap(pid, '读取精修状态'),
-      projectData.status(pid, '读取项目状态').catch(() => null)
+      projectData.status(pid, '读取项目状态')
     ])
+    const primaryFail = [evR, clR].find((r) => r.status === 'rejected')
+    if (primaryFail) throw primaryFail.reason
+    const ev = evR.value
+    const cl = clR.value
+    const pl = plR.status === 'fulfilled' ? plR.value : []
+    const st = stR.status === 'fulfilled' ? stR.value : null
     const m = {}
     ;(pl || []).forEach(p => { m[p.dir] = p })
     projectDataRef.value = { events: (ev && ev.events) || [], clips: cl || [], polishMap: m }

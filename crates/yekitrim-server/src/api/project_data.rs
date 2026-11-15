@@ -738,7 +738,11 @@ pub(super) fn count_in_range(starts: &[f64], start: f64, end: f64) -> u64 {
 
 pub(super) fn data_events_impl(ws: &Workspace) -> ApiResult {
     let path = ws.output_dir().join("events.json");
-    if !path.exists() { return Err(err(StatusCode::NOT_FOUND, "暂无 events.json")); }
+    // 同 data_clips_impl：**还没检测过**是正常空态，不是错误 —— 返回空集合，
+    // 让调用方渲染"还没有事件"的空态，而不是把整页判成加载失败。
+    if !path.exists() {
+        return ok(serde_json::json!({ "titles": {}, "events": [] }));
+    }
     let raw = std::fs::read_to_string(&path).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取失败: {e}")))?;
     let mut v: serde_json::Value = serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null);
     // 事件区间内的弹幕量/字幕量（切片页排序用），文件缺失时为 0。
@@ -985,7 +989,12 @@ pub(super) fn data_events_merge_splits_impl(ws: &Workspace) -> ApiResult {
 
 pub(super) fn data_clips_impl(ws: &Workspace) -> ApiResult {
     let clips = ws.output_dir().join("clips");
-    if !clips.exists() { return Err(err(StatusCode::NOT_FOUND, "暂无 clips")); }
+    // ⚠️ 目录不存在 = **还没有片段**，是正常空态，不是"资源不存在"（2026-11-15 修）：
+    // 以前回 404「暂无 clips」，而切片页把四个接口放在 Promise.all 里 ——
+    // 一个 404 让整页 catch，连**已经读到的 events 也一起丢掉**，界面显示
+    // 「切片数据加载失败：暂无 clips」+ 事件列表空。实测用户报的就是这个
+    // （刚跑完「查找事件」、67 条事件明明在 events.json 里，只是还没剪片段）。
+    if !clips.exists() { return ok(serde_json::json!([])); }
     // 发布标题（`publish_config.json` 的 `clips[].title`）：页面上那个「发布标题」框要显示
     // **投稿真正会用的那句**，而不是 `clip.json` 的原始标题 —— 改过标题的片段刷新后
     // 必须还是改过的那句（否则用户会以为没保存成功，再改一遍）。整份文件读一次即可。
@@ -1848,6 +1857,46 @@ pub(super) fn resolve_media_path(
 
 #[cfg(test)]
 mod tests {
+    /// **空态不是错误**（2026-11-15 用户实测）：只跑过「查找事件」、还没剪片段的项目，
+    /// `/project-data/clips` 曾经回 404「暂无 clips」—— 而切片页把四个接口放在
+    /// `Promise.all` 里，一个 404 让整页 catch，**连已经读到的 events 一起丢掉**，
+    /// 界面显示「切片数据加载失败：暂无 clips」，用户以为检测白跑了（67 条事件其实在）。
+    ///
+    /// 契约：没有产物 = 空集合（200），不是资源不存在（404）。
+    /// ⚠️ 写接口（PUT events / merge-splits / cut-all）保持 404 —— 那些是"操作不存在的产物"。
+    #[tokio::test]
+    async fn empty_project_returns_empty_collections_not_404() {
+        let t = test_app().await;
+        let root = t._dir.path().join("empty-proj");
+        std::fs::create_dir_all(root.join("output")).unwrap();
+        std::fs::write(root.join("big.mp4"), vec![0u8; 16]).unwrap();
+        let cfg_path = root.join("yekitrim.toml");
+        std::fs::write(&cfg_path, "input_file = \"big.mp4\"\n").unwrap();
+        let pid = t
+            .auth
+            .db()
+            .create_project(1, "empty-proj", None, "local", Some("空工程"), &root, &cfg_path, None)
+            .unwrap();
+
+        let res = t
+            .call(t.req("GET", &format!("/project-data/clips?project={pid}")).body(Body::empty()).unwrap())
+            .await;
+        assert_eq!(res.status(), StatusCode::OK, "没有片段目录 ⇒ 200 + 空数组，不是 404");
+        let body = body_json(res).await;
+        assert_eq!(body.as_array().map(|a| a.len()), Some(0), "必须是空数组：{body}");
+
+        let res = t
+            .call(t.req("GET", &format!("/project-data/events?project={pid}")).body(Body::empty()).unwrap())
+            .await;
+        assert_eq!(res.status(), StatusCode::OK, "没有 events.json ⇒ 200 + 空集合，不是 404");
+        let body = body_json(res).await;
+        assert_eq!(
+            body.get("events").and_then(|e| e.as_array()).map(|a| a.len()),
+            Some(0),
+            "events 必须是空数组：{body}"
+        );
+    }
+
     /// **B7（2026-11-14 后端 review）：已超配额的普通账号不能再起转写/检测/剪切任务**。
     ///
     /// 占用是 `quota_gate_impl` 自己刷新的（源文件落盘即计入）—— 内核判据见 api/mod.rs
