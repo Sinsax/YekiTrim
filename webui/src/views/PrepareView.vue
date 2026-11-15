@@ -42,18 +42,16 @@
                ⚠️ 只读 `hasTranscript/hasEvents/hasClips` 与任务态，不改主按钮状态机。 -->
           <div class="prep-steps" data-cap="prepare.stage-select">
             <template v-for="(st, i) in prepSteps" :key="st.key">
-              <div class="pstep" :class="st.state">
-                <!-- 阶段可选（spec A）：勾选 = 这一节点纳入一键处理；累计语义（勾后面带上前面）。
-                     剪出片段默认不勾（剪辑太费时间和性能，用户口径 2026-11-15）。 -->
-                <label class="pstep-check" :class="{ dis: busy }" @click.stop
-                       title="勾选后「一键处理」会跑到这一阶段">
-                  <input type="checkbox"
-                         :checked="stageSel[st.key]"
-                         :disabled="busy || (st.key === 'detect' && !stageSel.transcribe) || (st.key === 'cut' && !stageSel.detect)"
-                         @change="setStageSel(st.key, $event.target.checked)">
-                </label>
-                <b class="pstep-name" :class="{ dim: st.state === 'todo' }">{{ st.label }}</b>
-                <span v-if="st.state === 'done'" class="pstep-done" aria-hidden="true">✓</span>
+              <div class="pstep">
+                <!-- 阶段可选 v2（用户口径：文字变亮变暗就是设置）：亮 = 纳入一键处理、暗 = 排除；
+                     点亮后面的自动带上前面，熄灭前面的连带熄灭后面（累计）。剪出片段默认暗（费时费性能）。 -->
+                <button type="button" class="pstep-tag"
+                        :class="{ on: stageSel[st.key], dim: !stageSel[st.key], done: st.state === 'done', active: st.state === 'active' }"
+                        :disabled="busy"
+                        :title="stageSel[st.key] ? '已纳入一键处理，点击排除' : '点击纳入一键处理'"
+                        @click="toggleStage(st.key)">
+                  {{ st.label }}<span v-if="st.state === 'done'" class="pstep-done"> ✓</span>
+                </button>
               </div>
               <span v-if="i < prepSteps.length - 1" class="pstep-line" :class="{ on: st.state === 'done' }" aria-hidden="true"></span>
             </template>
@@ -494,8 +492,13 @@ function readStageSel() {
   }
 }
 const stageSel = reactive(readStageSel())
-function setStageSel(key, next) {
-  normalizeStageSel(Object.assign(stageSel, { [key]: !!next }))
+/** 点击切换（变亮变暗就是设置）：点亮后面自动带上前面，熄灭前面的连带熄灭后面（累计）。 */
+function toggleStage(key) {
+  if (busy.value) return
+  const order = ['transcribe', 'detect', 'cut']
+  const at = order.indexOf(key)
+  const on = !stageSel[key]
+  for (let i = 0; i < order.length; i++) stageSel[order[i]] = on ? i <= at : i < at
   try {
     localStorage.setItem(STAGE_SEL_KEY, JSON.stringify({
       transcribe: stageSel.transcribe, detect: stageSel.detect, cut: stageSel.cut
@@ -1526,22 +1529,27 @@ onUnmounted(() => {
 .run-btn { justify-content:center; }
 /* 识别流程卡：一行 = 复选节点 + 主按钮；运行中第二行 = 进度 + 停止/任务（旧四层堆叠已压扁）。 */
 /* ── 步骤条（识别 → 查找事件 → 剪出片段）：flow-card 内可伸缩的一段，不是独立卡片 ── */
-.prep-steps { display:flex; align-items:center; gap:8px 10px; flex:1 1 340px; min-width:0; flex-wrap:wrap; }
-.pstep-check { flex:none; display:flex; align-items:center; cursor:pointer; }
-.pstep-check input { accent-color:var(--main); width:13px; height:13px; margin:0; cursor:pointer; }
-.pstep-check.dis { opacity:.45; cursor:not-allowed; }
+.prep-steps { display:flex; align-items:center; gap:6px; flex:0 1 auto; min-width:0; flex-wrap:wrap; }
 .prep-run { display:flex; align-items:center; gap:8px; flex-basis:100%; }
 .prep-run-label { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.pstep { display:flex; align-items:center; gap:5px; min-width:0; flex:none; }
-.pstep-name { font-size:var(--fs-sm); font-weight:var(--fw-semi); color:var(--ink); white-space:nowrap; }
-.pstep.todo .pstep-name.dim { color:var(--ink-faint); }
-.pstep.active .pstep-name { color:var(--pink-text); }
-.pstep-done { color:var(--green-deep); font-size:var(--fs-xs); flex:none; }
-.pstep-line { flex:1 1 auto; min-width:14px; height:2px; border-radius:2px; background:var(--line); }
+.pstep { display:flex; align-items:center; min-width:0; flex:none; }
+/* 阶段开关 pill：亮（主色底+粉字+实线）= 纳入；暗（灰字+虚线框）= 排除 —— 变亮变暗即设置 */
+.pstep-tag { padding:4px 14px; border-radius:var(--r-full); font-size:12.5px; font-weight:var(--fw-semi);
+  border:1.5px solid var(--line); background:transparent; color:var(--ink-faint);
+  cursor:pointer; transition:border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+  line-height:1.4; white-space:nowrap; }
+.pstep-tag.dim { border-style:dashed; }
+.pstep-tag:hover:not(:disabled) { border-color:var(--ink-dim); color:var(--ink-dim); }
+.pstep-tag.on { border-color:var(--main); background:var(--main-soft); color:var(--pink-text); }
+.pstep-tag.on:hover:not(:disabled) { border-color:var(--main-glow, var(--main)); }
+.pstep-tag.done { border-color:var(--green); background:var(--green-soft); color:var(--green-deep); }
+.pstep-tag.active { border-color:var(--main); color:var(--pink-text); }
+.pstep-done { color:inherit; }
+.pstep-tag:disabled { opacity:.5; cursor:not-allowed; }
+.pstep-line { flex:0 0 36px; height:2px; border-radius:2px; background:var(--line); }
 .pstep-line.on { background:var(--green); }
 @media (max-width:900px) {
   .prep-steps { flex-basis:100%; order:3; overflow-x:auto; }
-  .pstep-name { white-space:nowrap; }
 }
 
 .flow-card { display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; }
