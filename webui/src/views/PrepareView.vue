@@ -101,12 +101,11 @@
 
       </div>
 
-      <!-- 右：识别（一块卡，高级项默认折叠）。主按钮紧跟状态 chips，其余收进「处理选项」。 -->
+      <!-- 右：三块卡自上而下 —— 处理流程（阶段开关 + 主行动）/ 处理选项（默认收起）/ 手动切片（默认展开）。 -->
       <div class="side-col">
-        <div class="card">
-          <!-- 处理流程（识别行并入处理选项，用户口径 2026-11-15）：阶段亮暗即设置 + 主按钮 + 运行进度。
-               ⚠️ 只读 hasTranscript/hasEvents/hasClips 与任务态，不改主按钮状态机。 -->
-          <div class="row spread mb-8">
+        <!-- 处理流程卡（v9 布局重构）：竖排阶段开关 + 底部主行动（空闲）/ 进度（运行中）。 -->
+        <div class="card flow-panel">
+          <div class="row spread mb-6">
             <b class="t m-0">处理流程</b>
             <span v-if="job.id" class="chip" :class="statusClass(job.status)">{{ statusText(job.status) }}</span>
           </div>
@@ -116,37 +115,42 @@
                     :disabled="busy"
                     :title="stageSel[st.key] ? '已纳入一键处理，点击排除' : '点击纳入一键处理'"
                     @click="toggleStage(st.key)">
-              <span class="stage-dot" aria-hidden="true"></span>
+              <span class="stage-dot" aria-hidden="true">{{ st.state === 'done' ? '✓' : st.index }}</span>
               <span class="stage-name">{{ st.label }}</span>
               <span class="stage-sub">{{ st.sub }}</span>
             </button>
-            <!-- 运行中：进度条 + jobLine 摘要 + 停止/任务（全卡唯一的运行态渲染处） -->
-            <div v-if="jobRunning" class="run-line">
-              <div class="progress flex-1"><div :style="{ width: jobPct + '%' }"></div></div>
-            </div>
-            <div v-if="jobRunning" class="muted small run-sum">{{ jobLine(job) || '运行中' }}</div>
-            <div v-if="jobRunning" class="row" style="gap:6px">
+          </div>
+          <!-- 运行中：进度条 + 摘要 + 停止/日志（本卡唯一运行态渲染处） -->
+          <div v-if="jobRunning" class="panel-run">
+            <div class="progress"><div :style="{ width: jobPct + '%' }"></div></div>
+            <div class="muted small panel-run-sum" :title="jobLine(job)">{{ jobLine(job) || '运行中' }}</div>
+            <div class="row" style="gap:6px">
               <button class="mini-btn danger flex-none" :disabled="canceling" title="停止当前任务" @click="cancelJob">
                 <Icon name="x" :size="10" /> 停止
               </button>
-              <button class="mini-btn flex-none" title="打开任务抽屉" @click="openJobs()">任务</button>
-            </div>
-            <button
-              v-if="!completed && !jobRunning"
-              class="btn btn-primary stage-run"
-              data-cap="prepare.run-all"
-              :disabled="primaryDisabled"
-              :title="primaryTitle"
-              @click="onPrimary"
-            >{{ primaryLabel }}</button>
-            <!-- 失败/取消必须可见（成功由步进 ✓ 与「去挑片段」表达，不重复渲染） -->
-            <div v-if="job.id && !jobRunning && (job.status === 'failed' || job.status === 'cancelled')" class="error-banner">
-              <Icon name="alert" :size="14" />
-              <span class="flex-1">{{ statusText(job.status) }}：{{ job.message || job.error || '无详情' }}</span>
-              <button class="mini-btn flex-none" @click="openJobs()">任务</button>
+              <button class="mini-btn flex-none" title="打开任务抽屉查看完整日志" @click="openJobs()">任务日志</button>
             </div>
           </div>
-          <!-- 处理选项：ASR 模式 / 主播名 / 分步处理 / 弹幕与字幕清单 / 重新处理。默认收起。 -->
+          <!-- 空闲：唯一主行动 -->
+          <button
+            v-else-if="!completed"
+            class="btn btn-primary panel-run-btn"
+            data-cap="prepare.run-all"
+            :disabled="primaryDisabled"
+            :title="primaryTitle"
+            @click="onPrimary"
+          >{{ primaryLabel }}</button>
+          <div v-else class="muted small done-hint">已完成 · 去「挑片段」看结果</div>
+          <!-- 失败/取消必须可见 -->
+          <div v-if="job.id && !jobRunning && (job.status === 'failed' || job.status === 'cancelled')" class="error-banner">
+            <Icon name="alert" :size="14" />
+            <span class="flex-1">{{ statusText(job.status) }}：{{ job.message || job.error || '无详情' }}</span>
+            <button class="mini-btn flex-none" @click="openJobs()">日志</button>
+          </div>
+        </div>
+
+        <!-- 处理选项卡：ASR 模式 / 主播名 / 素材清单 / 重新处理（默认收起） -->
+        <div class="card mt-12">
           <details class="adv-blk materials-blk" :open="materialsOpen" @toggle="syncMaterials">
             <summary data-cap="prepare.materials" title="ASR 模式、主播名、分步处理、弹幕/字幕清单与重新处理">处理选项</summary>
 
@@ -403,7 +407,7 @@ import { projectData } from '../api/projectData'
 import { healthPayload, refreshHealth } from '../stores/health'
 import { humanBytes } from '../stores/project'
 import { isAdmin } from '../stores/auth'
-import { watchJob, jobsApi, kindText, statusText, busyOn, outKey, jobLine, QUEUED_HINT } from '../api/jobs'
+import { watchJob, jobsApi, kindText, statusClass, statusText, busyOn, outKey, jobLine, QUEUED_HINT } from '../api/jobs'
 import { useJobs, onJobDone } from '../composables/useJobs'
 import { useDisclosure } from '../composables/useDisclosure'
 import { toast } from '../stores/toast'
@@ -1273,8 +1277,9 @@ function stageText(name) {
 }
 
 /** 右栏「处理流程」行：prepSteps 的状态 + 勾选态合并（sub 随勾选/进度变化）。 */
-const stageRows = computed(() => prepSteps.value.map((st) => ({
+const stageRows = computed(() => prepSteps.value.map((st, i) => ({
   ...st,
+  index: i + 1,
   sub: st.state === 'done' ? '已完成'
     : st.state === 'active' ? (stageSel[st.key] ? `进行中 ${jobPct.value}%` : '进行中')
     : (stageSel[st.key] ? '待开始' : '未纳入')
@@ -1528,44 +1533,41 @@ onUnmounted(() => {
 /* 重叠警告：这一段压在前一段上 ⇒ 同一段内容会被剪两遍（落盘时会并成一段，见
    `merge_overlapping_ranges`）—— 琥珀色，只在真重叠时出现，别做成常驻 */
 .seg-overlap { color:var(--amber-deep); font-size:11px; white-space:nowrap; }
+/* ── 处理流程卡（v9 布局重构）：竖排阶段开关 + 底部主行动 ──
+   亮 = 纳入一键处理（实线圆点 + 正常字色）、暗 = 排除（虚线圆点 + 灰字）；
+   已完成查勾、进行中实心主色圆点。整行可点，右侧是状态词。 */
 .run-btn { justify-content:center; }
-/* 识别流程卡：一行 = 复选节点 + 主按钮；运行中第二行 = 进度 + 停止/任务（旧四层堆叠已压扁）。 */
-/* ── 步骤条（识别 → 查找事件 → 剪出片段）：flow-card 内可伸缩的一段，不是独立卡片 ── */
-.prep-steps { display:flex; align-items:center; gap:6px; flex:0 1 auto; min-width:0; flex-wrap:wrap; }
-.run-bar { flex:0 0 200px; }
-.run-pct { white-space:nowrap; }
-/* 行尾任务日志 ticker：最新一行 + 悬停近况（完整历史在任务抽屉） */
-.joblog-tick { flex:1 1 180px; min-width:160px; display:flex; align-items:center; gap:8px;
-  border-left:1px solid var(--line-soft); padding-left:12px; cursor:pointer; min-width:0; }
-.joblog-tick b { flex:none; font-size:12px; color:var(--ink-dim); }
-.joblog-last { font-family:var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size:11.5px;
-  color:var(--ink-dim); min-width:0; flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.joblog-tick:hover .joblog-last { color:var(--ink); }
-.run-fail { display:flex; align-items:center; gap:6px; color:var(--red-deep); font-size:12px;
-  min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.pstep { display:flex; align-items:center; min-width:0; flex:none; }
-/* 阶段开关 pill：亮（主色底+粉字+实线）= 纳入；暗（灰字+虚线框）= 排除 —— 变亮变暗即设置 */
-.pstep-tag { padding:5px 16px; border-radius:var(--r-full); font-size:13.5px; font-weight:var(--fw-semi);
-  border:1.5px solid var(--line); background:transparent; color:var(--ink-faint);
-  cursor:pointer; transition:border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
-  line-height:1.4; white-space:nowrap; }
-.pstep-tag.dim { border-style:dashed; }
-.pstep-tag:hover:not(:disabled) { border-color:var(--ink-dim); color:var(--ink-dim); }
-.pstep-tag.on { border-color:var(--main); background:var(--main-soft); color:var(--pink-text); }
-.pstep-tag.on:hover:not(:disabled) { border-color:var(--main-glow, var(--main)); }
-.pstep-tag.done { border-color:var(--green); background:var(--green-soft); color:var(--green-deep); }
-.pstep-tag.active { border-color:var(--main); color:var(--pink-text); }
-.pstep-done { color:inherit; }
-.pstep-tag:disabled { opacity:.5; cursor:not-allowed; }
-.pstep-line { flex:0 0 36px; height:2px; border-radius:2px; background:var(--line); }
-.pstep-line.on { background:var(--green); }
-@media (max-width:900px) {
-  .prep-steps { flex-basis:100%; order:3; overflow-x:auto; }
+.stage-list { display:flex; flex-direction:column; gap:2px; margin:0 0 10px; }
+.stage-row {
+  display:flex; align-items:center; gap:9px; width:100%;
+  padding:7px 8px; border-radius:var(--r-sm); border:1px solid transparent;
+  background:transparent; text-align:left; cursor:pointer;
+  transition:background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
 }
-
-.flow-card { display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; }
-.flow-card > .row { flex:1 1 auto; margin:0 !important; }
-.flow-card > .run-btn { width:auto; min-width:150px; margin:0 0 0 auto; }
+.stage-row:hover:not(:disabled) { background:var(--bg-soft); }
+.stage-row:disabled { opacity:.55; cursor:not-allowed; }
+.stage-row.on { border-color:var(--line-soft); }
+.stage-dot {
+  flex:none; width:20px; height:20px; border-radius:var(--r-full);
+  display:flex; align-items:center; justify-content:center;
+  font-size:11px; font-weight:var(--fw-semi); font-variant-numeric:tabular-nums;
+  border:1.5px dashed var(--line); color:var(--ink-faint); background:var(--card);
+}
+.stage-row.on .stage-dot { border-style:solid; border-color:var(--ink-dim); color:var(--ink-dim); }
+.stage-name { flex:1 1 auto; min-width:0; font-size:13px; font-weight:var(--fw-semi); color:var(--ink-faint);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.stage-row.on .stage-name { color:var(--ink); }
+.stage-sub { flex:none; font-size:11.5px; color:var(--ink-faint); white-space:nowrap; }
+.stage-row.done .stage-dot { border-style:solid; border-color:var(--green); background:var(--green-soft); color:var(--green-deep); }
+.stage-row.done .stage-sub { color:var(--green-deep); }
+.stage-row.active .stage-dot { border-style:solid; border-color:var(--main); background:var(--main); color:var(--bg); }
+.stage-row.active .stage-name { color:var(--pink-text); }
+.stage-row.active .stage-sub { color:var(--pink-text); }
+/* 运行态：进度条 + 摘要 + 停止/日志（主按钮让位） */
+.panel-run { display:flex; flex-direction:column; gap:6px; padding-top:9px; border-top:1px solid var(--line-soft); }
+.panel-run-sum { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.panel-run-btn { width:100%; justify-content:center; }
+.done-hint { padding-top:9px; border-top:1px solid var(--line-soft); }
 /* 输入素材（弹幕 / 字幕）两块清单：每块自带分隔虚线（MaterialList），这里别再画一条，
    否则第一块上面会出现双线。 */
 .assets { margin-bottom:10px; }

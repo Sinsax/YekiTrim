@@ -187,6 +187,9 @@ const CRITICAL_BINDINGS = [
   ['webui/src/components/HomeClipsOverview.vue', overview, ['ovFilter', 'OV_FILTERS', 'searchIn', 'query', 'shownClips']],
   ['webui/src/views/SettingsView.vue', settings, ['localNoAuth', 'visibleSections']],
   ['webui/src/components/ModelList.vue', modelList, ['canDownload']],
+  // 识别页「处理流程」卡（2026-11-15 布局重构）：模板直接渲染这些标识符，
+  // 漏一个 import 就是静默空白 —— statusClass 真的漏过（chip 渲染成无样式 span）。
+  ['webui/src/views/PrepareView.vue', prepareView, ['statusClass', 'stageRows', 'stageSel', 'jobLine']],
   // 文字动效那组控件（2026-10-13）。⚠️ **Vue 对模板里未定义的标识符不报错**，
   // 而是渲染成空白 —— 症状是"面板里少了一行，没有任何报错"。这里逐个钉住。
   ['webui/src/views/PolishView.vue', polishView, ['swayDeg', 'swayMs', 'patchElements', 'rangeOrNull', 'numOrNull', 'pacing', 'pacingText', 'pacingTitle']]
@@ -229,7 +232,12 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
     const usedInTpl = tpl.includes(n)
     const defined =
       new RegExp(`(const|let|function)\\s+${n}\\b`).test(script) ||
-      new RegExp(`\\b${n}\\s*[:=]`).test(script)
+      new RegExp(`\\b${n}\\s*[:=]`).test(script) ||
+      // ⚠️ **import 也算定义**（2026-11-15 加）：模板用的东西大多来自 import，
+      // 只认 const/function 会让判据把"漏了 import"这种**真事故**判成"没定义"而误报，
+      // 也会反过来放过"import 写了但名字拼错"的那一类。实测事故：statusClass
+      // 在模板里渲染任务状态 chip，import 被删掉后 chip 静默变成无样式 span。
+      new RegExp(`import\\s*\\{[^}]*\\b${n}\\b[^}]*\\}`).test(script)
     // ① 定义必须存在（无论用没用到）；
     check(`${file.split('/').pop()} · ${n}（必须定义过）`, defined, true)
     // ② 模板真用到了 ⇒ 就更不能定义丢了（这条与上一条同真值，但它在报错文案里点名症状）。
