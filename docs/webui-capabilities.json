@@ -167,13 +167,25 @@
       "id": "prepare.materials",
       "phase": "P1",
       "surface": "prepare",
-      "label": "处理选项（自动剪出/主播名/素材清单）",
+      "label": "处理选项（主播名/ASR 模式/素材清单）",
       "files": [
         "webui/src/views/PrepareView.vue"
       ],
       "anchor": "data-cap=\"prepare.materials\"",
       "advancedOnly": true,
       "firstScreen": false
+    },
+    {
+      "id": "prepare.stage-select",
+      "phase": "P1",
+      "surface": "prepare",
+      "label": "阶段可选（识别/查找事件/剪出片段，默认前三）",
+      "files": [
+        "webui/src/views/PrepareView.vue"
+      ],
+      "anchor": "data-cap=\"prepare.stage-select\"",
+      "advancedOnly": false,
+      "firstScreen": true
     },
     {
       "id": "prepare.subtitle-track",

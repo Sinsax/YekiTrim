@@ -42,9 +42,18 @@
           <!-- v6 步骤条：替换掉原来的三枚 chip —— 它们和步骤条说的是同一件事，
                同时出现就是"同一状态说两遍"。步骤条多了序号与连线，扫一眼就知道走到哪。
                ⚠️ 只读 `hasTranscript/hasEvents/hasClips` 与任务态，**不改主按钮状态机**。 -->
-          <div class="prep-steps">
+          <div class="prep-steps" data-cap="prepare.stage-select">
             <template v-for="(st, i) in prepSteps" :key="st.key">
               <div class="pstep" :class="st.state">
+                <!-- 阶段可选（spec A）：勾选 = 这一节点纳入一键处理；累计语义（勾后面带上前面）。
+                     剪出片段默认不勾（剪辑太费时间和性能，用户口径 2026-11-15）。 -->
+                <label class="pstep-check" :class="{ dis: busy }" @click.stop
+                       title="勾选后「一键处理」会跑到这一阶段">
+                  <input type="checkbox"
+                         :checked="stageSel[st.key]"
+                         :disabled="busy || (st.key === 'detect' && !stageSel.transcribe) || (st.key === 'cut' && !stageSel.detect)"
+                         @change="setStageSel(st.key, $event.target.checked)">
+                </label>
                 <span class="pstep-dot" aria-hidden="true">{{ st.state === 'done' ? '✓' : i + 1 }}</span>
                 <span class="pstep-body">
                   <b>{{ st.label }}</b>
@@ -53,6 +62,11 @@
               </div>
               <span v-if="i < prepSteps.length - 1" class="pstep-line" :class="{ on: st.state === 'done' }" aria-hidden="true"></span>
             </template>
+          </div>
+          <!-- 整体进度行（spec C）：运行中复用 jobLine（阶段 i/N · 中文名 · 明细 · %），与任务抽屉同口径。 -->
+          <div v-if="jobRunning" class="prep-progress">
+            <div class="muted small">{{ jobLine(job) }}</div>
+            <div v-if="job.total > 0" class="progress mt-6"><div :style="{ width: jobPct + '%' }"></div></div>
           </div>
 
           <!-- 主按钮（状态机见 primaryLabel / onPrimary）：没有事件时 = 一键处理，
@@ -161,13 +175,6 @@
           <!-- 处理选项：ASR 模式 / 主播名 / 分步处理 / 弹幕与字幕清单 / 重新处理。默认收起。 -->
           <details class="adv-blk materials-blk" :open="materialsOpen" @toggle="syncMaterials">
             <summary data-cap="prepare.materials" title="ASR 模式、主播名、分步处理、弹幕/字幕清单与重新处理">处理选项</summary>
-
-            <!-- 自动剪出：开 = 主按钮一次跑完（识别 → 查找事件 → 剪出片段）；
-                 关 = 只到查找事件（主按钮文案变「开始识别」），片段到切片页自己挑。 -->
-            <label class="opt-row mt-6" :class="{ dis: busy }" title="开：一次点击跑完识别 → 查找事件 → 剪出片段；关：只到查找事件">
-              <input type="checkbox" :checked="autoCut" :disabled="busy" @change="setAutoCut($event.target.checked)">
-              <span>自动剪出片段</span>
-            </label>
 
           <!-- ASR 模式：写进本工程 `yekitrim.toml` 的 `[asr] mode`（merge 时覆盖全局配置，
                接口走 `PUT /api/project-data/config {patch}` —— 保留注释与其他 section）。
@@ -472,9 +479,10 @@ const llmMissing = ref(false)
 const { open: materialsOpen, set: setMaterialsOpen } = useDisclosure('prepare.materials', false)
 const { open: manualOpen, set: setManualOpen } = useDisclosure('prepare.manualSlice.v2', true)
 const { open: subsOpen, set: setSubsOpen } = useDisclosure('prepare.subtitles.v2', true)
-/** 自动剪出片段（默认开）：开 = 主按钮一键跑完识别 → 查找事件 → 剪出片段；关 = 只到查找事件。 */
-const AUTO_CUT_KEY = 'yekitrim.ui.prepare.autoCut'
-const autoCut = ref(readAutoCut())
+/** 阶段可选（spec A，2026-11-15 用户口径）：步进区三枚复选框，累计语义 ——
+ *  默认只勾前三阶段（识别声音+查找事件），剪出片段不勾（剪辑太费时间和性能）。
+ *  勾后面的自动带上前面；取消前面的连带取消后面。持久化 localStorage。 */
+const STAGE_SEL_KEY = 'yekitrim.prepare.stages'
 /** 一键处理成功后的结果（亮点数 / 片段数），给顶部「下一步」条用；读不到就保持 null（不报假数）。 */
 const completed = ref(null)
 /** 「停止」防连点。 */
@@ -482,19 +490,38 @@ const canceling = ref(false)
 /** 当前阶段（服务端 `stage_started` 给的英文名）：单一 process 任务靠它把 chips 打到对应那一格。 */
 const stageNow = ref('')
 
-/** 读自动剪出开关（默认 true；localStorage 只有显式 '0' 才算关）。 */
-function readAutoCut() {
+function normalizeStageSel(out) {
+  if (out.cut) { out.detect = true; out.transcribe = true }
+  if (out.detect) out.transcribe = true
+  if (!out.transcribe) { out.detect = false; out.cut = false }
+  if (!out.detect) out.cut = false
+  return out
+}
+function readStageSel() {
+  const def = { transcribe: true, detect: true, cut: false }
   try {
-    return localStorage.getItem(AUTO_CUT_KEY) !== '0'
+    const raw = JSON.parse(localStorage.getItem(STAGE_SEL_KEY) || 'null')
+    if (!raw || typeof raw !== 'object') return def
+    return normalizeStageSel({
+      transcribe: raw.transcribe === true,
+      detect: raw.detect === true,
+      cut: raw.cut === true
+    })
   } catch {
-    return true
+    return def
   }
 }
-
-function setAutoCut(next) {
-  autoCut.value = !!next
-  try { localStorage.setItem(AUTO_CUT_KEY, autoCut.value ? '1' : '0') } catch {}
+const stageSel = reactive(readStageSel())
+function setStageSel(key, next) {
+  normalizeStageSel(Object.assign(stageSel, { [key]: !!next }))
+  try {
+    localStorage.setItem(STAGE_SEL_KEY, JSON.stringify({
+      transcribe: stageSel.transcribe, detect: stageSel.detect, cut: stageSel.cut
+    }))
+  } catch {}
 }
+/** 旧口径兼容：autoCut = 「剪出片段」勾选 —— 主按钮两路语义不变（开走一键全流程、关走两段式）。 */
+const autoCut = computed(() => stageSel.cut)
 
 /** `<details>` 的开关状态与 localStorage 双向同步（原生 toggle 事件）。 */
 function syncMaterials(e) { if (e?.target) setMaterialsOpen(e.target.open) }
@@ -642,6 +669,9 @@ const primaryDisabled = computed(() => {
   if (busy.value) return true
   // 一个字幕都没有、而当前 ASR 模式的槽已经占了：这次转写后端也会 409（先选字幕或换模式）
   if (!hasTranscript.value && !canRunAsr.value) return true
+  // 阶段可选：勾选组合无可跑项 → 没有主行动（识别已完成且不跑查找事件等）
+  if (!stageSel.transcribe && !stageSel.detect && !stageSel.cut) return true
+  if (hasTranscript.value && !stageSel.detect) return true
   return false
 })
 const primaryLabel = computed(() => {
@@ -654,6 +684,8 @@ const primaryLabel = computed(() => {
   if (!hasVideo.value) return '还没有输入视频'
   if (hasEvents.value) return '去挑片段 →'
   if (!hasTranscript.value && !canRunAsr.value) return '先选一份字幕'
+  if (!stageSel.transcribe && !stageSel.detect && !stageSel.cut) return '未勾选阶段'
+  if (hasTranscript.value && !stageSel.detect) return '识别已完成'
   return autoCut.value ? '开始处理' : '开始识别'
 })
 const primaryTitle = computed(() => {
@@ -1229,7 +1261,8 @@ async function runPrepare() {
   if (busy.value) { toast('该项目正在' + busyText.value + '，请稍候'); return }
   completed.value = null
   if (!hasTranscript.value) {
-    chainDetect.value = true
+    // 查找事件勾选才自动接检测（阶段可选：用户可以只跑识别）
+    chainDetect.value = stageSel.detect
     await startStage('transcribe')
   } else {
     await startStage('detect')
@@ -1511,7 +1544,11 @@ onUnmounted(() => {
 .run-btn { width:100%; justify-content:center; margin-bottom:8px; }
 /* 识别流程卡在 grid 上方：标题/状态 chips 在左，主按钮在右，任务盒另起一行。 */
 /* ── v6 步骤条（转写 → 查找事件 → 剪片段）：flow-card 内可伸缩的一段，不是独立卡片 ── */
-.prep-steps { display:flex; align-items:center; gap:10px; flex:1 1 340px; min-width:0; }
+.prep-steps { display:flex; align-items:center; gap:10px; flex:1 1 340px; min-width:0; flex-wrap:wrap; }
+.pstep-check { flex:none; display:flex; align-items:center; cursor:pointer; }
+.pstep-check input { accent-color:var(--main); width:13px; height:13px; margin:0; }
+.pstep-check.dis { opacity:.45; cursor:not-allowed; }
+.prep-progress { margin-top:8px; }
 .pstep { display:flex; align-items:center; gap:8px; min-width:0; flex:none; }
 .pstep-dot { width:22px; height:22px; flex:none; border-radius:var(--r-full);
   display:flex; align-items:center; justify-content:center;
