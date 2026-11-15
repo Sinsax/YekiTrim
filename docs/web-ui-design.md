@@ -1158,10 +1158,12 @@ extra_params = { seed = 42, thinking = { type = "enabled" }, response_format = {
 | polish 预览/编辑器 | `yekitrim polish preview` |
 | 全局配置 | `yekitrim config show / config init` |
 | 阶段推导 | `yekitrim status` |
-### 附录 D 项目级「主播名」（2026-10）
+### 附录 D 项目级「主播名」（2026-10；预处理页的输入框 2026-11-15 已删）
 
 全局 `[detection] vtuber_name` 只是**默认值**；每个工程可以自己写一份，写在工程的
-`yekitrim.toml` 里（同样是 `[detection] vtuber_name`）。修改入口在**预处理页**（`/p/:pid/prepare`）。
+`yekitrim.toml` 里（同样是 `[detection] vtuber_name`）。⚠️ **预处理页不再放这个输入框**
+（用户口径 2026-11-15：主播名只用在最终切片标题上，识别页摆它没有意义）—— 要改就手改
+`yekitrim.toml`，或改全局配置；精修页那条「主播名」是**单条标题的草稿**，不写回配置。
 
 机制不需要新的配置字段 —— `load_config_at()` 本来就是
 `默认值 → 合并 .yekitrim/config.toml → 合并工程的 yekitrim.toml`，而工程文件**本来就能写 `[detection]`**。
@@ -1172,9 +1174,10 @@ extra_params = { seed = 42, thinking = { type = "enabled" }, response_format = {
 
 ⚠️ **清空 = 跟随全局，不是"设成空名字"**：`merge()` 对 `vtuber_name` 的**空串不覆盖**
 （`config/mod.rs` 的 `if !overlay.detection.vtuber_name.is_empty()`），所以写空串就恢复继承。
-界面据此把"留空 = 跟随全局"做成一个输入框就够，**不需要额外的"启用覆盖"开关**。
+手改工程文件时照这个来 —— 没有"启用覆盖"开关这回事。
 
-⚠️ 界面上必须能区分"本工程写了"与"继承来的" —— 只看合并值分不出来，所以要 `project_config` 那一份。
+（历史：界面曾据此在预处理页放一个输入框，靠 `GET /api/project-data/config` 的 `project_config`
+那一份区分"本工程写了"与"继承来的"；输入框 2026-11-15 删除，接口与字段都还在。）
 
 ### 附录 E 本地模式的三处口径 · 首页检查项（含运行状况，2026-10；2026-11-15 运行状况并入检查项）
 

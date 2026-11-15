@@ -167,7 +167,7 @@
       "id": "prepare.materials",
       "phase": "P1",
       "surface": "prepare",
-      "label": "处理选项（主播名/ASR 模式/素材清单）",
+      "label": "处理选项（ASR 模式/素材清单）",
       "files": [
         "webui/src/views/PrepareView.vue"
       ],

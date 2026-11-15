@@ -65,22 +65,13 @@
           </div>
         </div>
 
-        <!-- 字幕轨道：默认展开（用户口径）；收起后只留工具行（保存状态 + 展开编辑），要拖块/改字再展开。
-             展开状态首帧同步读 localStorage（`useDisclosure`）—— 别改成 v-show，轨道挂载时要量宽度。 -->
-        <div class="card mt-12">
-          <div class="row mb-6" style="justify-content:flex-end">
-            <span class="row" style="gap:8px">
-              <span class="muted small" :class="{ err: saveState === 'error' }">{{ saveHint }}</span>
-              <button
-                class="mini-btn flex-none"
-                data-cap="prepare.subtitle-track"
-                :title="subsOpen ? '点块在上方属性条改文本/入点/出点，改动自动保存；收起不会丢内容' : '展开后能拖块改起止、改文本（改动自动保存）'"
-                @click="toggleSubs"
-              >{{ subsOpen ? '收起编辑' : '展开编辑' }}</button>
-            </span>
+        <!-- 字幕轨道：**常驻展开**（2026-11-15 用户口径：收起/展开那颗按钮与「点块编辑」提示都去掉）。
+             只剩自动保存的状态行（保存中 / 已保存 / 失败 / 读闸），空态不占位。 -->
+        <div class="card mt-12" data-cap="prepare.subtitle-track">
+          <div v-if="saveHint" class="row mb-6" style="justify-content:flex-end">
+            <span class="muted small" :class="{ err: saveState === 'error' }">{{ saveHint }}</span>
           </div>
           <SubtitleTrack
-            v-if="subsOpen"
             :disabled="writeBlocked"
             :segments="segments"
             :duration="duration"
@@ -144,10 +135,10 @@
           </div>
         </div>
 
-        <!-- 处理选项卡：ASR 模式 / 主播名 / 素材清单 / 重新处理（默认收起） -->
+        <!-- 处理选项卡：ASR 模式 / 素材清单 / 重新处理（默认收起） -->
         <div class="card mt-12">
           <details class="adv-blk materials-blk" :open="materialsOpen" @toggle="syncMaterials">
-            <summary data-cap="prepare.materials" title="ASR 模式、主播名、分步处理、弹幕/字幕清单与重新处理">处理选项</summary>
+            <summary data-cap="prepare.materials" title="ASR 模式、分步处理、弹幕/字幕清单与重新处理">处理选项</summary>
 
           <!-- ASR 模式：写进本工程 `yekitrim.toml` 的 `[asr] mode`（merge 时覆盖全局配置，
                接口走 `PUT /api/project-data/config {patch}` —— 保留注释与其他 section）。
@@ -175,20 +166,6 @@
               :title="asrRunTitle"
               @click="runAsr"
             >{{ canRunAsr ? '只识别' : '已跑过' }}</button>
-          </div>
-          <!-- 主播名：全局 `[detection] vtuber_name` 只是**默认值**，每个工程可以自己写一份
-               （写进 `yekitrim.toml` 的 `[detection] vtuber_name`，merge 时覆盖全局）。
-               ⚠️ `merge` 对**空串不覆盖** ⇒ 清空就是"恢复跟随全局"，不需要额外的开关。 -->
-          <div class="asr-row">
-            <span class="asr-name">主播名</span>
-            <input
-              v-model="vtuberName"
-              class="fld-input flex-1"
-              placeholder="留空 = 跟随全局"
-              :title="vtuberHint + ' · 生效：' + (effectiveVtuber || '未设')"
-              :disabled="busy"
-              @change="saveVtuberName"
-            >
           </div>
 
           <!-- 分步：事件检测（只跑检测、不剪片段）。「只识别」在上面 ASR 那一行（只转写）。 -->
@@ -446,11 +423,10 @@ const notFound = ref(false)
 const writeBlocked = computed(() => notFound.value || !!loadError.value)
 /** `/api/health.llm === false`：只多一句提示，**不挡任何操作**（检测会退化成热度 + 一个整段）。 */
 const llmMissing = ref(false)
-/** 三块可折叠区的展开状态：首帧同步读 localStorage（`useDisclosure`），避免先展开再收起闪一下。
- *  ⚠️ 字幕轨与手动切片**默认展开**（用户口径）；键带 `.v2`，避免旧版默认收起时写下的 '0' 继续压着。 */
+/** 两块可折叠区的展开状态：首帧同步读 localStorage（`useDisclosure`），避免先展开再收起闪一下。
+ *  ⚠️ 手动切片**默认展开**（用户口径）；键带 `.v2`，避免旧版默认收起时写下的 '0' 继续压着。 */
 const { open: materialsOpen, set: setMaterialsOpen } = useDisclosure('prepare.materials', false)
 const { open: manualOpen, set: setManualOpen } = useDisclosure('prepare.manualSlice.v2', true)
-const { open: subsOpen, set: setSubsOpen } = useDisclosure('prepare.subtitles.v2', true)
 /** 阶段可选（spec A，2026-11-15 用户口径）：步进区三枚复选框，累计语义 ——
  *  默认只勾前三阶段（识别声音+查找事件），剪出片段不勾（剪辑太费时间和性能）。
  *  勾后面的自动带上前面；取消前面的连带取消后面。持久化 localStorage。 */
@@ -503,7 +479,6 @@ const autoCut = computed(() => stageSel.cut)
 /** `<details>` 的开关状态与 localStorage 双向同步（原生 toggle 事件）。 */
 function syncMaterials(e) { if (e?.target) setMaterialsOpen(e.target.open) }
 function syncManual(e) { if (e?.target) setManualOpen(e.target.open) }
-function toggleSubs() { setSubsOpen(!subsOpen.value) }
 
 const segments = ref([])
 /** 轨道总长：视频元数据时长与最后一条字幕取大者（视频还没加载时只能靠字幕兜底） */
@@ -580,7 +555,7 @@ const saveHint = computed(() => {
   if (saveState.value === 'saving') return '保存中…'
   if (saveState.value === 'error') return '保存失败：' + saveError.value
   if (saveState.value === 'saved') return '已保存 ' + saveAt.value
-  return subsOpen.value ? '点块编辑' : '展开编辑'
+  return ''
 })
 
 const jobRunning = computed(() => job.status === 'running' || job.status === 'queued')
@@ -736,14 +711,6 @@ const assetsRoot = computed(() => assets.value?.root_dir || '')
 // `hybrid` = SenseVoice 打轴 + qwen3-asr 填词（默认）。fallback 与
 // `config/types.rs::default_asr_mode()` 一致，读失败时别显示成 single。
 const asrMode = ref('hybrid')
-/** 本工程自己写的主播名（空 = 跟随全局）与其合并后的生效值 */
-const vtuberName = ref('')
-const effectiveVtuber = ref('')
-const vtuberHint = computed(() =>
-  vtuberName.value
-    ? '本工程自己设的值（写在 yekitrim.toml 的 [detection] vtuber_name）'
-    : '当前用的是全局默认值；填一个就只对本工程生效'
-)
 /** 每个 ASR 模式的槽是否已占 —— **服务端算的**（`assets::slot_bound`：清单里登记过该模式
  *  产物，或盘上已有 `output/transcript.<mode>.json`）。前端不从 `items` 自己推：
  *  判槽还要看盘上那些没登记过的老产物，抄一份到前端就会漂。 */
@@ -889,9 +856,6 @@ async function load() {
   try {
     const d = await projectData.config(pid.value, '读取项目配置')
     asrMode.value = d.config?.asr?.mode || 'hybrid'
-    // 本工程**自己**写的那份（空 = 跟随全局）与合并后的生效值，两个都要
-    vtuberName.value = d.project_config?.detection?.vtuber_name || ''
-    effectiveVtuber.value = d.config?.detection?.vtuber_name || ''
   } catch {}
   try {
     const d = await projectData.transcript(pid.value, '读取字幕')
@@ -1132,21 +1096,6 @@ async function saveSubs() {
 /** 改 ASR 模式 = 立刻写进项目 `yekitrim.toml`（patch 模式：保留注释与其他 section）。
  *  只影响**还没跑**的转写 —— 两格槽都占满时才置灰（`canPickAsr`：那种情况下
  *  跑不了任何新模式，改它只是空转）。单格占满时仍可切到另一个模式去跑。 */
-/** 主播名存进本工程 `yekitrim.toml` 的 `[detection] vtuber_name`（patch，保留注释）。
- *
- *  ⚠️ 清空 = 写空串 = **恢复跟随全局**（`merge` 对空串不覆盖），不是"设成空名字"。
- */
-async function saveVtuberName() {
-  try {
-    const v = vtuberName.value.trim()
-    await projectData.patchConfig(pid.value, { detection: { vtuber_name: v } })
-    effectiveVtuber.value = v
-    toast(v ? '主播名已保存到本工程：' + v : '主播名已清空，恢复跟随全局')
-  } catch (e) {
-    toast('主播名保存失败：' + (e.message || ''), 'err')
-  }
-}
-
 async function saveAsrMode() {
   if (!canPickAsr.value) return
   try {
