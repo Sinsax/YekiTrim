@@ -68,21 +68,23 @@
             >{{ primaryLabel }}</button>
             <span v-else-if="completed" class="muted small flex-none">已完成 ✓</span>
           </div>
-          <!-- 运行中第二行：进度条 + jobLine + 停止/任务 —— 全卡唯一的运行态渲染处 -->
-          <div v-if="jobRunning" class="prep-run">
-            <div class="progress flex-1"><div :style="{ width: jobPct + '%' }"></div></div>
-            <span class="muted small prep-run-label">{{ jobLine(job) || '运行中' }}</span>
-            <button class="mini-btn danger flex-none" :disabled="canceling" title="停止当前任务" @click="cancelJob">
+            <!-- 运行中：进度条 + 摘要 + 停止/任务 —— 与 pills 同一行（spec：一行化） -->
+            <div v-if="jobRunning" class="progress run-bar"><div :style="{ width: jobPct + '%' }"></div></div>
+            <span v-if="jobRunning" class="muted small run-pct">{{ jobLine(job) || '运行中' }}</span>
+            <button v-if="jobRunning" class="mini-btn danger flex-none" :disabled="canceling" title="停止当前任务" @click="cancelJob">
               <Icon name="x" :size="10" /> 停止
             </button>
-            <button class="mini-btn flex-none" title="打开任务抽屉" @click="openJobs()">任务</button>
-          </div>
-          <!-- 失败/取消必须可见（成功由步进 ✓ 与「去挑片段」表达，不重复渲染） -->
-          <div v-if="job.id && !jobRunning && (job.status === 'failed' || job.status === 'cancelled')" class="error-banner">
-            <Icon name="alert" :size="14" />
-            <span class="flex-1">{{ statusText(job.status) }}：{{ job.message || job.error || '无详情' }}</span>
-            <button class="mini-btn flex-none" @click="openJobs()">任务</button>
-          </div>
+            <button v-if="jobRunning" class="mini-btn flex-none" title="打开任务抽屉" @click="openJobs()">任务</button>
+            <!-- 失败/取消必须可见（成功由步进 ✓ 与「去挑片段」表达，不重复渲染） -->
+            <span v-if="job.id && !jobRunning && (job.status === 'failed' || job.status === 'cancelled')"
+                  class="run-fail" :title="job.message || job.error || ''">
+              <Icon name="alert" :size="13" /> {{ statusText(job.status) }}：{{ job.message || job.error || '无详情' }}
+            </span>
+            <!-- 任务日志 ticker（用户口径：识别行与任务日志同行）：最新一行 + 悬停看近况，点击开任务抽屉 -->
+            <span class="joblog-tick" :title="jobLogTickTitle" @click="openJobs()">
+              <b>任务日志</b>
+              <span class="mono joblog-last">{{ jobLogLast || '暂无' }}</span>
+            </span>
         </div>
       <div class="grid cols-main">
       <!-- 左：播放器 + 字幕轨道 + 切片标记 -->
@@ -151,19 +153,6 @@
 
       <!-- 右：识别（一块卡，高级项默认折叠）。主按钮紧跟状态 chips，其余收进「处理选项」。 -->
       <div class="side-col">
-        <!-- 运行任务日志（用户口径：右侧搬日志方便盯进度）：详情回填最近 50 行 + SSE Log 事件实时追加 -->
-        <div class="card joblog-card">
-          <div class="row spread mb-8">
-            <b class="t m-0">任务日志</b>
-            <span class="muted small" v-if="jobLogs.length">{{ jobLogs.length }} 行</span>
-          </div>
-          <div class="joblog" ref="joblogEl">
-            <div v-if="!jobLogs.length" class="empty small">暂无任务日志 —— 起一个任务后这里会实时滚动</div>
-            <div v-for="(l, i) in jobLogs" :key="i" class="joblog-line" :class="l.level">
-              <span class="mono">{{ l.message }}</span>
-            </div>
-          </div>
-        </div>
         <div class="card">
           <!-- 处理选项：ASR 模式 / 主播名 / 分步处理 / 弹幕与字幕清单 / 重新处理。默认收起。 -->
           <details class="adv-blk materials-blk" :open="materialsOpen" @toggle="syncMaterials">
@@ -409,7 +398,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import Icon from '../components/Icon.vue'
 import AppModal from '../components/AppModal.vue'
@@ -1291,13 +1280,10 @@ function stageText(name) {
   return map[name] || '处理'
 }
 
-/** 右栏「任务日志」：当前任务的日志行（详情回填最近 50 行 + SSE Log 事件实时追加，上限 200 行）。 */
+/** 行尾任务日志 ticker：当前任务的日志行（详情回填 + SSE Log 事件追加，上限 50 行）。 */
 const jobLogs = ref([])
-const joblogEl = ref(null)
-watch(() => jobLogs.value.length, async () => {
-  await nextTick()
-  if (joblogEl.value) joblogEl.value.scrollTop = joblogEl.value.scrollHeight
-})
+const jobLogLast = computed(() => jobLogs.value.length ? jobLogs.value[jobLogs.value.length - 1].message : '')
+const jobLogTickTitle = computed(() => jobLogs.value.slice(-8).map((l) => l.message).join('\n') || '暂无任务日志')
 
 function attachJob(id, kind, queued = false) {
   Object.assign(job, { id, kind, status: queued ? 'queued' : 'running', current: 0, total: 0, message: queued ? '排队中' : '已启动' })
@@ -1305,7 +1291,7 @@ function attachJob(id, kind, queued = false) {
   // 右栏日志：先清空，再用任务详情回填最近日志（SSE Log 事件随后实时追加）
   jobLogs.value = []
   jobsApi.detail(id).then((j) => {
-    jobLogs.value = (j?.logs || []).slice(-200).map((l) => ({ level: l.level, message: l.message }))
+    jobLogs.value = (j?.logs || []).slice(-50).map((l) => ({ level: l.level, message: l.message }))
   }).catch(() => {})
   // `watchJob()` 返回 `{ close() }` 对象（不是函数）：当函数调会抛错，
   // 且下面的订阅就不会执行 → 任务永远停在「运行中」。
@@ -1316,7 +1302,7 @@ function attachJob(id, kind, queued = false) {
       if (e.type === 'log') {
         job.message = e.message
         jobLogs.value.push({ level: e.level, message: e.message })
-        if (jobLogs.value.length > 200) jobLogs.value.splice(0, jobLogs.value.length - 200)
+        if (jobLogs.value.length > 50) jobLogs.value.splice(0, jobLogs.value.length - 50)
       }
       if (e.type === 'stage_started') {
         stageNow.value = e.stage || ''
@@ -1560,16 +1546,17 @@ onUnmounted(() => {
 /* 识别流程卡：一行 = 复选节点 + 主按钮；运行中第二行 = 进度 + 停止/任务（旧四层堆叠已压扁）。 */
 /* ── 步骤条（识别 → 查找事件 → 剪出片段）：flow-card 内可伸缩的一段，不是独立卡片 ── */
 .prep-steps { display:flex; align-items:center; gap:6px; flex:0 1 auto; min-width:0; flex-wrap:wrap; }
-.prep-run { display:flex; align-items:center; gap:8px; flex:1 1 240px; min-width:220px; }
-.prep-run-label { font-size:13px; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-/* 右栏任务日志：mono 小字滚动区（详情回填 + SSE Log 事件实时追加，自动滚到底） */
-.joblog { max-height:320px; overflow-y:auto; padding:6px 8px;
-  font-family:var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size:11px; line-height:1.6;
-  border:1px solid var(--line-soft); border-radius:var(--r-sm); background:var(--bg-soft); }
-.joblog-line { padding:1px 0; border-bottom:1px dashed var(--line-soft); overflow-wrap:anywhere; }
-.joblog-line:last-child { border-bottom:none; }
-.joblog-line.error { color:var(--red-deep); }
-.joblog-line.warn { color:var(--amber-deep); }
+.run-bar { flex:0 0 200px; }
+.run-pct { white-space:nowrap; }
+/* 行尾任务日志 ticker：最新一行 + 悬停近况（完整历史在任务抽屉） */
+.joblog-tick { flex:1 1 180px; min-width:160px; display:flex; align-items:center; gap:8px;
+  border-left:1px solid var(--line-soft); padding-left:12px; cursor:pointer; min-width:0; }
+.joblog-tick b { flex:none; font-size:12px; color:var(--ink-dim); }
+.joblog-last { font-family:var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size:11.5px;
+  color:var(--ink-dim); min-width:0; flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.joblog-tick:hover .joblog-last { color:var(--ink); }
+.run-fail { display:flex; align-items:center; gap:6px; color:var(--red-deep); font-size:12px;
+  min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .pstep { display:flex; align-items:center; min-width:0; flex:none; }
 /* 阶段开关 pill：亮（主色底+粉字+实线）= 纳入；暗（灰字+虚线框）= 排除 —— 变亮变暗即设置 */
 .pstep-tag { padding:5px 16px; border-radius:var(--r-full); font-size:13.5px; font-weight:var(--fw-semi);
