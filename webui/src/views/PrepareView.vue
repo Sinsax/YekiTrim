@@ -36,56 +36,6 @@
       />
       <div v-if="completedHint" class="hint completed-hint" :title="completedHintTitle">{{ completedHint }}</div>
 
-        <div class="card flow-card mb-12">
-          <!-- 一行 = 复选节点 + 主按钮；运行中第二行 = 进度条 + jobLine + 停止/任务。
-               旧版「标题 / 按钮 / 进度行 / 任务盒」四层堆叠说的都是同一件事 —— 用户口径：太长，压紧凑。
-               ⚠️ 只读 `hasTranscript/hasEvents/hasClips` 与任务态，不改主按钮状态机。 -->
-          <div class="prep-steps" data-cap="prepare.stage-select">
-            <template v-for="(st, i) in prepSteps" :key="st.key">
-              <div class="pstep">
-                <!-- 阶段可选 v2（用户口径：文字变亮变暗就是设置）：亮 = 纳入一键处理、暗 = 排除；
-                     点亮后面的自动带上前面，熄灭前面的连带熄灭后面（累计）。剪出片段默认暗（费时费性能）。 -->
-                <button type="button" class="pstep-tag"
-                        :class="{ on: stageSel[st.key], dim: !stageSel[st.key], done: st.state === 'done', active: st.state === 'active' }"
-                        :disabled="busy"
-                        :title="stageSel[st.key] ? '已纳入一键处理，点击排除' : '点击纳入一键处理'"
-                        @click="toggleStage(st.key)">
-                  {{ st.label }}<span v-if="st.state === 'done'" class="pstep-done"> ✓</span>
-                </button>
-              </div>
-              <span v-if="i < prepSteps.length - 1" class="pstep-line" :class="{ on: st.state === 'done' }" aria-hidden="true"></span>
-            </template>
-            <!-- ⚠️ 刚跑完这一次时主按钮不渲染：上面的 NextStepBar 已经是「去挑片段」，
-                 两颗同目的地的主按钮并排 = 一页两个主行动。重新跑走「处理选项 → 重新查找事件」。
-                 `data-cap` 仍只有源码里这一处（check-simplify 数的是锚点，不是渲染结果）。 -->
-            <button
-              v-if="!completed && !jobRunning"
-              class="btn btn-primary run-btn"
-              data-cap="prepare.run-all"
-              :disabled="primaryDisabled"
-              :title="primaryTitle"
-              @click="onPrimary"
-            >{{ primaryLabel }}</button>
-            <span v-else-if="completed" class="muted small flex-none">已完成 ✓</span>
-          </div>
-            <!-- 运行中：进度条 + 摘要 + 停止/任务 —— 与 pills 同一行（spec：一行化） -->
-            <div v-if="jobRunning" class="progress run-bar"><div :style="{ width: jobPct + '%' }"></div></div>
-            <span v-if="jobRunning" class="muted small run-pct">{{ jobLine(job) || '运行中' }}</span>
-            <button v-if="jobRunning" class="mini-btn danger flex-none" :disabled="canceling" title="停止当前任务" @click="cancelJob">
-              <Icon name="x" :size="10" /> 停止
-            </button>
-            <button v-if="jobRunning" class="mini-btn flex-none" title="打开任务抽屉" @click="openJobs()">任务</button>
-            <!-- 失败/取消必须可见（成功由步进 ✓ 与「去挑片段」表达，不重复渲染） -->
-            <span v-if="job.id && !jobRunning && (job.status === 'failed' || job.status === 'cancelled')"
-                  class="run-fail" :title="job.message || job.error || ''">
-              <Icon name="alert" :size="13" /> {{ statusText(job.status) }}：{{ job.message || job.error || '无详情' }}
-            </span>
-            <!-- 任务日志 ticker（用户口径：识别行与任务日志同行）：最新一行 + 悬停看近况，点击开任务抽屉 -->
-            <span class="joblog-tick" :title="jobLogTickTitle" @click="openJobs()">
-              <b>任务日志</b>
-              <span class="mono joblog-last">{{ jobLogLast || '暂无' }}</span>
-            </span>
-        </div>
       <div class="grid cols-main">
       <!-- 左：播放器 + 字幕轨道 + 切片标记 -->
       <div>
@@ -154,6 +104,48 @@
       <!-- 右：识别（一块卡，高级项默认折叠）。主按钮紧跟状态 chips，其余收进「处理选项」。 -->
       <div class="side-col">
         <div class="card">
+          <!-- 处理流程（识别行并入处理选项，用户口径 2026-11-15）：阶段亮暗即设置 + 主按钮 + 运行进度。
+               ⚠️ 只读 hasTranscript/hasEvents/hasClips 与任务态，不改主按钮状态机。 -->
+          <div class="row spread mb-8">
+            <b class="t m-0">处理流程</b>
+            <span v-if="job.id" class="chip" :class="statusClass(job.status)">{{ statusText(job.status) }}</span>
+          </div>
+          <div class="stage-list" data-cap="prepare.stage-select">
+            <button v-for="st in stageRows" :key="st.key" type="button" class="stage-row"
+                    :class="{ on: stageSel[st.key], dim: !stageSel[st.key], done: st.state === 'done', active: st.state === 'active' }"
+                    :disabled="busy"
+                    :title="stageSel[st.key] ? '已纳入一键处理，点击排除' : '点击纳入一键处理'"
+                    @click="toggleStage(st.key)">
+              <span class="stage-dot" aria-hidden="true"></span>
+              <span class="stage-name">{{ st.label }}</span>
+              <span class="stage-sub">{{ st.sub }}</span>
+            </button>
+            <!-- 运行中：进度条 + jobLine 摘要 + 停止/任务（全卡唯一的运行态渲染处） -->
+            <div v-if="jobRunning" class="run-line">
+              <div class="progress flex-1"><div :style="{ width: jobPct + '%' }"></div></div>
+            </div>
+            <div v-if="jobRunning" class="muted small run-sum">{{ jobLine(job) || '运行中' }}</div>
+            <div v-if="jobRunning" class="row" style="gap:6px">
+              <button class="mini-btn danger flex-none" :disabled="canceling" title="停止当前任务" @click="cancelJob">
+                <Icon name="x" :size="10" /> 停止
+              </button>
+              <button class="mini-btn flex-none" title="打开任务抽屉" @click="openJobs()">任务</button>
+            </div>
+            <button
+              v-if="!completed && !jobRunning"
+              class="btn btn-primary stage-run"
+              data-cap="prepare.run-all"
+              :disabled="primaryDisabled"
+              :title="primaryTitle"
+              @click="onPrimary"
+            >{{ primaryLabel }}</button>
+            <!-- 失败/取消必须可见（成功由步进 ✓ 与「去挑片段」表达，不重复渲染） -->
+            <div v-if="job.id && !jobRunning && (job.status === 'failed' || job.status === 'cancelled')" class="error-banner">
+              <Icon name="alert" :size="14" />
+              <span class="flex-1">{{ statusText(job.status) }}：{{ job.message || job.error || '无详情' }}</span>
+              <button class="mini-btn flex-none" @click="openJobs()">任务</button>
+            </div>
+          </div>
           <!-- 处理选项：ASR 模式 / 主播名 / 分步处理 / 弹幕与字幕清单 / 重新处理。默认收起。 -->
           <details class="adv-blk materials-blk" :open="materialsOpen" @toggle="syncMaterials">
             <summary data-cap="prepare.materials" title="ASR 模式、主播名、分步处理、弹幕/字幕清单与重新处理">处理选项</summary>
@@ -1276,34 +1268,28 @@ async function startStage(stage) {
 
 /** 阶段英文名 → 行内中文（服务端 `stage_started` 给的是 `AudioExtractor` / `Transcriber` / …）。 */
 function stageText(name) {
-  const map = { AudioExtractor: '提取音频', Transcriber: '转写', EventDetector: '检测', Cutter: '剪出片段' }
+  const map = { AudioExtractor: '提取音频', Transcriber: '转写', EventDetector: '查找事件', Cutter: '剪出片段' }
   return map[name] || '处理'
 }
 
-/** 行尾任务日志 ticker：当前任务的日志行（详情回填 + SSE Log 事件追加，上限 50 行）。 */
-const jobLogs = ref([])
-const jobLogLast = computed(() => jobLogs.value.length ? jobLogs.value[jobLogs.value.length - 1].message : '')
-const jobLogTickTitle = computed(() => jobLogs.value.slice(-8).map((l) => l.message).join('\n') || '暂无任务日志')
+/** 右栏「处理流程」行：prepSteps 的状态 + 勾选态合并（sub 随勾选/进度变化）。 */
+const stageRows = computed(() => prepSteps.value.map((st) => ({
+  ...st,
+  sub: st.state === 'done' ? '已完成'
+    : st.state === 'active' ? (stageSel[st.key] ? `进行中 ${jobPct.value}%` : '进行中')
+    : (stageSel[st.key] ? '待开始' : '未纳入')
+})))
 
 function attachJob(id, kind, queued = false) {
   Object.assign(job, { id, kind, status: queued ? 'queued' : 'running', current: 0, total: 0, message: queued ? '排队中' : '已启动' })
   stageNow.value = ''
-  // 右栏日志：先清空，再用任务详情回填最近日志（SSE Log 事件随后实时追加）
-  jobLogs.value = []
-  jobsApi.detail(id).then((j) => {
-    jobLogs.value = (j?.logs || []).slice(-50).map((l) => ({ level: l.level, message: l.message }))
-  }).catch(() => {})
   // `watchJob()` 返回 `{ close() }` 对象（不是函数）：当函数调会抛错，
   // 且下面的订阅就不会执行 → 任务永远停在「运行中」。
   jobClose?.close?.()
   jobClose = watchJob(id, {
     onEvent(e) {
       if (e.type === 'progress') { job.current = e.current; job.total = e.total }
-      if (e.type === 'log') {
-        job.message = e.message
-        jobLogs.value.push({ level: e.level, message: e.message })
-        if (jobLogs.value.length > 50) jobLogs.value.splice(0, jobLogs.value.length - 50)
-      }
+      if (e.type === 'log') job.message = e.message
       if (e.type === 'stage_started') {
         stageNow.value = e.stage || ''
         job.message = stageText(e.stage) + ' 运行中'
