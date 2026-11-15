@@ -1499,7 +1499,9 @@ pub(super) async fn run_single_cut_event(config_file: &Path, ev: yekitrim_core::
     // 于是切片页的「精修」按钮、首页切片总览、`polish_ready` 判据进来时工程已经在了，
     // 不再有"发完 init 就跳转、页面先读到 polish.toml not found"的竞态。
     // 失败只 warn：剪切已经成功，进入精修时还有 `ensure_polish_project` 兜底。
-    yekitrim_service::init_polish_for_events(&ctx.output_dir, &ctx.events).await;
+    // 收尾进度传 None：单条收尾秒级（cut_all 的逐条进度由调用方循环统一报，
+    // 不会在这里出现 >120s 的无事件窗口 —— spec §1 P2 口径核对过）。
+    yekitrim_service::init_polish_for_events(&ctx.output_dir, &ctx.events, None).await;
     Ok(())
 }
 

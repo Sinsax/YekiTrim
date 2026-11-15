@@ -31,21 +31,24 @@ pub async fn run_stages(
 }
 
 /// 本任务将**按序**运行的阶段号 —— spec §1 的 stage_index/stage_total 来源。
-/// 与 `yekitrim_service::run_stages_with_ext` 的分派同口径：单阶段（且不是 process）→
-/// 只跑那一个；其余（多阶段 / process）→ 全流程 1..4。
+/// 与 `yekitrim_service::run_stages_with_ext` 的分派同口径（2026-11-15 修正后）：
+/// 含 "process" → 全流程 1..4；**其余按请求列表逐个映射**（阶段子集不再误当全流程，
+/// 旧行为把多阶段一律当 run_process，勾选「识别+查找事件」会连剪出一起跑）。
 /// 未知键给 0：桥落 (1, 0)，前端对 total=0 不显示 i/N（宁可少显示也不撒谎）。
 fn expected_stages(stages: &[String]) -> Vec<u32> {
-    if stages.len() == 1 && stages[0] != "process" {
-        vec![match stages[0].as_str() {
+    if stages.iter().any(|s| s == "process") {
+        return vec![1, 2, 3, 4];
+    }
+    stages
+        .iter()
+        .map(|s| match s.as_str() {
             "extract" => 1,
             "transcribe" => 2,
             "detect" => 3,
             "cut" => 4,
             _ => 0,
-        }]
-    } else {
-        vec![1, 2, 3, 4]
-    }
+        })
+        .collect()
 }
 
 /// 进度桥的一次落库动作：桥（管线线程）→ 通道 → 主 runtime 上的消费者。
@@ -93,7 +96,7 @@ fn stage_zh(name: &str) -> &str {
     match name {
         "AudioExtractor" => "提取音频",
         "Transcriber" => "识别声音",
-        "EventDetector" => "找亮点",
+        "EventDetector" => "查找事件",
         "Cutter" => "剪出片段",
         other => other,
     }
@@ -399,8 +402,13 @@ mod tests {
         assert_eq!(expected_stages(&["cut".to_string()]), vec![4]);
         assert_eq!(
             expected_stages(&["transcribe".to_string(), "detect".to_string()]),
-            vec![1, 2, 3, 4],
-            "多阶段入口实际走 run_process 全流程（分派如此，别自作聪明裁剪）"
+            vec![2, 3],
+            "阶段子集按请求列表映射 —— 2026-11-15 分派修正后多阶段不再误当全流程"
+        );
+        assert_eq!(
+            expected_stages(&["extract".to_string(), "transcribe".to_string(), "detect".to_string()]),
+            vec![1, 2, 3],
+            "步进区默认勾选（前三阶段）= 阶段 1/3 → 3/3"
         );
         assert_eq!(expected_stages(&["mystery".to_string()]), vec![0], "未知键给 0 → 不显示 i/N");
     }

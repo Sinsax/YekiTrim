@@ -131,7 +131,7 @@
       "id": "prepare.run-all",
       "phase": "P1",
       "surface": "prepare",
-      "label": "一键处理（识别+找亮点+剪出片段）",
+      "label": "一键处理（识别+查找事件+剪出片段）",
       "files": [
         "webui/src/views/PrepareView.vue"
       ],

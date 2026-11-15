@@ -151,12 +151,29 @@ fn warm_loudness_cache(clip_dir: &Path) {
 pub async fn init_polish_for_events(
     output_dir: &Path,
     events: &[yekitrim_core::types::Event],
+    // 收尾子阶段进度（spec §1 D-1，2026-11-15）：[Cutter] completed 之后本循环动辄十几
+    // 分钟（40+ 片段 × 10-55s 响度预热），此前零事件 → 任务行停在「100%」假卡死。
+    // message 明示「剪切完成，补精修工程中」；进度条从收尾起点重爬（i/N）。
+    progress: Option<&Arc<dyn ProgressReporter>>,
 ) -> usize {
+    let total = events.len() as u64;
+    if let Some(p) = progress {
+        yekitrim_core::progress::ProgressReporter::note(
+            p.as_ref(),
+            "剪切完成，补精修工程 / 预热响度中…",
+        );
+    }
     let mut created = 0usize;
-    for ev in events {
-        let dir = output_dir
-            .join("clips")
-            .join(yekitrim_core::cutting::clip_dir_name_for_event(ev));
+    for (i, ev) in events.iter().enumerate() {
+        let name = yekitrim_core::cutting::clip_dir_name_for_event(ev);
+        let dir = output_dir.join("clips").join(&name);
+        if let Some(p) = progress {
+            yekitrim_core::progress::ProgressReporter::stage_progress(p.as_ref(), i as u64 + 1, total);
+            yekitrim_core::progress::ProgressReporter::note(
+                p.as_ref(),
+                &format!("补精修工程 {}/{}：{}", i + 1, events.len(), name),
+            );
+        }
         match init_polish_for_clip(&dir).await {
             Ok(true) => created += 1,
             Ok(false) => {}
@@ -219,13 +236,29 @@ pub async fn run_stages_with_ext(
     progress: Option<Arc<dyn ProgressReporter>>,
 ) -> anyhow::Result<()> {
     normalize_if_exists(config_file)?;
-    // 单阶段
-    if stages.len() == 1 && stages[0] != "process" {
-        return run_stage(config_file, &stages[0], resume, input_override, output_override, transcript_override, events_override, progress.as_ref()).await;
+    // 全流程：**只有显式含 "process"** 才走 run_all（无视文件检查从头跑到底）。
+    if stages.iter().any(|s| s == "process") {
+        return run_process(config_file, dry_run, resume, input_override, output_override, progress.as_ref()).await;
     }
 
-    // 全流程
-    run_process(config_file, dry_run, resume, input_override, output_override, progress.as_ref()).await
+    // 单阶段 / **阶段子集**（2026-11-15 步进区复选框 + 采集级别）：**按序逐个 run_stage**。
+    // ⚠️ 旧实现把多阶段一律当全流程 —— 勾选「识别+查找事件」会连剪出一起跑，恰好
+    // 违背阶段可选（docs/plan/prepare-stepper-and-progress-plan-2026-11-15.md §A）。
+    // run_stage 自带各阶段前置与自动补提取，产物路径（audio/transcript/events）逐个
+    // 写回 config，串行状态天然衔接 —— 别在循环外自己拼 ctx。
+    for stage in stages {
+        run_stage(
+            config_file,
+            stage,
+            resume,
+            input_override.clone(),
+            output_override.clone(),
+            transcript_override.clone(),
+            events_override.clone(),
+            progress.as_ref(),
+        ).await?;
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -312,8 +345,8 @@ async fn run_stage(
             ctx.events = yekitrim_core::detection::load_events(&ev_path)?;
             runner.add_stage(Box::new(yekitrim_core::cutting::Cutter));
             runner.run(&mut ctx).await?;
-            // 剪切收尾：新片段立刻带上精修工程（见 `init_polish_for_clip`）
-            init_polish_for_events(&ctx.output_dir, &ctx.events).await;
+            // 剪切收尾：新片段立刻带上精修工程（见 `init_polish_for_clip`）；progress 透传给收尾子阶段进度
+            init_polish_for_events(&ctx.output_dir, &ctx.events, progress).await;
         }
         other => anyhow::bail!("未知 stage: {}", other),
     }
@@ -484,8 +517,8 @@ async fn run_process(
             return Ok(());
         }
         run_until(cfg, progress, &mut ctx, STAGE_CUT, Box::new(yekitrim_core::cutting::Cutter)).await?;
-        // 剪切收尾：新片段立刻带上精修工程（与单阶段 `cut` 同一条路，见 `init_polish_for_clip`）
-        init_polish_for_events(&ctx.output_dir, &ctx.events).await;
+        // 剪切收尾：新片段立刻带上精修工程（与单阶段 `cut` 同一条路）；progress 透传收尾子阶段进度
+        init_polish_for_events(&ctx.output_dir, &ctx.events, progress).await;
     } else {
         tracing::info!("剪切已完成，跳过");
     }
@@ -621,6 +654,7 @@ mod tests {
         let created = init_polish_for_events(
             tmp.path(),
             &[event(1, None), event(2, Some("夏日杂谈"))],
+            None,
         )
         .await;
         assert_eq!(created, 2, "两个刚剪出来的目录都该补上工程");
@@ -628,7 +662,7 @@ mod tests {
         assert!(tmp.path().join("clips").join("夏日杂谈").join("polish.toml").exists());
         // 幂等：再跑一次不再新建
         assert_eq!(
-            init_polish_for_events(tmp.path(), &[event(1, None)]).await,
+            init_polish_for_events(tmp.path(), &[event(1, None)], None).await,
             0
         );
     }
@@ -650,7 +684,7 @@ mod tests {
         );
         std::fs::write(&cache, &raw).unwrap();
 
-        init_polish_for_events(tmp.path(), &[event(1, None), event(2, None)]).await;
+        init_polish_for_events(tmp.path(), &[event(1, None), event(2, None)], None).await;
 
         assert_eq!(
             std::fs::read_to_string(&cache).unwrap(),
@@ -695,7 +729,7 @@ mod tests {
         .unwrap();
 
         let t0 = std::time::Instant::now();
-        init_polish_for_events(tmp.path(), &[event(1, None)]).await;
+        init_polish_for_events(tmp.path(), &[event(1, None)], None).await;
         let cold = t0.elapsed();
 
         let cache = dir.join("data").join("loudness.json");
@@ -714,7 +748,7 @@ mod tests {
 
         let mtime_before = std::fs::metadata(&cache).unwrap().modified().unwrap();
         let t1 = std::time::Instant::now();
-        init_polish_for_events(tmp.path(), &[event(1, None)]).await;
+        init_polish_for_events(tmp.path(), &[event(1, None)], None).await;
         let hot = t1.elapsed();
         assert_eq!(std::fs::read_to_string(&cache).unwrap(), raw, "命中不许重写");
         assert_eq!(

@@ -23,7 +23,7 @@
       <!-- LLM 未配置：**不拦路**（检测照跑，退化按弹幕/字幕热度 + 一个整段），只是提前说清结果。 -->
       <div v-if="llmMissing" class="llm-banner" title="在「设置 → AI 模型」里配好接口与密钥后，检测会按话题切成多个亮点">
         <Icon name="alert" :size="14" />
-        <span class="flex-1" title="没配 AI 时只按弹幕/字幕热度找亮点，可能只得到一个整段；配置后可提高分段质量">未配置 AI：只按弹幕/字幕热度找亮点</span>
+        <span class="flex-1" title="没配 AI 时只按弹幕/字幕热度查找事件，可能只得到一个整段；配置后可提高分段质量">未配置 AI：只按弹幕/字幕热度查找事件</span>
         <router-link class="mini-btn flex-none" to="/settings/llm">去配置 AI</router-link>
       </div>
 
@@ -58,7 +58,7 @@
           <!-- 主按钮（状态机见 primaryLabel / onPrimary）：没有事件时 = 一键处理，
                已有事件 = 去挑片段；运行中禁用，进度与「停止」在下面的任务盒。 -->
           <!-- ⚠️ 刚跑完这一次时**不渲染主按钮**：上面的 NextStepBar 已经是「去挑片段」，
-               两颗同目的地的主按钮并排 = 一页两个主行动。重新跑走「处理选项 → 重新找亮点」。
+               两颗同目的地的主按钮并排 = 一页两个主行动。重新跑走「处理选项 → 重新查找事件」。
                `data-cap` 仍只有源码里这一处（check-simplify 数的是锚点，不是渲染结果）。 -->
           <button
             v-if="!completed"
@@ -162,9 +162,9 @@
           <details class="adv-blk materials-blk" :open="materialsOpen" @toggle="syncMaterials">
             <summary data-cap="prepare.materials" title="ASR 模式、主播名、分步处理、弹幕/字幕清单与重新处理">处理选项</summary>
 
-            <!-- 自动剪出：开 = 主按钮一次跑完（识别 → 找亮点 → 剪出片段）；
-                 关 = 只到找亮点（主按钮文案变「开始识别」），片段到切片页自己挑。 -->
-            <label class="opt-row mt-6" :class="{ dis: busy }" title="开：一次点击跑完识别 → 找亮点 → 剪出片段；关：只到找亮点">
+            <!-- 自动剪出：开 = 主按钮一次跑完（识别 → 查找事件 → 剪出片段）；
+                 关 = 只到查找事件（主按钮文案变「开始识别」），片段到切片页自己挑。 -->
+            <label class="opt-row mt-6" :class="{ dis: busy }" title="开：一次点击跑完识别 → 查找事件 → 剪出片段；关：只到查找事件">
               <input type="checkbox" :checked="autoCut" :disabled="busy" @change="setAutoCut($event.target.checked)">
               <span>自动剪出片段</span>
             </label>
@@ -249,7 +249,7 @@
             />
           </div>
 
-            <!-- 重新找亮点：只重跑事件检测（整份覆盖 events.json），不重切片段。
+            <!-- 重新查找事件：只重跑事件检测（整份覆盖 events.json），不重切片段。
                  已剪片段不受影响；要重切去「挑片段」页点「一键剪出全部」。 -->
             <button
               v-if="hasEvents || hasClips"
@@ -258,7 +258,7 @@
               :disabled="busy || !hasVideo"
               :title="redetectTitle"
               @click="onRedetect"
-            >重新找亮点</button>
+            >重新查找事件</button>
           </details>
         </div>
         <div class="card">
@@ -472,7 +472,7 @@ const llmMissing = ref(false)
 const { open: materialsOpen, set: setMaterialsOpen } = useDisclosure('prepare.materials', false)
 const { open: manualOpen, set: setManualOpen } = useDisclosure('prepare.manualSlice.v2', true)
 const { open: subsOpen, set: setSubsOpen } = useDisclosure('prepare.subtitles.v2', true)
-/** 自动剪出片段（默认开）：开 = 主按钮一键跑完识别 → 找亮点 → 剪出片段；关 = 只到找亮点。 */
+/** 自动剪出片段（默认开）：开 = 主按钮一键跑完识别 → 查找事件 → 剪出片段；关 = 只到查找事件。 */
 const AUTO_CUT_KEY = 'yekitrim.ui.prepare.autoCut'
 const autoCut = ref(readAutoCut())
 /** 一键处理成功后的结果（亮点数 / 片段数），给顶部「下一步」条用；读不到就保持 null（不报假数）。 */
@@ -665,8 +665,8 @@ const primaryTitle = computed(() => {
     return `「${asrMode.value}」模式的 ASR 已经跑过 —— 从处理选项的字幕列表里选一份，或换个模式再跑`
   }
   const modelHint = hasTranscript.value ? '' : '；首次会下载模型（hybrid 879 MB / single 165 MB）'
-  if (autoCut.value) return `一次点击跑完：转写 → 找亮点 → 剪出片段（已完成的阶段会跳过）${modelHint}`
-  return `一次点击跑完：转写 → 找亮点（不剪片段，片段到切片页自己挑）${modelHint}`
+  if (autoCut.value) return `一次点击跑完：转写 → 查找事件 → 剪出片段（已完成的阶段会跳过）${modelHint}`
+  return `一次点击跑完：转写 → 查找事件（不剪片段，片段到切片页自己挑）${modelHint}`
 })
 /** 一键处理成功后的「下一步」文案：片段数只有在这次真的切了片段时才报（分步跑只报亮点数）。 */
 const completedText = computed(() => {
@@ -697,7 +697,7 @@ const prepSteps = computed(() => {
       sub: run === 'transcribe' ? `进行中 ${pct}%` : tr ? '已完成' : '待开始'
     },
     {
-      key: 'detect', label: '找亮点',
+      key: 'detect', label: '查找事件',
       state: run === 'detect' ? 'active' : ev ? 'done' : tr ? 'active' : 'todo',
       sub: run === 'detect' ? `进行中 ${pct}%` : ev ? '已完成' : '待开始'
     },
@@ -712,7 +712,7 @@ const prepSteps = computed(() => {
 const completedHintTitle = computed(() => (completed.value && /^完整录像/.test(completed.value.firstLabel)
   ? '未配置 AI 模型（或模型没识别出话题）时，检测只产出一个「完整录像」事件。'
   : '检测只产出一条事件时的提示。'))
-/** 「重新找亮点」：只重跑检测。已有片段时不去动 events.json，直接把人送到挑片段页补切。 */
+/** 「重新查找事件」：只重跑检测。已有片段时不去动 events.json，直接把人送到挑片段页补切。 */
 const redetectTitle = '只重跑事件检测：整份覆盖 events.json，不重切片段；已剪片段不受影响'
 
 
@@ -1175,7 +1175,7 @@ async function runDetectOnly() {
   await startStage('detect')
 }
 
-/** 处理选项里的「重新找亮点」：有已剪片段时不重跑检测（会让 events 与片段错位），
+/** 处理选项里的「重新查找事件」：有已剪片段时不重跑检测（会让 events 与片段错位），
  *  直接去挑片段页补切；没有片段才重跑检测（`startStage` 自带二次确认）。 */
 function onRedetect() {
   if (hasClips.value) {
@@ -1198,7 +1198,7 @@ function goSlices() {
   router.push(slicesPath.value)
 }
 
-/** 一键处理：**一个任务**跑完 识别 → 找亮点 → 剪出片段（后端 `stage=process` 会跳过已完成阶段）。
+/** 一键处理：**一个任务**跑完 识别 → 查找事件 → 剪出片段（后端 `stage=process` 会跳过已完成阶段）。
  *  已有亮点/片段时二次确认 —— 文案（`redetectWarning`）写明片段不会被删。 */
 async function runAll() {
   if (busy.value) { toast('该项目正在' + busyText.value + '，请稍候'); return }
@@ -1510,7 +1510,7 @@ onUnmounted(() => {
 .seg-overlap { color:var(--amber-deep); font-size:11px; white-space:nowrap; }
 .run-btn { width:100%; justify-content:center; margin-bottom:8px; }
 /* 识别流程卡在 grid 上方：标题/状态 chips 在左，主按钮在右，任务盒另起一行。 */
-/* ── v6 步骤条（转写 → 找亮点 → 剪片段）：flow-card 内可伸缩的一段，不是独立卡片 ── */
+/* ── v6 步骤条（转写 → 查找事件 → 剪片段）：flow-card 内可伸缩的一段，不是独立卡片 ── */
 .prep-steps { display:flex; align-items:center; gap:10px; flex:1 1 340px; min-width:0; }
 .pstep { display:flex; align-items:center; gap:8px; min-width:0; flex:none; }
 .pstep-dot { width:22px; height:22px; flex:none; border-radius:var(--r-full);

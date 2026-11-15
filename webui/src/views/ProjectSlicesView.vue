@@ -9,7 +9,7 @@
       v-if="showEmptyAll"
       icon="scissors"
       title="还没有可剪的片段"
-      description="先在「识别」页找亮点，再回来剪片段"
+      description="先在「识别」页查找事件，再回来剪片段"
       primary="去识别"
       :primary-to="`/p/${pid}/prepare`"
       secondary="手动添加"

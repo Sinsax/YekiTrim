@@ -277,7 +277,15 @@ impl Stage for Cutter {
 
             for result in batch_results {
                 match result {
-                    Ok(ClipOutcome::Cut(info)) => clip_infos.push(info),
+                    Ok(ClipOutcome::Cut(info)) => {
+                        // 剪出明细（spec §1 P2）：逐片段 note 与批次百分比互补 ——
+                        // 长片几十个片段时用户能看到「剪到哪一条」，而不是只有一根爬条。
+                        ctx.progress.note(&format!(
+                            "剪出 {}/{}：{}",
+                            batch_end, total_events, info.title
+                        ));
+                        clip_infos.push(info);
+                    }
                     Ok(ClipOutcome::Skipped(reason)) => {
                         tracing::info!("{reason}");
                         skipped.push(reason);

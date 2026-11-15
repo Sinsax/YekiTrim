@@ -6,7 +6,7 @@ export const KIND_ZH = {
   pipeline: '处理流程',
   stage_extract: '提取音频',
   stage_transcribe: '识别声音',
-  stage_detect: '找亮点',
+  stage_detect: '查找事件',
   stage_cut: '剪出片段',
   stage_process: '一键处理',
   cut_all: '剪出全部片段',
@@ -24,7 +24,7 @@ export const KIND_ZH = {
   publish: '投稿',
   ingest_none: '采集',
   ingest_transcribe: '采集后识别',
-  ingest_detect: '采集后找亮点',
+  ingest_detect: '采集后查找事件',
   ingest_cut: '采集后剪片段'
 }
 
