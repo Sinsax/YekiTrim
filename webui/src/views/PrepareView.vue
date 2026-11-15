@@ -37,11 +37,9 @@
       <div v-if="completedHint" class="hint completed-hint" :title="completedHintTitle">{{ completedHint }}</div>
 
         <div class="card flow-card mb-12">
-          <b class="t">识别</b>
-
-          <!-- v6 步骤条：替换掉原来的三枚 chip —— 它们和步骤条说的是同一件事，
-               同时出现就是"同一状态说两遍"。步骤条多了序号与连线，扫一眼就知道走到哪。
-               ⚠️ 只读 `hasTranscript/hasEvents/hasClips` 与任务态，**不改主按钮状态机**。 -->
+          <!-- 一行 = 复选节点 + 主按钮；运行中第二行 = 进度条 + jobLine + 停止/任务。
+               旧版「标题 / 按钮 / 进度行 / 任务盒」四层堆叠说的都是同一件事 —— 用户口径：太长，压紧凑。
+               ⚠️ 只读 `hasTranscript/hasEvents/hasClips` 与任务态，不改主按钮状态机。 -->
           <div class="prep-steps" data-cap="prepare.stage-select">
             <template v-for="(st, i) in prepSteps" :key="st.key">
               <div class="pstep" :class="st.state">
@@ -54,55 +52,39 @@
                          :disabled="busy || (st.key === 'detect' && !stageSel.transcribe) || (st.key === 'cut' && !stageSel.detect)"
                          @change="setStageSel(st.key, $event.target.checked)">
                 </label>
-                <span class="pstep-dot" aria-hidden="true">{{ st.state === 'done' ? '✓' : i + 1 }}</span>
-                <span class="pstep-body">
-                  <b>{{ st.label }}</b>
-                  <span class="pstep-sub">{{ st.sub }}</span>
-                </span>
+                <b class="pstep-name" :class="{ dim: st.state === 'todo' }">{{ st.label }}</b>
+                <span v-if="st.state === 'done'" class="pstep-done" aria-hidden="true">✓</span>
               </div>
               <span v-if="i < prepSteps.length - 1" class="pstep-line" :class="{ on: st.state === 'done' }" aria-hidden="true"></span>
             </template>
+            <!-- ⚠️ 刚跑完这一次时主按钮不渲染：上面的 NextStepBar 已经是「去挑片段」，
+                 两颗同目的地的主按钮并排 = 一页两个主行动。重新跑走「处理选项 → 重新查找事件」。
+                 `data-cap` 仍只有源码里这一处（check-simplify 数的是锚点，不是渲染结果）。 -->
+            <button
+              v-if="!completed && !jobRunning"
+              class="btn btn-primary run-btn"
+              data-cap="prepare.run-all"
+              :disabled="primaryDisabled"
+              :title="primaryTitle"
+              @click="onPrimary"
+            >{{ primaryLabel }}</button>
+            <span v-else-if="completed" class="muted small flex-none">已完成 ✓</span>
           </div>
-          <!-- 整体进度行（spec C）：运行中复用 jobLine（阶段 i/N · 中文名 · 明细 · %），与任务抽屉同口径。 -->
-          <div v-if="jobRunning" class="prep-progress">
-            <div class="muted small">{{ jobLine(job) }}</div>
-            <div v-if="job.total > 0" class="progress mt-6"><div :style="{ width: jobPct + '%' }"></div></div>
+          <!-- 运行中第二行：进度条 + jobLine + 停止/任务 —— 全卡唯一的运行态渲染处 -->
+          <div v-if="jobRunning" class="prep-run">
+            <div class="progress flex-1"><div :style="{ width: jobPct + '%' }"></div></div>
+            <span class="muted small prep-run-label">{{ jobLine(job) || '运行中' }}</span>
+            <button class="mini-btn danger flex-none" :disabled="canceling" title="停止当前任务" @click="cancelJob">
+              <Icon name="x" :size="10" /> 停止
+            </button>
+            <button class="mini-btn flex-none" title="打开任务抽屉" @click="openJobs()">任务</button>
           </div>
-
-          <!-- 主按钮（状态机见 primaryLabel / onPrimary）：没有事件时 = 一键处理，
-               已有事件 = 去挑片段；运行中禁用，进度与「停止」在下面的任务盒。 -->
-          <!-- ⚠️ 刚跑完这一次时**不渲染主按钮**：上面的 NextStepBar 已经是「去挑片段」，
-               两颗同目的地的主按钮并排 = 一页两个主行动。重新跑走「处理选项 → 重新查找事件」。
-               `data-cap` 仍只有源码里这一处（check-simplify 数的是锚点，不是渲染结果）。 -->
-          <button
-            v-if="!completed"
-            class="btn btn-primary run-btn"
-            data-cap="prepare.run-all"
-            :disabled="primaryDisabled"
-            :title="primaryTitle"
-            @click="onPrimary"
-          >
-            <span v-if="jobRunning" class="spinner"></span>
-            {{ primaryLabel }}
-          </button>
-          <div v-if="job.id" class="job-box mt-12">
-            <div class="row spread small">
-              <b>{{ kindText(job.kind) }}</b>
-              <span class="chip" :class="statusClass(job.status)">{{ statusText(job.status) }}</span>
-            </div>
-            <!-- 进行时行与任务抽屉同口径（jobLine 唯一实现）；无内容时退回「运行中」 -->
-            <div class="muted small mt-2">{{ jobLine(job) || '运行中' }}</div>
-            <div v-if="job.total > 0" class="progress mt-6"><div :style="{ width: jobPct + '%' }"></div></div>
-            <div class="row mt-6" style="gap:6px">
-              <button class="mini-btn flex-none" @click="openJobs()">查看任务</button>
-              <button v-if="jobRunning" class="mini-btn danger flex-none" :disabled="canceling" @click="cancelJob">
-                <Icon name="x" :size="10" /> 停止
-              </button>
-            </div>
+          <!-- 失败/取消必须可见（成功由步进 ✓ 与「去挑片段」表达，不重复渲染） -->
+          <div v-if="job.id && !jobRunning && (job.status === 'failed' || job.status === 'cancelled')" class="error-banner">
+            <Icon name="alert" :size="14" />
+            <span class="flex-1">{{ statusText(job.status) }}：{{ job.message || job.error || '无详情' }}</span>
+            <button class="mini-btn flex-none" @click="openJobs()">任务</button>
           </div>
-
-
-
         </div>
       <div class="grid cols-main">
       <!-- 左：播放器 + 字幕轨道 + 切片标记 -->
@@ -429,7 +411,7 @@ import { projectData } from '../api/projectData'
 import { healthPayload, refreshHealth } from '../stores/health'
 import { humanBytes } from '../stores/project'
 import { isAdmin } from '../stores/auth'
-import { watchJob, jobsApi, kindText, statusClass, statusText, busyOn, outKey, jobLine, QUEUED_HINT } from '../api/jobs'
+import { watchJob, jobsApi, kindText, statusText, busyOn, outKey, jobLine, QUEUED_HINT } from '../api/jobs'
 import { useJobs, onJobDone } from '../composables/useJobs'
 import { useDisclosure } from '../composables/useDisclosure'
 import { toast } from '../stores/toast'
@@ -1541,36 +1523,30 @@ onUnmounted(() => {
 /* 重叠警告：这一段压在前一段上 ⇒ 同一段内容会被剪两遍（落盘时会并成一段，见
    `merge_overlapping_ranges`）—— 琥珀色，只在真重叠时出现，别做成常驻 */
 .seg-overlap { color:var(--amber-deep); font-size:11px; white-space:nowrap; }
-.run-btn { width:100%; justify-content:center; margin-bottom:8px; }
-/* 识别流程卡在 grid 上方：标题/状态 chips 在左，主按钮在右，任务盒另起一行。 */
-/* ── v6 步骤条（转写 → 查找事件 → 剪片段）：flow-card 内可伸缩的一段，不是独立卡片 ── */
-.prep-steps { display:flex; align-items:center; gap:10px; flex:1 1 340px; min-width:0; flex-wrap:wrap; }
+.run-btn { justify-content:center; }
+/* 识别流程卡：一行 = 复选节点 + 主按钮；运行中第二行 = 进度 + 停止/任务（旧四层堆叠已压扁）。 */
+/* ── 步骤条（识别 → 查找事件 → 剪出片段）：flow-card 内可伸缩的一段，不是独立卡片 ── */
+.prep-steps { display:flex; align-items:center; gap:8px 10px; flex:1 1 340px; min-width:0; flex-wrap:wrap; }
 .pstep-check { flex:none; display:flex; align-items:center; cursor:pointer; }
-.pstep-check input { accent-color:var(--main); width:13px; height:13px; margin:0; }
+.pstep-check input { accent-color:var(--main); width:13px; height:13px; margin:0; cursor:pointer; }
 .pstep-check.dis { opacity:.45; cursor:not-allowed; }
-.prep-progress { margin-top:8px; }
-.pstep { display:flex; align-items:center; gap:8px; min-width:0; flex:none; }
-.pstep-dot { width:22px; height:22px; flex:none; border-radius:var(--r-full);
-  display:flex; align-items:center; justify-content:center;
-  font-size:11px; font-weight:var(--fw-semi); font-variant-numeric:tabular-nums;
-  border:1.5px solid var(--line); background:var(--card); color:var(--ink-faint); }
-.pstep.done .pstep-dot { border-color:var(--green); background:var(--green-soft); color:var(--green-deep); }
-.pstep.active .pstep-dot { border-color:var(--main); background:var(--main-soft); color:var(--pink-text); }
-.pstep-body { display:flex; flex-direction:column; line-height:1.25; min-width:0; }
-.pstep-body b { font-size:var(--fs-sm); font-weight:var(--fw-semi); color:var(--ink); }
-.pstep-sub { font-size:var(--fs-xs); color:var(--ink-faint); white-space:nowrap; }
+.prep-run { display:flex; align-items:center; gap:8px; flex-basis:100%; }
+.prep-run-label { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.pstep { display:flex; align-items:center; gap:5px; min-width:0; flex:none; }
+.pstep-name { font-size:var(--fs-sm); font-weight:var(--fw-semi); color:var(--ink); white-space:nowrap; }
+.pstep.todo .pstep-name.dim { color:var(--ink-faint); }
+.pstep.active .pstep-name { color:var(--pink-text); }
+.pstep-done { color:var(--green-deep); font-size:var(--fs-xs); flex:none; }
 .pstep-line { flex:1 1 auto; min-width:14px; height:2px; border-radius:2px; background:var(--line); }
 .pstep-line.on { background:var(--green); }
 @media (max-width:900px) {
   .prep-steps { flex-basis:100%; order:3; overflow-x:auto; }
-  .pstep-body b { white-space:nowrap; }
+  .pstep-name { white-space:nowrap; }
 }
 
 .flow-card { display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; }
-.flow-card > .t { flex:none; }
 .flow-card > .row { flex:1 1 auto; margin:0 !important; }
-.flow-card > .run-btn { width:auto; min-width:180px; margin:0 0 0 auto; }
-.flow-card > .job-box { flex-basis:100%; margin-top:0; }
+.flow-card > .run-btn { width:auto; min-width:150px; margin:0 0 0 auto; }
 /* 输入素材（弹幕 / 字幕）两块清单：每块自带分隔虚线（MaterialList），这里别再画一条，
    否则第一块上面会出现双线。 */
 .assets { margin-bottom:10px; }
