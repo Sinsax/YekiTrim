@@ -87,56 +87,10 @@
 
       </div>
 
-      <!-- 右：三块卡自上而下 —— 处理流程（阶段开关 + 主行动）/ 处理选项（默认收起）/ 手动切片（默认展开）。 -->
+      <!-- 右：三块卡自上而下 —— 处理选项（默认收起）/ 处理流程（阶段开关 + 主行动）/ 手动切片（默认展开）。 -->
       <div class="side-col">
-        <!-- 处理流程卡（v9 布局重构）：竖排阶段开关 + 底部主行动（空闲）/ 进度（运行中）。 -->
-        <div class="card flow-panel">
-          <div class="row spread mb-6">
-            <b class="t m-0">处理流程</b>
-            <span v-if="job.id" class="chip" :class="statusClass(job.status)">{{ statusText(job.status) }}</span>
-          </div>
-          <div class="stage-list" data-cap="prepare.stage-select">
-            <button v-for="st in stageRows" :key="st.key" type="button" class="stage-row"
-                    :class="{ on: stageSel[st.key], dim: !stageSel[st.key], done: st.state === 'done', active: st.state === 'active' }"
-                    :disabled="busy"
-                    :title="stageSel[st.key] ? '已纳入一键处理，点击排除' : '点击纳入一键处理'"
-                    @click="toggleStage(st.key)">
-              <span class="stage-dot" aria-hidden="true">{{ st.state === 'done' ? '✓' : st.index }}</span>
-              <span class="stage-name">{{ st.label }}</span>
-              <span class="stage-sub">{{ st.sub }}</span>
-            </button>
-          </div>
-          <!-- 运行中：进度条 + 摘要 + 停止/日志（本卡唯一运行态渲染处） -->
-          <div v-if="jobRunning" class="panel-run">
-            <div class="progress"><div :style="{ width: jobPct + '%' }"></div></div>
-            <div class="muted small panel-run-sum" :title="jobLine(job)">{{ jobLine(job) || '运行中' }}</div>
-            <div class="row" style="gap:6px">
-              <button class="mini-btn danger flex-none" :disabled="canceling" title="停止当前任务" @click="cancelJob">
-                <Icon name="x" :size="10" /> 停止
-              </button>
-              <button class="mini-btn flex-none" title="打开任务抽屉查看完整日志" @click="openJobs()">任务日志</button>
-            </div>
-          </div>
-          <!-- 空闲：唯一主行动 -->
-          <button
-            v-else-if="!completed"
-            class="btn btn-primary panel-run-btn"
-            data-cap="prepare.run-all"
-            :disabled="primaryDisabled"
-            :title="primaryTitle"
-            @click="onPrimary"
-          >{{ primaryLabel }}</button>
-          <div v-else class="muted small done-hint">已完成 · 去「挑片段」看结果</div>
-          <!-- 失败/取消必须可见 -->
-          <div v-if="job.id && !jobRunning && (job.status === 'failed' || job.status === 'cancelled')" class="error-banner">
-            <Icon name="alert" :size="14" />
-            <span class="flex-1">{{ statusText(job.status) }}：{{ job.message || job.error || '无详情' }}</span>
-            <button class="mini-btn flex-none" @click="openJobs()">日志</button>
-          </div>
-        </div>
-
         <!-- 处理选项卡：ASR 模式 / 素材清单 / 重新处理（默认收起） -->
-        <div class="card mt-12">
+        <div class="card">
           <details class="adv-blk materials-blk" :open="materialsOpen" @toggle="syncMaterials">
             <summary data-cap="prepare.materials" title="ASR 模式、分步处理、弹幕/字幕清单与重新处理">处理选项</summary>
 
@@ -218,6 +172,53 @@
             >重新查找事件</button>
           </details>
         </div>
+
+        <!-- 处理流程卡（v9 布局重构）：竖排阶段开关 + 底部主行动（空闲）/ 进度（运行中）。 -->
+        <div class="card flow-panel">
+          <div class="row spread mb-6">
+            <b class="t m-0">处理流程</b>
+            <span v-if="job.id" class="chip" :class="statusClass(job.status)">{{ statusText(job.status) }}</span>
+          </div>
+          <div class="stage-list" data-cap="prepare.stage-select">
+            <button v-for="st in stageRows" :key="st.key" type="button" class="stage-row"
+                    :class="{ on: stageSel[st.key], dim: !stageSel[st.key], done: st.state === 'done', active: st.state === 'active' }"
+                    :disabled="busy"
+                    :title="stageSel[st.key] ? '已纳入一键处理，点击排除' : '点击纳入一键处理'"
+                    @click="toggleStage(st.key)">
+              <span class="stage-dot" aria-hidden="true">{{ st.state === 'done' ? '✓' : st.index }}</span>
+              <span class="stage-name">{{ st.label }}</span>
+              <span class="stage-sub">{{ st.sub }}</span>
+            </button>
+          </div>
+          <!-- 运行中：进度条 + 摘要 + 停止/日志（本卡唯一运行态渲染处） -->
+          <div v-if="jobRunning" class="panel-run">
+            <div class="progress"><div :style="{ width: jobPct + '%' }"></div></div>
+            <div class="muted small panel-run-sum" :title="jobLine(job)">{{ jobLine(job) || '运行中' }}</div>
+            <div class="row" style="gap:6px">
+              <button class="mini-btn danger flex-none" :disabled="canceling" title="停止当前任务" @click="cancelJob">
+                <Icon name="x" :size="10" /> 停止
+              </button>
+              <button class="mini-btn flex-none" title="打开任务抽屉查看完整日志" @click="openJobs()">任务日志</button>
+            </div>
+          </div>
+          <!-- 空闲：唯一主行动 -->
+          <button
+            v-else-if="!completed"
+            class="btn btn-primary panel-run-btn"
+            data-cap="prepare.run-all"
+            :disabled="primaryDisabled"
+            :title="primaryTitle"
+            @click="onPrimary"
+          >{{ primaryLabel }}</button>
+          <div v-else class="muted small done-hint">已完成 · 去「挑片段」看结果</div>
+          <!-- 失败/取消必须可见 -->
+          <div v-if="job.id && !jobRunning && (job.status === 'failed' || job.status === 'cancelled')" class="error-banner">
+            <Icon name="alert" :size="14" />
+            <span class="flex-1">{{ statusText(job.status) }}：{{ job.message || job.error || '无详情' }}</span>
+            <button class="mini-btn flex-none" @click="openJobs()">日志</button>
+          </div>
+        </div>
+
         <div class="card">
           <!-- 手动切片：整块原样保留（判据 ⑳/㉔/㉕/㉙ 以这里的结构与缩进为锚，别重排）。 -->
           <details class="adv-blk manual-blk" :open="manualOpen" @toggle="syncManual">
