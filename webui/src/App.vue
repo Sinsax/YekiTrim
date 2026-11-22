@@ -44,7 +44,14 @@
           <span class="crumb-proj" :title="currentProject?.name">{{ currentProject?.name || ('项目 #' + route.params.pid) }}</span>
           <span class="sep">/</span>
           <b>{{ stepName }}</b>
-          <span v-if="currentProject?.source?.label" class="muted small crumb-source">
+          <!-- 面包屑尾部：**页面自己决定**（`ui.crumbTail`，精修页放当前片段标题）。
+               没页面认领时退回项目来源标签，但**不许和项目名重复** ——
+               本地来源的 label 是 `本机 · <父目录>/<目录名>`，而项目名就是那个目录名，
+               原样显示会把录播名写两遍（用户 2026-11-22 报的就是这条）。 -->
+          <span v-if="ui.crumbTail" class="muted small crumb-source" :title="currentProject?.source?.label">
+            {{ ui.crumbTail }}
+          </span>
+          <span v-else-if="currentProject?.source?.label && !sourceRepeatsProjectName" class="muted small crumb-source">
             {{ currentProject.source.label }}
           </span>
         </template>
@@ -193,6 +200,12 @@ watch(mobileNavOpen, (open) => {
 // 邀请码注册整条路走不通。两个入口必须同一判据。
 const isLogin = computed(() => route.name === 'login' || route.name === 'register')
 const currentProject = computed(() => projectById(route.params.pid))
+/** 来源标签是不是把项目名又写了一遍（`本机 · <父目录>/<目录名>` ⇒ 尾部就是目录名） */
+const sourceRepeatsProjectName = computed(() => {
+  const label = String(currentProject.value?.source?.label || '').trim()
+  const name = String(currentProject.value?.name || '').trim()
+  return !!name && !!label && label.endsWith(name)
+})
 const stepName = computed(() => STEPS.find((s) => s.key === routeStep.value)?.name || '')
 const routeStep = computed(() => {
   const name = String(route.name || '')

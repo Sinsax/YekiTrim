@@ -1,31 +1,11 @@
 <template>
   <div>
-    <!-- 紧凑页头一行：chip + 片段标题（竖高省给预览；哪个片段由面包屑/片段卡说明）。
-         「列表」= 回到不带 :clip 的列表页（`?list=1` 让 doLoad 跳过自动选片，见下面 doLoad）。 -->
-    <!-- 页头：**只有精修一种模式**（用户口径：不留快速切片）。原来那排「快速出片 / 精修」
-         分段控件、以及 `?mode=pro` 一次性覆盖入口，全部删除。 -->
-    <UiPageHeader :title="dir ? title : '选择要出片的片段'" compact
-                  :description="dir ? '' : '从片段库选一个片段开始出片'">
-      <template #actions>
-        <!-- 片段切换器：不用退回列表就能上下游走。
-             ⚠️ 走的是 `gotoClip()`（named route + `c.name`），`watch(clipName)` 会重载；
-             `router-view` 的 key 是 pid，所以**不会整块重挂**（canvas 安全）。 -->
-        <div v-if="clipPos.i >= 0 && clipPos.total > 1" class="clip-nav">
-          <button type="button" class="mini-btn" :disabled="!clipPos.prev"
-                  title="上一个片段" aria-label="上一个片段" @click="gotoClip(clipPos.prev)">
-            <Icon name="chevron-left" :size="13" />
-          </button>
-          <span class="clip-nav-pos" title="当前是第几个片段">{{ clipPos.i + 1 }} / {{ clipPos.total }}</span>
-          <button type="button" class="mini-btn" :disabled="!clipPos.next"
-                  title="下一个片段" aria-label="下一个片段" @click="gotoClip(clipPos.next)">
-            <Icon name="chevron-right" :size="13" />
-          </button>
-        </div>
-        <router-link v-if="clipName" class="mini-btn"
-                     :to="{ name: 'project-polish', params: { pid }, query: { list: '1' } }"
-                     title="回到片段列表（不自动打开片段）">列表</router-link>
-      </template>
-    </UiPageHeader>
+    <!-- 页头**只在还没进片段时**出现：「选择要出片的片段」老文案。
+         进了片段后不渲染大标题 —— 顶栏面包屑尾部已经显示当前片段标题（用户 2026-11-22：
+         「已经出现了一次标题，下方的大标题不显示了，删除」），省下的竖高给预览与时间轴。
+         片段切换（‹ 1/3 ›）与「列表」按钮跟着搬进下面的片段条，别跟着页头一起消失。 -->
+    <UiPageHeader v-if="!dir" title="选择要出片的片段" compact
+                  description="从片段库选一个片段开始出片" />
 
     <!-- 切片列表读不到：**必须与"真的没有切片"分开**（以前失败被 catch 成空数组，
          页面显示"还没有可精修的切片"，看着像切片被删了） -->
@@ -99,21 +79,50 @@
           <button class="mini-btn ml-auto" @click="load({ silent: true })">重试</button>
         </div>
 
-        <!-- 片段卡（小卡，只做跳转）：默认一行，可展开两行 -->
-        <div class="card frag-strip">
-          <div class="frag-strip-row">
-            <FragmentList :rows="fragRows" :current="clipName" :card-rows="ui.fragRows"
+        <!-- 片段卡（小卡，只做跳转）：**默认横排展开**；收起 = 整条折起、一个片段都不显示
+             （用户 2026-11-22 口径）。原来的「1 行 ↔ 2 行」整条删除 —— 两行态是列方向填充
+             （1/3、2/4 竖着排），读起来像顺序错了，还把整条撑高一大截。 -->
+        <div class="card frag-strip" :class="{ 'frag-open': ui.fragOpen }">
+          <!-- 收起态：**整条可点，点任意位置就展开**（用户 2026-11-22）。
+               这时右侧那组按钮（‹ 1/3 › · 列表 · 收起）**整组不渲染** ——
+               一条空条上挂着用不上的控件只会让人以为点不动。 -->
+          <div v-if="!ui.fragOpen" class="frag-collapsed" role="button" tabindex="0"
+               title="展开片段列表（横排）"
+               @click="toggleFragOpen" @keydown.enter.prevent="toggleFragOpen"
+               @keydown.space.prevent="toggleFragOpen">
+            <span class="muted small">片段（{{ clips.length }}）· 已收起</span>
+            <span class="muted small frag-expand-hint">点击展开</span>
+          </div>
+          <div v-else class="frag-strip-row">
+            <FragmentList :rows="fragRows" :current="clipName"
                           @goto="gotoClip" @init="initClipByName" />
-            <button class="mini-btn frag-more" :title="ui.fragRows === 2 ? '收成一行' : '展开成两行'"
-                    @click="toggleFragRows">
-              {{ ui.fragRows === 2 ? '收起' : '展开' }}
-            </button>
+            <!-- 片段切换器 + 回列表：**搬到这里**（页头进了片段后不再渲染）。
+                 ⚠️ 切换走 `gotoClip()`（named route + `c.name`），`router-view` 的 key 是 pid，
+                 所以不会整块重挂（底座 canvas 安全）。 -->
+            <div class="frag-strip-actions">
+              <div v-if="clipPos.i >= 0 && clipPos.total > 1" class="clip-nav">
+                <button type="button" class="mini-btn" :disabled="!clipPos.prev"
+                        title="上一个片段" aria-label="上一个片段" @click="gotoClip(clipPos.prev)">
+                  <Icon name="chevron-left" :size="13" />
+                </button>
+                <span class="clip-nav-pos" title="当前是第几个片段">{{ clipPos.i + 1 }} / {{ clipPos.total }}</span>
+                <button type="button" class="mini-btn" :disabled="!clipPos.next"
+                        title="下一个片段" aria-label="下一个片段" @click="gotoClip(clipPos.next)">
+                  <Icon name="chevron-right" :size="13" />
+                </button>
+              </div>
+              <router-link v-if="clipName" class="mini-btn"
+                           :to="{ name: 'project-polish', params: { pid }, query: { list: '1' } }"
+                           title="回到片段列表（不自动打开片段）">列表</router-link>
+              <button class="mini-btn frag-more" title="收起整条片段列表" @click="toggleFragOpen">收起</button>
+            </div>
           </div>
         </div>
 
         <!-- 左列 = 预览（属性面板在左、舞台在右）；右栏 = 生成与导出 -->
         <div class="grid cols-main mt-16 edit-grid polish-grid">
-          <div class="card">
+          <!-- 锚点①：视频编辑（预览 + 时间轴这一段）—— 右侧浮动栏跳这里 -->
+          <div id="sec-video" class="card anchor-target">
             <div class="row spread">
               <h2 class="m-0 card-h2"><Icon name="video" :size="16" /> 视频预览（preview 效果）</h2>
               <span v-if="selectRegion" class="chip p">选框模式 · 运镜已暂停</span>
@@ -640,28 +649,34 @@
           </TimelineEditor>
         </div>
 
-        <div ref="coverCardEl" class="mt-16" data-cap="polish.cover"><CoverDesigner :key="'cv' + coverKey" :dir="dir" :pid="pid" @changed="refreshClipEntry(true)" /></div>
+        <!-- 锚点②：封面设计 -->
+        <div id="sec-cover" ref="coverCardEl" class="mt-16 anchor-target" data-cap="polish.cover"><CoverDesigner :key="'cv' + coverKey" :dir="dir" :pid="pid" @changed="refreshClipEntry(true)" /></div>
 
         <!-- 产物整行（**两种模式共用**）：成片 + 封面 + 输出目录。快速模式也要看得到产物。 -->
-        <div class="card mt-16 artifact-bar" data-cap="polish.artifact">
+        <!-- 锚点③：产物（文件夹视图） -->
+        <div id="sec-artifact" class="card mt-16 artifact-bar anchor-target" data-cap="polish.artifact">
           <div class="row spread">
             <div class="row">
               <b class="t m-0">产物</b>
-              <!-- 有产物才有下载 chip（没有就看右栏的占位框，别两处都说一遍"未渲染"） -->
-              <a v-if="renderedUrl && !renderedFailed" class="mini-btn" :href="renderedUrl" download :title="renderedFile">
-                <Icon name="download" :size="12" /> 成片 {{ renderedFile }}
-              </a>
-              <a v-if="coverUrl && !coverFailed" class="mini-btn" :href="coverUrl" download :title="coverFile">
-                <Icon name="download" :size="12" /> 封面 {{ coverFile }}
-              </a>
+              <!-- 文件名不在标题行复述：右半的左列就是**文件清单**（按产出先后），右侧是选中那份的预览 -->
+              <span v-if="artifacts.length" class="muted small">{{ artifacts.length }} 个文件</span>
             </div>
-            <!-- 打开输出目录：**只在本机（本地免登录）**渲染 —— 服务端模式下这个端点也不存在
-                 （远端的人点一下、服务器上弹窗口是不可接受的）。 -->
-            <button v-if="isLocal" class="mini-btn" @click="openOutDir">打开输出目录</button>
+            <div class="row">
+              <!-- 下载 = **选中的那份**（清单里点哪一行就是哪一份）；没有产物就整颗不渲染 -->
+              <a v-if="activeArtifact" class="mini-btn" :href="activeArtifactUrl" download
+                 :title="'下载 ' + activeArtifact.name">
+                <Icon name="download" :size="12" /> 下载
+              </a>
+              <!-- 打开输出目录：**只在本机（本地免登录）**渲染 —— 服务端模式下这个端点也不存在
+                   （远端的人点一下、服务器上弹窗口是不可接受的）。 -->
+              <button v-if="isLocal" class="mini-btn" @click="openOutDir">打开输出目录</button>
+            </div>
           </div>
           <!-- 产物卡 = **左右两栏 + 固定高度**（用户 2026-11-14 口径：没产物时不许塌成一条，
                有产物时的高度才是常态）。左：发布标题三行（标题 / 主播名 / 完整标题）；
-               右：成片 + 封面两个 16:9 框（空态是虚线占位框，高度照旧）。
+               右：**文件夹视图**（用户 2026-11-22 口径：「类似文件夹的格式，左为列表、显示顺序先后，
+               右侧为预览」）—— 左列 = 全部产物文件（每个版本都在），右列 = 选中那份的预览。
+               空态照旧是虚线占位框，高度不塌。
                标题写的是 `output/publish_config.json` 的 `clips[].title`（投稿链路读那份），**不是**
                `clip.json` 的标题 —— 后者是片段身份（重新检测靠它匹配目录，见 `clip_title_put_impl`）。
                ⚠️ 复制别只靠 `navigator.clipboard`：它只在安全上下文（https / localhost）里存在，
@@ -797,7 +812,7 @@ import { ref, computed, reactive, onMounted, onUnmounted, watch, nextTick } from
 import { useRoute, useRouter } from 'vue-router'
 import { toast } from '../stores/toast'
 import { confirmDialog } from '../stores/dialog'
-import { ui, toggleFragRows } from '../stores/ui'
+import { ui, toggleFragOpen, setCrumbTail } from '../stores/ui'
 import Icon from '../components/Icon.vue'
 import UiPageHeader from '../components/ui/UiPageHeader.vue'
 
@@ -887,6 +902,17 @@ function resetClipUiState() {
   openLane.value = ''
 }
 const title = ref('精修编辑器')
+/**
+ * 面包屑尾部 = **当前片段标题**（用户 2026-11-22）。
+ *
+ * 顶栏原来在「出片」后面跟着项目来源标签（「本机 · 耶斯yeki/<录播目录名>」），而项目名
+ * 本身就是那个目录名 —— 录播名等于写了两遍。片段标题才是「我正在改哪一条」，放在那个位置。
+ * 没进片段（列表空态 / 初始化卡）就交回 App.vue 的来源标签（那边还会挡掉与项目名重复的）。
+ */
+watch([() => title.value, () => dir.value], () => {
+  const t = String(title.value || '').trim()
+  setCrumbTail(dir.value && t && t !== '精修编辑器' ? t : '')
+}, { immediate: true })
 const loading = ref(false)
 const ready = ref(false)
 const cfg = ref(null)
@@ -1992,6 +2018,48 @@ const clipPos = computed(() => {
   }
 })
 
+// ---- 右侧浮动锚点栏（视频编辑 / 封面设计 / 产出）----
+/** 三段的 id 与图标：id 直接写在模板的目标卡片上（`scroll-margin-top` 让吸顶面包屑不盖住标题）。 */
+const anchors = [
+  { id: 'sec-video', label: '视频编辑', icon: 'video' },
+  { id: 'sec-cover', label: '封面设计', icon: 'image' },
+  { id: 'sec-artifact', label: '产出', icon: 'folder' }
+]
+const activeAnchor = ref('sec-video')
+/** 点了就滚过去（`.main` 是滚动容器，`scrollIntoView` 会沿着滚动链一起滚）。 */
+function jumpTo(id) {
+  document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+/** 滚动时点亮当前所在的那一段：顶边越过「吸顶栏 + 一点余量」的最后一段就是当前段。
+ *  ⚠️ 已滚到底要直接点亮**最后一段** —— 最后一块（产物）顶到视口顶部时页面早就见底了，
+ *  按上面的判据它永远点不亮（实测：点「产出」滚到底，亮的是「封面设计」）。 */
+function syncActiveAnchor() {
+  const sc = anchorScroller
+  if (sc && sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 4) {
+    activeAnchor.value = anchors[anchors.length - 1].id
+    return
+  }
+  let best = anchors[0].id
+  for (const a of anchors) {
+    const el = document.getElementById(a.id)
+    if (el && el.getBoundingClientRect().top <= 140) best = a.id
+  }
+  activeAnchor.value = best
+}
+let anchorScroller = null
+onMounted(() => {
+  anchorScroller = document.querySelector('.main')
+  anchorScroller?.addEventListener('scroll', syncActiveAnchor, { passive: true })
+  syncActiveAnchor()
+})
+// 首屏 / 换片段后内容高度会变：还没渲染完时 scrollHeight ≈ clientHeight，会被误判成「已滚到底」
+// 而那时最后一个锚点会一直亮着（实测：刚进页面点亮的不是「视频编辑」）。
+watch([loading, ready, () => dir.value], () => nextTick(syncActiveAnchor))
+onUnmounted(() => {
+  anchorScroller?.removeEventListener('scroll', syncActiveAnchor)
+  anchorScroller = null
+})
+
 function initClipByName(name) {
   const c = clips.value.find((x) => x.name === name)
   if (c) initClip(c)
@@ -2167,8 +2235,8 @@ function onTimelineRetried() {
 }
 
 async function refreshClipEntry(force = false) {
-  coverFailed.value = false
-  renderedFailed.value = false
+  // 产物刚重出过 ⇒ 预览失败态作废（文件换了一版，"上一份读不出来"不该继续挂着）
+  previewFailed.value = false
   const norm = (p) => String(p || '').replace(/\\/g, '/').toLowerCase()
   const key = norm(dir.value)
   // `loadClips()` 刚拉过整张 polish 表；正常情况下直接用缓存，只有封面保存等确实需要
@@ -3291,6 +3359,8 @@ onUnmounted(() => {
   stopJobTimer()
   closeJobWatcher()
   if (flashTimer) clearTimeout(flashTimer)
+  // 面包屑尾部是**页面认领的**，卸载必须交还 —— 否则会带到别的页面上去
+  setCrumbTail('')
 })
 </script>
 
@@ -3476,8 +3546,22 @@ onUnmounted(() => {
 .region-row { gap: 4px; }
 .region-row .mini-btn { padding: 4px 8px; }
 .frag-strip { padding:8px 10px; }
+/* 收起态把卡片自身的内边距让给那条大按钮 ⇒ 卡片的**每个像素**都能点（用户：点栏的任意位置展开） */
+.frag-strip:not(.frag-open) { padding:0; }
 .frag-strip-row { display:flex; gap:8px; align-items:flex-start; }
 .frag-strip-row :deep(.frag-cards) { flex:1; min-width:0; }
+/* 收起态：整条就是**一个可点的大条**（点任意位置展开；右侧那组按钮这时整组不渲染） */
+.frag-collapsed { display:flex; align-items:center; justify-content:space-between; gap:10px;
+  padding:10px 12px; border-radius:var(--r-sm); cursor:pointer;
+  transition:background var(--dur-fast) var(--ease); }
+.frag-collapsed:hover { background:var(--bg-soft); }
+.frag-collapsed:focus-visible { outline:2px solid var(--main-glow); outline-offset:2px; }
+/* 右侧「点击展开」只是提示文字（不是按钮 —— 收起态不该挂着控件） */
+.frag-expand-hint { color:var(--pink-text); opacity:.75; }
+.frag-collapsed:hover .frag-expand-hint { opacity:1; }
+/* 片段条右侧那组动作（‹ 1/3 › · 列表 · 收起/展开）—— 一行、不换行、不被卡片挤；
+   竖向**居中对齐缩略图那一行**（`flex-start` 会让它们贴着条顶，看着像挂在面包屑上）。 */
+.frag-strip-actions { display:flex; align-items:center; gap:6px; flex:none; align-self:center; }
 .frag-more { flex:none; }
 /* 紧凑页头：一行放完 chip + 标题（原设计是 26px 标题 + sub 两行，这里为竖高让路） */
 .compact-head { align-items:center; margin-bottom:8px; }
@@ -3587,20 +3671,70 @@ onUnmounted(() => {
 .artifact-bar .copy-hint.ok { color:var(--green-deep); opacity:1; }
 /* 两栏之间那条竖线（贯穿卡片内容区） */
 .artifact-bar .art-sep { flex:none; width:1px; background:var(--line); }
-/* 媒体列吃掉左栏之外的宽度，两个框**平分**它（高度仍固定 ⇒ 不再锁 16:9，视频用 contain
-   不裁、封面用 cover 裁边；锁死 16:9 的话 1/4 的左栏一改，右边会空出一大块）。 */
-.artifact-bar .art-media { display:flex; gap:12px; flex:1 1 auto; min-width:0; }
-.artifact-bar .art-box { display:flex; align-items:center; justify-content:center; height:100%;
-  flex:1 1 0; min-width:0; overflow:hidden; background:#000;
-  border:1px solid var(--line); border-radius:var(--r-sm); }
+/* ── 右侧浮动锚点栏（用户 2026-11-22）：视频编辑 / 封面设计 / 产出 ──────────────
+   固定贴在视口右缘那圈留白里（`.main` 的滚动条之外），不占布局；窄屏直接不渲染。 */
+.page-anchors { position:fixed; right:14px; top:50%; transform:translateY(-50%);
+  display:flex; flex-direction:column; gap:8px; z-index:40; }
+.anchor-dot { position:relative; display:flex; align-items:center; justify-content:center;
+  width:30px; height:30px; padding:0; border-radius:50%; border:1px solid var(--line);
+  background:var(--card); color:var(--ink-faint); cursor:pointer; box-shadow:var(--shadow);
+  transition:color .15s, border-color .15s, background .15s; }
+.anchor-dot:hover { color:var(--pink-text); border-color:var(--main); }
+.anchor-dot.on { color:var(--pink-text); border-color:var(--main); background:var(--main-soft); }
+/* 文字标签只在悬停/聚焦时露出来（默认是 30px 的圆点，不挤内容） */
+.anchor-label { position:absolute; right:38px; top:50%; transform:translateY(-50%);
+  padding:2px 8px; border-radius:var(--r-sm); border:1px solid var(--line);
+  background:var(--card); color:var(--ink); font-size:11px; white-space:nowrap;
+  opacity:0; pointer-events:none; transition:opacity .12s; }
+.anchor-dot:hover .anchor-label, .anchor-dot:focus-visible .anchor-label { opacity:1; }
+/* 锚点目标给吸顶面包屑留出高度，别让它盖住段首标题 */
+.anchor-target { scroll-margin-top:78px; }
+@media (max-width:1280px) { .page-anchors { display:none; } }
+
+/* ── 右半 = **文件夹**（用户 2026-11-22：左列表 / 右预览）─────────────────────────
+   高度仍然由 `.art-body`（180px）钉住：列表自己滚，**不许**把卡片撑高、也不许塌成一条。
+   宽度 = 固定宽的列表（200px）+ 1px 竖线（复用 `.art-sep`）+ 吃掉剩余的预览。 */
+.artifact-bar .art-folder { display:flex; flex:1 1 auto; min-width:0; align-items:stretch; }
+/* 列表：**按产出先后**从上到下（服务端已排好序，前端不再排）。
+   每行 = 图标 + 文件名 + 行尾时刻（时分；日期与大小在悬停里，见 artifactMeta/artifactWhen）。
+   200px 是实测定的：最长的 `vtuber-clip_1.mp4` 与 `22:54` 同时放得下。 */
+.artifact-bar .art-files { flex:none; width:200px; min-width:0; position:relative;
+  display:flex; flex-direction:column; gap:2px; overflow-y:auto; overflow-x:hidden; padding-right:8px; }
+.artifact-bar .art-file { display:grid; grid-template-columns:auto minmax(0,1fr) auto; column-gap:6px;
+  align-items:center; width:100%; text-align:left; padding:4px 6px; border:1px solid transparent;
+  border-radius:var(--r-sm); background:transparent; color:var(--ink-dim); font:inherit;
+  font-size:11.5px; line-height:1.45; cursor:pointer; }
+.artifact-bar .art-file:hover { background:var(--bg-soft); color:var(--ink); }
+.artifact-bar .art-file:focus-visible { outline:2px solid var(--main-glow); outline-offset:1px; }
+/* 选中行 = 当前预览的那份（用与「主播名」开关同一套主色浅底，一眼看得出预览对应哪一行） */
+.artifact-bar .art-file.on { background:var(--main-soft); border-color:var(--main); color:var(--pink-text); }
+.artifact-bar .art-file-ico { align-self:center; opacity:.8; }
+.artifact-bar .art-file-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* 行尾时刻：等宽数字 + nowrap，**别被文件名挤掉**（grid 的 auto 列天然 flex:none） */
+.artifact-bar .art-file-time { font-size:10px; color:var(--ink-faint); font-variant-numeric:tabular-nums;
+  white-space:nowrap; }
+.artifact-bar .art-file.on .art-file-time { color:var(--pink-text); }
+.artifact-bar .art-files-empty { margin:0; padding:4px 6px; font-size:11.5px; color:var(--ink-faint); }
+/* 预览：选中那份（视频可播 / 封面可看）。媒体元素撑满、用 contain —— 预览要看清整张图，
+   不替用户裁边；全局 `video` 规则带的 `max-height/margin-top` 在这里要压掉。 */
+/* 预览 = **16:9 的框**（成片/封面都是 1920×1080，铺满即无黑边；不锁比例时会上下或左右留大片黑） */
+.artifact-bar .art-preview { position:relative; flex:1 1 auto; min-width:0; aspect-ratio:16/9;
+  display:flex; align-items:center; justify-content:center; }
+.artifact-bar .art-preview > video, .artifact-bar .art-preview > img { display:block; width:100%; height:100%;
+  max-height:none; margin:0; border-radius:var(--r-sm); background:#000; object-fit:contain; }
+.artifact-bar .art-preview > .art-box { width:100%; }
 /* 空态框：虚线用 `--ink-faint`（`--line` 在亮色下几乎看不见，用户会以为右边是空白） */
+.artifact-bar .art-box { display:flex; align-items:center; justify-content:center; height:100%;
+  min-width:0; overflow:hidden; background:#000;
+  border:1px solid var(--line); border-radius:var(--r-sm); }
 .artifact-bar .art-box.empty { background:transparent; border-style:dashed; border-color:var(--ink-faint);
   color:var(--ink-faint); }
-.artifact-bar .art-box img, .artifact-bar .art-box video { width:100%; height:100%; display:block;
-  border-radius:0; object-fit:cover; }
-.artifact-bar .art-box video { object-fit:contain; }
-/* 窄屏把整块等比缩小，别让两个 16:9 框把左栏挤没 */
-@media (max-width:1180px) { .artifact-bar .art-body { height:132px; } .artifact-bar .art-left { flex-basis:32%; } }
+/* 窄屏整块等比缩小（别让列表 + 预览把左栏的标题挤没）：列表收窄一档、**行尾时刻让位给文件名**
+   （132px 高的框里能看见的行本来就少，文件名被截成 `vtuber-clip_…` 比看不到时刻更糟；
+   完整时刻仍在悬停里）。 */
+@media (max-width:1180px) { .artifact-bar .art-left { flex-basis:32%; }
+  .artifact-bar .art-files { width:168px; }
+  .artifact-bar .art-file-time { display:none; } }
 /* 最终标题 = 纯文本、**单击即复制**（没有按钮）：所以必须看起来可点 —— 指针 + 悬停底色，
    别做成一行不可交互的灰字。空态（开关全关）不显示手型，文案用弱色。 */
 .pub-final { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:6px;

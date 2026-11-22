@@ -14,7 +14,7 @@ Vue3 工作台的全部前端：壳 + 面包屑、hash 路由、首页 `#/workbe
 - `utils.js`：`SETTINGS_SECTIONS`（设置页标签/副标题/路由唯一来源）、`redetectWarning()`、
   `clipMatchesEvent`、`stageInfo`、`projectEntryPath`、`STEPS`。
 - `stores/`：`project.js::sourceBadge/sourceLabel`、`workbench.js`（项目列表 + per-pid 缓存 +
-  `invalidate`/`forgetProject`）、`ui.js`（`sideCollapsed`/`fragRows`/`toggleSide`）、`theme.js`
+  `invalidate`/`forgetProject`）、`ui.js`（`sideCollapsed`/`fragOpen`/`toggleSide`）、`theme.js`
   （**哥特浅色/暗色**，见「主题」）、`health.js`（`localNoAuth()` —— 见「本地模式」）。
 - `composables/useJobs.js`：`load()`（单飞 + SSE 合帧）/ `onJobDone(fn)` → 返回退订函数。
 - `composables/useOverlay.js`：弹层通用行为（初始焦点 / Tab 圈定 / **Esc 只关最上层** / 还焦点 /

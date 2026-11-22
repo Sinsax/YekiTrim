@@ -1,7 +1,8 @@
 <template>
-  <!-- 片段切换卡（只做跳转，所以做小）：缩略图 + 状态 chip 贴角 + 一行标题；
-       cardRows=1 一行可横向滚，=2 折成两行（列方向填充，仍横向滚） -->
-  <div class="frag-cards" :class="'rows-' + cardRows">
+  <!-- 片段切换卡（只做跳转，所以做小）：缩略图 + 状态 chip 贴角 + 一行标题。
+       **横排一行、超出横向滚动**（用户 2026-11-22 口径）；「2 行」那档已删 —— 列方向填充
+       会把片段排成 1/3、2/4 竖着读，而且把整条撑高。 -->
+  <div class="frag-cards">
     <div
       v-for="(r, i) in rows"
       :key="r.name"
@@ -31,13 +32,11 @@
 </template>
 
 <script setup>
-// 精修页的片段切换卡：小卡片（只做跳转）、可 1 行/2 行显示（父级给 cardRows）
+// 精修页的片段切换卡：小卡片（只做跳转）、横排一行（父级负责展开/收起整条）
 import { rangesHint } from '../../utils'
 defineProps({
   rows: { type: Array, default: () => [] },
-  current: { type: String, default: '' },
-  /** 显示几行：1（默认，横向滚动）| 2（折两行，仍横向滚动） */
-  cardRows: { type: Number, default: 1 }
+  current: { type: String, default: '' }
 })
 const emit = defineEmits(['goto', 'init'])
 </script>
@@ -50,8 +49,6 @@ const emit = defineEmits(['goto', 'init'])
   /* 列方向排列时，缺省 justify-content:normal(=stretch) 会把 auto 宽的列**撑满整行** ——
      只有两张卡时它们会被推到两端，看着"隔了老远"。夹到左端、列宽取内容宽。 */
   justify-content:start; grid-auto-columns:max-content; }
-.frag-cards.rows-1 { grid-template-rows:auto; }
-.frag-cards.rows-2 { grid-template-rows:repeat(2, auto); }
 .frag-card { position:relative; width:108px; border:1.5px solid var(--line); border-radius:10px;
   padding:5px; background:var(--card); cursor:pointer; transition:.15s; }
 .frag-card:hover { border-color:var(--main); transform:translateY(-1px); }

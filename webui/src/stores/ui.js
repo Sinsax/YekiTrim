@@ -2,7 +2,9 @@
 import { reactive } from 'vue'
 
 const LS_SIDE = 'yekitrim.ui.sideCollapsed'
-const LS_FRAG = 'yekitrim.ui.fragRows'
+// ⚠️ 旧键 `yekitrim.ui.fragRows`（1 行 / 2 行）已废弃：用户 2026-11-22 改了语义 ——
+// 「展开」= 横排显示全部片段，「收起」= 整条折起一个都不显示。旧值不再读取（默认展开）。
+const LS_FRAG_OPEN = 'yekitrim.ui.fragOpen'
 
 // 启动时同步读取：侧栏折叠态必须在首帧就生效（否则会先展开再收起来，闪一下）
 function readSideCollapsed() {
@@ -13,12 +15,12 @@ function readSideCollapsed() {
   }
 }
 
-/** 精修页片段卡显示几行（1 | 2），同样首帧生效 */
-function readFragRows() {
+/** 精修页顶部片段卡**是否展开**（默认展开），同样首帧生效 */
+function readFragOpen() {
   try {
-    return localStorage.getItem(LS_FRAG) === '2' ? 2 : 1
+    return localStorage.getItem(LS_FRAG_OPEN) !== '0'
   } catch {
-    return 1
+    return true
   }
 }
 
@@ -27,8 +29,10 @@ export const ui = reactive({
   jobs: false,
   /** 左侧栏是否折叠成图标轨（64px）；持久化在 localStorage */
   sideCollapsed: readSideCollapsed(),
-  /** 精修页顶部片段卡：1 行 / 2 行 */
-  fragRows: readFragRows(),
+  /** 精修页顶部片段卡：展开（横排一行）/ 收起（整条不显示） */
+  fragOpen: readFragOpen(),
+  /** 面包屑尾部（`App.vue` 渲染）：精修页放**当前片段标题**，其他页面留空走项目来源标签 */
+  crumbTail: '',
 })
 
 export function openJobs() {
@@ -46,10 +50,15 @@ export function toggleSide() {
   } catch {}
 }
 
-/** 片段卡 1 行 ↔ 2 行 */
-export function toggleFragRows() {
-  ui.fragRows = ui.fragRows === 2 ? 1 : 2
+/** 面包屑尾部（空串 = 回到项目来源标签）。**页面卸载必须清掉**，否则会带到别的页面。 */
+export function setCrumbTail(text) {
+  ui.crumbTail = String(text || '')
+}
+
+/** 片段卡 展开 ↔ 收起（收起 = 整条折起、一个片段都不显示） */
+export function toggleFragOpen() {
+  ui.fragOpen = !ui.fragOpen
   try {
-    localStorage.setItem(LS_FRAG, String(ui.fragRows))
+    localStorage.setItem(LS_FRAG_OPEN, ui.fragOpen ? '1' : '0')
   } catch {}
 }
