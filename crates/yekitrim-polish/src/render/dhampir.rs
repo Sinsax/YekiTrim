@@ -284,7 +284,7 @@ fn translator_candidates_for(exe: &Path) -> Vec<PathBuf> {
     candidates
 }
 
-fn find_translator() -> Result<PathBuf> {
+pub fn find_translator() -> Result<PathBuf> {
     let mut tried: Vec<String> = Vec::new();
     if let Ok(explicit) = std::env::var("VTEDIT_TRANSLATOR") {
         let p = PathBuf::from(&explicit);
@@ -1055,6 +1055,14 @@ fn scratch_tag() -> String {
 /// 老工程 `font = "LXGW WenKai"` 那种系统字体族名不该被改写 —— 所以这里**只放库里有的 id**，
 /// 库外的值由转译器自己原样保留。
 fn write_font_families(dest: &Path) -> Result<()> {
+    let body = serde_json::to_vec(&serde_json::Value::Object(font_family_map()))?;
+    std::fs::write(dest, body)
+        .with_context(|| format!("写字体族名映射失败：{}", dest.display()))?;
+    Ok(())
+}
+
+/// 「库 id → 真族名」这份映射本身 —— `write_font_families` 与 [`fonts_stamp`] 的**唯一**来源。
+fn font_family_map() -> serde_json::Map<String, serde_json::Value> {
     let mut map = serde_json::Map::new();
     // ⚠️ **两层**：自带字体在 `global/`，只扫用户库会让底座拿不到自带字体的族名
     // ⇒ 字幕里用到它时静默回落（"预览有字、成片不同"这类最难查的形态）。
@@ -1070,10 +1078,30 @@ fn write_font_families(dest: &Path) -> Result<()> {
         }
         map.insert(e.id.clone(), serde_json::Value::String(fam.to_string()));
     }
-    let body = serde_json::to_vec(&serde_json::Value::Object(map))?;
-    std::fs::write(dest, body)
-        .with_context(|| format!("写字体族名映射失败：{}", dest.display()))?;
-    Ok(())
+    map
+}
+
+/// 字体库的**廉价格印** —— 给「转译结果缓存」当失效键用（`api::polish` 那边读）。
+///
+/// # 为什么缓存键必须有它
+///
+/// 转译器拿 `--font-families` 的映射把 `polish.toml` 里的**库 id** 换成**真族名**，
+/// 所以**增删一支字体、或改了它的族名，都会改变转译产物**。只看 `polish.toml` 的 mtime
+/// 会让"换了字体但预览还是旧族名"——那正是历史上报过的「换字体没反应」的形态。
+///
+/// # 口径
+///
+/// 对 [`font_family_map`] 的序列化字节做一次散列：**与转译器实际消费的那份数据同源**，
+/// 不比 mtime 猜测更松（比如 rename 不改目录 mtime 这类坑直接绕开）。
+/// `DefaultHasher` 不保证跨进程/跨版本稳定 —— 这正是我们要的：它只服务进程内缓存，
+/// 只要求"字节变了值就变"。
+pub fn fonts_stamp() -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash as _, Hasher as _};
+    let body = serde_json::to_vec(&serde_json::Value::Object(font_family_map())).unwrap_or_default();
+    let mut h = DefaultHasher::new();
+    body.hash(&mut h);
+    format!("{:016x}", h.finish())
 }
 
 /// 与 [`prepare_project`] 同一条路，但**把转译报告也带回来**（`--strict` 要用它）。

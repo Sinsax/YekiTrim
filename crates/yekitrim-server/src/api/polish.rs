@@ -5171,6 +5171,93 @@ pub(super) async fn polish_dhampir_status(
     ok(serde_json::json!(readiness))
 }
 
+// ── Dhampir 转译结果缓存（2026-11-21）───────────────────────────────────────────
+//
+// `POST /polish/dhampir-project` **每次**都 spawn 一次 Node 转译器（+ 若干 ffprobe），实测几百 ms ~ 2 s；
+// 而精修页在「进片段」与「每次改动落盘后」都会调它。用户在局域网里感知到的「点一下要等一下」，
+// 一半来自这里（另一半才是带宽）。转译结果对**同一份输入**是确定的，所以可以缓存。
+//
+// # 键 = 六项，全部满足「输入变了 ⇒ 键必变」
+// `polish.toml` / `_proxy_720.mp4`（有就参与：它决定转译器探测到的时基与分辨率）/ `clip.srt` /
+// `clip.dm.srt` / **转译器脚本自身**（开发时改 `tools/polish-to-dhampir.mjs` 必须失效）/
+// **字体库映射指纹**（`dhampir::fonts_stamp` —— 换字体必须失效，否则就是历史上那个「换字体没反应」）。
+//
+// # ⚠️ 只存内存、只存**回包 JSON**
+// 转译产物写在工程 `.yekitrim/` 的 scratch 名上，`cleanup_project` 立刻删掉它 ——
+// 缓存「产物路径」会拿到已删除的文件；而回包里带的是**内容**（project + subtitles + 报告），所以能缓存。
+// **绝不落盘**：工程目录里多一个缓存文件就多一条用户看不懂的残留（R4 的同一条纪律）。
+//
+// # 容量 2、最近使用优先
+// 一次预览只碰一个片段，切来切去时 2 条足够；内存钉在「两份工程 JSON」这个量级。
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct TranslationKey {
+    /// 片段目录（绝对、已校验）——多用户/多片段之间必须互不串味。
+    dir: String,
+    polish_toml: (u64, u64),
+    proxy: (u64, u64),
+    srt: (u64, u64),
+    dm: (u64, u64),
+    translator: (u64, u64),
+    fonts: String,
+}
+
+/// `(mtime_nanos, len)`；文件不在就 `(0, 0)`（「没写过」本身就是一个有效状态）。
+fn file_stamp(p: &Path) -> (u64, u64) {
+    use std::time::UNIX_EPOCH;
+    match std::fs::metadata(p) {
+        Ok(m) => {
+            let t = m
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0);
+            (t, m.len())
+        }
+        Err(_) => (0, 0),
+    }
+}
+
+/// 算一次键（5 次 `metadata` + 一次字体库扫描）—— **必须放 blocking 池**，工程常在网络盘上。
+fn translation_key(dir: &Path) -> TranslationKey {
+    let translator = yekitrim_polish::render::dhampir::find_translator().ok();
+    TranslationKey {
+        dir: yekitrim_core::path::display(dir),
+        polish_toml: file_stamp(&dir.join("polish.toml")),
+        proxy: file_stamp(&dir.join(yekitrim_polish::render::proxy::PREVIEW_PROXY_FILE)),
+        srt: file_stamp(&dir.join("clip.srt")),
+        dm: file_stamp(&dir.join("clip.dm.srt")),
+        translator: translator.as_deref().map(file_stamp).unwrap_or((0, 0)),
+        fonts: yekitrim_polish::render::dhampir::fonts_stamp(),
+    }
+}
+
+/// 最近使用的在前（`Vec` 当 LRU，容量 2）。
+static TRANSLATION_CACHE: std::sync::OnceLock<
+    std::sync::Mutex<Vec<(TranslationKey, Arc<serde_json::Value>)>>,
+> = std::sync::OnceLock::new();
+
+fn translation_cache() -> &'static std::sync::Mutex<Vec<(TranslationKey, Arc<serde_json::Value>)>> {
+    TRANSLATION_CACHE.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+
+fn translation_cache_get(key: &TranslationKey) -> Option<serde_json::Value> {
+    let mut guard = translation_cache().lock().unwrap_or_else(|e| e.into_inner());
+    let idx = guard.iter().position(|(k, _)| k == key)?;
+    let hit = guard.remove(idx);
+    let value = (*hit.1).clone();
+    guard.insert(0, hit);
+    Some(value)
+}
+
+fn translation_cache_put(key: TranslationKey, value: &serde_json::Value) {
+    let mut guard = translation_cache().lock().unwrap_or_else(|e| e.into_inner());
+    guard.retain(|(k, _)| k != &key);
+    guard.insert(0, (key, Arc::new(value.clone())));
+    guard.truncate(2);
+}
+
 /// `POST /polish/dhampir-project` —— 转译 `polish.toml`，把工程 JSON **内容**交给浏览器。
 ///
 /// 请求：`{ "dir": "<片段目录（绝对路径）>" }`
@@ -5185,6 +5272,16 @@ pub(super) async fn polish_dhampir_project(
     let path = validated_project_dir(dir)?;
     if !path.join("polish.toml").is_file() {
         return Err(err(StatusCode::BAD_REQUEST, "目录未初始化 polish"));
+    }
+    // ① 先算缓存键（5 次 metadata + 一次字体库扫描 —— 走 blocking 池，工程常在网络盘上）。
+    //    命中就直接回上次那份回包：**省掉一整个 Node 转译**（几百 ms ~ 2 s）。
+    let key = {
+        let p = path.clone();
+        blocking(move || Ok::<_, AppError>(translation_key(&p))).await?
+    };
+    if let Some(hit) = translation_cache_get(&key) {
+        tracing::debug!("  · Dhampir 转译命中缓存（{}）", key.dir);
+        return ok(hit);
     }
     let scratch = path.join(yekitrim_core::path::PROJECT_STATE_DIR_NAME);
     std::fs::create_dir_all(&scratch)
@@ -5248,12 +5345,15 @@ pub(super) async fn polish_dhampir_project(
         .collect();
     // 转译报告进回包（总方案 §4）：`translate_report` 是**接口产物**，
     // 前端据此提示"这个效果其实没生效"。零 DROP 也回（那是有意义的好消息，且可核对）。
-    ok(serde_json::json!({
+    let value = serde_json::json!({
         "ok": true,
         "project": project,
         "subtitles": subtitles,
         "translate_report": translate_report,
-    }))
+    });
+    // ② 只把**成功**的那份放进缓存（失败下次还要重试；转译报错会走上面的 `?` 提前返回）。
+    translation_cache_put(key, &value);
+    ok(value)
 }
 
 /// 读回**全部旁写字幕**（内容, 文件名）—— 预览那条腿靠它把文本喂给 wasm。
@@ -5614,4 +5714,128 @@ pub(super) async fn polish_sticker_prewarm(
         "decoded": decoded,
         "failed": failed,
     })))
+}
+
+/// `POST /polish/dhampir-project` **转译缓存**的判据（2026-11-21）。
+///
+/// 单独一个模块：上面的 `mod tests` 是路由级用例（要 `TestApp` + 真跑 node），
+/// 而这个缓存是**纯进程内状态**，不需要起服务、也不需要 node。
+#[cfg(test)]
+mod translation_cache_tests {
+    use super::*;
+
+    fn key_for(dir: &str, toml_len: u64) -> TranslationKey {
+        TranslationKey {
+            dir: dir.to_string(),
+            polish_toml: (1, toml_len),
+            proxy: (0, 0),
+            srt: (0, 0),
+            dm: (0, 0),
+            translator: (0, 0),
+            fonts: "abc".into(),
+        }
+    }
+
+    /// 命中 / 容量 2 / 最近使用优先 —— LRU 很朴素，但它错了就是「改了配置还拿旧工程」。
+    #[test]
+    fn cache_remembers_two_and_evicts_the_least_recent() {
+        // 用一对不可能出现在真实路径里的 dir 造键，免得和别的用例/真实请求串味
+        let (a, b, c) = (
+            key_for("<cache-test-a>", 1),
+            key_for("<cache-test-b>", 1),
+            key_for("<cache-test-c>", 1),
+        );
+        assert!(translation_cache_get(&a).is_none(), "一开始是空的");
+
+        translation_cache_put(a.clone(), &serde_json::json!({ "v": "A" }));
+        assert_eq!(translation_cache_get(&a).unwrap()["v"], "A");
+
+        translation_cache_put(b.clone(), &serde_json::json!({ "v": "B" }));
+        // 摸一下 A ⇒ 它变成「最近使用」
+        assert_eq!(translation_cache_get(&a).unwrap()["v"], "A");
+
+        translation_cache_put(c.clone(), &serde_json::json!({ "v": "C" }));
+        assert_eq!(translation_cache_get(&a).unwrap()["v"], "A", "最近用过的不能被挤掉");
+        assert!(
+            translation_cache_get(&b).is_none(),
+            "最久没用的那条要被挤掉（容量 2）"
+        );
+        assert_eq!(translation_cache_get(&c).unwrap()["v"], "C");
+    }
+
+    /// 键必须**跟着输入变**：`polish.toml` 改一个字节就得换一个键；同内容两次必须稳定。
+    #[test]
+    fn key_tracks_the_inputs_and_is_stable() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        std::fs::write(dir.path().join("polish.toml"), "a = 1\n").unwrap();
+        let k1 = translation_key(dir.path());
+        assert_eq!(k1, translation_key(dir.path()), "同一份输入两次算出的键必须相同");
+
+        std::fs::write(dir.path().join("polish.toml"), "a = 2222\n").unwrap();
+        let k2 = translation_key(dir.path());
+        assert_ne!(k1.polish_toml, k2.polish_toml, "polish.toml 变了，键必须变");
+        assert_ne!(k1, k2);
+
+        // 代理文件出现也要变 —— 它决定转译器探测到的时基与分辨率
+        std::fs::write(dir.path().join("_proxy_720.mp4"), b"x").unwrap();
+        let k3 = translation_key(dir.path());
+        assert_ne!(k2.proxy, k3.proxy, "代理出现 ⇒ 键必须变");
+    }
+
+    /// **端到端**：真打一次接口之后，缓存里必须有那一份 —— 也就是说「下一次同样的请求不会再 spawn node」。
+    ///
+    /// 判据用「接口跑完 ⇒ `translation_cache_get(key)` 命中」，而不是计时
+    /// （计时在 CI/慢盘上必然抖）。第二次请求再比一次回包**逐值相同**，把"走的是缓存那条路"钉死。
+    #[tokio::test]
+    async fn project_endpoint_populates_the_cache_and_replays_it() {
+        use crate::api::test_support::{body_json, test_app};
+
+        let t = test_app().await;
+        let clip = t.root.join("output/clips/tcache");
+        std::fs::create_dir_all(&clip).unwrap();
+        let cfg = yekitrim_polish::project::ProjectFile::example();
+        std::fs::write(clip.join("polish.toml"), cfg.to_toml_commented().unwrap()).unwrap();
+        let payload = serde_json::json!({ "dir": clip.to_string_lossy() }).to_string();
+
+        let ask = |payload: String| {
+            let t = &t;
+            async move {
+                let res = t
+                    .call(
+                        t.req("POST", "/polish/dhampir-project")
+                            .header(axum::http::header::CONTENT_TYPE, "application/json")
+                            .body(axum::body::Body::from(payload))
+                            .unwrap(),
+                    )
+                    .await;
+                let status = res.status();
+                let v = body_json(res).await;
+                (status, v)
+            }
+        };
+
+        let (status, first) = ask(payload.clone()).await;
+        if status != StatusCode::OK {
+            panic!("转译应当成功，实际 {status}：{first}");
+        }
+        let key = translation_key(&clip);
+        assert!(
+            translation_cache_get(&key).is_some(),
+            "接口成功后必须把回包放进缓存（否则每次改配置都白跑一遍 node）"
+        );
+
+        let (status2, second) = ask(payload).await;
+        assert_eq!(status2, StatusCode::OK);
+        assert_eq!(first, second, "同样的输入两次回包必须逐值相同（第二次走缓存）");
+    }
+
+    /// 字体库指纹：进程内**稳定**且是 16 位十六进制（它参与缓存键，错了就是「换字体没反应」）。
+    #[test]
+    fn fonts_stamp_is_stable_hex() {
+        let a = yekitrim_polish::render::dhampir::fonts_stamp();
+        let b = yekitrim_polish::render::dhampir::fonts_stamp();
+        assert_eq!(a, b, "同一份字体库两次指纹必须相同");
+        assert_eq!(a.len(), 16, "指纹是 16 位十六进制：{a}");
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()), "只许十六进制：{a}");
+    }
 }

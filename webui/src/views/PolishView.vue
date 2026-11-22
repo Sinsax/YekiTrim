@@ -790,7 +790,7 @@ import {
 import { localNoAuthKnown } from '../stores/health'
 // `/api/health` 的同一份缓存：P2 快速模式的「智能剪辑」能力位（别在这里再拉一次）。
 import { healthPayload, refreshHealth } from '../stores/health'
-import { ensureFontFace, fontFamilyFor, fontInLibrary, fontLabelFor } from '../polish/fonts'
+import { ensureFontFace, findFontInLibrary, fontFamilyFor, fontLabelFor } from '../polish/fonts'
 import { freeRect, regionRect } from '../polish/engine'
 import { jobsApi, watchJob, busyOn, clipKey, kindText, KIND_ZH, QUEUED_HINT } from '../api/jobs'
 import { useJobs } from '../composables/useJobs'
@@ -1188,25 +1188,45 @@ async function patchElements(patch) {
  *  （服务端 `fonts::emoji_font` 选一支，经 `/api/polish/fonts` 的 `emoji_family` 透传给预览），
  *  用户不该把一支没有中文字形的字体选成正文 —— 那会让整条字幕变成豆腐块。
  *  服务端 `set_default` / `resolve_font_plan` 也各挡一道（配置是文本文件，用户能手改）。 */
-const fontOptions = computed(() => {
+/** 库里能进正文下拉的字体（排除 emoji / .ttc / 未安装），`value` = 库 id。
+ *  ⚠️ 字幕与弹幕两个下拉**共用这一份底表**：以前弹幕那份是从 `fontOptions` 里二次过滤的，
+ *  而 `fontOptions` 会为了"当前值能选中"把某条的 value 改写成族名 —— 于是弹幕下拉把那条
+ *  （判据只认 id）**整个丢掉**（2026-11-19 实测：弹幕字体里没有 Noto Sans SC 了）。 */
+const libraryFontOptions = computed(() => {
   const opts = []
   for (const f of fonts.value) {
     if (f.installed === false || /\.ttc$/i.test(f.file || '') || f.emoji) continue
     const base = f.family && f.family !== f.id ? `${f.family}（${f.id}）` : f.id
     opts.push({ value: f.id, label: f.is_default ? `${base}[默认]` : base })
   }
+  return opts
+})
+
+const fontOptions = computed(() => {
+  const opts = [...libraryFontOptions.value]
   const cur = subtitleFont.value
   // ⚠️ 空值只是**占位**、不是「一种可选字体」（老工程从没选过字体时就是它）：
   // 显示成「未指定 · 用默认文字字体」而非列表里的一档 —— 用户选任何具体字体后它自然消失。
   // 这样列表内容 = **库里已有的字体**，与用户口径一致。
-  if (!cur) opts.unshift({ value: '', label: '未指定 · 用默认文字字体', placeholder: true })
+  if (!cur) {
+    opts.unshift({ value: '', label: '未指定 · 用默认文字字体', placeholder: true })
+    return opts
+  }
   // ⚠️ 认**三种名字**（2026-10-16）：配置里那串值可能是**库 id**（界面选的），
   //    也可能是**族名/显示名**（`default_font()` 写下的 `Noto Sans SC` 就是族名）。
   //    只认 id 的症状是「明明装了的字体被标成不在字体库」，而它其实一直能用。
-  else if (!fontInLibrary(fonts.value, cur)) opts.push({ value: cur, label: `${cur}（不在字体库）` })
-  // ⚠️ 别名命中（值是族名）：**必须补一条 `value === 当前值` 的选项**，否则 `<select>`
-  //    里没有任何选项匹配当前值 ⇒ 浏览器显示第一项（用户看到「选中的字体跳了」）。
-  //    保留原值不改配置，只给它库里那支的标签 —— 见 `fontLabelFor`。
+  const hit = findFontInLibrary(fonts.value, cur)
+  if (!hit) {
+    opts.push({ value: cur, label: `${cur}（不在字体库）` })
+    return opts
+  }
+  // ⚠️ 别名命中（值是族名）**不能直接再 push 一条**：那条与库里 id 那条的 label 逐字相同，
+  //    用户看到的就是「同一个字体在下拉里出现两次」（2026-11-19 实测：`font = "Noto Sans SC"`
+  //    时 id 选项 + 别名选项两份 `Noto Sans SC（NotoSansSC-Regular）`）。
+  //    正确做法 = **把库里那条的 value 改写成配置里的写法**（让 `<select>` 选得中），选项仍只一条。
+  if (opts.some((o) => o.value === cur)) return opts
+  const i = opts.findIndex((o) => o.value === hit.id)
+  if (i >= 0) opts[i] = { ...opts[i], value: cur }
   else opts.push({ value: cur, label: fontLabelFor(fonts.value, cur) })
   return opts
 })
@@ -2635,23 +2655,22 @@ async function saveDanmakuOffset(next) {
 const danmakuFont = computed(() => cfg.value?.style?.danmaku?.font || '')
 /** 与字幕字体共用一个库；首项「默认」= 空串（不写盘 ⇒ 走上面那条出厂默认，老工程零迁移）。 */
 const danmakuFontOptions = computed(() => {
-  const known = new Set(fonts.value.map((f) => f.id))
-  const opts = [{ value: '', label: '默认 · Noto Sans SC' }]
-  for (const o of fontOptions.value) {
-    if (o.placeholder || o.value === '') continue
-    if (!known.has(o.value) && o.value !== danmakuFont.value) continue
-    opts.push(o)
-  }
+  // 底表与字幕下拉同一份（库里全部可用的正文字体），**不是**从 `fontOptions` 二次过滤 ——
+  // 后者带着"当前字幕字体"的别名改写，会把那一档从弹幕列表里吞掉。
+  const opts = [{ value: '', label: '默认 · Noto Sans SC' }, ...libraryFontOptions.value]
   const cur = danmakuFont.value
+  if (!cur || opts.some((o) => o.value === cur)) return opts
   // ⚠️ **库里没有**要看三种名字（id / 族名 / 显示名），见 `fontInLibrary`；
-  //    别名命中时补的那条要**按库里那支显示**（否则 select 会显示第一项）。
-  if (cur && !opts.some((o) => o.value === cur)) {
-    opts.push(
-      fontInLibrary(fonts.value, cur)
-        ? { value: cur, label: fontLabelFor(fonts.value, cur) }
-        : { value: cur, label: `${cur}（不在字体库）` },
-    )
+  //    别名命中同样**不能补第二条同标签的选项**（与字幕字体那条同一个 bug）：
+  //    库里 id 那条已经在列表里时，只把它的 value 改写成当前写法。
+  const hit = findFontInLibrary(fonts.value, cur)
+  if (!hit) {
+    opts.push({ value: cur, label: `${cur}（不在字体库）` })
+    return opts
   }
+  const i = opts.findIndex((o) => o.value === hit.id)
+  if (i >= 0) opts[i] = { ...opts[i], value: cur }
+  else opts.push({ value: cur, label: fontLabelFor(fonts.value, cur) })
   return opts
 })
 /**
