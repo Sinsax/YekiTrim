@@ -105,12 +105,69 @@ fn stream_file(
 ///
 /// `/api/media/*` 与 `/api/polish/stickers/*/files/*` 共用这一份——两处都是
 /// "只服务服务端已有文件"，不该各写一遍分块与 Range 处理。
-pub(crate) async fn serve_file(
+// 这里曾有一个不带缓存头的 `serve_file(path, mime, range)` —— 四个文件出口都在用它，
+// 于是每次进精修页/打开贴纸选择器都要把字体与贴纸**整份重下**（局域网里就是「有延迟」）。
+// 已由 `serve_file_from_headers` 取代（ETag/304 + 文本类 gzip），**别再把它加回来**。
+
+/// **带条件缓存的那条路**：ETag/304 + 文本类 gzip（`serve_file` 的推荐替代）。
+///
+/// # 为什么要有它（2026-11-21，用户报「局域网访问精修有延迟」）
+///
+/// `/api/media/*` 早在 2026-10-02 就补了 ETag/304（见 `api/project_data.rs::media_get`），
+/// 但**另外四个走 `serve_file` 的文件出口一个都没补**：
+///
+/// | 出口 | 典型体积 | 以前 |
+/// |---|---|---|
+/// | `/api/polish/font`（预览注册的字体字节） | CJK 单支 **5–20 MB** | 每次进精修页/刷新整份重下 |
+/// | `/api/polish/sticker-file`、`/polish/stickers/:pack/files/:name` | 单张 GIF 最大几 MB | 贴纸选择器每次打开整份重下 |
+/// | `/api/polish/asset`（素材库视频/字体预览） | 同上 | 每次预览整份重下 |
+/// | `/api/polish/video-thumb` | 几百 KB | 同上 |
+///
+/// 「没有 `Cache-Control` / `ETag` / `Last-Modified`」的响应**没有条件请求可发** ——
+/// 浏览器只能每次都把字节重新拉一遍。本机 loopback 上这只是几十毫秒，
+/// **在局域网（尤其 Wi-Fi）上就是几秒到几十秒**，用户感知到的正是「访问精修有延迟」。
+///
+/// # 三条硬约束（与 `serve_file_cond` 同一套，别各写一遍）
+///
+/// ① **有 `Range` 头就不参与 304**：算 ETag 要 `metadata`，而媒体元素每次 seek 都带 Range、
+///    打出一串请求；更重要的是对一个分段请求回 304 会让播放器当成「整份还有效」。
+///    所以这里 `range.is_some() ⇒ etag = None`（`serve_file_cond` 先判 ETag 再判 Range）。
+/// ② **有 `Range` 头一律不压**（压缩后字节与「原始文件第 start..end 字节」错位 ⇒ 花屏）。
+/// ③ `Cache-Control` 用 **`no-cache`**（= 用之前回来校验），不是 max-age：文件改了 mtime 就变、
+///    ETag 自然失效；写成 long-cache 会让「重切了片段但预览还是旧的」。
+pub(crate) async fn serve_file_cached(
     path: &Path,
     mime: &str,
     range_header: Option<&str>,
+    if_none_match: Option<&str>,
+    accept_encoding: Option<&str>,
 ) -> Response {
-    serve_file_cond(path, mime, range_header, None, None, None).await
+    let etag = if range_header.is_some() {
+        None
+    } else {
+        tokio::fs::metadata(path).await.ok().map(|m| file_etag(&m))
+    };
+    serve_file_cond(path, mime, range_header, etag.as_deref(), if_none_match, accept_encoding).await
+}
+
+/// 直接从请求头取 `Range` / `If-None-Match` / `Accept-Encoding` 并走 `serve_file_cached`。
+///
+/// **文件出口一律用它**：四个 handler 各自从 `HeaderMap` 抠三个头会漏（实测就漏了 ETag），
+/// 而漏掉的症状是「每次进页面重下几 MB」，**不报错、日志里也看不出来**。
+pub(crate) async fn serve_file_from_headers(
+    path: &Path,
+    mime: &str,
+    headers: &axum::http::HeaderMap,
+) -> Response {
+    let get = |name: axum::http::header::HeaderName| headers.get(name).and_then(|v| v.to_str().ok());
+    serve_file_cached(
+        path,
+        mime,
+        get(axum::http::header::RANGE),
+        get(axum::http::header::IF_NONE_MATCH),
+        get(axum::http::header::ACCEPT_ENCODING),
+    )
+    .await
 }
 
 /// 与 [`serve_file`] 同一条路，外加**响应压缩**与 **ETag/304** 两个可选行为。
@@ -241,7 +298,7 @@ pub(crate) async fn serve_file_cond(
 ///
 /// 这条白名单就是「别把视频压坏」的那道闸：只有走这条路的响应才可能被压缩，
 /// 而视频的 `video/mp4`、图片的 `image/*`、字体的 `font/*` 都不在其中。
-fn compressible_mime(mime: &str) -> Option<&'static str> {
+pub(crate) fn compressible_mime(mime: &str) -> Option<&'static str> {
     let m = mime.split(';').next().unwrap_or("").trim();
     match m {
         "application/wasm" => Some("gzip"),
@@ -249,6 +306,11 @@ fn compressible_mime(mime: &str) -> Option<&'static str> {
         "text/css" => Some("gzip"),
         "text/html" | "text/plain" => Some("gzip"),
         "application/json" => Some("gzip"),
+        // **未压缩的字体**（CJK 的 .ttf/.otf/.ttc 单支 5–20 MB）：字体本身没有容器压缩，
+        // gzip 实测能砍掉 40–55%。冷启动那一次省下的是几 MB 的局域网搬运，
+        // 之后靠 ETag 走 304（见 `serve_file_cached`）就不再压了。
+        // ⚠️ **`font/woff` / `font/woff2` 不许收**：它们本来就是压缩格式，再压一遍只是烧 CPU。
+        "font/ttf" | "font/otf" | "font/ttc" | "application/x-font-ttf" => Some("gzip"),
         // 注意 `image/svg+xml` **故意不收**：它虽含文本，但常被当作可缩放图形
         // 参与尺寸计算，压缩收益也小；收了要多想一层，不值。
         _ => None,
@@ -256,7 +318,7 @@ fn compressible_mime(mime: &str) -> Option<&'static str> {
 }
 
 /// 客户端是否接受 gzip。**认不出来就当不支持**（宁可发原始字节，也别发对方解不开的）。
-fn accepts_gzip(accept_encoding: Option<&str>) -> bool {
+pub(crate) fn accepts_gzip(accept_encoding: Option<&str>) -> bool {
     let Some(v) = accept_encoding else { return false };
     v.split(',').any(|part| {
         let mut it = part.split(';');
@@ -269,7 +331,7 @@ fn accepts_gzip(accept_encoding: Option<&str>) -> bool {
     })
 }
 
-fn gzip_bytes(raw: &[u8]) -> Vec<u8> {
+pub(crate) fn gzip_bytes(raw: &[u8]) -> Vec<u8> {
     // 6 是 zlib 默认档：实测 7.66 MB 的 wasm 在 -6 下就是 1.43 MB（19%），
     // 再往高档走到 -9 只多省几个百分点、CPU 翻倍——服务端每次都要压，不值。
     let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::new(6));
@@ -296,7 +358,7 @@ pub(crate) fn file_etag(meta: &std::fs::Metadata) -> String {
 }
 
 /// `If-None-Match` 是否命中。支持 `*`、逗号分隔列表、以及弱校验前缀 `W/`。
-fn etag_matches(if_none_match: &str, tag: &str) -> bool {
+pub(crate) fn etag_matches(if_none_match: &str, tag: &str) -> bool {
     let want = if_none_match.trim();
     if want == "*" {
         return true;
@@ -344,6 +406,12 @@ mod tests {
         assert_eq!(compressible_mime("video/webm"), None);
         assert_eq!(compressible_mime("image/png"), None);
         assert_eq!(compressible_mime("image/jpeg"), None);
+        // **未压缩的字体要压**（2026-11-21，局域网首屏）：CJK 单支 5–20 MB，gzip 砍 40–55%。
+        assert_eq!(compressible_mime("font/ttf"), Some("gzip"));
+        assert_eq!(compressible_mime("font/otf"), Some("gzip"));
+        assert_eq!(compressible_mime("font/ttc"), Some("gzip"));
+        // ⚠️ woff/woff2 本来就是压缩格式，**不许**收进来（压一遍只烧 CPU、几乎不省字节）
+        assert_eq!(compressible_mime("font/woff"), None);
         assert_eq!(compressible_mime("font/woff2"), None);
         assert_eq!(compressible_mime("application/octet-stream"), None);
     }
@@ -404,6 +472,83 @@ mod tests {
         let e2 = file_etag(&std::fs::metadata(&f).unwrap());
         assert_ne!(e1, e2, "长度变了 ETag 必须变（否则改造后刷新拿到旧 wasm）");
         assert!(e1.starts_with('\"') && e1.ends_with('\"'), "ETag 要带引号：{e1}");
+    }
+
+    /// 读整个响应体（小文件够用）。
+    async fn body_of(res: Response) -> Vec<u8> {
+        axum::body::to_bytes(res.into_body(), 8 * 1024 * 1024)
+            .await
+            .expect("body")
+            .to_vec()
+    }
+
+    /// 造一份**可压**的文本（够大、够重复，gzip 才压得比原文小）。
+    fn big_json() -> Vec<u8> {
+        let mut s = String::from("{\"items\":[");
+        for i in 0..2000 {
+            if i > 0 {
+                s.push(',');
+            }
+            s.push_str("{\"start\":1.5,\"end\":3.5,\"text\":\"你好世界\"}");
+        }
+        s.push_str("]}");
+        s.into_bytes()
+    }
+
+    /// **局域网那次「第二次打开还是慢」的头号原因**（2026-11-21）：
+    /// 没有 `ETag`/`Cache-Control` 的响应**没有条件请求可发** ⇒ 字体/贴纸/素材每次整份重下。
+    /// 这条钉住三件事：首次 200 带校验符、带着校验符回来 304 空体、声明 gzip 时文本类要压。
+    #[tokio::test]
+    async fn cached_file_serving_sends_etag_then_304_and_gzips_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("d.json");
+        let payload = big_json();
+        std::fs::write(&f, &payload).unwrap();
+        let tag = file_etag(&std::fs::metadata(&f).unwrap());
+
+        // ① 首次全量：200 + ETag + `no-cache`（= 用之前回来校验，不是"不许缓存"）
+        let res = serve_file_cached(&f, "application/json", None, None, None).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(res.headers().get(header::ETAG).and_then(|v| v.to_str().ok()), Some(tag.as_str()));
+        assert_eq!(res.headers().get(header::CACHE_CONTROL).and_then(|v| v.to_str().ok()), Some("no-cache"));
+        assert_eq!(body_of(res).await, payload, "没声明 gzip ⇒ 原样字节");
+
+        // ② 带着同一个 ETag 再来 ⇒ 304 空体（省掉的就是那 5–20 MB）
+        let res = serve_file_cached(&f, "application/json", None, Some(&tag), None).await;
+        assert_eq!(res.status(), StatusCode::NOT_MODIFIED);
+        assert!(body_of(res).await.is_empty(), "304 不许带 body");
+
+        // ③ 声明 gzip ⇒ 文本类要压，并且必须带 Vary（同一 URL 两种字节）
+        let res = serve_file_cached(&f, "application/json", None, None, Some("gzip")).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(res.headers().get(header::CONTENT_ENCODING).and_then(|v| v.to_str().ok()), Some("gzip"));
+        assert_eq!(res.headers().get(header::VARY).and_then(|v| v.to_str().ok()), Some("Accept-Encoding"));
+        let gz = body_of(res).await;
+        assert!(gz.len() * 4 < payload.len(), "压缩没生效：{} -> {}", payload.len(), gz.len());
+        use std::io::Read as _;
+        let mut back = Vec::new();
+        flate2::read::GzDecoder::new(&gz[..]).read_to_end(&mut back).expect("解压失败");
+        assert_eq!(back, payload, "压坏了比不压更糟");
+    }
+
+    /// **带 `Range` 时既不能 304、也不能压**（播放会花屏/卡死）——
+    /// 与 `serve_file_cond` 的既有铁律同一条，只是现在多了一个入口，必须一起钉住。
+    #[tokio::test]
+    async fn range_requests_never_get_304_or_gzip() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("c.mp4");
+        let payload: Vec<u8> = (0..5000u32).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&f, &payload).unwrap();
+        let tag = file_etag(&std::fs::metadata(&f).unwrap());
+
+        let res = serve_file_cached(&f, "video/mp4", Some("bytes=0-9"), Some(&tag), Some("gzip")).await;
+        assert_eq!(res.status(), StatusCode::PARTIAL_CONTENT, "带 Range 必须 206，不能 304");
+        assert!(res.headers().get(header::CONTENT_ENCODING).is_none(), "Range 响应绝不能压");
+        assert!(
+            res.headers().get(header::ETAG).is_none(),
+            "带 Range 时不算 ETag（媒体元素每次 seek 都打一串 Range，算了也没人用来 304）"
+        );
+        assert_eq!(body_of(res).await, payload[..10].to_vec(), "206 的字节必须是原始文件那一段");
     }
 
     #[test]

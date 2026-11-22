@@ -63,6 +63,8 @@
   `current_exe()` 那两条必须在编译期常量前 —— 否则换台机器/换 cwd 会静默端出**开发机源码树里**
   那份（判据见 `web.rs::tests`）。别把本 crate 挪深，否则构建期那条指到 `crates/`。
 - `src/web.rs` 的 503 只在**显式覆盖指到空目录**时出现；启动日志打一行 `静态资源：内嵌（N）`。
+  ⚠️ **静态壳也 gzip + 304**（`asset_response`，2026-11-21）：JS/CSS 压一次进内存缓存（不是每请求现压），
+  `index.html` 带 ETag（1 KB 也不必重下）。局域网自查清单见 `docs/deploy.md` B-1。
   ⚠️ 那行**不许以 `WebUI: http://` 开头** —— 托盘靠那个前缀抓地址（跨进程契约）。
 
 ### 任务队列（`src/jobs.rs` / `src/scope_key.rs`）
@@ -158,14 +160,13 @@
 
 - `src/stickers.rs`：路由在**用户层**（**不是** admin-only —— 贴纸库按 `Owner` 分，见 `src/stickers.rs` 头部；
   单人 = `<数据>/resources/stickers/`，多用户 = `<数据>/users/<uid>/resources/stickers/`）；`spawn_build` 走 JobManager（占 `stickers` 键，取消在
-  **批次边界**生效）；64 MiB `DefaultBodyLimit` **只给上传那一条**放开（axum 默认 2 MB）；`.../:pack/files/:name` 与
-  `/api/media/*` 共用 `media::serve_file` 的 Range 实现；包名过 `sanitize_pack_name`、文件名过 `is_safe_component`。
-- `src/media.rs::serve_file` 是**唯一**的文件出口（`/api/media/*`、贴纸文件、Dhampir wasm 资源）。
-  ⚠️ **压缩与 ETag 只在 `serve_file_cond` 上开、只给 `/polish/dhampir-wasm/*` 用**（2026-10-02 首屏提速，
-  7.66 MB wasm → 1.49 MB）：视频走 `Range`，压缩后字节与「原始文件第 start..end 字节」不再一一对应，
-  对 206 压缩会破坏播放 ⇒ **有 `Range` 头一律退回 identity**，且白名单里只有文本类（`compressible_mime`）。
-  别把压缩挪进 `serve_file` 让所有调用点都吃到。细节见 `src/api/AGENTS.md`。
-  ⚠️ 前端 `webui/src/api/stickers.js::UPLOAD_MAX_BYTES` 与 Rust 的是同一个数。
+  **批次边界**生效）；上限 = `[stickers] upload_max_mb`（默认 1 GiB，路由硬顶 4 GiB）；`.../:pack/files/:name` 与
+  `/api/media/*` 共用 `media::serve_file_from_headers`；包名过 `sanitize_pack_name`、文件名过 `is_safe_component`。
+- `src/media.rs` 是**唯一**的文件出口（`/api/media/*`、字体、贴纸、素材库、Dhampir wasm）。
+  ⚠️ **入口只有 `serve_file_from_headers`**（2026-11-21）：`ETag` + `no-cache` → **304**、文本类
+  （含未压缩字体 `ttf/otf/ttc`）**gzip**、`Range` 分段；**有 `Range` 头不压、也不回 304**。
+  ⚠️ 以前只有两处补了 ETag ⇒ 字体/贴纸/素材库每次进页面**整份重下**（=「局域网访问精修有延迟」）。
+  ⚠️ 前端不写死：`GET /polish/stickers/limits` 现取（`DEFAULT_UPLOAD_MAX_BYTES` 兜底）。
 - `src/auth.rs`：`require_user` / `require_admin` / `require_password_changed`（**服务端强制**）/ `resolve_client_ip` /
   `trust_proxy` / `tls_terminated` / `owner_of`（身份 → `Owner` 唯一分叉点）/ `optional_owner`（**公开接口**的可选
   会话解析：`GET /api/health` 的 `llm` 位靠它按**账号**读 `llm.toml`；无会话回 `None`，调用方回落 `Owner::Local`）；

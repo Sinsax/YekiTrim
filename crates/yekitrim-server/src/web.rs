@@ -22,8 +22,9 @@
 //! 所以 debug 下这张表是**空的**、`Embedded` 那条路自然轮不到；release 下 `dist` 缺失或比
 //! `webui/src` 旧仍然**编译失败**。`YEKITRIM_EMBED_WEBUI=1/0` 可强制任一侧（排障用）。
 
+use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use axum::body::Body;
 use axum::http::{Request, Response, StatusCode, header};
@@ -186,23 +187,121 @@ fn mime_for(path: &Path) -> String {
     }
 }
 
+/// 静态壳的**压缩体 + 校验符**缓存：同一份字节只算一次。
+///
+/// 键里带 `len` 与内容哈希（见 [`asset_key`]），所以**磁盘来源换了文件也一定失配** ——
+/// debug 下 `npm run build` 之后刷新立刻拿到新内容，不会端出上一次压好的那一份。
+/// 值不是 `bytes` 而是 gzip 结果：dist 1.5 MB，压完约 0.5 MB，驻留内存可接受。
+struct AssetMeta {
+    gz: std::sync::Arc<Vec<u8>>,
+    etag: String,
+}
+
+fn asset_cache() -> &'static Mutex<HashMap<String, std::sync::Arc<AssetMeta>>> {
+    static C: OnceLock<Mutex<HashMap<String, std::sync::Arc<AssetMeta>>>> = OnceLock::new();
+    C.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// FNV-1a 64：只用来给静态资源做**内容指纹**，不是密码学哈希。
+///
+/// ⚠️ 不加依赖（`sha2` 只在 `xtask` 里有），也不该用内容哈希做缓存键的替代品 ——
+/// 这里要的只是"这份字节和上次那份一样吗"。
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in bytes {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+fn asset_key(key: &str, bytes: &[u8]) -> String {
+    format!("{key}|{}|{:016x}", bytes.len(), fnv1a64(bytes))
+}
+
+/// 取（必要时生成）这份静态资源的压缩体与 ETag。
+fn asset_meta(key: &str, bytes: &[u8]) -> std::sync::Arc<AssetMeta> {
+    let ck = asset_key(key, bytes);
+    let mut map = asset_cache().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(m) = map.get(&ck) {
+        return m.clone();
+    }
+    // 简单上限：条目数封顶即可（dist 一共也没几个文件，真超了说明磁盘那条路被反复改写）
+    if map.len() > 128 {
+        map.clear();
+    }
+    let m = std::sync::Arc::new(AssetMeta {
+        gz: std::sync::Arc::new(crate::media::gzip_bytes(bytes)),
+        etag: format!("\"{}-{:016x}\"", bytes.len(), fnv1a64(bytes)),
+    });
+    map.insert(ck, m.clone());
+    m
+}
+
 /// 组装静态资源响应。
 ///
 /// 入口 html 必须 `no-cache`：发版后浏览器启发式缓存会让用户停在旧界面
 /// （入口引用的是内容哈希资源名，资源本身可以长缓存）。
-fn asset_response(key: &str, bytes: Vec<u8>) -> Response<Body> {
-    let mut b = Response::builder().header(header::CONTENT_TYPE, mime_for(Path::new(key)));
+///
+/// 三件事（2026-11-21，局域网提速）：
+/// ① **ETag + 304**：入口 1 KB 每次导航都重下太亏；有校验符就回 304（0 字节）。
+/// ② **gzip**：JS/CSS 原样发是 555 KB（`PolishView` 278 + `index` 172 + CSS 105），
+///    压完约 1/3 —— 局域网/Wi-Fi 上这是首屏最实的一刀。
+/// ③ **压在缓存里**：不是每请求现压（1.5 MB 的 dist 压一遍要几十毫秒 CPU），
+///    同一份字节只压一次，之后每次请求零成本。
+fn asset_response(
+    key: &str,
+    bytes: Vec<u8>,
+    accept_encoding: Option<&str>,
+    if_none_match: Option<&str>,
+) -> Response<Body> {
+    let mime = mime_for(Path::new(key));
+    let meta = asset_meta(key, &bytes);
+    // 304 必须排在压缩之前：命中校验符时**一个字节都不该发**（也不该去取 gzip）
+    if let Some(inm) = if_none_match {
+        if crate::media::etag_matches(inm, &meta.etag) {
+            return Response::builder()
+                .status(StatusCode::NOT_MODIFIED)
+                .header(header::ETAG, &meta.etag)
+                .header(header::CACHE_CONTROL, cache_control_for(key))
+                .body(Body::empty())
+                .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+        }
+    }
+    let compressible = crate::media::compressible_mime(&mime).is_some()
+        && crate::media::accepts_gzip(accept_encoding)
+        && bytes.len() >= 1024
+        && meta.gz.len() < bytes.len();
+    let mut b = Response::builder()
+        .header(header::CONTENT_TYPE, mime)
+        .header(header::ETAG, &meta.etag)
+        .header(header::CACHE_CONTROL, cache_control_for(key));
+    if compressible {
+        b = b
+            .header(header::CONTENT_ENCODING, "gzip")
+            .header(header::CONTENT_LENGTH, meta.gz.len())
+            // 同一 URL 对不同 Accept-Encoding 给不同字节 ⇒ 少了它会串味
+            .header(header::VARY, "Accept-Encoding");
+        return b
+            .body(Body::from(meta.gz.as_ref().clone()))
+            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+    }
+    b.header(header::CONTENT_LENGTH, bytes.len())
+        .body(Body::from(bytes))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+/// 静态资源的缓存策略（三档，别合并）。
+fn cache_control_for(key: &str) -> &'static str {
     if key == INDEX {
-        // 入口永远回源：发版后不能停在旧 index
-        b = b.header(header::CACHE_CONTROL, "no-cache");
+        // 入口永远回源：发版后不能停在旧 index（有 ETag ⇒ 没变就是 304）
+        "no-cache"
     } else if key.starts_with("assets/") {
         // vite 产物文件名带内容哈希 ⇒ 可以长缓存（重复访问不再重新下载 JS/CSS）
-        b = b.header(header::CACHE_CONTROL, "public, max-age=31536000, immutable");
+        "public, max-age=31536000, immutable"
     } else {
-        b = b.header(header::CACHE_CONTROL, "public, max-age=86400");
+        "public, max-age=86400"
     }
-    b.body(Body::from(bytes))
-        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
 /// 缺少可用资源时的可读指引（503）。
@@ -247,27 +346,27 @@ npm run build</code></pre>
 }
 
 /// 内嵌来源：按表精确匹配；未命中回落 `index.html`（SPA 回退，与磁盘那条一致）。
-fn embedded_response(rel: &str) -> Response<Body> {
+fn embedded_response(rel: &str, ae: Option<&str>, inm: Option<&str>) -> Response<Body> {
     if let Some((_, bytes)) = WEBUI_DIST.iter().find(|(p, _)| *p == rel) {
-        return asset_response(rel, bytes.to_vec());
+        return asset_response(rel, bytes.to_vec(), ae, inm);
     }
     let Some((_, index)) = WEBUI_DIST.iter().find(|(p, _)| *p == INDEX) else {
         // build.rs 保证表里一定有 index.html；真没有说明生成物被人手改了
         return build_hint_page();
     };
-    asset_response(INDEX, index.to_vec())
+    asset_response(INDEX, index.to_vec(), ae, inm)
 }
 
 /// 磁盘来源：原有行为原样保留（防穿越 + SPA 回退）。
-fn disk_response(dist: &Path, rel: &str) -> Response<Body> {
+fn disk_response(dist: &Path, rel: &str, ae: Option<&str>, inm: Option<&str>) -> Response<Body> {
     let file = dist.join(rel);
     if file.is_file() {
         if let Ok(bytes) = std::fs::read(&file) {
-            return asset_response(rel, bytes);
+            return asset_response(rel, bytes, ae, inm);
         }
     }
     match std::fs::read(dist.join(INDEX)) {
-        Ok(bytes) => asset_response(INDEX, bytes),
+        Ok(bytes) => asset_response(INDEX, bytes, ae, inm),
         Err(_) => build_hint_page(),
     }
 }
@@ -277,9 +376,13 @@ pub async fn webui_fallback(req: Request<Body>) -> Response<Body> {
     let Some(rel) = safe_rel(req.uri().path()) else {
         return StatusCode::FORBIDDEN.into_response();
     };
+    // 两个头决定"压不压、要不要 304"—— 与 `media::serve_file_from_headers` 同一套口径。
+    let ae = req.headers().get(header::ACCEPT_ENCODING).and_then(|v| v.to_str().ok()).map(str::to_owned);
+    let inm = req.headers().get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok()).map(str::to_owned);
+    let (ae, inm) = (ae.as_deref(), inm.as_deref());
     match source() {
-        WebuiSource::Embedded => embedded_response(rel),
-        WebuiSource::Disk(dist) => disk_response(&dist, rel),
+        WebuiSource::Embedded => embedded_response(rel, ae, inm),
+        WebuiSource::Disk(dist) => disk_response(&dist, rel, ae, inm),
     }
 }
 
@@ -403,6 +506,112 @@ mod tests {
         assert!(safe_rel("/a\\b").is_some(), "反斜杠路径应落进 SPA 回退，不该 403");
         // 内嵌那条是精确匹配：穿越串在表里根本不存在
         assert!(WEBUI_DIST.iter().all(|(p, _)| *p != "../secret"));
+    }
+
+    /// 取响应体的字节（测试用）。
+    async fn body_bytes(res: Response<Body>) -> Vec<u8> {
+        axum::body::to_bytes(res.into_body(), 16 * 1024 * 1024)
+            .await
+            .expect("body")
+            .to_vec()
+    }
+
+    fn gunzip(gz: &[u8]) -> Vec<u8> {
+        use std::io::Read as _;
+        let mut out = Vec::new();
+        flate2::read::GzDecoder::new(gz).read_to_end(&mut out).expect("解压失败");
+        out
+    }
+
+    /// 造一份**可压**、超过阈值的 JS（够大、够重复，gzip 才压得比原文小）。
+    fn big_js() -> Vec<u8> {
+        let mut s = String::from("const A = [");
+        for i in 0..2000 {
+            if i > 0 {
+                s.push(',');
+            }
+            s.push_str("\"hello-world-12345\"");
+        }
+        s.push_str("];");
+        s.into_bytes()
+    }
+
+    /// **首屏那一刀**：静态 JS/CSS 必须 gzip，且必须带 `Vary`（同一 URL 两种字节）。
+    #[tokio::test]
+    async fn static_assets_are_gzipped_and_declare_vary() {
+        let raw = big_js();
+        let res = asset_response("assets/app.js", raw.clone(), Some("gzip, deflate"), None);
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            res.headers().get(header::CONTENT_ENCODING).and_then(|v| v.to_str().ok()),
+            Some("gzip")
+        );
+        assert_eq!(
+            res.headers().get(header::VARY).and_then(|v| v.to_str().ok()),
+            Some("Accept-Encoding")
+        );
+        let declared: usize = res
+            .headers()
+            .get(header::CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok())
+            .expect("必须给 Content-Length")
+            .parse()
+            .expect("Content-Length 要是数字");
+        let gz = body_bytes(res).await;
+        assert_eq!(declared, gz.len(), "Content-Length 必须是**压缩后**的长度");
+        assert!(gz.len() * 3 < raw.len(), "压缩没生效：{} -> {}", raw.len(), gz.len());
+        assert_eq!(gunzip(&gz), raw, "压坏了比不压更糟");
+
+        // 没声明 gzip ⇒ 原样字节（否则浏览器收到解不开的东西）
+        let res = asset_response("assets/app.js", raw.clone(), None, None);
+        assert!(res.headers().get(header::CONTENT_ENCODING).is_none(), "没 Accept-Encoding 却压了");
+        assert_eq!(body_bytes(res).await, raw);
+    }
+
+    /// **入口 1 KB 也不该每次重下**：有 `If-None-Match` 就 304（0 字节），且缓存策略不变。
+    #[tokio::test]
+    async fn index_html_answers_304_on_matching_etag() {
+        let bytes = b"<!doctype html><html><body>hi</body></html>".to_vec();
+        let first = asset_response(INDEX, bytes.clone(), None, None);
+        assert_eq!(first.status(), StatusCode::OK);
+        let tag = first
+            .headers()
+            .get(header::ETAG)
+            .and_then(|v| v.to_str().ok())
+            .expect("静态资源必须带 ETag")
+            .to_string();
+        assert_eq!(
+            first.headers().get(header::CACHE_CONTROL).and_then(|v| v.to_str().ok()),
+            Some("no-cache"),
+            "入口必须回源校验（不是 max-age）"
+        );
+
+        let second = asset_response(INDEX, bytes.clone(), Some("gzip"), Some(&tag));
+        assert_eq!(second.status(), StatusCode::NOT_MODIFIED);
+        assert!(body_bytes(second).await.is_empty(), "304 不许带 body");
+
+        // 内容换了 ⇒ ETag 必须变（否则发版后用户停在旧界面）
+        let mut changed = bytes.clone();
+        changed.push(b' ');
+        let third = asset_response(INDEX, changed, None, Some(&tag));
+        assert_eq!(third.status(), StatusCode::OK, "内容变了还给 304 = 停在旧界面");
+    }
+
+    /// 压缩体必须**命中缓存**而不是每请求重压：同一份字节连取两次，ETag 与字节都一致。
+    #[tokio::test]
+    async fn repeated_requests_hit_the_compression_cache() {
+        let raw = big_js();
+        let a = asset_response("assets/cache.js", raw.clone(), Some("gzip"), None);
+        let tag_a = a.headers().get(header::ETAG).and_then(|v| v.to_str().ok()).map(str::to_owned);
+        let body_a = body_bytes(a).await;
+        let b = asset_response("assets/cache.js", raw, Some("gzip"), None);
+        let tag_b = b.headers().get(header::ETAG).and_then(|v| v.to_str().ok()).map(str::to_owned);
+        assert_eq!(tag_a, tag_b, "同一份字节两次请求 ETag 必须一样");
+        assert_eq!(body_a, body_bytes(b).await, "两次压缩结果必须一致");
+        // 小文件不压（阈值 1 KB）：这里顺带钉住阈值本身
+        let tiny = b"a{1}".to_vec();
+        let t = asset_response("assets/tiny.js", tiny, Some("gzip"), None);
+        assert!(t.headers().get(header::CONTENT_ENCODING).is_none(), "1 KB 以下不压");
     }
 
     /// release 形态必须**真的**有内嵌资源可用：否则「只换 exe 就能升级」是空话。

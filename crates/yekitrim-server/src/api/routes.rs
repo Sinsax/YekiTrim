@@ -302,7 +302,12 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::auth::require_user,
-        ));
+        ))
+        // **JSON gzip 挂在这里**（2026-11-21，局域网提速）：在 `require_user` 之后、`access_log` 之前。
+        // 链序 = `ratelimit → access_log → compress → require_user → handler`，于是
+        // `access_log` 读到的仍是**明文** `error` 文案（它对 ≥400 会读 body）。
+        // ⚠️ 只压 `application/json`，**SSE 不在白名单里**（被缓冲会让任务进度整条卡住）。
+        .layer(axum::middleware::from_fn(crate::api::compress::compress_json));
 
     public
         .merge(admin)

@@ -1870,35 +1870,14 @@ pub(super) async fn media_get(
         Some("mov") => "video/quicktime".to_string(),
         _ => mime_guess::from_path(&path).first_or_octet_stream().to_string(),
     };
-    let range_header = headers.get(axum::http::header::RANGE).and_then(|v| v.to_str().ok());
-
-    // **ETag/304：没变就不重传。**
+    // **ETag/304 + 文本类 gzip**：口径与硬约束全在 `media::serve_file_cached` 的文档里，
+    // 这里只负责把头交过去 —— **别再在这一层自己抠 `Range`/`If-None-Match`**：
+    // 那正是「四个文件出口只有这一条补了 ETag、另外四条漏了」的成因（2026-11-21 修）。
     //
-    // 为什么加（2026-10-02）：精修页进 Dhampir 时会把该工程引用的**全部动图**整份取一遍
-    // —— 实测一组 5 张贴纸合计 **15.72 MB**（单张最大 4.95 MB），而这条路此前**没有任何
-    // 校验符、也没有 `Cache-Control`** ⇒ 浏览器每次进页面都得原样重收一遍。
-    // 用户看到的是"动图加载要 6.5 秒"，而其中大头其实是**这 15.7 MB 的搬运**，
-    // 不是解码（解码/上传实测只要几百毫秒 —— 见 `docs` 里那次误判的复盘）。
-    //
-    // ⚠️ **绝不能对带 Range 的请求开压缩**（会破坏播放，见 `media.rs::serve_file_cond`
-    // 的模块注释）。ETag 与 Range **可以共存**：304 只是"别传了，你那份还有效"，
-    // 206 仍然按原字节发。所以这里 `compress=false`、`etag=Some`。
-    //
-    // 校验符用「长度 + mtime」（`media::file_etag`），**不是内容摘要**：
-    // 对一份 4.95 MB 的贴纸每次请求都算一遍哈希，比省下的传输还贵。
-    // `Cache-Control: no-cache` = "用之前回来校验"，配合 ETag 正合适
-    // （不是"不许缓存"）。文件一变 mtime 就变 ⇒ ETag 自然失效。
-    let mut etag = None;
-    if range_header.is_none() {
-        etag = tokio::fs::metadata(&path)
-            .await
-            .ok()
-            .map(|m| media::file_etag(&m));
-    }
-    let if_none_match = headers
-        .get(axum::http::header::IF_NONE_MATCH)
-        .and_then(|v| v.to_str().ok());
-    media::serve_file_cond(&path, &mime, range_header, etag.as_deref(), if_none_match, None).await
+    // 历史（2026-10-02，别丢）：精修页进 Dhampir 时会把该工程引用的**全部动图**整份取一遍
+    // —— 实测一组 5 张贴纸合计 **15.72 MB**（单张最大 4.95 MB）。没有校验符时浏览器每次进
+    // 页面都得原样重收一遍，用户看到的是「动图加载要 6.5 秒」，而大头其实是这 15.7 MB 的搬运。
+    media::serve_file_from_headers(&path, &mime, &headers).await
 }
 
 /// `/api/media/*` 的归属校验 + 路径解析（同步：DB 查询 + 项目目录上的 canonicalize/jail）。

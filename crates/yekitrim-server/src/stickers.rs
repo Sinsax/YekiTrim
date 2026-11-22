@@ -482,10 +482,7 @@ pub async fn pack_file(
         return super::media::json_error(StatusCode::NOT_FOUND, "文件不在贴纸库内");
     }
     let mime = mime_guess::from_path(&path).first_or_octet_stream().to_string();
-    let range = headers
-        .get(axum::http::header::RANGE)
-        .and_then(|v| v.to_str().ok());
-    super::media::serve_file(&path, &mime, range).await
+    super::media::serve_file_from_headers(&path, &mime, &headers).await
 }
 
 #[cfg(test)]

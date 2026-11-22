@@ -101,6 +101,54 @@ yekitrim server --host 0.0.0.0 --allow-remote
   （`yekitrim user invites` 查看，`--disable` 关闭）。
 - 到这一步仍建议套一层 HTTPS（自签或内网证书），否则口令与 cookie 是明文过网的。
 
+### B-1. 局域网里「精修页很慢」怎么查（2026-11-21）
+
+精修页一次进入会搬**十几到几十 MB**：CJK 字体（单支 5–20 MB）、贴纸动图、`data/danmaku.json`、
+以及按原码率取的视频分段。本机 loopback 上感觉不出来，**Wi-Fi 上就是几秒到几十秒**。
+服务端已经在做的三件事（都别拆）：
+
+| 层 | 做什么 |
+|---|---|
+| 压缩 | 静态壳（JS/CSS）gzip + 进内存缓存；`/api/*` 的 `application/json` gzip；字体 `ttf/otf/ttc` gzip；wasm gzip |
+| 缓存 | 文件出口一律 `ETag(len+mtime)` + `Cache-Control: no-cache` → **304**；`assets/*` 内容哈希 + `immutable` |
+| 代理 | 预览优先读 `_proxy_720.mp4`（720p / GOP10）；出片永远用源；`process` 收尾会按需重建过期的那份 |
+| 服务器时间 | `POST /polish/dhampir-project` 的转译结果在**进程内**缓存（键 = `polish.toml`/代理/两个字幕/转译器/字体库指纹，容量 2），改一个字节就失效 |
+
+**用 DevTools 自查（三条，一分钟）**：
+
+1. **冷启动**（Network → 勾 Disable cache → 硬刷新）：看 `Transferred` 合计与最慢的 5 个请求。
+2. **热启动**（取消 Disable cache，普通 F5）：精修页那些请求应当全是 **`304`** 或 `(disk cache)`；
+   只剩 `index.html`（1 KB）与视频的 Range 请求还有传输。若某个字体/贴纸还是 **200 且几 MB**，
+   说明它走了一条没带校验符的出口 —— 那是 bug，不是网络问题。
+3. **一次编辑**（时间轴上拖一个块松手）：看请求条数、`polish/process` 与 `polish/dhampir-project`
+   各自的墙钟耗时。后者每次都重跑 Node 转译器（几百 ms ~ 2 s），**这是服务器时间，不是带宽**。
+
+### B-2. 硬件编码（可选，默认关）
+
+本仓自己那条 ffmpeg 回路（**屏蔽区间重编码**、剪切）默认用 **CPU `libx264 slow/crf17`**。
+想换成核显/独显可以设环境变量（进程级，重启生效）：
+
+| 值 | 行为 |
+|---|---|
+| 不设 / `auto` | 先探 NVENC（**真编 3 帧验证**），不行回落 `libx264` |
+| `cpu` | 强制 `libx264`（跨机器结果一致，画质最好） |
+| `vaapi` | 显式用 **VAAPI**（AMD/Intel 核显，走 `/dev/dri/renderD128`，可用 `VTEDIT_VAAPI_DEVICE` 换设备）；探不到自动回落 |
+
+```bash
+# /etc/systemd/system/yekitrim.service 的 [Service] 里（用户级服务则 ~/.config/systemd/user/）
+Environment=VTEDIT_ENCODER=vaapi
+systemctl --user daemon-reload && systemctl --user restart yekitrim
+```
+
+⚠️ **默认不开**的理由：VAAPI 只能按 `-qp` 定质量（不像 `crf` 按内容自适应），这是拿一点画质换速度；
+实测（Ryzen 7 7735HS / Radeon 680M，1080p60 真实素材 10s）：`libx264 slow/crf17` 8.50s / SSIM 0.9965，
+`h264_vaapi -qp19` **3.94s** / SSIM 0.9942 ⇒ **快 2.2×**、画质低 0.0023。
+⚠️ 这条只加速**我们自己的 ffmpeg 回路**；出片的主体是底座 Dhampir（它自己编码），不受此开关影响。
+⚠️ 放进容器要加 `--device /dev/dri`，否则探不到设备（会静默回落 `libx264`，日志一条 warn）。
+
+> 视频那条腿：DOM 预览默认读 `_proxy_720.mp4`（有就优先）。想看原码率就设 `VTEDIT_NO_PROXY=1`
+> 重启服务 —— 预览回落源、拖时间轴更卡，但画质是原始分辨率。
+
 ## C. 公网服务（含邀请制 SaaS）
 
 ### 1. 反代 + HTTPS（必做）

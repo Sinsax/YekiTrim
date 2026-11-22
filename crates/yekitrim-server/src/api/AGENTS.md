@@ -63,10 +63,10 @@
   ⚠️ 这三条**有意不挂 `enforce_scope`**；导入用"服务器上的路径"而非上传（同 `/api/fs/list`）。
 - **`POST /api/polish/cover`** 的 body 多了可选 **`renderer`**（现在**只有 `takumi`** —— `chrome` 那条截图腿 2026-10-01 整条删除，传它由 `cover.rs` **明确报错**）：服务端**只透传**成子进程的 `--renderer`，取值口径与白名单只在 `crates/yekitrim-polish/src/cover.rs`（**只此一份**，不在这一层抄第二份），认不出的值由那里**报错**。**能不能用**（编了 feature + 字体库非空）回在 `/api/health.cover_static`（`{compiled, fonts, ready}`）—— 前端据此把「生成封面」置灰并在卡片里写原因（通道弹窗已删）。⚠️ **review B6（2026-11-14）：health 公开、一律不回路径** —— `fonts_dir` 已从回包删掉，空字体的指路文案由前端给。
 
-- ⚠️ **`/polish/dhampir-wasm/*` 的压缩 + ETag/304**（只在这条路由上开，7.66 MB wasm → 1.49 MB）走
-  `media::serve_file_cond`。三条硬规矩：① 只压文本类（`compressible_mime`）；② **有 `Range` 头
-  一律不压**（对 206 压缩会破坏播放；`/api/media/*` 仍走 `serve_file`）；③ **ETag 取 `len+mtime`**
-  （不是常量 —— 底座重建 wasm 后刷新即新，写成 max-age 长缓存会破坏它）。
+- ⚠️ **文件出口只有一个入口：`media::serve_file_from_headers`**（2026-11-21）—— `/api/media/*`、
+  `/polish/{font,sticker-file,asset,video-thumb}`、`/polish/stickers/:pack/files/:name`、
+  `/polish/dhampir-wasm/*` **一律**走它：`ETag` + `no-cache` → 304、文本类 gzip、Range；**有 `Range` 头不压不 304**。
+  ⚠️ **`/api/*` 的 JSON 也 gzip**（`api/compress.rs`；**SSE 不在白名单**，超限原样放行）。
 - **`routes` 是唯一的路由权威**；加接口 = 在 `routes.rs` 挂一条 + 在对应领域模块写 handler。
   ⚠️ **本地免登录（`--local-no-auth`）/ `POST /api/shutdown` 控制通道**：正文（两道闸、三道闸、
   互斥与开机守卫、哨兵会话、`local_no_auth` 布尔、令牌头名与托盘各写一份字面量）见 `docs/deploy.md`。

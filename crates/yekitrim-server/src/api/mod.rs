@@ -424,6 +424,7 @@ pub(crate) async fn health(State(state): State<Arc<AppState>>, headers: axum::ht
     }))
 }
 
+pub(crate) mod compress;
 pub(crate) mod routes;
 pub(crate) mod auth;
 pub(crate) mod invite;

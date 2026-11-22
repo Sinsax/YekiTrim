@@ -2493,10 +2493,7 @@ pub(super) async fn polish_asset_file(
     // ⚠️ mime 按**扩展名**给，别一律 octet-stream：浏览器靠它决定"当视频播还是当文件下载"。
     // `mime_guess` 对 mp4/webm/ttf/otf/png/jpg 都认，认不出的才落到 octet-stream。
     let mime = mime_guess::from_path(&path).first_or_octet_stream().to_string();
-    let range = headers
-        .get(axum::http::header::RANGE)
-        .and_then(|v| v.to_str().ok());
-    crate::media::serve_file(&path, &mime, range).await
+    crate::media::serve_file_from_headers(&path, &mime, &headers).await
 }
 
 /// `kind` → 该 owner 该类型的库根目录（**唯一映射表**）。
@@ -2554,10 +2551,7 @@ pub(super) async fn polish_video_thumb(
         // 抽不出来 = "没有缩略图"，不是"接口坏了"（前端按 404 退成图标）
         return crate::media::json_error(StatusCode::NOT_FOUND, "无法生成缩略图");
     };
-    let range = headers
-        .get(axum::http::header::RANGE)
-        .and_then(|v| v.to_str().ok());
-    crate::media::serve_file(&thumb, "image/jpeg", range).await
+    crate::media::serve_file_from_headers(&thumb, "image/jpeg", &headers).await
 }
 
 /// 抽并缓存一帧。返回 `None` = 抽不出来（调用方回 404）。
@@ -2667,10 +2661,7 @@ pub(super) async fn polish_sticker_file(
         return crate::media::json_error(StatusCode::NOT_FOUND, "文件不在贴纸库内");
     }
     let mime = mime_guess::from_path(&path).first_or_octet_stream().to_string();
-    let range = headers
-        .get(axum::http::header::RANGE)
-        .and_then(|v| v.to_str().ok());
-    crate::media::serve_file(&path, &mime, range).await
+    crate::media::serve_file_from_headers(&path, &mime, &headers).await
 }
 
 
