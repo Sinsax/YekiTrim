@@ -332,7 +332,26 @@ impl Ffmpeg {
     /// （用户报「成片文字锯齿感强烈」；同帧 lossless ↔ 解码 MAE 3.83 / max 51，损伤全在字形边缘）。
     /// 现在：NVENC `p5/cq19`、libx264 `slow/crf17` —— **与底座那次编码同级**，不做"更差的第二遍"。
     /// ⚠️ 代价：这一遍只在真有屏蔽区间时才跑（没有屏蔽时是 `-c:v copy`，一个字节都不重压）。
+    /// ⚠️⚠️ **必须真编一次才算数**（判据 = `yekitrim_core::cutting::encoder_works`，全仓唯一一份）：
+    /// `ffmpeg -encoders` 里有 `h264_nvenc` 只说明**这份 ffmpeg 带它编译**，不说明本机有卡。
+    /// 2026-11-22 实测（Linux 容器、无 GPU）：只看列表 ⇒ 选中 nvenc ⇒ 屏蔽区间重编码
+    /// `Cannot load libcuda.so.1` ⇒ 剪不掉 ⇒ 最后报成「成片长度与成片时间线不一致」
+    /// （看着像时间线 bug，其实是编码器选错了）。core 的剪切那条腿 2026-10-05 踩的是同一个坑。
     pub fn detect_encoder() -> EncoderInfo {
+        // ① 用户显式指定（`VTEDIT_ENCODER=cpu|vaapi`）——显式要求优先于一切自动探测。
+        match EncoderPref::from_env() {
+            EncoderPref::Cpu => return Self::software_encoder(),
+            EncoderPref::Vaapi => {
+                if let Some(enc) = Self::vaapi_encoder() {
+                    tracing::info!("编码器：h264_vaapi（VTEDIT_ENCODER=vaapi，设备来自 VTEDIT_VAAPI_DEVICE）");
+                    return enc;
+                }
+                return Self::software_encoder();
+            }
+            EncoderPref::Auto => {}
+        }
+
+        // ② 默认：先看 NVENC，真编一次才算数，不行回落 libx264。
         let mut cmd = yekitrim_core::process::cmd("ffmpeg");
         cmd.args(["-hide_banner", "-encoders"]);
         let output = Self::run_with_timeout(cmd, "探测编码器", Self::PROBE_TIMEOUT).ok();
@@ -340,19 +359,77 @@ impl Ffmpeg {
         if let Some(out) = output {
             let text = String::from_utf8_lossy(&out.stdout);
             if text.contains("nvenc") {
-                return EncoderInfo {
-                    codec: "h264_nvenc".into(),
-                    // p1 = 最快那一档（画质最差的老默认），换成 p5；cq 22 → 19。
-                    args: vec!["-preset".into(), "p5".into(), "-cq".into(), "19".into()],
-                };
+                // p1 = 最快那一档（画质最差的老默认），换成 p5；cq 22 → 19。
+                let args: Vec<String> =
+                    vec!["-preset".into(), "p5".into(), "-cq".into(), "19".into()];
+                let probe: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+                if yekitrim_core::cutting::encoder_works("h264_nvenc", &probe) {
+                    return EncoderInfo {
+                        codec: "h264_nvenc".into(),
+                        args,
+                        input_args: Vec::new(),
+                        filter_tail: None,
+                        pix_fmt: true,
+                    };
+                }
+                tracing::warn!(
+                    "h264_nvenc 编译进了 ffmpeg 但本机实测编不了（无 GPU / 驱动不可用），改用 libx264"
+                );
             }
         }
 
+        Self::software_encoder()
+    }
+
+    /// 软件兜底（`libx264`）：与底座那一遍同级（`slow/crf17`）—— 第二遍不该比第一遍更差。
+    fn software_encoder() -> EncoderInfo {
         EncoderInfo {
             codec: "libx264".into(),
-            // 与底座那一遍同级（`slow/crf17`）—— 第二遍不该比第一遍更差。
             args: vec!["-preset".into(), "slow".into(), "-crf".into(), "17".into()],
+            input_args: Vec::new(),
+            filter_tail: None,
+            pix_fmt: true,
         }
+    }
+
+    /// VAAPI（AMD/Intel 核显）的**调用规格**（纯构造，不探测；探测见 [`Self::vaapi_encoder`]）。
+    ///
+    /// 与 x264/NVENC 的差别是三处，缺一条都开不起来：
+    /// 1. `-vaapi_device <dev>` 必须在 `-i` **之前**（输入侧参数）；
+    /// 2. 帧要先上传：`-vf …,format=nv12,hwupload`（所以滤镜得追加在链条**末尾**）；
+    /// 3. 质量旋钮是 `-qp`（VAAPI 没有 crf），且**不能**再写 `-pix_fmt`（硬件帧）。
+    fn vaapi_spec(device: &str) -> EncoderInfo {
+        EncoderInfo {
+            codec: "h264_vaapi".into(),
+            args: vec!["-qp".into(), "19".into()],
+            input_args: vec!["-vaapi_device".into(), device.to_string()],
+            filter_tail: Some("format=nv12,hwupload".into()),
+            pix_fmt: false,
+        }
+    }
+
+    /// 本机可用的 VAAPI 编码器（真编一次验证；没有设备/驱动就 `None`）。
+    fn vaapi_encoder() -> Option<EncoderInfo> {
+        let device =
+            std::env::var("VTEDIT_VAAPI_DEVICE").unwrap_or_else(|_| "/dev/dri/renderD128".into());
+        if !std::path::Path::new(&device).exists() {
+            return None;
+        }
+        let spec = Self::vaapi_spec(&device);
+        let input: Vec<&str> = spec.input_args.iter().map(|s| s.as_str()).collect();
+        let args: Vec<&str> = spec.args.iter().map(|s| s.as_str()).collect();
+        let ok = yekitrim_core::cutting::encoder_works_with(
+            &spec.codec,
+            &input,
+            &args,
+            spec.filter_tail.as_deref(),
+            spec.pix_fmt,
+        );
+        if !ok {
+            tracing::warn!("VAAPI（{device}）打不开或编不了，回落 libx264");
+            return None;
+        }
+        Some(spec)
     }
 
     /// Concat 多个 MP4 文件
@@ -603,40 +680,101 @@ impl Ffmpeg {
     /// [`Ffmpeg::detect_encoder`] —— 硬编码 libx264 时，一个 4 分钟的切片要 17s，
     /// 而同一个出片流程的其它环节早就用上 NVENC 了。画质档与分块编码保持一致。
     pub fn cut_ranges(input: &str, ranges: &[(f64, f64)], output: &str) -> anyhow::Result<()> {
-        let mut parts: Vec<String> = Vec::new();
-        for (s, e) in ranges {
-            if e > s {
-                parts.push(format!(r"not(between(t\,{s:.3}\,{e:.3}))"));
+        let enc = Self::detect_encoder();
+        Self::cut_ranges_with(input, ranges, output, &enc)
+    }
+
+    /// [`cut_ranges`] 的**可注入编码器**版本（单测用：直接把 VAAPI 规格塞进来验一遍整链）。
+    pub(crate) fn cut_ranges_with(
+        input: &str,
+        ranges: &[(f64, f64)],
+        output: &str,
+        enc: &EncoderInfo,
+    ) -> anyhow::Result<()> {
+        // ⚠️⚠️ 选择条件必须在**帧域**，与派生（`edl_frame_at` = `round(seconds*fps)`，
+        // `resolve_clips` 帧域累加）**同口径**。第一版用 `between(t,s,e)`（秒域、闭区间），
+        // 与帧域量化在每个屏蔽边界上各差 ±1 帧 —— 5 个区间实测净差 2 帧，
+        // 被剪后时长断言判失败（2026-11-22）。
+        //
+        // 帧域口径：屏蔽帧 = `[round(s*fps), round(e*fps))`，选择条件用 `n`（输入帧序号，
+        // 从 0 起 —— 与派生数的**源帧号**一一对应）表达：
+        //   drop 帧 n ⟺ 存在区间使 `between(n, round(s*fps), round(e*fps)-1)`。
+        // ⚠️ **视频与音频的表达式必须分开**：`n` 在 select（视频）里是输入帧序号，
+        // 在 aselect（音频）里却是**音频包序号**（一个包 ≈ 1024 采样）—— 同一个
+        // 表达式喂给 `-af` 会把「剪 11.6~19.74 秒」变成「剪第 696~1183 个音频包」。
+        let fps = Self::probe_fps(input).unwrap_or(0.0);
+        let mut vparts: Vec<String> = Vec::new();
+        let mut aparts: Vec<String> = Vec::new();
+        if fps > 0.0 {
+            for (s, e) in ranges {
+                let fs = (s * fps).round() as i64;
+                let fe = (e * fps).round() as i64;
+                if fe > fs {
+                    vparts.push(format!(r"not(between(n\,{fs}\,{}))", fe - 1));
+                }
             }
         }
-        if parts.is_empty() {
+        // 探不到 fps（异常输入）⇒ 视频也退回秒域老路，别让渲染直接失败；
+        // 音频一律秒域 `t`（采样连续，没有帧量化问题，±半帧 mux 自然对齐）。
+        for (s, e) in ranges {
+            if e > s {
+                aparts.push(format!(r"not(between(t\,{s:.3}\,{e:.3}))"));
+                if fps <= 0.0 {
+                    vparts.push(format!(r"not(between(t\,{s:.3}\,{e:.3}))"));
+                }
+            }
+        }
+        if vparts.is_empty() {
             return Ok(());
         }
-        let expr = parts.join("*");
-        let vf = format!("select='{expr}',setpts=N/FRAME_RATE/TB");
-        let af = format!("aselect='{expr}',asetpts=N/SR/TB");
-        let enc = Self::detect_encoder();
-        let mut args: Vec<String> = vec![
-            "-y".into(), "-i".into(), input.into(),
-            "-vf".into(), vf,
-            "-af".into(), af,
-            "-c:v".into(), enc.codec.clone(),
-        ];
-        args.extend(enc.args.iter().cloned());
-        args.extend([
-            "-pix_fmt".into(), "yuv420p".into(),
-            "-c:a".into(), "aac".into(),
-            "-b:a".into(), "160k".into(),
-            "-movflags".into(), "+faststart".into(),
-            output.into(),
-        ]);
-        let mut cmd = yekitrim_core::process::cmd("ffmpeg");
-        cmd.args(&args);
-        let out = Self::run_with_timeout(cmd, "按屏蔽区间重编码", Self::media_timeout(input))?;
-        if !out.status.success() {
-            anyhow::bail!("ffmpeg cut ranges failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+        let vexpr = vparts.join("*");
+        let aexpr = aparts.join("*");
+        let vf = format!("select='{vexpr}',setpts=N/FRAME_RATE/TB");
+        let af = format!("aselect='{aexpr}',asetpts=N/SR/TB");
+        let attempt = |enc: &EncoderInfo| -> anyhow::Result<()> {
+            // 输入侧参数（VAAPI 的 `-vaapi_device`）**必须在 `-i` 之前**。
+            let mut args: Vec<String> = vec!["-y".into()];
+            args.extend(enc.input_args.iter().cloned());
+            args.extend(["-i".into(), input.into()]);
+            // 硬件那档要把帧传上去：滤镜尾巴追加在链**末尾**（`format=nv12,hwupload`）。
+            let vf_full = match &enc.filter_tail {
+                Some(t) => format!("{vf},{t}"),
+                None => vf.clone(),
+            };
+            args.extend(["-vf".into(), vf_full, "-af".into(), af.clone()]);
+            args.extend(["-c:v".into(), enc.codec.clone()]);
+            args.extend(enc.args.iter().cloned());
+            if enc.pix_fmt {
+                args.extend(["-pix_fmt".into(), "yuv420p".into()]);
+            }
+            args.extend([
+                "-c:a".into(), "aac".into(),
+                "-b:a".into(), "160k".into(),
+                "-movflags".into(), "+faststart".into(),
+                output.into(),
+            ]);
+            let mut cmd = yekitrim_core::process::cmd("ffmpeg");
+            cmd.args(&args);
+            let out = Self::run_with_timeout(cmd, "按屏蔽区间重编码", Self::media_timeout(input))?;
+            if !out.status.success() {
+                anyhow::bail!("{} 失败: {}", enc.codec, String::from_utf8_lossy(&out.stderr).trim());
+            }
+            Ok(())
+        };
+        // ① 先用探测到的（可能是硬件）；② 失败且刚才不是 libx264 ⇒ **换 libx264 再来一次** ——
+        // 与 core 的 `cut_segment` 同一条兜底：驱动崩溃 / 显存耗尽 / 并发句柄耗尽都是"选中时可用、
+        // 跑到一半失效"。两次都失败才把两次的错一起报出去（别只报后一次，那会掩盖真因）。
+        match attempt(enc) {
+            Ok(()) => Ok(()),
+            Err(first) if enc.codec != "libx264" => {
+                tracing::warn!("屏蔽区间重编码用 {} 失败，降级 libx264 重试: {first:#}", enc.codec);
+                let soft = Self::software_encoder();
+                attempt(&soft).map_err(|second| {
+                    anyhow::anyhow!("{} 与 libx264 均失败；libx264 报: {second:#}", enc.codec)
+                })
+            }
+            Err(e) => Err(e),
         }
-        Ok(())
     }
 
     /// 按 EDL 把**音轨**从源素材上重新拼出来（第 2 批 B 件的核心）。
@@ -1371,6 +1509,50 @@ impl Ffmpeg {
 pub struct EncoderInfo {
     pub codec: String,
     pub args: Vec<String>,
+    /// 出现在 `-i` **之前**的输入侧参数（VAAPI 要 `-vaapi_device <dev>`）。
+    #[doc(hidden)]
+    pub input_args: Vec<String>,
+    /// 追加到 `-vf` 链**末尾**的滤镜（VAAPI 要 `format=nv12,hwupload`）。
+    #[doc(hidden)]
+    pub filter_tail: Option<String>,
+    /// 是否显式写 `-pix_fmt yuv420p`：**硬件帧不能写**（写了参数冲突，编码器开不起来）。
+    #[doc(hidden)]
+    pub pix_fmt: bool,
+}
+
+/// 用户指定的编码器偏好（`VTEDIT_ENCODER`，见 [`Ffmpeg::detect_encoder`]）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EncoderPref {
+    /// 默认：先试硬件（NVENC，真编验证），不行回落 `libx264`。
+    Auto,
+    /// 强制 CPU（`libx264`）：跨机器结果一致、画质最好，慢。
+    Cpu,
+    /// 显式要 VAAPI（AMD/Intel 核显，走 `/dev/dri/renderD128`）。
+    ///
+    /// ⚠️ **默认不开**：这是"用一点画质换速度"的选择（`-qp` 不像 crf 按内容自适应），
+    /// 而且它只影响**我们自己那条 ffmpeg 回路**（屏蔽区间重编码 / 剪切），
+    /// 底座 Dhampir 出片那遍编码不在我们手里。
+    Vaapi,
+}
+
+impl EncoderPref {
+    /// 解析 `VTEDIT_ENCODER` 的值（大小写不敏感；认不出的值按 `Auto` 并告警）。
+    pub fn parse(raw: &str) -> Self {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "" | "auto" => Self::Auto,
+            "cpu" | "x264" | "libx264" => Self::Cpu,
+            "vaapi" => Self::Vaapi,
+            other => {
+                tracing::warn!("VTEDIT_ENCODER={other} 认不出（可选 auto/cpu/vaapi），按 auto 处理");
+                Self::Auto
+            }
+        }
+    }
+
+    /// 从进程环境读（唯一入口）。
+    pub fn from_env() -> Self {
+        Self::parse(&std::env::var("VTEDIT_ENCODER").unwrap_or_default())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1410,6 +1592,150 @@ pub struct SfxEnvelopePoint {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **探测出来的编码器必须真能用**（2026-11-22 实测事故的判据）。
+    ///
+    /// 事故形状：`ffmpeg -encoders` 里有 `h264_nvenc` ⇒ 旧实现直接选它 ⇒ 这台机器没有
+    /// `libcuda.so.1` ⇒ 屏蔽区间重编码 `Cannot load libcuda.so.1` ⇒ 剪不掉 ⇒ 最后报成
+    /// 「成片长度与成片时间线不一致」。这条把"选中但用不了"当场钉红。
+    fn as_refs(v: &[String]) -> Vec<&str> {
+        v.iter().map(|s| s.as_str()).collect()
+    }
+
+    /// `VTEDIT_ENCODER` 的取值（认不出按 auto，不 panic）。
+    #[test]
+    fn encoder_pref_parses_the_env_values() {
+        assert_eq!(EncoderPref::parse(""), EncoderPref::Auto);
+        assert_eq!(EncoderPref::parse("auto"), EncoderPref::Auto);
+        assert_eq!(EncoderPref::parse(" CPU "), EncoderPref::Cpu);
+        assert_eq!(EncoderPref::parse("libx264"), EncoderPref::Cpu);
+        assert_eq!(EncoderPref::parse("VAAPI"), EncoderPref::Vaapi);
+        assert_eq!(EncoderPref::parse("nvdec"), EncoderPref::Auto, "认不出就 auto，不 panic");
+    }
+
+    /// VAAPI 的调用形态三件套（少一条就开不起来）：设备在 `-i` 前、帧要 hwupload、不写 pix_fmt。
+    #[test]
+    fn vaapi_spec_has_the_three_required_pieces() {
+        let spec = Ffmpeg::vaapi_spec("/dev/dri/renderD128");
+        assert_eq!(spec.codec, "h264_vaapi");
+        assert_eq!(spec.input_args, vec!["-vaapi_device", "/dev/dri/renderD128"]);
+        assert_eq!(spec.filter_tail.as_deref(), Some("format=nv12,hwupload"));
+        assert!(!spec.pix_fmt, "硬件帧不能写 -pix_fmt");
+        assert_eq!(spec.args[0], "-qp", "VAAPI 没有 crf，只有 qp");
+    }
+
+    /// 有 `/dev/dri/renderD128` 时 VAAPI 必须真能编；没有就**必须**判成不可用（不许选中打不开的）。
+    #[test]
+    fn vaapi_probe_matches_this_machine() {
+        let dev = "/dev/dri/renderD128";
+        let spec = Ffmpeg::vaapi_spec(dev);
+        let works = yekitrim_core::cutting::encoder_works_with(
+            &spec.codec,
+            &as_refs(&spec.input_args),
+            &as_refs(&spec.args),
+            spec.filter_tail.as_deref(),
+            spec.pix_fmt,
+        );
+        if std::path::Path::new(dev).exists() {
+            assert!(works, "{dev} 在，但 VAAPI 编不了 —— 探测/设备权限有问题");
+            assert!(Ffmpeg::vaapi_encoder().is_some(), "设备在 ⇒ vaapi_encoder() 必须给出规格");
+        } else {
+            assert!(!works, "没有渲染节点却探测通过，说明探测是假的");
+            assert!(Ffmpeg::vaapi_encoder().is_none());
+        }
+    }
+
+    /// **端到端**：把 VAAPI 规格塞进 `cut_ranges_with`，整条滤镜链（select/setpts + hwupload）要真的跑通。
+    #[test]
+    fn cut_ranges_works_with_vaapi_when_available() {
+        if !std::path::Path::new("/dev/dri/renderD128").exists() {
+            return; // 没有核显的机器上这条不适用
+        }
+        if yekitrim_core::process::cmd("ffmpeg").arg("-version").output().is_err() {
+            return;
+        }
+        let spec = Ffmpeg::vaapi_spec("/dev/dri/renderD128");
+        if !yekitrim_core::cutting::encoder_works_with(
+            &spec.codec,
+            &as_refs(&spec.input_args),
+            &as_refs(&spec.args),
+            spec.filter_tail.as_deref(),
+            spec.pix_fmt,
+        ) {
+            return; // 设备在但驱动不给用（CI 常见）⇒ 不算失败
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src.mp4");
+        let ok = yekitrim_core::process::cmd("ffmpeg")
+            .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10", "-t", "3", "-c:v", "libx264", "-pix_fmt", "yuv420p"])
+            .arg(&src)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !ok || !src.is_file() {
+            return;
+        }
+        let out = dir.path().join("cut.mp4");
+        Ffmpeg::cut_ranges_with(&src.to_string_lossy(), &[(1.0, 2.0)], &out.to_string_lossy(), &spec)
+            .expect("VAAPI 整链必须跑通（select/setpts + format=nv12,hwupload）");
+        let dur = Ffmpeg::probe_duration(&out.to_string_lossy()).expect("读时长");
+        assert!((1.5..2.5).contains(&dur), "剪掉 1s 后应剩 ~2s，实得 {dur:.2}s");
+    }
+
+    /// **屏蔽区间重编码在"没有 GPU 的机器"上必须跑得通**（2026-11-22 那次的端到端判据）。
+    ///
+    /// 造 3s 素材 → 剪掉 `[1,2)` → 产物存在且时长 ≈ 2s。这条会真的起 ffmpeg（~1s）：
+    /// 事故就是"只在有卡的机器上试过"，所以它常跑、不挂 `#[ignore]`；没有 ffmpeg 时跳过。
+    #[test]
+    fn cut_ranges_actually_drops_the_range_here() {
+        // ⚠️ 子进程一律走 `process::cmd`（托盘是无控制台子系统，裸 `Command::new` 会闪黑框；
+        //    那也是边界门禁的一条规则）。
+        if yekitrim_core::process::cmd("ffmpeg")
+            .arg("-version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src.mp4");
+        let ok = yekitrim_core::process::cmd("ffmpeg")
+            .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10", "-t", "3", "-c:v", "libx264", "-pix_fmt", "yuv420p"])
+            .arg(&src)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !ok || !src.is_file() {
+            return;
+        }
+        let out = dir.path().join("cut.mp4");
+        Ffmpeg::cut_ranges(&src.to_string_lossy(), &[(1.0, 2.0)], &out.to_string_lossy())
+            .expect("屏蔽区间重编码必须成功（无 GPU 的机器也一样）");
+        let dur = Ffmpeg::probe_duration(&out.to_string_lossy()).expect("读时长");
+        assert!(
+            (1.5..2.5).contains(&dur),
+            "剪掉 1s 之后应当剩 ~2s，实得 {dur:.2}s —— 区间没剪掉/剪多了"
+        );
+    }
+
+    #[test]
+    fn detect_encoder_never_returns_an_unusable_encoder() {
+        let enc = Ffmpeg::detect_encoder();
+        let args: Vec<&str> = enc.args.iter().map(|s| s.as_str()).collect();
+        let input: Vec<&str> = enc.input_args.iter().map(|s| s.as_str()).collect();
+        assert!(
+            yekitrim_core::cutting::encoder_works_with(
+                &enc.codec,
+                &input,
+                &args,
+                enc.filter_tail.as_deref(),
+                enc.pix_fmt,
+            ),
+            "选中了 {}（{:?}）但实测编不了 —— 探测逻辑失效",
+            enc.codec,
+            enc.args
+        );
+    }
 
     /// **§22 音效两端都要淡**：`afade=t=in` 与 `afade=t=out` 必须都在。
     ///

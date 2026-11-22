@@ -390,32 +390,59 @@ fn hw_encoder_candidates() -> &'static [EncoderSpec] {
 /// 用 `testsrc` 合成源（不碰用户素材）+ `-f null`（不落盘），3 帧而已，代价可忽略；
 /// 探测结果由 `encoder_config()` 的 `OnceLock` 缓存，每个进程只跑一次。
 fn encoder_actually_works(spec: EncoderSpec) -> bool {
-    let out = crate::process::cmd("ffmpeg")
-        .args([
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-f",
-            "lavfi",
-            "-i",
-            "testsrc=size=128x128:rate=5",
-            "-frames:v",
-            "3",
-            "-c:v",
-            spec.0,
-            "-preset",
-            spec.1,
-            spec.2,
-            "23",
-            "-pix_fmt",
-            "yuv420p",
-            "-f",
-            "null",
-            "-",
-        ])
-        .output();
+    encoder_works(spec.0, &["-preset", spec.1, spec.2, "23"])
+}
 
-    match out {
+/// **真编一次**验证某个编码器在本机可用 —— 全仓**唯一**的这条判据。
+///
+/// # 为什么必须真编
+/// `ffmpeg -encoders` 列表里有 `h264_nvenc` 只说明**这份 ffmpeg 带它编译**，不说明**本机有卡**。
+/// 只看列表就会选中一个打不开的编码器：core 的剪切那边 2026-10-05 踩过（无卡机器上每条切片
+/// `Conversion failed!`），polish 的出片那边 2026-11-22 又踩了一次（`Cannot load libcuda.so.1`
+/// ⇒ 屏蔽区间没剪掉、最后报成"成片长度与时间线不一致"）。**判据只留这一份**，谁要探测就调它。
+///
+/// `args` 是调用方自己的编码参数（`-preset/-cq/-crf…`），探测只关心"能不能开起来"。
+pub fn encoder_works(codec: &str, args: &[&str]) -> bool {
+    encoder_works_with(codec, &[], args, None, true)
+}
+
+/// [`encoder_works`] 的完整形态 —— 硬件 API 的接法差别很大，探测也得跟着变。
+///
+/// * `input_args`：出现在 `-i` **之前**的输入侧参数（VAAPI 要 `-vaapi_device <dev>`）；
+/// * `args`：编码参数（`-preset/-cq/-crf/-qp…`）；
+/// * `filter`：编码前要走的滤镜（VAAPI 要 `format=nv12,hwupload` 把软帧传上去）；
+/// * `pix_fmt`：是否显式写 `-pix_fmt yuv420p` —— **硬件帧不能写**（写了参数冲突直接开不起来）。
+///
+/// ⚠️ 与 `encoder_works` 同一件事：**真编 3 帧**，列表里有不算数。
+pub fn encoder_works_with(
+    codec: &str,
+    input_args: &[&str],
+    args: &[&str],
+    filter: Option<&str>,
+    pix_fmt: bool,
+) -> bool {
+    let mut cmd = crate::process::cmd("ffmpeg");
+    cmd.args(["-hide_banner", "-loglevel", "error"]);
+    cmd.args(input_args);
+    cmd.args([
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc=size=128x128:rate=5",
+        "-frames:v",
+        "3",
+    ]);
+    if let Some(f) = filter {
+        cmd.args(["-vf", f]);
+    }
+    cmd.args(["-c:v", codec]);
+    cmd.args(args);
+    if pix_fmt {
+        cmd.args(["-pix_fmt", "yuv420p"]);
+    }
+    cmd.args(["-f", "null", "-"]);
+
+    match cmd.output() {
         Ok(o) => o.status.success(),
         Err(_) => false,
     }
@@ -1109,6 +1136,15 @@ struct ClipEntry {
     danmaku: Option<String>,
     #[serde(default)]
     title: String,
+    /// 主播名的**片段级覆盖**（2026-11-22，规则见 `crate::naming`）：
+    /// * 字段缺席（`None`）= 跟随项目级 `[detection].vtuber_name`；
+    /// * `Some("")` = 这个片段明确**不用**主播名；
+    /// * `Some("名")` = 用户改过 ⇒ 锁定，不再跟随全局。
+    ///
+    /// ⚠️ **必须在这个结构里声明**：`cutting` 是读-改-写 `publish_config.json` 的那一方，
+    /// 结构里没有的键会在反序列化时被丢掉 ⇒ 重切一次就把用户的覆盖清空。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    streamer_name: Option<String>,
     #[serde(default)]
     summary: String,
     #[serde(default)]
@@ -1150,6 +1186,10 @@ impl PublishConfig {
                         None
                     },
                     title: c.title.clone(),
+                    // 新剪出来的片段一律**跟随**项目级主播名（不锁定）。
+                    // ⚠️ 重切同一个目录会把旧条目的覆盖清掉 —— 那是"重新剪"的语义：
+                    //    用户既然重剪了，就该按当前配置重新拼标题（而不是留着一个看不见的旧名字）。
+                    streamer_name: None,
                     summary: c.summary.clone(),
                     event_type: serde_json::to_value(&c.event_type)
                         .ok()

@@ -875,18 +875,25 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
         let muted_out = project_path.join("_temp_muted.mp4");
         match Ffmpeg::cut_ranges(&op, &mute_ranges, &muted_out.to_string_lossy()) {
             Ok(_) => {
-                if std::fs::copy(&muted_out, &op_path).is_ok() {
-                    std::fs::remove_file(&muted_out).ok();
-                    tracing::info!(
-                        "  ✂ 已导出去除 {} 个屏蔽区间（整段重编码 ⏱ {:.1}s）",
-                        mute_ranges.len(),
-                        t_mute.elapsed().as_secs_f64()
-                    );
-                } else {
-                    tracing::info!("  ⚠ 屏蔽区间结果写入失败，保留原成片");
-                }
+                // ⚠️ 复制失败也**不许**留着原片往下走（同下面那条 Err 的理由）。
+                std::fs::copy(&muted_out, &op_path).map_err(|e| {
+                    anyhow::anyhow!("屏蔽区间结果写入成片失败，成片未导出: {e}")
+                })?;
+                std::fs::remove_file(&muted_out).ok();
+                tracing::info!(
+                    "  ✂ 已导出去除 {} 个屏蔽区间（整段重编码 ⏱ {:.1}s）",
+                    mute_ranges.len(),
+                    t_mute.elapsed().as_secs_f64()
+                );
             }
-            Err(e) => tracing::info!("  ⚠ 屏蔽区间导出失败: {e:#}"),
+            // ⚠️⚠️ **这里绝不能只打日志然后继续**（2026-11-22 实测的坑）：
+            // 用户的屏蔽区间是要**剪掉**的内容，带着它出片等于把它发出去；
+            // 而「继续」之后紧接着那条「成片长度 == 成片时间线」的断言必然失败 ——
+            // 于是真正的原因（编码器打不开：`Cannot load libcuda.so.1`）被那行看起来像
+            // 时间线 bug 的报错**完全盖住**，用户只看到「剪多了/剪少了」。
+            Err(e) => {
+                anyhow::bail!("按屏蔽区间重编码失败，成片未导出（原片里还带着要屏蔽的内容）: {e:#}")
+            }
         }
 
         // ⚠️⚠️ **剪完之后补一道时长校验**（缺陷 D1 的另一半，别删）。

@@ -113,6 +113,11 @@ ffmpeg 调用；`frame.rs`/`gif.rs`/`sound.rs`/`backend.rs`/`context.rs` 是底�
   - 诊断：`VT_POLISH_DIR=<项目> cargo test -p yekitrim-polish --lib diagnose_sticker_cache -- --ignored --nocapture`
 - **屏蔽区间导出走硬件编码**：`Ffmpeg::cut_ranges` 是整段重编码，用 `detect_encoder()`
   的结果（libx264 时 17s → NVENC 9s）。别写回硬编码。
+  ⚠️ **`detect_encoder()` 必须真编一次才算数**（`cutting::encoder_works_with`）：只看
+  `ffmpeg -encoders` 会选中打不开的编码器（2026-11-22：无 GPU 机器选 nvenc ⇒ `Cannot load
+  libcuda.so.1` ⇒ 屏蔽区间没剪掉 ⇒ 报成「成片长度与时间线不一致」）。`VTEDIT_ENCODER=cpu|vaapi`
+  可显式指定（VAAPI 三件套：`-vaapi_device` 在 `-i` 前、`format=nv12,hwupload`、`-qp` 且不写 `-pix_fmt`）；
+  默认 `auto` = 只探 NVENC 再回落 libx264。表在 `docs/deploy.md` B-2。
 - **模板里的工具函数必须放在脚本顶层**：`templates/index.html` 里 canvas 出片那一段是
   独立的 IIFE，看不到 `init()` 内部的东西。`evDur` 曾放在 `init()` 里、被 IIFE 的
   `buildIndex()` 调用 → 每次出片都抛 `evDur is not defined`（GSAP 预览路径却完全正常，
