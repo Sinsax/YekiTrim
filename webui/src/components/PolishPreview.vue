@@ -2316,7 +2316,20 @@ const player = createSfxPlayer({
   onError: (name) => addClient('debug', `音效 sfx/${name}.mp3 加载失败 —— 预览里这条不会响（出片侧同样会跳过它）`, 'preview'),
 })
 
-const videoSrc = computed(() => clipMediaUrl(props.pid, props.dir, props.config?.source?.video || 'clip.mp4'))
+// **预览优先读 720p 代理**（2026-11-21，局域网提速）。
+//
+// 服务端 `GET /polish/project?preview=1` 会回 `_preview_video`（= `_proxy_720.mp4`，
+// 或 `null`：代理没生成 / 比源旧 / `VTEDIT_NO_PROXY=1`）。判定只那一处
+// （`proxy::preview_video_for`），前端**不自己判新鲜度**。
+//
+// ⚠️ 只有**预览**这条腿读它：出片永远用源（转译器的 `--video` 参数由服务端自己传）。
+// ⚠️ 拿不到 `_preview_video` 时**必须**回落 `source.video` —— 老工程/禁代理/刚重切
+//    都走这一支，编一个默认文件名会让预览整块黑。
+const videoSrc = computed(() => {
+  const cfg = props.config || {}
+  const rel = cfg._preview_video || cfg.source?.video || 'clip.mp4'
+  return clipMediaUrl(props.pid, props.dir, rel)
+})
 const muteRanges = computed(() => (props.config?.mute_ranges || [])
   .map(r => ({ start: Number(r.start) || 0, end: Number(r.end) || 0 }))
   .filter(r => r.end - r.start > 0.001)

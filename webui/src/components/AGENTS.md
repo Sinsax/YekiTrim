@@ -98,6 +98,8 @@
   从 `polish/engine.js` 来）。⚠️ **只有自绘这一层**：两条真渲染通道（wasm 实时 + `render-frame` 单帧回退）随
   「作废 wgpu」删掉了 —— **别再接回来**，要真渲染走 Dhampir 底座。
 - 媒体地址一律走 `utils.js::clipMediaUrl(pid, dir, 相对路径)`，别自己拼 `/api/media/...`。
+- ⚠️ **预览视频源优先 `_preview_video`**（2026-11-21，即 `_proxy_720.mp4`）；拿不到回落 `source.video`。
+  出片与 Dhampir 腿不受影响。
 - 音量/静音 = **总音量，必须落到所有会出声的 `<video>` 元素**（**只调 SFX 播放器即 bug**）；读回用
   `isFinite` + clamp，**不能写 `parseFloat(...) || 1`**。**别再写死 `66vh`**（②.6）。⚠️ **Dhampir 模式下"台上那块"不是
   唯一在响的元素**：`applyAudio()` 必须覆盖 `dhampirSourceVideos` ∪ `dhampirTwins`（**不能只遍历

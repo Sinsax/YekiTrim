@@ -30,6 +30,8 @@ pub use sfx::*;
 pub use download::*;
 pub use fx::*;
 use self::download::try_resolve_sticker;
+// Step 7（预览代理保鲜）用：判据与转码都在 `render::proxy` 一处，别在这里另写一份。
+use crate::render::proxy;
 
 /// `cmd_process` 的薄包装（无进度出口）：CLI 与既有测试用。
 pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
@@ -1251,7 +1253,49 @@ pub async fn cmd_process_with(
     })
     .await?;
     tracing::info!("  ✓ polish.toml updated");
+
+    // Step 7: **预览代理保鲜**（2026-11-21）。
+    //
+    // `_proxy_720.mp4` 只在 `polish init` 建一次，而**重切过的片段会让它作废**
+    // （源比代理新 ⇒ `preview_video_rel` 返回 `None`）—— 之后预览就一直回落**源**，
+    // 局域网里表现就是「拖时间轴卡」。这里按需补一份：`ensure_preview_proxy` 自己判新鲜度，
+    // 已是最新就只打一行日志、**不重编码**。
+    //
+    // ⚠️ 三条纪律：
+    //   ① 排在**写回之后** —— 转码按源时长给预算（可能几十秒），不该把 `polish.toml` 的写回
+    //      卡在它后面；
+    //   ② 走 `spawn_blocking` —— 它起 ffmpeg，是本函数里最后一段**同步阻塞**（`api/AGENTS.md`
+    //      那条「同步 IO 不能留在 async 线程上」对它同样成立）；
+    //   ③ 失败**只告警、不阻断** —— 与 `init` 那边同一条口径（没有代理只是预览更卡，功能不缺）。
+    if let Some(src) = proxy_refresh_source(project_path) {
+        let clip = project_path.to_path_buf();
+        let _ = tokio::task::spawn_blocking(move || {
+            proxy::ensure_preview_proxy(&clip, &src);
+        })
+        .await;
+    }
     Ok(())
+}
+
+/// Step 7 的**纯判据**：这一趟要不要重建预览代理？`Some(源相对路径)` = 要。
+///
+/// 抽成纯函数是为了能直接测（真正转码那条路要 ffmpeg，见 `tests/preview_proxy.rs`）——
+/// 而这里判错的表现是两种极端：「用户重切了片段、代理一直是旧的」（预览卡）或
+/// 「每次 process 都重压一遍 720p」（白烧 CPU）。
+fn proxy_refresh_source(project_path: &Path) -> Option<String> {
+    if proxy::proxy_disabled() {
+        return None;
+    }
+    let cfg = project::load_project(project_path).ok()?;
+    let src = cfg.source.video;
+    if src.trim().is_empty() || !project_path.join(&src).is_file() {
+        return None;
+    }
+    // 有且不比源旧 ⇒ 什么都不用做（`ensure_preview_proxy` 自己也是这么判的）
+    if proxy::preview_video_rel(project_path, &src).is_some() {
+        return None;
+    }
+    Some(src)
 }
 
 /// Step 5 的**写回门**：本趟真的落实了冷开场/回忆回溯意图时，才把 `clips` 交给

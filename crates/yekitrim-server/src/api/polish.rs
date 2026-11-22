@@ -1586,6 +1586,17 @@ pub(super) async fn polish_project_get_impl(
                 contract["stage"]["position"].clone(),
             );
             obj.insert("_canvas".into(), contract);
+            // **预览该读哪份视频**（2026-11-21，局域网提速）：有新鲜的 720p 代理就把它的文件名交出去，
+            // 前端 DOM 那条腿据此改读代理（底座那条腿早就经转译器 `--video` 拿到它了）。
+            // 判定只此一处（`proxy::preview_video_for`：代理缺失 / 比源旧 / `VTEDIT_NO_PROXY=1` ⇒ `None`）。
+            // ⚠️ 出片**永远**用源 —— 这里只是给预览挑一份低码率副本。
+            obj.insert(
+                "_preview_video".into(),
+                match yekitrim_polish::render::proxy::preview_video_for(&path) {
+                    Some(rel) => serde_json::json!(rel),
+                    None => serde_json::Value::Null,
+                },
+            );
             // 最近一次 LLM 生成的结果（哪段成/哪段失败），编辑器按它给分段上警示色。
             // 只是展示用：读不到就当没有，绝不影响加载。
             if let Some(st) = yekitrim_polish::llm::status::load(&path) {
@@ -3431,6 +3442,55 @@ mod tests {
         let text = String::from_utf8_lossy(&detail);
         assert_eq!(status, StatusCode::BAD_REQUEST, "认不出的通道必须 400；响应：{text}");
         assert!(text.contains("dhampir"), "报错要把可用值列出来：{text}");
+    }
+
+    /// **`preview=1` 要把"预览该读哪份视频"交给前端**（2026-11-21，局域网提速）。
+    ///
+    /// 在此之前 DOM 那条腿永远读**源** `clip.mp4`，`_proxy_720.mp4` 只喂给底座 —— 于是拖时间轴 /
+    /// 跳片段要按**原码率**取 Range（局域网上一卡就是几秒）。这条钉住"有新鲜代理就交出去、没有就
+    /// `null`"，而且与底座那条腿用**同一个判定**（`proxy::preview_video_for`，含"源比代理新 ⇒ 作废"）。
+    #[tokio::test]
+    async fn preview_reports_the_proxy_video_for_the_dom_leg() {
+        let t = test_app().await;
+        let clip = t.root.join("output/clips/proxyvis");
+        std::fs::create_dir_all(&clip).unwrap();
+        let cfg = yekitrim_polish::project::ProjectFile::example();
+        std::fs::write(clip.join("polish.toml"), cfg.to_toml_commented().unwrap()).unwrap();
+        let dir = clip.to_string_lossy().into_owned();
+
+        let ask = |dir: String| {
+            let t = &t;
+            async move {
+                let req = t
+                    .req("GET", &format!("/polish/project?dir={dir}&preview=1"))
+                    .body(Body::empty())
+                    .unwrap();
+                let res = t.call(req).await;
+                assert_eq!(res.status(), StatusCode::OK, "preview=1 应当 200");
+                body_json(res).await
+            }
+        };
+
+        // ① 没有代理 ⇒ `null`（前端回落源，不能凭空编一个文件名）
+        let v = ask(dir.clone()).await;
+        assert!(
+            v.get("_preview_video").is_some(),
+            "preview=1 必须给出 `_preview_video`（哪怕是 null）：{v}"
+        );
+        assert!(
+            v["_preview_video"].is_null(),
+            "没有代理时必须回 null，实际：{}",
+            v["_preview_video"]
+        );
+
+        // ② 有新鲜代理 ⇒ 交出去（前端据此改读 720p）
+        std::fs::write(clip.join("_proxy_720.mp4"), b"not-a-real-video").unwrap();
+        let v = ask(dir).await;
+        assert_eq!(
+            v["_preview_video"].as_str(),
+            Some("_proxy_720.mp4"),
+            "有新鲜的 `_proxy_720.mp4` 时 preview=1 必须把它交给 DOM 腿（否则它白生成了）"
+        );
     }
 
     /// **工程 JSON 走真 HTTP**：路由接上了、转译真的跑了、回来的是能喂给 wasm 的工程。
