@@ -25,7 +25,8 @@
 - `jobs.js`：`jobsApi.{list,detail,cancel}`、`watchJob(id, {onEvent,onSummary,onDone})`（SSE 优先、
   轮询兜底）、`clipKey` / `outKey` / `idxKey` / `busyOn` / `snapshotStale` / `KIND_ZH` / `CLASS_ZH`。
 - `auth.js`：`authApi`（登录 / 登出 / 当前用户 / 改密）；`ingest.js`：`ingestApi` + `PIPELINES`；
-  `stickers.js`：`stickersApi` + `UPLOAD_MAX_BYTES`（全局贴纸库，接口全在 `/api/admin/*`，仅 admin）。
+  `stickers.js`：`stickersApi` + `DEFAULT_UPLOAD_MAX_BYTES`（全局贴纸库；接口在 `/api/polish/stickers/*`，
+  登录用户都能用）。
 
 ## 边界
 
@@ -51,10 +52,11 @@
 - ⚠ **`apiOr` 只用来兜值，不许把"读取失败"伪装成"没有数据"**：`api(...).catch(() => [])` 是同类
   反模式。精修时间轴的读路径（`TimelineEditor::loadData`）**必须直接调 `api()`**，失败置
   `loadError` 并**暂停写入**（详见 `webui/src/AGENTS.md` 的读失败纪律）。
-- ⚠ **上传上限是双份常量**：`stickers.js::UPLOAD_MAX_BYTES` 与 Rust
-  `crates/yekitrim-server/src/stickers.rs::UPLOAD_MAX_BYTES` 是**同一个数**（**改一处要改两处**，
-  Rust 侧有单测把它钉在 64 MiB）。**前端必须先挡**：axum 超限回的是 **413 + 纯文本**，而
-  `client.js` 只认 JSON，会把"文件太大"报成"接口不存在或返回格式错误"。
+- ⚠ **上传上限只有一份真源**：`config.toml` 的 `[stickers] upload_max_mb`（默认 1024 MiB），
+  前端经 `stickersApi.limits()`（`GET /api/polish/stickers/limits`）**现取**再预检 ——
+  `stickers.js::DEFAULT_UPLOAD_MAX_BYTES` 只是取不到时的兜底，**别再写死一个数**。
+  **前端必须先挡**：路由硬顶那条超限回 **413 + 纯文本**（`client.js` 只认 JSON，会说"接口不存在或
+  返回格式错误"）；配置值那条由服务端 `upload_limit_guard` 回 **413 + JSON**。
 - **`jobs.js` 的资源键必须与后端 `yekitrim-server/src/server/scope_key.rs` 一致**（`clipKey`/`outKey`/
   `idxKey`）：前端用同一套键判断"我这个片段/项目忙不忙"，只在自己作用域被占用时才禁用按钮。
   `busyOn` 只是提前提示、**不是正确性保证**（正确性由服务端排队兜），所以 `snapshotStale` 超时后

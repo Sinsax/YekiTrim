@@ -38,10 +38,28 @@ pub struct ZipLimits {
     pub max_total_bytes: u64,
 }
 
+impl ZipLimits {
+    /// 条目数上限：防"十万条空条目"这种纯 DoS，与包的大小无关，因此**不做成配置**。
+    pub const MAX_ENTRIES: usize = 2000;
+
+    /// 按调用方的配置构造（服务端 `[stickers]`）：只覆盖单文件与总量两层，
+    /// 条目数仍用固定的 [`Self::MAX_ENTRIES`]。
+    ///
+    /// 默认值（32 MiB / 256 MiB）是"小图包"口径；`[stickers]` 默认放到
+    /// 64 MiB / 2 GiB，因为用户实测有 500 MB 的包（2026-11-19）。
+    pub fn with_sizes(max_file_bytes: u64, max_total_bytes: u64) -> Self {
+        Self {
+            max_entries: Self::MAX_ENTRIES,
+            max_file_bytes,
+            max_total_bytes,
+        }
+    }
+}
+
 impl Default for ZipLimits {
     fn default() -> Self {
         Self {
-            max_entries: 2000,
+            max_entries: Self::MAX_ENTRIES,
             max_file_bytes: 32 * 1024 * 1024,
             max_total_bytes: 256 * 1024 * 1024,
         }
@@ -123,7 +141,7 @@ fn staging_name() -> String {
 /// 解压到 `staging`（调用方负责建/清）。
 fn extract_into(staging: &Path, bytes: &[u8], limits: &ZipLimits) -> anyhow::Result<ExtractStats> {
     // 中央目录在这里被整份解析（zip crate 的内部表示）。清单规模由请求体上限
-    // （`UPLOAD_MAX_BYTES`，64 MiB）兜着，且这条接口本身是 admin-only，所以不额外预扫 EOCD。
+    // （`[stickers] upload_max_mb`，默认 1 GiB；路由硬顶 4 GiB）兜着，所以不额外预扫 EOCD。
     let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
         .map_err(|e| anyhow::anyhow!("不是有效的 zip 压缩包: {e}"))?;
     let total_entries = archive.len();

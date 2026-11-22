@@ -9,15 +9,20 @@ import { api } from './client'
 
 const q = (s) => encodeURIComponent(s)
 
-/** 上传压缩包的大小上限，与 Rust 侧 `server/stickers.rs::UPLOAD_MAX_BYTES` 是同一个数 —— 改一处要改两处。
+/** 上传上限的**兜底值**（服务端 `[stickers] upload_max_mb` 默认 1024 MiB = 1 GiB）。
  *
- * 上传前先在浏览器里挡一道：服务端超限回的是 413 + 纯文本，而 client.js 只认 JSON，
- * 会把"文件太大"报成"接口不存在或返回格式错误"。 */
-export const UPLOAD_MAX_BYTES = 64 * 1024 * 1024
+ * 真正的值由 `limits()` 现取 —— 上限是配置项，写死一份必然漂（旧版写死 64 MiB，
+ * 用户 500 MB 的包连前端预检都过不去）。取不到时才用这个兜底。
+ *
+ * 上传前先在浏览器里挡一道：服务端超限回的是 413 + JSON（Content-Length 预检那条）或
+ * 纯文本（axum 硬顶那条），而 client.js 只认 JSON，会把后者报成"接口不存在或返回格式错误"。 */
+export const DEFAULT_UPLOAD_MAX_BYTES = 1024 * 1024 * 1024
 
 export const stickersApi = {
   /** 包列表（磁盘为准，手工丢进库里的文件夹也会出现） */
   list: () => api('/api/polish/stickers', { label: '读取表情包列表' }),
+  /** 当前账号的贴纸包体积上限（字节）。上传前预检用 —— 值来自 config.toml 的 [stickers]。 */
+  limits: () => api('/api/polish/stickers/limits', { label: '读取贴纸包上限' }),
   /** 包内文件 + 每个文件命中的 tags（展开预览时才拉） */
   detail: (pack) => api(`/api/polish/stickers/${q(pack)}`, { label: `读取表情包 ${pack}` }),
   /** 上传一个 zip 建成新包（请求体就是文件原始字节）；build=true 时顺带起 LLM 构建任务。

@@ -18,7 +18,8 @@
   `file_tags_map`、**`is_image_file_name(name)` / `is_image_path(p)`（唯一扩展名判据）**、
   `is_safe_component(s)`、`sanitize_pack_name(raw) -> Option<String>`、`StickerIndex` / `StickerPackage` / `MatchResult`。
 - `sticker_zip`：`import_package_from_zip(root, name, bytes)` / `..._with(root, name, bytes, &ZipLimits)`、
-  `ZipLimits { max_entries, max_file_bytes, max_total_bytes }`（默认 2000 / 32 MiB / 256 MiB）、`ZipImportReport`。
+  `ZipLimits { max_entries, max_file_bytes, max_total_bytes }`（默认 2000 / 32 MiB / 256 MiB；
+  服务端按 `[stickers]` 用 `ZipLimits::with_sizes` 覆盖后两层，默认 64 MiB / 2 GiB）、`ZipImportReport`。
 - `sfx_catalog`：`all()` / `lookup(id)` / `lookup_variant(file_stem)` / `lookup_label(label)`、
   `is_blacklisted(id, blacklist)`、`search_by_tags` / `candidates_for_tags(target_tags, used, limit, blacklist)` /
   `candidates_text(...)`、`fuzzy_search(_excluding)`、`categories_text()` / `CATEGORY_ORDER` / `all_tags()`、
@@ -83,15 +84,17 @@
   —— 任何失败路径都 `remove_dir_all(暂存)`，所以**不存在半个包**；暂存名以 `.` 开头，
   而 `scan_packages` 只认非 `.` 开头的目录、`sanitize_pack_name` 也拒绝 `.` 开头，
   所以它既不出现在列表里也访问不到。
-  闸门：请求体 64 MiB（路由上的 `DefaultBodyLimit`，只给这一条放开，axum 默认才 2 MB）+
-  `ZipLimits` 的条目数 2000 / 单文件 32 MiB / 解压总量 256 MiB；单文件那层按**实际写入字节数**
-  判（`take(limit+1)` 后比对），所以中央目录里谎报尺寸没用。
+  闸门：请求体按 `[stickers] upload_max_mb`（默认 1024 MiB；路由 `DefaultBodyLimit` 只给这一条放开
+  4 GiB 硬顶，axum 默认才 2 MB，实际值由 `upload_limit_guard` 按 `Content-Length` 预检）+
+  `ZipLimits` 的条目数 2000 / 单文件 `file_max_mb`（默认 64 MiB）/ 解压总量 `extract_max_mb`（默认 2 GiB）；
+  单文件那层按**实际写入字节数**判（`take(limit+1)` 后比对），所以中央目录里谎报尺寸没用。
   ⚠️ **这是全站第二处有意接收用户上传的入口**（第一处是封面背景图 base64）；
   「服务器文件建项目」那条仍然**永不接受上传**。别按旧规矩（"全站没有 multipart、不接受上传"）
   把这条删掉 —— 它是有意做的，闸门在上面。
-  ⚠️ 前端 `webui/src/api/stickers.js::UPLOAD_MAX_BYTES` 与 Rust `yekitrim-server/src/stickers.rs::UPLOAD_MAX_BYTES`
-  是同一个数（改一处要改两处），前端必须先挡：axum 超限回的是 **413 + 纯文本**，
-  而 `client.js` 只认 JSON，会把"文件太大"报成"接口不存在或返回格式错误"。
+  ⚠️ 上限只有一份真源（`[stickers] upload_max_mb`）：前端经 `GET /polish/stickers/limits` 现取再预检
+  （`webui/src/api/stickers.js::DEFAULT_UPLOAD_MAX_BYTES` 只是兜底）。前端必须先挡：硬顶那条超限回的是
+  **413 + 纯文本**，而 `client.js` 只认 JSON，会把"文件太大"报成"接口不存在或返回格式错误"；
+  配置值那条由 `upload_limit_guard` 回 **413 + JSON**。
   上传**没有进度条**（`fetch` 拿不到上传进度），只显示「上传中…」。
   zip 依赖钉在 `zip = "2.4.2"`（`default-features = false, features = ["deflate"]`）：
   该版本连同全部传递依赖都在本机 cargo 缓存里，**4.6.1 的 deflate 走 `flate2/zlib-rs`，那份没缓存**。

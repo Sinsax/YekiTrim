@@ -280,7 +280,7 @@ import {
   uploadFont,
   videoThumbUrl,
 } from '../api/polish'
-import { stickersApi, UPLOAD_MAX_BYTES } from '../api/stickers'
+import { stickersApi, DEFAULT_UPLOAD_MAX_BYTES } from '../api/stickers'
 // ⚠️ **`hasBoldFace` 必须一起引**（2026-10-18 真 bug）：字体分支的「无粗体」徽标用它算判据，
 //    而这里以前只引了 `ensureFontFace` ⇒ 切到「字体」页时 `items` 抛 ReferenceError ⇒
 //    **Vue 把整块子树卸掉，素材库直接消失**（用户报的就是这个）。
@@ -829,8 +829,18 @@ async function importStickerZip(file) {
     toast('贴纸包要传 zip 压缩包', 'err')
     return
   }
-  if (file.size > UPLOAD_MAX_BYTES) {
-    toast(`${file.name} 超过 ${Math.round(UPLOAD_MAX_BYTES / 1024 / 1024)} MB 上限`, 'err')
+  // 上限是配置项（config.toml 的 [stickers] upload_max_mb，默认 1024 MiB）——
+  // ⚠️ 必须现取，不能写死：前端写死那个数会和后端配置漂（旧版写死 64 MiB，
+  //    用户 500 MB 的包连预检都过不去）。取不到才退回同一份默认值，服务端仍会挡。
+  let maxBytes = DEFAULT_UPLOAD_MAX_BYTES
+  try {
+    const r = await stickersApi.limits()
+    if (r && Number(r.upload_max_bytes) > 0) maxBytes = Number(r.upload_max_bytes)
+  } catch (e) {
+    // 读不到上限不该让上传直接失败：交给服务端判，超限会回 JSON 413
+  }
+  if (file.size > maxBytes) {
+    toast(`${file.name} 超过 ${Math.round(maxBytes / 1024 / 1024)} MB 上限`, 'err')
     return
   }
   const name = file.name.replace(/\.zip$/i, '')

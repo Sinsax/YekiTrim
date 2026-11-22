@@ -208,6 +208,9 @@ pub struct Config {
     pub cutting: CuttingConfig,
     #[serde(default)]
     pub sfx: SfxConfig,
+    /// 贴纸包（zip）上传 / 解压的体积上限（默认 1 GiB 上传、2 GiB 解压总量）
+    #[serde(default)]
+    pub stickers: StickersConfig,
     /// 多用户服务：项目托管与容量（P2 起用 `projects_root`，P3/P5 用上限与水位）
     #[serde(default)]
     pub storage: StorageConfig,
@@ -567,6 +570,81 @@ impl Default for BiliLivePublishConfig {
             uid: 0,
         }
     }
+}
+
+/// `[stickers]` —— 贴纸包（一个 zip 解压成一堆贴纸）的体积上限，单位 **MiB**。
+///
+/// 为什么做成配置：贴纸包从"十几张小图"到"几百张 GIF"差一个数量级，
+/// 写死一个数总有一边难受（2026-11-19 实测有 500 MB 的包）。
+///
+/// 三个值都是"0 或非法值按默认值处理"（见 [`StickersConfig::upload_max_bytes`] 等），
+/// 不是"0 = 不限" —— 不限会让一个 zip 炸弹把磁盘/内存吃干净。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StickersConfig {
+    /// 上传请求体（zip 原始字节）上限。默认 1024 MiB（1 GiB）。
+    #[serde(default = "default_sticker_upload_max_mb")]
+    pub upload_max_mb: u32,
+    /// 解压后**所有文件合计**的上限。默认 2048 MiB（zip 里是压缩过的，解压后通常更大）。
+    #[serde(default = "default_sticker_extract_max_mb")]
+    pub extract_max_mb: u32,
+    /// 解压后**单个文件**的上限。默认 64 MiB。
+    #[serde(default = "default_sticker_file_max_mb")]
+    pub file_max_mb: u32,
+}
+
+impl StickersConfig {
+    /// 路由层 `DefaultBodyLimit` 的硬顶：它在**启动时**就要定死，而 `[stickers]` 可以之后改。
+    /// 所以"配置值"只在这个硬顶之内有效，超过按硬顶算（`/polish/stickers/limits` 会回实际生效值）。
+    pub const HARD_MAX_UPLOAD_MB: u32 = 4096;
+
+    /// 上传请求体上限（字节）。`0` 或超过硬顶 ⇒ 走默认值 / 硬顶。
+    pub fn upload_max_bytes(&self) -> usize {
+        let mb = match self.upload_max_mb {
+            0 => default_sticker_upload_max_mb(),
+            v => v.min(Self::HARD_MAX_UPLOAD_MB),
+        };
+        mb as usize * 1024 * 1024
+    }
+
+    /// 解压后总量上限（字节）。`0` ⇒ 默认值。
+    pub fn extract_max_bytes(&self) -> u64 {
+        let mb = if self.extract_max_mb == 0 {
+            default_sticker_extract_max_mb()
+        } else {
+            self.extract_max_mb
+        };
+        mb as u64 * 1024 * 1024
+    }
+
+    /// 解压后单文件上限（字节）。`0` ⇒ 默认值。
+    pub fn file_max_bytes(&self) -> u64 {
+        let mb = if self.file_max_mb == 0 {
+            default_sticker_file_max_mb()
+        } else {
+            self.file_max_mb
+        };
+        mb as u64 * 1024 * 1024
+    }
+}
+
+impl Default for StickersConfig {
+    fn default() -> Self {
+        Self {
+            upload_max_mb: default_sticker_upload_max_mb(),
+            extract_max_mb: default_sticker_extract_max_mb(),
+            file_max_mb: default_sticker_file_max_mb(),
+        }
+    }
+}
+
+fn default_sticker_upload_max_mb() -> u32 {
+    1024
+}
+fn default_sticker_extract_max_mb() -> u32 {
+    2048
+}
+fn default_sticker_file_max_mb() -> u32 {
+    64
 }
 
 /// `[storage]` — 项目托管目录与磁盘上限（只在服务端生效，CLI 单机路径不受影响）。

@@ -35,7 +35,7 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::body::Bytes;
-use axum::extract::{Extension, Path as AxumPath, Query, State};
+use axum::extract::{Extension, Path as AxumPath, Query, Request, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
@@ -48,14 +48,71 @@ use super::model::AppState;
 type AppError = (StatusCode, Json<serde_json::Value>);
 type ApiResult<T = serde_json::Value> = Result<Json<T>, AppError>;
 
-/// 上传压缩包的请求体上限（64 MiB）。
-///
-/// 挂在路由上的 `DefaultBodyLimit` 与前端预检用的是同一个数 —— 改这里要同步
-/// `webui/src/api/stickers.js` 的 `UPLOAD_MAX_BYTES`。
+/// 上传请求体的**硬顶**（4 GiB）：`DefaultBodyLimit` 在路由构建时就要定死，
+/// 而 `[stickers] upload_max_mb` 可以之后改。真正生效的上限由
+/// `yekitrim_core::config::StickersConfig::upload_max_bytes` 算（默认 1 GiB），
+/// 超过硬顶按硬顶算 —— 前端经 `GET /polish/stickers/limits` 拿实际值，
+/// 超限的请求由 [`upload_limit_guard`] 在读 body 之前就拒掉。
 ///
 /// 为什么要有前端预检：axum 超限时回的是 **413 + 纯文本**，而 `client.js` 只认 JSON，
 /// 会把超限报成"接口不存在或返回格式错误"，用户看不出是文件太大。
-pub(crate) const UPLOAD_MAX_BYTES: usize = 64 * 1024 * 1024;
+pub(crate) const UPLOAD_HARD_MAX_BYTES: usize =
+    yekitrim_core::config::StickersConfig::HARD_MAX_UPLOAD_MB as usize * 1024 * 1024;
+
+/// 读**该 owner** 的 `[stickers]`（配置按账号分；同步 IO ⇒ 必须走 blocking 池）。
+async fn sticker_limits(
+    owner: yekitrim_core::owner::Owner,
+) -> Result<yekitrim_core::config::StickersConfig, AppError> {
+    super::api::blocking(move || Ok(yekitrim_core::config::load_config_for(owner).stickers)).await
+}
+
+/// 上传前的体积预检：`DefaultBodyLimit` 只有硬顶，配置值比硬顶小时必须**先看
+/// `Content-Length` 再决定要不要读 body** —— 等 `Bytes` 提取器读完再判就晚了
+/// （500 MB 的包已经躺在内存里了）。
+///
+/// 没有 `Content-Length`（chunked）时只能放过：那条路由仍有 4 GiB 的硬顶兜着。
+pub async fn upload_limit_guard(
+    Extension(user): Extension<CurrentUser>,
+    req: Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let declared = req
+        .headers()
+        .get(axum::http::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.trim().parse::<u64>().ok());
+    if let Some(len) = declared {
+        let owner = crate::auth::owner_of(&user);
+        if let Ok(cfg) = sticker_limits(owner).await {
+            let limit = cfg.upload_max_bytes();
+            if len > limit as u64 {
+                return (
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    Json(serde_json::json!({
+                        "ok": false,
+                        "error": format!(
+                            "贴纸包超过 {} MB 上限（config.toml 的 [stickers] upload_max_mb）",
+                            limit / 1024 / 1024
+                        ),
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    }
+    next.run(req).await
+}
+
+/// `GET /api/polish/stickers/limits` — 当前账号的贴纸包体积上限（前端上传前预检用）。
+pub async fn pack_limits(Extension(user): Extension<CurrentUser>) -> ApiResult {
+    let cfg = sticker_limits(crate::auth::owner_of(&user)).await?;
+    ok(serde_json::json!({
+        "ok": true,
+        "upload_max_bytes": cfg.upload_max_bytes(),
+        "extract_max_bytes": cfg.extract_max_bytes(),
+        "file_max_bytes": cfg.file_max_bytes(),
+    }))
+}
 
 fn err(status: StatusCode, msg: impl Into<String>) -> AppError {
     (
@@ -319,10 +376,12 @@ fn parse_upload_args(q: &UploadQuery, body_len: usize) -> Result<(String, bool),
 ///
 /// 请求体就是压缩包的**原始字节**（`application/octet-stream`，不是 multipart）：
 /// 单文件上传用 multipart 只是多一层边界解析，而前端 `api()` 本来就能直接传 `File`。
-/// 路由上挂了 `DefaultBodyLimit::max(UPLOAD_MAX_BYTES)` —— axum 默认只有 2 MB。
+/// 体积上限分两层：路由挂 `DefaultBodyLimit::max(UPLOAD_HARD_MAX_BYTES)`（4 GiB 硬顶，
+/// axum 默认只有 2 MB），真正生效的值来自 `[stickers] upload_max_mb`（默认 1 GiB），
+/// 由 [`upload_limit_guard`] 在读 body 前按 `Content-Length` 预检。
 ///
 /// 限额与安全规则全在 `yekitrim_polish::assets::sticker_zip`：只取 basename（zip-slip 天然失效）、
-/// 条目数/单文件/总量三重闸门、先解到暂存目录再 `rename`（不会留半个包）。
+/// 条目数/单文件/总量三重闸门（后两层按 `[stickers]` 配置）、先解到暂存目录再 `rename`（不会留半个包）。
 pub async fn pack_upload(
     State(state): State<Arc<AppState>>,
     Extension(user): Extension<CurrentUser>,
@@ -330,12 +389,24 @@ pub async fn pack_upload(
     body: Bytes,
 ) -> ApiResult {
     let owner = crate::auth::owner_of(&user);
+    let cfg = sticker_limits(owner).await?;
+    let limit = cfg.upload_max_bytes();
+    if body.len() > limit {
+        return Err(err(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!(
+                "贴纸包超过 {} MB 上限（config.toml 的 [stickers] upload_max_mb）",
+                limit / 1024 / 1024
+            ),
+        ));
+    }
     let (name, want_build) = parse_upload_args(&q, body.len())?;
-    // 解压 + 写盘是同步 IO（几十 MB），交给 blocking 池；Bytes 提取本身在 async 侧（那是网络读取）
+    // 解压 + 写盘是同步 IO（现在可能到 GB 级），交给 blocking 池；Bytes 提取本身在 async 侧（那是网络读取）
     let root = yekitrim_core::owner::asset_dir(owner, yekitrim_core::owner::AssetKind::Stickers);
     let pack = name.clone();
+    let zip_limits = sz::ZipLimits::with_sizes(cfg.file_max_bytes(), cfg.extract_max_bytes());
     let report = super::api::blocking(move || {
-        sz::import_package_from_zip(&root, &pack, &body)
+        sz::import_package_from_zip_with(&root, &pack, &body, &zip_limits)
             .map_err(|e| err(StatusCode::BAD_REQUEST, format!("{e:#}")))
     })
     .await?;
@@ -469,9 +540,25 @@ mod tests {
         assert_eq!(parse_upload_args(&q("ysyk", None), 0).unwrap_err().0, StatusCode::BAD_REQUEST);
     }
 
-    /// 请求体上限与前端预检必须是同一个数（前端 `webui/src/api/stickers.js` 的 UPLOAD_MAX_BYTES）。
+    /// 上限是配置项：默认 1 GiB、硬顶 4 GiB（`DefaultBodyLimit` 只能按硬顶挂）。
     #[test]
-    fn upload_limit_is_64_mib() {
-        assert_eq!(UPLOAD_MAX_BYTES, 64 * 1024 * 1024);
+    fn upload_limit_defaults_to_1_gib_with_4_gib_ceiling() {
+        let d = yekitrim_core::config::StickersConfig::default();
+        assert_eq!(d.upload_max_bytes(), 1024 * 1024 * 1024);
+        assert_eq!(d.extract_max_bytes(), 2048 * 1024 * 1024);
+        assert_eq!(d.file_max_bytes(), 64 * 1024 * 1024);
+        assert_eq!(UPLOAD_HARD_MAX_BYTES, 4096 * 1024 * 1024);
+        // 0 与超硬顶都收敛到有界值（不许出现"0 = 不限"）
+        let zero = yekitrim_core::config::StickersConfig {
+            upload_max_mb: 0,
+            extract_max_mb: 0,
+            file_max_mb: 0,
+        };
+        assert_eq!(zero.upload_max_bytes(), 1024 * 1024 * 1024);
+        let huge = yekitrim_core::config::StickersConfig {
+            upload_max_mb: 999_999,
+            ..Default::default()
+        };
+        assert_eq!(huge.upload_max_bytes(), UPLOAD_HARD_MAX_BYTES);
     }
 }

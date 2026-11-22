@@ -78,8 +78,8 @@ Vue3 工作台的全部前端：壳 + 面包屑、hash 路由、首页 `#/workbe
   `<template v-if="isAdmin">` 里。不可用时整块**置灰** + 输入禁用，只给一句"录播姬未接入，暂时不能
   添加"；`roomsAvailable` 初值 **`null`** = 还没问到（避免先闪一下"未接入"）。
 - 表情包区块（**仅 admin；非 admin 整块不渲染**，细节在 `crates/yekitrim-polish/src/assets/AGENTS.md`）：
-  ⚠ **`preview` 只存 `{pack, name}`**，文件对象由 `previewFile` 从 `detail` 现取 —— 别存快照；**上传要
-  前端先挡 64 MiB**（`api/stickers.js::UPLOAD_MAX_BYTES`）。布局数字见附录 F 第 6 节。
+  ⚠ **`preview` 只存 `{pack, name}`**，文件对象由 `previewFile` 从 `detail` 现取 —— 别存快照；**上传前按
+  `stickersApi.limits()` 现取上限**。布局数字见附录 F 第 6 节。
 
 **路由**
 - `#/workbench`、`#/p/:pid/{prepare,slices,polish,polish/:clip,settings}`、`#/ingest`、

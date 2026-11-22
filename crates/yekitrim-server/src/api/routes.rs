@@ -190,12 +190,19 @@ pub fn router(state: Arc<AppState>) -> Router {
         // 那是给"只有管理员能管"设计的，留着会变成两套语义）
         .route("/polish/stickers", get(crate::stickers::packs_list))
         .route("/polish/stickers/import", post(crate::stickers::pack_import))
-        // 上传 zip 建新包。请求体是压缩包原始字节 —— 单独放开体积上限（axum 默认 2 MB）。
+        // 当前账号的贴纸包体积上限（前端上传前预检用；值来自 config.toml 的 [stickers]）。
+        .route("/polish/stickers/limits", get(crate::stickers::pack_limits))
+        // 上传 zip 建新包。请求体是压缩包原始字节 —— 路由层只挂**硬顶**（4 GiB），
+        // 真正生效的上限（默认 1 GiB）在请求体读取前按 Content-Length 判（中间件），
+        // 否则 500 MB 的包会先被读进内存再拒，白吃一遍内存。
         .route(
             "/polish/stickers/upload",
             post(crate::stickers::pack_upload)
                 .layer(axum::extract::DefaultBodyLimit::max(
-                    crate::stickers::UPLOAD_MAX_BYTES,
+                    crate::stickers::UPLOAD_HARD_MAX_BYTES,
+                ))
+                .layer(axum::middleware::from_fn(
+                    crate::stickers::upload_limit_guard,
                 )),
         )
         .route(

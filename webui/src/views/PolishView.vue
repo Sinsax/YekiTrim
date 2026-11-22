@@ -397,7 +397,7 @@
               :class="{ on: stickerSource.includes(src.name) }"
               :title="'贴纸来源：' + src.name + (src.tags?.length ? '（tags: ' + src.tags.join(' / ') + '）' : (src.description ? '（' + src.description + '）' : '')) + ' —— 点一下开/关'"
               @click="toggleStickerSource(src.name)">
-        <b>{{ src.name }}</b>
+        <b>{{ src.name }}<span v-if="src.missing" class="muted"> · 库里没有</span></b>
       </button>
       <div v-if="stickerSourcesError" class="row small gap-6">
         <span class="muted">读取失败：{{ stickerSourcesError }}</span>
@@ -1049,7 +1049,7 @@ const allStickerOptions = computed(() => {
   const known = new Set(stickerSources.value.map((s) => s.name))
   const extra = stickerSource.value
     .filter((n) => !known.has(n))
-    .map((n) => ({ name: n, builtin: false, tags: [], description: '已配置，但当前贴纸库里没有这个来源' }))
+    .map((n) => ({ name: n, builtin: false, missing: true, tags: [], description: '已配置，但当前贴纸库里没有这个来源' }))
   return [...stickerSources.value, ...extra]
 })
 

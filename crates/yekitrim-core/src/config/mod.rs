@@ -216,6 +216,16 @@ default_quota_bytes = 0
 # 该功能只读取服务器上已存在的文件，永不接受上传；普通用户仍只能用 <projects_root>/users/<uid>
 local_roots = []
 
+[stickers]
+# 贴纸包（zip）的体积上限，单位 MiB。默认 1 GiB 上传 / 2 GiB 解压总量。
+# 上传走 WebUI「素材库 → 贴纸包」（POST /api/polish/stickers/upload），
+# 解压闸门见 yekitrim-polish::assets::sticker_zip（条目数固定 2000）。
+# 0 或非法值按默认值处理；上传上限的硬顶是 4096 MiB（路由层 DefaultBodyLimit 在启动时定死，
+# 改完这个值要重启服务才生效）。
+upload_max_mb = 1024        # 单个 zip 上传的请求体上限（1 GiB）
+extract_max_mb = 2048       # 解压后所有文件合计上限（2 GiB）
+file_max_mb = 64            # 解压后单个文件上限（64 MiB）
+
 [ingest]
 # 录播姬 webhook：启用后 POST /api/ingest/bililive/<token> 才会被接受
 # token 用 `yekitrim ingest token` 生成（只显示一次明文，这里只存哈希）
@@ -443,12 +453,12 @@ pub fn write_project_config_exact(
 ///    （项目优先），于是"设置页改了没生效"这句话永远查不到原因。
 ///
 /// 剥离清单：`[llm]`（独立 llm.toml）/ `[correct]`（订正 prompt 只住程序配置）/
-/// `[auth]` / `[publish]` / `[storage]` / `[ingest]`（含 `ingest.*` 子表）。
+/// `[auth]` / `[publish]` / `[storage]` / `[stickers]` / `[ingest]`（含 `ingest.*` 子表）。
 /// `[detection]` 里的 prompt 同样只住程序配置 —— 见「改内建 prompt 要同步用户配置」。
 fn project_config_body(global_text: &str, output_dir: Option<&str>) -> Result<String> {
     let mut doc: toml_edit::DocumentMut = global_text.parse()?;
     // 程序级段（其中多个带凭证）：不是工程该覆盖的东西，别抄进工程文件。
-    for section in ["llm", "correct", "auth", "publish", "storage", "ingest"] {
+    for section in ["llm", "correct", "auth", "publish", "storage", "stickers", "ingest"] {
         doc.remove(section);
     }
     // ⚠️ **版本键不在这里插**：本函数的输出会被拼在 `[project]` 表头**之后**，而 TOML 里
@@ -866,6 +876,19 @@ fn merge(base: &mut Config, overlay: Config) {
         if !base.sfx.blacklist.contains(id) {
             base.sfx.blacklist.push(id.clone());
         }
+    }
+
+    // [stickers] 是服务端专用段（项目配置里不写，见 project_config_body 的剥离清单），
+    // 仍按"非默认值覆盖"合并 —— 与 [storage] 同一条口径。
+    let stickers_d = crate::config::types::StickersConfig::default();
+    if overlay.stickers.upload_max_mb != stickers_d.upload_max_mb {
+        base.stickers.upload_max_mb = overlay.stickers.upload_max_mb;
+    }
+    if overlay.stickers.extract_max_mb != stickers_d.extract_max_mb {
+        base.stickers.extract_max_mb = overlay.stickers.extract_max_mb;
+    }
+    if overlay.stickers.file_max_mb != stickers_d.file_max_mb {
+        base.stickers.file_max_mb = overlay.stickers.file_max_mb;
     }
 
 
