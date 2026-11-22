@@ -70,6 +70,102 @@ fn rendered_file_of(dir: &std::path::Path, configured_output: Option<&str>) -> O
     latest_numbered_file(dir, DEFAULT_RENDER_STEM, "mp4")
 }
 
+/// 产物 stem 的候选集：**配置名在前、默认名垫底** —— 与 `rendered_file_of` 的兜底顺序同口径
+/// （先按配置名找，找不到再看默认名，保住"先用默认名出过片、之后才改配置"的存量产物）。
+fn render_stems(configured_output: Option<&str>) -> Vec<String> {
+    let mut stems: Vec<String> = Vec::new();
+    if let Some(stem) = configured_output.and_then(render_stem_of) {
+        stems.push(stem);
+    }
+    if !stems.iter().any(|s| s == DEFAULT_RENDER_STEM) {
+        stems.push(DEFAULT_RENDER_STEM.to_string());
+    }
+    stems
+}
+
+/// 某个 stem 的**全部版本**文件（`<stem>.<ext>` + `<stem>_<n>.<ext>`），按版本号升序。
+///
+/// 判定与 `latest_numbered_file` 逐条相同（同一套前后缀、同样的 `_N` 语义），区别只是**收全**
+/// 而不是只留最大那份 —— 「产物」卡的文件夹视图要把历史版本也列出来。
+fn numbered_family(dir: &Path, stem: &str, ext: &str) -> Vec<(u32, String)> {
+    let mut out: Vec<(u32, String)> = Vec::new();
+    let base = format!("{stem}.{ext}");
+    if dir.join(&base).is_file() {
+        out.push((0, base));
+    }
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        let prefix = format!("{stem}_");
+        let suffix = format!(".{ext}");
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            // ⚠️ strip_prefix/strip_suffix 而不是算术切片：`cover_.jpg`（前后缀之间为空）在
+            // 切片写法下会 panic（同 `latest_numbered_file` 的注释）。
+            let Some(mid) = name.strip_prefix(&prefix).and_then(|rest| rest.strip_suffix(&suffix)) else {
+                continue;
+            };
+            if let Ok(n) = mid.parse::<u32>() {
+                out.push((n, name));
+            }
+        }
+    }
+    out.sort_by_key(|(n, _)| *n);
+    out
+}
+
+/// 这个片段目录里的**全部产物文件**（成片每个版本 + 封面每个版本），按**产出先后**（旧 → 新）
+/// 排好 —— 精修页「产物」卡右栏那个**文件夹视图**照它画：左列列文件、右侧预览选中的那份。
+///
+/// 为什么不直接用 `rendered_file` / `cover_file`：那两个是"**最新**那一份"的口径（切片卡片的
+/// 「已导出」、任务日志都靠它们）；而界面上还要看得到历史版本 —— 成片**同名不覆盖**，第二次出片
+/// 叫 `vtuber-clip_2.mp4`，以前除最新那份外都只能去文件管理器里翻。
+///
+/// ⚠️ **不能扫"目录里所有文件"**：同一个目录里还躺着 `clip.mp4`（源）、`_proxy_720.mp4`
+/// （预览代理）、`_thumb.jpg`、`_cover_bg.jpg` / `_cover_frame.jpg`（封面设计器的中间图）与
+/// `polish.toml` 等 —— 它们都不是产物。只认上面两族命名。
+///
+/// 排序键 = `(mtime, 类型, 版本号)`：mtime 是"先后"的事实来源；秒级 mtime 在部分文件系统上会
+/// 并列（网络盘精度可能就是 1s），所以并列时按"成片在前、再按版本号"兜底，保证顺序稳定。
+fn artifact_files_of(dir: &Path, configured_output: Option<&str>) -> Vec<serde_json::Value> {
+    let mut found: Vec<(String, &'static str, u64)> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for stem in render_stems(configured_output) {
+        for (n, name) in numbered_family(dir, &stem, "mp4") {
+            if seen.insert(name.clone()) {
+                found.push((name, "video", n as u64));
+            }
+        }
+    }
+    for (n, name) in numbered_family(dir, "cover", "jpg") {
+        if seen.insert(name.clone()) {
+            found.push((name, "image", n as u64));
+        }
+    }
+    let mut rows: Vec<(u64, u8, u64, String, &'static str, u64)> = found
+        .into_iter()
+        .map(|(name, kind, seq)| {
+            let meta = std::fs::metadata(dir.join(&name)).ok();
+            let bytes = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+            let mtime = meta
+                .as_ref()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            (mtime, if kind == "video" { 0 } else { 1 }, seq, name, kind, bytes)
+        })
+        .collect();
+    rows.sort_by(|a, b| (a.0, a.1, a.2).cmp(&(b.0, b.1, b.2)));
+    rows.into_iter()
+        .map(|(mtime, _, _, name, kind, bytes)| {
+            serde_json::json!({ "name": name, "kind": kind, "bytes": bytes, "mtime": mtime })
+        })
+        .collect()
+}
+
 pub(super) fn polish_projects_impl(ws: &Workspace) -> ApiResult {
     let clips = ws.output_dir().join("clips");
     let mut out = vec![];
@@ -98,6 +194,13 @@ pub(super) fn polish_projects_impl(ws: &Workspace) -> ApiResult {
             let rendered = rendered_file.is_some();
             let cover_file = latest_numbered_file(&dir, "cover", "jpg");
             let cover = cover_file.is_some();
+            // 产物卡的**文件夹视图**（2026-11-22）：全部版本、按产出先后。
+            // ⚠️ 与上面两个"最新那份"字段并存 —— 别拿它去替换 `rendered`/`cover`：
+            // 切片卡片的「已导出」判定与任务日志仍走那两个。
+            let artifacts = artifact_files_of(
+                &dir,
+                polish_cfg.as_ref().map(|cfg| cfg.project.output.as_str()),
+            );
             let mut version = "original";
             let mut mute_range_count = 0usize;
             if let Some(cfg) = polish_cfg.as_ref() {
@@ -114,6 +217,7 @@ pub(super) fn polish_projects_impl(ws: &Workspace) -> ApiResult {
                 "rendered_file": rendered_file,
                 "cover": cover,
                 "cover_file": cover_file,
+                "artifacts": artifacts,
                 "version": version,
                 "mute_range_count": mute_range_count,
             }));
@@ -2857,6 +2961,85 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// ★ **产物卡的文件夹视图：全部版本 + 按产出先后 + 不混进同目录的非产物文件。**
+    ///
+    /// 用户 2026-11-22 把「产物」右半改成文件夹（左列表 / 右预览），列表要的是**每一个**版本
+    /// （`vtuber-clip_1.mp4`…），不再只是"最新那一份"。这里钉三件事：
+    /// ① 两族命名都在：成片（跟随 `[project] output` + 默认名兜底）与封面（`cover.jpg`/`cover_N.jpg`）；
+    /// ② 顺序 = **产出先后**（mtime），不是文件名字典序 —— 字符串序会把 `cover.jpg` 排到最后，
+    ///    而它其实比 `vtuber-clip_1.mp4` 先产出；
+    /// ③ `clip.mp4` / `_proxy_720.mp4` / `_thumb.jpg` / `_cover_bg.jpg` / `_cover_frame.jpg` /
+    ///    `polish.toml` 与 `cover_.jpg`（空版本号）这些**同目录的非产物**一个都不许出现。
+    #[test]
+    fn artifacts_list_every_version_in_production_order() {
+        let dir = std::env::temp_dir().join(format!("yekitrim-artifacts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // 显式写 mtime：创建顺序在同一秒内不可靠，而"先后"正是这条的判据
+        let touch = |name: &str, bytes: usize, secs: u64| {
+            let p = dir.join(name);
+            std::fs::write(&p, vec![b'x'; bytes]).unwrap();
+            let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs);
+            std::fs::File::options()
+                .write(true)
+                .open(&p)
+                .unwrap()
+                .set_modified(t)
+                .unwrap();
+        };
+        touch("vtuber-clip.mp4", 10, 1_700_000_100);
+        touch("cover.jpg", 20, 1_700_000_200);
+        touch("vtuber-clip_1.mp4", 30, 1_700_000_300);
+        touch("cover_1.jpg", 40, 1_700_000_400);
+        for noise in [
+            "clip.mp4",
+            "_proxy_720.mp4",
+            "_thumb.jpg",
+            "_cover_bg.jpg",
+            "_cover_frame.jpg",
+            "cover_.jpg",
+            "polish.toml",
+        ] {
+            touch(noise, 5, 1_700_000_500);
+        }
+
+        let got: Vec<(String, String, u64, u64)> = artifact_files_of(&dir, None)
+            .into_iter()
+            .map(|v| {
+                (
+                    v["name"].as_str().unwrap().to_string(),
+                    v["kind"].as_str().unwrap().to_string(),
+                    v["bytes"].as_u64().unwrap(),
+                    v["mtime"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            got.iter().map(|(n, _, _, _)| n.as_str()).collect::<Vec<_>>(),
+            vec!["vtuber-clip.mp4", "cover.jpg", "vtuber-clip_1.mp4", "cover_1.jpg"],
+            "必须按产出先后（mtime），且同目录的 clip.mp4/_proxy/_thumb/_cover_*/polish.toml/cover_.jpg 都不算产物"
+        );
+        assert_eq!(got[1].1, "image", "封面是图片");
+        assert_eq!(got[2].1, "video", "成片是视频");
+        assert_eq!(got[3].2, 40, "bytes 要照实回（列表要显示大小）");
+        assert_eq!(got[3].3, 1_700_000_400, "mtime 要照实回（产物先后的显示靠它）");
+
+        // 配置了自定义输出名 ⇒ 那一族也在；默认名那种存量也保留（与 `rendered_file_of` 同口径）
+        touch("my-cut.mp4", 7, 1_700_000_050);
+        let names: Vec<String> = artifact_files_of(&dir, Some("my-cut.mp4"))
+            .into_iter()
+            .map(|v| v["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(names.first().map(|s| s.as_str()), Some("my-cut.mp4"), "最早产出的排最前");
+        assert!(
+            names.contains(&"vtuber-clip_1.mp4".to_string()),
+            "改过输出名之后，默认名那批存量产物也要在：{names:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// 封面标题的 prompt 必须**把参考标题当口吻基准**（2026-10-19 用户报「没有幽默串子那种想点进去的欲望」）。
     ///
     /// 旧 prompt 只写「参考标题用于提取信息点」+ 一列格式约束，模型于是写四平八稳的概述。

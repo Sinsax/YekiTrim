@@ -708,20 +708,50 @@
               <div v-if="titleErr" class="muted small warn">{{ titleErr }}</div>
             </div>
             <div class="art-sep" aria-hidden="true"></div>
-            <div class="art-media">
-              <!-- 成片：有就播放（可拖进度），没有是一条同尺寸的虚线占位框 -->
-              <video v-if="renderedUrl && !renderedFailed" :src="renderedUrl" controls playsinline
-                     class="art-box art-video" :title="renderedFile" @error="renderedFailed = true"></video>
-              <div v-else class="art-box empty"><span>未渲染</span></div>
-              <!-- 封面：点一下下载 -->
-              <a v-if="coverUrl && !coverFailed" class="art-box" :href="coverUrl" download
-                 :title="'封面 ' + coverFile + '（点击下载）'">
-                <img :src="coverUrl" alt="封面" @error="coverFailed = true">
-              </a>
-              <div v-else class="art-box empty"><span>无封面</span></div>
+            <!-- 右半 = **文件夹**：左列是**全部**产物文件、按**产出先后**排（成片的每个版本
+                 `vtuber-clip_1.mp4`、封面的每个版本 `cover_1.jpg` 都在；排序与"哪些算产物"
+                 全由服务端 `api/polish.rs::artifact_files_of` 判，前端不再从目录推一份）：
+                 点一行 → 右侧换成那份的预览（视频可播 / 封面可看），标题行的「下载」跟着换。 -->
+            <div class="art-folder">
+              <div ref="artFilesEl" class="art-files" role="listbox" aria-label="产物文件（按产出先后）">
+                <button v-for="f in artifacts" :key="f.name" type="button" class="art-file"
+                        :class="{ on: f.name === activeArtifactName }" role="option"
+                        :aria-selected="f.name === activeArtifactName"
+                        :title="f.name + '（' + artifactMeta(f) + ' · 点击预览）'"
+                        @click="pickArtifact(f.name)">
+                  <Icon class="art-file-ico" :name="f.kind === 'video' ? 'film' : 'image'" :size="11" />
+                  <span class="art-file-name">{{ f.name }}</span>
+                  <span class="art-file-time">{{ artifactWhen(f) }}</span>
+                </button>
+                <p v-if="!artifacts.length" class="art-files-empty">还没有产物</p>
+              </div>
+              <div class="art-sep" aria-hidden="true"></div>
+              <div class="art-preview">
+                <video v-if="activeArtifact && activeArtifact.kind === 'video' && !previewFailed"
+                       :key="'a' + activeArtifact.name" :src="activeArtifactUrl" controls playsinline
+                       :title="activeArtifact.name" @error="previewFailed = true"></video>
+                <img v-else-if="activeArtifact && activeArtifact.kind === 'image' && !previewFailed"
+                     :key="'a' + activeArtifact.name" :src="activeArtifactUrl" :alt="activeArtifact.name"
+                     :title="activeArtifact.name" @error="previewFailed = true">
+                <div v-else class="art-box empty">
+                  <span>{{ activeArtifact ? '预览失败' : '未渲染' }}</span>
+                </div>
+              </div>
             </div>
           </div>
         </div>
+
+        <!-- 右侧浮动锚点栏（用户 2026-11-22）：快速跳到 视频编辑 / 封面设计 / 产出。
+             固定贴在视口右缘（`.main` 的滚动条之外那一圈留白里），窄屏直接不渲染 ——
+             它只是导航，不承载任何功能。 -->
+        <nav class="page-anchors" aria-label="页面锚点">
+          <button v-for="a in anchors" :key="a.id" type="button" class="anchor-dot"
+                  :class="{ on: activeAnchor === a.id }" :aria-label="a.label" :title="a.label"
+                  @click="jumpTo(a.id)">
+            <Icon :name="a.icon" :size="13" />
+            <span class="anchor-label">{{ a.label }}</span>
+          </button>
+        </nav>
       </template>
     </template>
 
@@ -777,6 +807,7 @@ import TimelineEditor from '../components/TimelineEditor.vue'
 import FragmentList from '../components/polish/FragmentList.vue'
 import CoverDesigner from '../components/CoverDesigner.vue'
 import { clipMediaUrl } from '../utils'
+import { humanBytes } from '../stores/project'
 import { api } from '../api/client'
 import { addClient } from '../stores/log'
 import { projectData } from '../api/projectData'
@@ -1347,9 +1378,112 @@ watch(() => cfg.value?.layout, () => { if (!selectRegion.value) loadSelRect() })
 // 实测触发：`GET /api/media/2/output/clips/clip-25/vtuber-clip.mp4 → 404`，
 // 同时 `/api/jobs → 请求超时（10000ms）` 连续出现。
 const renderedFile = computed(() => clipEntry.value?.rendered_file || null)
-const renderedUrl = computed(() => (renderedFile.value
-  ? clipMediaUrl(pid.value, dir.value, renderedFile.value)
-  : null))
+
+// ---- 产物文件夹（列表 + 预览）：服务端 `GET /api/project-data/polish` 的 `artifacts` ----
+// 用户 2026-11-22 口径：「精修的产物右侧改成类似文件夹的格式，左为列表，显示顺序先后，右侧为预览」。
+// 以前右半是"最新成片 + 最新封面"两个框 —— 历史版本（同名不覆盖的 `_1`/`_2`）在界面上根本拿不到，
+// 只能去资源管理器里翻。现在左列列全部产物、右侧预览选中的那份。
+// ⚠️ **排序与"哪些算产物"只在服务端**（`api/polish.rs::artifact_files_of`）：片段目录里还躺着
+// `clip.mp4`（源）、`_proxy_720.mp4`（预览代理）、`_thumb.jpg`、`_cover_bg.jpg`/`_cover_frame.jpg`
+// （封面设计器的中间图）—— 前端若自己扫一遍目录，迟早把这些也列成"产物"。
+const artifacts = computed(() => {
+  const list = clipEntry.value?.artifacts
+  if (Array.isArray(list) && list.length) return list
+  // 老服务端没有这个字段 ⇒ 退回"最新成片 + 最新封面"两条（不让卡片变成空壳；正常不会走到）
+  const out = []
+  if (renderedFile.value) out.push({ name: renderedFile.value, kind: 'video', bytes: 0, mtime: 0 })
+  const cover = clipEntry.value?.cover_file
+  if (cover) out.push({ name: cover, kind: 'image', bytes: 0, mtime: 0 })
+  return out
+})
+const activeArtifactName = ref('')
+// 手动选过哪一行（与它所属的片段目录）：同一片段内产物刷新时**别抢回**默认项；
+// 换片段即作废（新片段当然要按新片段的默认项来）。
+let pickedByUser = false
+let pickedForDir = null
+const activeArtifact = computed(() =>
+  artifacts.value.find((f) => f.name === activeArtifactName.value) || null)
+const activeArtifactUrl = computed(() => (activeArtifact.value
+  ? clipMediaUrl(pid.value, dir.value, activeArtifact.value.name)
+  : ''))
+/** 预览失败（文件坏了 / 被删了）：**只影响预览**，清单里那一行还在 —— 别让它退化成"没有产物"。 */
+const previewFailed = ref(false)
+const artFilesEl = ref(null)
+
+/** 列表行的悬停说明：`成片 · 2.1 MB · 10-30 03:31`（行内只放文件名 + 时分，见 `artifactWhen`）。 */
+function artifactMeta(f) {
+  const kind = f.kind === 'video' ? '成片' : '封面'
+  const size = f.bytes > 0 ? ' · ' + humanBytes(f.bytes) : ''
+  return kind + size + (f.mtime > 0 ? ' · ' + fmtArtifactStamp(f.mtime) : '')
+}
+/** 行尾那个时刻 = **产出先后**的可读证据（列表本身就是按它排的）。只留时分，
+ *  日期与大小在悬停里 —— 180px 高的列表里，一行的宽度要优先让给文件名。 */
+function artifactWhen(f) {
+  const ms = Number(f.mtime || 0) * 1000
+  const d = new Date(ms)
+  if (!ms || !Number.isFinite(d.getTime())) return ''
+  const p = (n) => String(n).padStart(2, '0')
+  return p(d.getHours()) + ':' + p(d.getMinutes())
+}
+/** unix 秒 → `MM-DD HH:mm`（与 `TimelineEditor` / `WorkbenchView` 里那两处局部实现同形；
+ *  本仓没有公共的日期格式化函数，为一处四行格式化不值得单独抽模块）。 */
+function fmtArtifactStamp(sec) {
+  const d = new Date(Number(sec) * 1000)
+  if (!Number.isFinite(d.getTime())) return ''
+  const p = (n) => String(n).padStart(2, '0')
+  return p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes())
+}
+
+/** 用户手动点了一行：换预览、失败态清零（否则上一份的"预览失败"会粘在新文件上），
+ *  并记下"这是人选的" —— 之后产物刷新（新出了一版）不许把默认项抢回去。
+ *  滚动交给下面那个 `watch([loading, ready, activeArtifactName])`。 */
+function pickArtifact(name) {
+  if (name === activeArtifactName.value) return
+  activeArtifactName.value = name
+  previewFailed.value = false
+  pickedByUser = true
+  pickedForDir = dir.value
+}
+
+/** 把选中行滚进列表的可视区。**别用 `scrollIntoView`** —— 它会连带把整个页面滚一段，
+ *  产物卡（在页面最底部）会被顶出视口。`.art-files` 是 `position:relative`，`offsetTop` 可靠。 */
+function revealActiveArtifact() {
+  const box = artFilesEl.value
+  if (!box) return
+  const row = box.querySelector('.art-file.on')
+  if (!row) return
+  const top = row.offsetTop
+  const bottom = top + row.offsetHeight
+  if (top < box.scrollTop) box.scrollTop = top
+  else if (bottom > box.scrollTop + box.clientHeight) box.scrollTop = bottom - box.clientHeight
+}
+
+/**
+ * 换片段 / 产物刷新后重新挑默认项 = **最新那份成片**（与切片卡片「已导出」同口径：走
+ * `rendered_file`，而不是"列表最后一行"—— mtime 与版本号在极端情况下会不一致）；
+ * 没有成片就退到最近一份封面。已经在选的那份还在列表里就不动（别把用户选的历史版本抢回去）。
+ */
+watch([() => dir.value, artifacts], () => {
+  const list = artifacts.value
+  const keep = list.some((f) => f.name === activeArtifactName.value)
+  // 用户在这个片段里手动选过、而那一份还在 ⇒ 不动（产物刷新 = 又多了一版，
+  // 不该把人正在看的旧版本换掉）。其余情况（首次 / 换片段 / 选中的被删了）都重挑默认项。
+  if (keep && pickedByUser && pickedForDir === dir.value) return
+  previewFailed.value = false
+  if (!list.length) { activeArtifactName.value = ''; return }
+  const latestVideo = [...list].reverse().find((f) => f.kind === 'video')
+  const cover = list.find((f) => f.name === clipEntry.value?.cover_file)
+  const pick = list.find((f) => f.name === renderedFile.value) || latestVideo || cover || list[list.length - 1]
+  activeArtifactName.value = pick.name
+  pickedByUser = false
+  pickedForDir = null
+}, { immediate: true })
+
+// 选中行滚进列表视口。⚠️ **必须等 DOM 真的在**：`loading` 期间是骨架屏、`!ready` 是占位卡，
+// 那两种状态下整张产物卡都没渲染（`artFilesEl` 是 null）—— 而默认项在数据到达时就选好了，
+// 只在"选中那一刻"滚会**永远滚不到**（实测：5 个版本时最后一行被截在框外）。
+// 所以把两个"卡片可能刚挂上"的开关一起看，`flush:'post'` 保证 DOM 已经打完再量。
+watch([loading, ready, activeArtifactName], () => revealActiveArtifact(), { flush: 'post' })
 
 
 // ---- 发布标题（产物卡那一条）：可直接复制、也能改 ----
@@ -3390,11 +3524,15 @@ onUnmounted(() => {
 /* ── 产物卡：左（标题三行）｜ 右（成片 + 封面两个 16:9 框），**高度固定** ──
    用户口径（2026-11-14）：没产物时高度不许塌成一条 —— 有产物时的高度才是常态，
    所以空态也画同尺寸的虚线占位框。 */
-.artifact-bar .art-body { display:flex; align-items:stretch; gap:12px; height:180px; margin-top:10px; }
+/* 高度**不再写死**：右半的预览是 16:9（用户 2026-11-22：拉高到能完整看 16:9），
+   整行高度由它按自身宽度算出来 —— 左栏与列表跟着 stretch。空态框同样 16:9，所以不塌。 */
+.artifact-bar .art-body { display:flex; align-items:stretch; gap:12px; margin-top:10px; }
 /* 左栏（标题/主播名/完整标题）**只占 1/4**，剩下的 3/4 全给成片 + 封面（用户 2026-11-14 口径）。
-   栅格 = 44px 标签列 + 控件列（列间距 8px），三行共用同一套列 ⇒ 控件左边缘严格对齐。 */
+   栅格 = 44px 标签列 + 控件列（列间距 8px），三行共用同一套列 ⇒ 控件左边缘严格对齐。
+   ⚠️ 竖向 **flex-start**：产物卡现在被 16:9 预览撑到 350+ 高，居中会让三行飘在中间、
+   上下各空一大块（用户 2026-11-22：复制框要跟着内容高度走，别把整列撑满）。 */
 .artifact-bar .art-left { display:flex; flex-direction:column; gap:10px; min-width:0; flex:0 0 25%;
-  justify-content:center; }
+  justify-content:flex-start; }
 .artifact-bar .art-field { display:grid; grid-template-columns:44px minmax(0,1fr); align-items:center;
   gap:8px; flex:none; }
 .artifact-bar .art-field > label { white-space:nowrap; text-align:right; }
