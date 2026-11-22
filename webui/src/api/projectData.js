@@ -38,8 +38,16 @@ export const projectData = {
    * 改一个片段的**发布标题**（不是 `clip.json` 的标题 —— 那份是片段身份，见服务端
    * `clip_title_put_impl` 的注释）。空串 = 清掉标题。
    */
-  setClipTitle: (pid, name, title) =>
-    api(paths.clipTitle(pid, name), { method: 'PUT', body: JSON.stringify({ title }), label: '保存发布标题' }),
+  /**
+   * 发布标题 + 主播名覆盖（`streamer` 三态，见 `yekitrim_core::naming`）：
+   * `undefined` = 不动主播名（老调用方）；`null` = 跟随本项目；`''` = 这段不用；`'名'` = 锁定。
+   */
+  setClipTitle: (pid, name, title, streamer) =>
+    api(paths.clipTitle(pid, name), {
+      method: 'PUT',
+      body: JSON.stringify(streamer === undefined ? { title } : { title, streamer_name: streamer }),
+      label: '保存发布标题'
+    }),
   polishMap: (pid, label) => api(paths.polishMap(pid), { label }),
   config: (pid, label) => api(paths.config(pid), { label }),
   transcript: (pid, label) => api(`/api/project-data/transcript?${scopeQ(pid)}`, { label }),

@@ -54,6 +54,10 @@ struct ClipEntry {
     file: String,
     #[serde(default)]
     title: String,
+    /// 主播名的**片段级覆盖**（三态，见 `yekitrim_core::naming`）：
+    /// 缺席 = 跟随项目级；`""` = 这个片段不用；`"名"` = 锁定。
+    #[serde(default)]
+    streamer_name: Option<String>,
     #[serde(default)]
     summary: String,
     #[serde(default)]
@@ -123,6 +127,16 @@ pub(crate) async fn publish(
     // 网络盘上 —— 按 api 卡「同步 IO 纪律」下 blocking 池。
     let ws_for_out = scope.ws.clone();
     let output = blocking(move || Ok(ws_for_out.output_dir())).await?;
+    // **主播名（项目级）**：产物标题的唯一来源（`[detection].vtuber_name`，规则见 `yekitrim_core::naming`）。
+    // 读 `yekitrim.toml` + 合并全局配置是同步 IO（工程常在网络盘上）⇒ blocking 池。
+    let ws_for_name = scope.ws.clone();
+    let project_name = blocking(move || {
+        Ok(ws_for_name
+            .load_config()
+            .map(|c| c.detection.vtuber_name)
+            .unwrap_or_default())
+    })
+    .await?;
     let publish_file = output.join("publish_config.json");
     let file = blocking(move || {
         let raw = std::fs::read_to_string(&publish_file).map_err(|e| {
@@ -207,6 +221,7 @@ pub(crate) async fn publish(
             staging_dir,
             container_root,
             selected,
+            project_name,
         )
         .await;
         match result {
@@ -240,6 +255,8 @@ async fn run_publish_job(
     staging_dir: PathBuf,
     container_root: String,
     selected: Vec<ClipEntry>,
+    // 项目级主播名（空 = 不拼）。见 `yekitrim_core::naming`。
+    project_name: String,
 ) -> Result<(), String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
@@ -247,7 +264,7 @@ async fn run_publish_job(
         .map_err(|e| format!("HTTP 客户端失败: {e}"))?;
 
     let staged = blocking(move || {
-        stage_clips(&output, project_id, &selected, &staging_dir, &container_root)
+        stage_clips(&output, project_id, &selected, &staging_dir, &container_root, &project_name)
     })
     .await
     .map_err(|e| err_text(&e))?;
@@ -572,6 +589,9 @@ fn stage_clips(
     clips: &[ClipEntry],
     staging_dir: &Path,
     container_root: &str,
+    // 项目级主播名（空 = 不拼）。**投稿送出去的标题就在这一步合成** ——
+    // `publish_config.json` 里存的是纯标题，名字不进切片产物（见 `yekitrim_core::naming`）。
+    project_name: &str,
 ) -> Result<Vec<StagedClip>, crate::api::AppError> {
     if staging_dir.as_os_str().is_empty() {
         return Err(err(
@@ -634,13 +654,20 @@ fn stage_clips(
             })?;
         }
         let container_path = format!("{container_root}/{project_id}/{name}.mp4");
+        // 标题为空就退回目录名（老行为），再统一交给 `naming` 拼主播名 ——
+        // 规则只有一份：`resolve_streamer` 会处理「老数据里已经带着 tag」那三种情况。
+        let base = if c.title.trim().is_empty() {
+            c.directory.clone()
+        } else {
+            c.title.clone()
+        };
         out.push(StagedClip {
             directory: name,
-            title: if c.title.trim().is_empty() {
-                c.directory.clone()
-            } else {
-                c.title.clone()
-            },
+            title: yekitrim_core::naming::publish_title(
+                c.streamer_name.as_deref(),
+                &base,
+                project_name,
+            ),
             summary: c.summary.clone(),
             container_path,
         });
@@ -928,6 +955,7 @@ mod tests {
         ClipEntry {
             file: format!("clips/{dir}/clip.mp4"),
             title: format!("标题{rank}"),
+            streamer_name: None,
             summary: format!("摘要{rank}"),
             rank,
             directory: dir.into(),
@@ -1040,6 +1068,7 @@ mod tests {
         let entry = ClipEntry {
             file: "clips/clip-01/clip.mp4".into(),
             title: "标题".into(),
+            streamer_name: None,
             summary: String::new(),
             rank: 1,
             directory: "clip-01".into(),
@@ -1052,6 +1081,7 @@ mod tests {
                 std::slice::from_ref(&entry),
                 &staging,
                 "/app/video/_yekitrim_publish",
+                "",
             )
             .unwrap()
         };

@@ -674,22 +674,23 @@
                 <input id="pub-title-in" v-model="titleBase" placeholder="标题"
                        @change="savePublishTitle" @keydown.enter.prevent="savePublishTitle">
               </div>
-              <!-- ② 主播名：**开关就长在它身上** —— 点「主播名」三个字切换开/关（关 = 变灰、且不拼进标题）；
-                   前/后 两段跟在输入框后面（关着时置灰不可点）。 -->
-              <div class="art-field art-field-name" :class="{ off: !withName }">
+              <!-- ② 主播名（2026-11-22）：**位置固定在后**（`标题【名】`），不再有前/后。
+                   三级取值：片段覆盖 > 本项目「写回本项目」那个值 > 程序默认。
+                   · 开关 = 这条片段用不用名字（关 ⇒ 落盘 `streamer_name: ""`，锁定为不用）；
+                   · 输入框空 = **跟随本项目**（占位符显示当前跟随到的名字），填了 = 锁定成这个；
+                   · 「写回本项目」= 把当前值设成整个项目的默认（此后跟随的片段一起变）。
+                   ⚠️ 名字只进**产物标题**，不参与切片/检测/目录命名（见 core 的 naming 卡）。 -->
+              <div class="art-field art-field-name" :class="{ off: !useName }">
                 <label class="small name-toggle" role="button" tabindex="0"
-                       :title="withName ? '主播名已拼进标题 · 点一下关掉' : '主播名没拼进去 · 点一下打开'"
+                       :title="useName ? '这条片段会带主播名 · 点一下关掉' : '这条片段不带主播名 · 点一下打开'"
                        @click.prevent="toggleName" @keydown.enter.prevent="toggleName" @keydown.space.prevent="toggleName">主播名</label>
                 <div class="name-cell">
-                  <input id="pub-name-in" v-model="pubName" placeholder="主播名"
-                         :title="'主播名：默认取本工程（或全局）的 [detection].vtuber_name；这里改只影响这条标题'"
+                  <input id="pub-name-in" v-model="pubName" :placeholder="namePlaceholder"
+                         :title="'主播名：空 = 跟随本项目；填了 = 只影响这条片段'"
                          @change="savePublishTitle">
-                  <div class="seg" :class="{ off: !withName }" title="主播名放在标题的前面还是后面">
-                    <button type="button" :class="{ on: nameFirst }" :disabled="!withName"
-                            @click="nameFirst = true; savePublishTitle()">前</button>
-                    <button type="button" :class="{ on: !nameFirst }" :disabled="!withName"
-                            @click="nameFirst = false; savePublishTitle()">后</button>
-                  </div>
+                  <button type="button" class="mini-btn name-to-project" :disabled="!nameHint"
+                          :title="'把当前主播名写成本项目默认（跟随本项目的片段一起生效）'"
+                          @click="saveNameToProject">写回本项目</button>
                 </div>
               </div>
               <!-- ③ 完整标题：**纯文本、单击即复制**（没有按钮、没有「完整」标签）。
@@ -1341,11 +1342,22 @@ const renderedUrl = computed(() => (renderedFile.value
 // · 开关 = 用不用主播名（以 `【名】` 形式出现）
 // · 前后 = 勾上主播名放**前**，不勾放**后**
 // · 标题 = 标题本身也拼进去（不勾就只剩主播名）
-const pubName = ref('')            // 主播名（草稿：默认取合并配置，改这里只影响本条标题）
-const withName = ref(false)        // 开关（滑动开关）
-const nameFirst = ref(false)       // 前/后：true = 主播名放标题前面
+// ---- 主播名（2026-11-22 三级取值：片段覆盖 > 本项目 > 程序默认）--------------------------
+// 与后端 `publish_config.json` 的 `clips[].streamer_name` 三态一一对应：
+//   null = 跟随本项目；'' = 这条片段明确不用；'名' = 锁定成这个。
+const pubName = ref('')            // 片段**覆盖**值（空 = 跟随，不是「没有名字」）
+const useName = ref(true)          // 这条片段**用不用**名字（关 ⇒ 落 `''`）
+const followName = ref(true)       // 是否跟随本项目（= 覆盖值为 null）
+const projectStreamer = ref('')    // 本项目当前生效的名字（服务端 `streamer_name_effective`）
+const nameHint = computed(() => (pubName.value.trim() || (followName.value ? projectStreamer.value : '')).trim())
+const namePlaceholder = computed(() =>
+  followName.value
+    ? (projectStreamer.value ? `跟随本项目：${projectStreamer.value}` : '跟随本项目（未设置）')
+    : '这条片段自己的主播名（清空 = 跟随本项目）')
 const titleBase = ref('')          // 标题本身（可编辑；标题**没有**开关了，永远在）
 const savedPublishTitle = ref('')  // 上一次落盘的**完整标题**（判断有没有改动）
+const savedTitleCore = ref('')     // 上一次落盘的**纯标题**（落盘的就是它）
+let savedStreamer = null           // 上一次落盘的主播名三态（null/''/'名'）
 const publishTitleLoaded = ref(false)
 const titleClip = ref('')
 const titleSaving = ref(false)
@@ -1353,14 +1365,15 @@ const titleErr = ref('')
 const titleFlash = ref('')
 let flashTimer = null
 
-const nameTag = computed(() => (pubName.value.trim() ? '【' + pubName.value.trim() + '】' : ''))
-/** 拼出来的**完整标题**：只读、也是「复制」与落盘的那一份。 */
+const nameTag = computed(() => (nameHint.value ? '【' + nameHint.value + '】' : ''))
+/** 拼出来的**完整标题**：只读、也是「复制」的那一份。
+ *  ⚠️ 规则必须与 `yekitrim_core::naming` 逐字一致：**名字永远在末尾**、空名不拼。
+ *  真正落盘的是**纯标题**（`titleBase`），名字由服务端在读取/投稿时合成。 */
 const finalTitle = computed(() => {
-  const tag = withName.value ? nameTag.value : ''
+  const tag = useName.value ? nameTag.value : ''
   const body = titleBase.value.trim()
   if (!tag) return body
-  if (!body) return tag
-  return nameFirst.value ? tag + body : body + tag
+  return body + tag
 })
 
 /** 种子：服务端带回来的「投稿用的那句」优先（`publish_title`，来自 publish_config），
@@ -1374,38 +1387,48 @@ function seedPublishTitle(entry) {
     && finalTitle.value.trim() !== savedPublishTitle.value
   if (dirty) return
   titleClip.value = name
-  const raw = String(entry?.publish_title || entry?.meta?.title || '').trim()
-  savedPublishTitle.value = raw
+  savedPublishTitle.value = String(entry?.publish_title || '').trim()
   publishTitleLoaded.value = !!entry
   titleErr.value = ''
-  const hit = splitNameTag(raw)
-  if (hit) {
-    // 标题里带的那个名字**就是它**：比配置里的更可信（配置可能改过、标题未必跟着改），
-    // 所以顺手把「主播名」框对齐到它，免得拆出来的标签和框里的名字对不上。
-    if (hit.name) pubName.value = hit.name
-    withName.value = true
-    nameFirst.value = hit.first
-    titleBase.value = hit.rest
-  } else {
-    withName.value = false
-    titleBase.value = raw
+  // 服务端已经把三态算好了（`yekitrim_core::naming::resolve_streamer`）：
+  //   `publish_title_core` = 纯标题（编辑框那份）；`streamer_name` = 覆盖（null = 跟随）；
+  //   `streamer_name_effective` = 这一条实际生效的名字。
+  titleBase.value = String(entry?.publish_title_core ?? entry?.meta?.title ?? '').trim()
+  savedTitleCore.value = titleBase.value
+  const override = entry?.streamer_name
+  savedStreamer = override === undefined ? null : override
+  followName.value = override === null || override === undefined
+  pubName.value = followName.value ? '' : String(override)
+  useName.value = !(override === '' ) && String(entry?.streamer_name_effective || '').trim() !== ''
+  if (followName.value) projectStreamer.value = String(entry?.streamer_name_effective || '').trim()
+}
+
+
+/**
+ * 「写回本项目」= 把当前主播名设成**整个项目的默认**（`[detection].vtuber_name`）。
+ *
+ * 只改项目那一份：跟随项目的片段会一起变；已经锁定过的片段**不受影响**（这就是
+ * 「不覆盖」—— 与后端 `naming::resolve_streamer` 同一条语义）。
+ * 改完把本条恢复成「跟随」，让用户立刻看到效果。
+ */
+async function saveNameToProject() {
+  const v = nameHint.value
+  if (!v) return
+  try {
+    await projectData.patchConfig(pid.value, { detection: { vtuber_name: v } })
+    projectStreamer.value = v
+    followName.value = true
+    pubName.value = ''
+    await savePublishTitle()
+    flashTitle('已写回本项目')
+  } catch (e) {
+    titleErr.value = '写回本项目失败：' + (e?.message || String(e))
   }
 }
 
-/** 从落盘的完整标题里拆出头/尾的 `【名】`（没有就 null）。
- *  ⚠️ 别拿「主播名」框里的值去比对再拆：那个值是配置来的，而标题里的名字可能已经不同 ——
- *  对不上时旧实现会把整个 `【名】` 当成标题正文塞回输入框（刷新后看着像坏了）。 */
-function splitNameTag(raw) {
-  const head = raw.match(/^【([^】]*)】/)
-  if (head) return { name: head[1].trim(), first: true, rest: raw.slice(head[0].length).trim() }
-  const tail = raw.match(/【([^】]*)】$/)
-  if (tail) return { name: tail[1].trim(), first: false, rest: raw.slice(0, raw.length - tail[0].length).trim() }
-  return null
-}
-
-/** 点「主播名」三个字 = 开关主播名（关 = 不拼进标题，整行变灰）。 */
+/** 点「主播名」三个字 = 这条片段**用不用**名字（关 = 落 `streamer_name: ""`，锁定为不用）。 */
 function toggleName() {
-  withName.value = !withName.value
+  useName.value = !useName.value
   savePublishTitle()
 }
 function flashTitle(msg) {
@@ -1417,16 +1440,29 @@ function flashTitle(msg) {
 /** 保存（`@change` = 失焦 / 回车，不每敲一键发一次）。空串 = 清掉标题。 */
 async function savePublishTitle() {
   if (!publishTitleLoaded.value || !clipName.value) return
-  const t = finalTitle.value.trim()
-  if (t === savedPublishTitle.value) return
+  // **落盘的是纯标题**（名字不进切片产物）；主播名单独按三态发过去。
+  const core = titleBase.value.trim()
+  const streamer = !useName.value
+    ? ''
+    : (followName.value || !pubName.value.trim() ? null : pubName.value.trim())
+  const composed = (useName.value ? (core + nameTag.value) : core).trim()
+  if (core === savedTitleCore.value && streamer === savedStreamer) return
   titleSaving.value = true
   titleErr.value = ''
   try {
-    await projectData.setClipTitle(pid.value, clipName.value, t)
-    savedPublishTitle.value = t
+    await projectData.setClipTitle(pid.value, clipName.value, core, streamer)
+    savedTitleCore.value = core
+    savedStreamer = streamer
+    savedPublishTitle.value = composed
     // 本地这份切片列表也跟上：切走再切回来不必等接口
     const row = clips.value.find((c) => c.name === clipName.value)
-    if (row) row.publish_title = t
+    if (row) {
+      row.publish_title = composed
+      row.publish_title_core = core
+      row.streamer_name = streamer
+      row.streamer_name_effective = nameHint.value
+    }
+    if (streamer === null && nameHint.value) projectStreamer.value = nameHint.value
     flashTitle('已保存')
   } catch (e) {
     titleErr.value = '保存失败：' + ((e && e.message) || e)
@@ -1486,10 +1522,6 @@ async function loadVtuberName() {
   const row = clips.value.find((c) => c.name === clipName.value)
   if (row) seedPublishTitle(row)
 }
-const coverFailed = ref(false)
-const renderedFailed = ref(false)
-const coverFile = computed(() => clipEntry.value?.cover_file || 'cover.jpg')
-const coverUrl = computed(() => clipMediaUrl(pid.value, dir.value, coverFile.value))
 
 /** 本地 kind → 人话名字。
  *
@@ -3374,11 +3406,13 @@ onUnmounted(() => {
 .artifact-bar .seg > button.on { background:var(--main-soft); color:var(--pink-text); font-weight:var(--fw-semi); }
 .artifact-bar .seg.off { opacity:.45; }
 .artifact-bar .seg > button:disabled { cursor:default; }
-/* 「完整标题」= 栅格第二列（与两个输入框同一条左边缘），吃掉剩下的高度。
+/* 「完整标题」= 栅格第二列（与两个输入框同一条左边缘），**高度跟着内容走**。
    ⚠️ **至少留两行**（用户口径：只给一行长标题会显示不全）：`min-height` 按两行行高算，
-   超出就自然换行、再超出才滚动 —— 别用 `line-clamp` 截断。 */
+   超出就自然换行、再超出才滚动 —— 别用 `line-clamp` 截断。
+   ⚠️ **不许 `flex:1`**（用户 2026-11-22：「这里复制框需要跟随实际的高度」）：
+   以前它 grow 到产物卡满高（16:9 预览撑开后是一整块 300px 的空白虚线框）。 */
 .artifact-bar .art-final-row { display:grid; grid-template-columns:44px minmax(0,1fr); gap:8px;
-  flex:1 1 auto; min-height:56px; }
+  flex:0 0 auto; min-height:56px; }
 /* 常驻一条淡虚线边框：不点开也知道「这一整块是可点的最终标题」（只在 hover 变主色） */
 .artifact-bar .pub-final { grid-column:2; margin-top:0; align-items:flex-start; flex-wrap:nowrap;
   justify-content:space-between; gap:10px; overflow:auto; min-height:56px;

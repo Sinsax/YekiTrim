@@ -746,6 +746,23 @@ async fn ingest_into(
         },
     )?;
     let project_id = landed.project_id;
+
+    // **主播名自动填充**（2026-11-22，用户口径「填入是手动 + 自动」）：录播姬的目录名默认是
+    // `<房间号>-<主播名>`，从源文件路径里把那段名字取出来写进项目配置。
+    // ⚠️ `seed_streamer_name` **只填空值** ⇒ 用户手改过的名字不会被覆盖；
+    // ⚠️ 失败只 warn —— 自动填名字不该让入库失败；
+    // ⚠️ 名字**只用于产物标题**，不参与检测/剪切/目录命名。
+    if let Some(hint) = sources.iter().find_map(|p| {
+        p.ancestors().find_map(|a| {
+            let n = a.file_name()?.to_str()?;
+            yekitrim_service::recorder::room_id_from_dir_name(n)
+                .and(yekitrim_service::recorder::streamer_name_from_dir_name(n))
+        })
+    }) {
+        if let Err(e) = yekitrim_service::projects::seed_streamer_name(project_root, Some(&hint)) {
+            tracing::warn!("主播名自动填入失败（不影响入库）: {e:#}");
+        }
+    }
     tracing::info!(
         "入库完成: session={} → project={project_id}（{} 个文件，合并={concat}，新建={}）",
         session.session_id,

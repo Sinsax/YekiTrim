@@ -71,8 +71,10 @@
           <div class="form-section-title">检测</div>
           <div class="form-grid">
             <div class="span-2">
-              <label>主播名</label>
-              <input v-model="form.detection.vtuber_name" type="text" placeholder="追加到切片标题">
+              <label>主播名（默认值）</label>
+              <input v-model="form.detection.vtuber_name" type="text"
+                     placeholder="只用于产物标题，切片时不用"
+                     title="只用于产物标题（`标题【名】`）：不参与切片、不参与目录命名。填错不影响已剪片段，改完刷新精修页即可；每个工程可在出片页覆盖">
             </div>
           </div>
         </div>

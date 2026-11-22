@@ -998,23 +998,34 @@ pub(super) fn data_clips_impl(ws: &Workspace) -> ApiResult {
     // 发布标题（`publish_config.json` 的 `clips[].title`）：页面上那个「发布标题」框要显示
     // **投稿真正会用的那句**，而不是 `clip.json` 的原始标题 —— 改过标题的片段刷新后
     // 必须还是改过的那句（否则用户会以为没保存成功，再改一遍）。整份文件读一次即可。
-    let publish_titles: std::collections::HashMap<String, String> = std::fs::read_to_string(
-        ws.output_dir().join("publish_config.json"),
-    )
-    .ok()
-    .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
-    .and_then(|v| {
-        v.get("clips").and_then(|c| c.as_array()).map(|arr| {
-            arr.iter()
-                .filter_map(|c| {
-                    let dir = c.get("directory").and_then(|d| d.as_str())?;
-                    let title = c.get("title").and_then(|t| t.as_str()).unwrap_or("");
-                    Some((dir.to_string(), title.to_string()))
+    // ⚠️ 这里读的 `title` 是**纯标题**（切片产物不带主播名，2026-11-22 起）；
+    // 名字在下面用 `naming` 实时合成。第二项是片段的覆盖值（`None` = 跟随项目级）。
+    let publish_entries: std::collections::HashMap<String, (String, Option<String>)> =
+        std::fs::read_to_string(ws.output_dir().join("publish_config.json"))
+            .ok()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+            .and_then(|v| {
+                v.get("clips").and_then(|c| c.as_array()).map(|arr| {
+                    arr.iter()
+                        .filter_map(|c| {
+                            let dir = c.get("directory").and_then(|d| d.as_str())?;
+                            let title = c.get("title").and_then(|t| t.as_str()).unwrap_or("");
+                            let streamer = c
+                                .get("streamer_name")
+                                .and_then(|s| s.as_str())
+                                .map(str::to_string);
+                            Some((dir.to_string(), (title.to_string(), streamer)))
+                        })
+                        .collect()
                 })
-                .collect()
-        })
-    })
-    .unwrap_or_default();
+            })
+            .unwrap_or_default();
+    // 项目级主播名：产物标题的唯一来源（`[detection].vtuber_name`）。读不到就当空 ——
+    // **绝不因为配置读失败而拦掉整个切片列表**（那是用户唯一的操作面）。
+    let project_streamer = ws
+        .load_config()
+        .map(|c| c.detection.vtuber_name)
+        .unwrap_or_default();
     let mut out = vec![];
     // 源弹幕的起始时间表：只有遇到「没有 clip.dm.srt 的老切片」时才解析一次（见下）
     let mut dm_starts: Option<Vec<f64>> = None;
@@ -1056,12 +1067,39 @@ pub(super) fn data_clips_impl(ws: &Workspace) -> ApiResult {
         let quality = clip_quality(&dir_path, duration_secs);
         // 先取出来再进 `json!`：`dir_name` 在下面会被 `json!` 吃掉（`to_value` 按值），
         // 之后再 `get(&dir_name)` 就借不到了。
-        let publish_title = publish_titles.get(&dir_name).cloned().unwrap_or_default();
+        // 纯标题（编辑框那一份）：发布索引优先，没有再回落到 `clip.json` 的标题。
+        let (stored_title, streamer_override) = publish_entries
+            .get(&dir_name)
+            .cloned()
+            .unwrap_or_default();
+        let base_title = if stored_title.trim().is_empty() {
+            meta.get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        } else {
+            stored_title
+        };
+        // 三态归一化（含"老数据里 title 已经带着 `【旧名】`"那段）：
+        // `(正文, 生效的名字)` —— 规则只有 `yekitrim_core::naming` 一份。
+        let (title_core, streamer_effective) = yekitrim_core::naming::resolve_streamer(
+            streamer_override.as_deref(),
+            &base_title,
+            &project_streamer,
+        );
+        let publish_title = yekitrim_core::naming::streamer_title(&title_core, &streamer_effective);
         out.push(serde_json::json!({
             "dir": yekitrim_core::path::display(&dir_path),
             "name": dir_name,
-            // 发布标题（投稿用；改过就是改过的那句）—— 见上面 `publish_titles` 的注释
+            // 发布标题 = **合成后**的那句（显示/复制用；投稿送出去的也是它）
             "publish_title": publish_title,
+            // 纯标题（编辑框的值；不含主播名）
+            "publish_title_core": title_core,
+            // 片段级覆盖：null = 跟随项目级；"" = 这段不用；其它 = 锁定
+            "streamer_name": streamer_override,
+            // 实际生效的名字（界面拿它显示「跟随中 · 某某」）
+            "streamer_name_effective": streamer_effective,
             "video_exists": video_path.exists(),
             "size_bytes": size_bytes,
             "duration_secs": duration_secs,
@@ -1244,7 +1282,23 @@ const MAX_TITLE_CHARS: usize = 200;
 ///
 /// 生命周期：重切**这个**片段会按 clip.json 重新生成标题（Cutter 的「同名覆盖」），重切**别的**
 /// 片段不会动它 —— 后者由 publish_index_merges_incremental_cuts_* 钉着。
-pub(super) fn clip_title_put_impl(ws: &Workspace, arg: &str, title: &str) -> ApiResult {
+/// 片段的**主播名覆盖**改动意图（三态，别拍平成 `Option<String>` —— 那就分不出
+/// "不动" 与 "清除覆盖"）。
+pub(super) enum StreamerPatch {
+    /// 这次只改标题，主播名保持原样。
+    Keep,
+    /// 清除覆盖 ⇒ 恢复跟随项目级（键直接删掉）。
+    Follow,
+    /// 设成这个值；空串 = 这个片段明确不用主播名。
+    Set(String),
+}
+
+pub(super) fn clip_title_put_impl(
+    ws: &Workspace,
+    arg: &str,
+    title: &str,
+    streamer: &StreamerPatch,
+) -> ApiResult {
     let output = ws.output_dir();
     let clip_dir = resolve_clip_dir(&output, arg)?;
     let Some(dir_name) = clip_dir.file_name().map(|n| n.to_string_lossy().into_owned()) else {
@@ -1268,6 +1322,16 @@ pub(super) fn clip_title_put_impl(ws: &Workspace, arg: &str, title: &str) -> Api
         for c in arr.iter_mut() {
             if c.get("directory").and_then(|d| d.as_str()) == Some(dir_name.as_str()) {
                 c["title"] = serde_json::json!(title);
+                // 主播名三态：Keep 一个字节都不动；Follow 删键；Set 写值。
+                match streamer {
+                    StreamerPatch::Keep => {}
+                    StreamerPatch::Follow => {
+                        if let Some(obj) = c.as_object_mut() {
+                            obj.remove("streamer_name");
+                        }
+                    }
+                    StreamerPatch::Set(v) => c["streamer_name"] = serde_json::json!(v),
+                }
                 hit = true;
             }
         }
@@ -1284,7 +1348,16 @@ pub(super) fn clip_title_put_impl(ws: &Workspace, arg: &str, title: &str) -> Api
         err(StatusCode::INTERNAL_SERVER_ERROR, format!("写入 publish_config.json 失败: {e}"))
     })?;
     sync_order_title(&output, &dir_name, title);
-    ok(serde_json::json!({ "ok": true, "directory": dir_name, "title": title }))
+    ok(serde_json::json!({
+        "ok": true,
+        "directory": dir_name,
+        "title": title,
+        "streamer_name": match streamer {
+            StreamerPatch::Keep => serde_json::Value::Null,
+            StreamerPatch::Follow => serde_json::Value::Null,
+            StreamerPatch::Set(v) => serde_json::json!(v),
+        },
+    }))
 }
 
 /// clips/clips_order.txt 每行「<目录名> <标题>」：标题跟着改，否则那份索引还念着旧标题。
@@ -1338,10 +1411,23 @@ pub(super) async fn project_data_clip_title_put(
             format!("标题最多 {MAX_TITLE_CHARS} 字（当前 {len}）"),
         ));
     }
+    // 主播名的改动意图（三态，见 `yekitrim_core::naming`）：
+    //   键缺席 = 不动；`null` = 清除覆盖（恢复跟随项目级）；字符串 = 设成这个名字（空串 = 这段不用）。
+    let patch = match body.get("streamer_name") {
+        None => StreamerPatch::Keep,
+        Some(serde_json::Value::Null) => StreamerPatch::Follow,
+        Some(serde_json::Value::String(s)) => StreamerPatch::Set(s.trim().to_string()),
+        Some(_) => {
+            return Err(err(
+                StatusCode::BAD_REQUEST,
+                "streamer_name 必须是字符串或 null",
+            ));
+        }
+    };
     // publish_config.json 是 read-modify-write（Cutter 也在写它）：与它走同一条路径锁
     let path = ws.output_dir().join("publish_config.json");
     let _guard = yekitrim_core::filelock::lock_path(&path).await;
-    blocking(move || clip_title_put_impl(&ws, &rank, &title)).await
+    blocking(move || clip_title_put_impl(&ws, &rank, &title, &patch)).await
 }
 /// polish 系列接口的 `dir` 参数校验：非空 + 必须已存在且是目录。
 ///
@@ -3092,6 +3178,99 @@ async fn danmaku_texts_keeps_raw_ass_text() {
     assert!(dm_lines.iter().any(|l| l.contains("怎么没人说话")));
     // 没配弹幕文件的项目：**回空桶**、不报错（"没配弹幕"与"弹幕是空的"对搜索是一回事）
     assert!(v["subs"].as_array().is_some(), "subs 桶也必须存在（可能是空的）");
+}
+
+/// **主播名只进产物标题**（2026-11-22 用户口径：「主播名不参与标题以外的任何处理」）：
+/// 项目级默认 ⇒ 跟随的片段自动带上；改成覆盖 ⇒ 锁定；关掉 ⇒ 不拼；清回 null ⇒ 又跟随。
+/// ⚠️ 全程 `publish_config.json` 的 `title` 都是**纯标题**（切片产物里不许出现 `【名】`）——
+/// 名字只在读取/投稿时合成，这正是「填错名字不用重切」的依据。
+#[tokio::test]
+async fn streamer_name_composes_into_the_publish_title_only() {
+    let t = test_app().await;
+    let root = t.root.clone();
+    let clips = root.join("output").join("clips");
+    std::fs::create_dir_all(&clips).unwrap();
+    write_clip_dir(&clips, 1, 0.0, 10.0, 1, None);
+    std::fs::write(
+        root.join("output").join("publish_config.json"),
+        r#"{"video_source":"a.mp4","clips":[{"directory":"clip-01","title":"标题"}]}"#,
+    )
+    .unwrap();
+    // 项目级主播名（跟着本工程走，不写程序级配置）
+    let cfg = root.join("yekitrim.toml");
+    if !cfg.exists() {
+        std::fs::write(&cfg, "[project]\ninput_file = \"a.mp4\"\n").unwrap();
+    }
+    yekitrim_core::config::patch_config_file(
+        &cfg,
+        &serde_json::json!({ "detection": { "vtuber_name": "主播" } }),
+    )
+    .unwrap();
+
+    let list = || {
+        let t = &t;
+        async move {
+            let res = t
+                .call(t.req("GET", "/project-data/clips?project=1").body(Body::empty()).unwrap())
+                .await;
+            body_json(res).await
+        }
+    };
+    let put = |body: serde_json::Value| {
+        let t = &t;
+        async move {
+            let res = t
+                .call(
+                    t.req("PUT", "/project-data/clips/clip-01/title?project=1")
+                        .header("content-type", "application/json")
+                        .body(Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await;
+            (res.status(), body_json(res).await)
+        }
+    };
+    let title_on_disk = || {
+        let raw = std::fs::read_to_string(root.join("output").join("publish_config.json")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        v["clips"][0]["title"].as_str().unwrap_or("").to_string()
+    };
+
+    // ① 没动过 ⇒ 跟随项目级
+    let v = list().await;
+    assert_eq!(v[0]["publish_title"], "标题【主播】", "{v}");
+    assert_eq!(v[0]["publish_title_core"], "标题", "只读标题框里不该出现名字：{v}");
+    assert_eq!(v[0]["streamer_name"], serde_json::Value::Null, "从没改过 = 跟随（null）: {v}");
+
+    // ② 改成覆盖 ⇒ 锁定成这个名字，磁盘上仍然是纯标题
+    let (st, j) = put(serde_json::json!({ "title": "标题", "streamer_name": "片段名" })).await;
+    assert_eq!(st, StatusCode::OK, "{j}");
+    assert_eq!(title_on_disk(), "标题", "切片产物里不许写名字");
+    let v = list().await;
+    assert_eq!(v[0]["publish_title"], "标题【片段名】", "{v}");
+    assert_eq!(v[0]["streamer_name"], "片段名", "改过 = 锁定: {v}");
+
+    // ③ 改项目级名字 ⇒ 锁定的那条**不跟随**
+    yekitrim_core::config::patch_config_file(
+        &cfg,
+        &serde_json::json!({ "detection": { "vtuber_name": "新主播" } }),
+    )
+    .unwrap();
+    let v = list().await;
+    assert_eq!(v[0]["publish_title"], "标题【片段名】", "锁定过的不许被全局改名带走: {v}");
+
+    // ④ 关掉（空串）⇒ 不拼，且**也不跟随**
+    let (st, _) = put(serde_json::json!({ "title": "标题", "streamer_name": "" })).await;
+    assert_eq!(st, StatusCode::OK);
+    let v = list().await;
+    assert_eq!(v[0]["publish_title"], "标题", "{v}");
+
+    // ⑤ 清回 null ⇒ 恢复跟随（吃到新的项目级名字）
+    let (st, _) = put(serde_json::json!({ "title": "标题", "streamer_name": serde_json::Value::Null })).await;
+    assert_eq!(st, StatusCode::OK);
+    let v = list().await;
+    assert_eq!(v[0]["publish_title"], "标题【新主播】", "{v}");
+    assert_eq!(title_on_disk(), "标题");
 }
 
 /// 发布标题（2026-11-14 用户要求「产物那里加个标题，方便复制也方便改」）：

@@ -488,3 +488,80 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 }
+
+/// 建项目时把**自动取到的主播名**写进 `yekitrim.toml [detection].vtuber_name`（2026-11-22）。
+///
+/// # 语义（用户口径：填入是「手动 + 自动」）
+/// * **自动只在空值时填**：用户手改过的值必须留着（与「局部改过就不跟随全局」同一条纪律，
+///   只是这里发生在项目级）；
+/// * 名字**只用于产物标题**（`yekitrim_core::naming`），不参与检测/剪切/命名/排序。
+///
+/// # 为什么写项目级、不写全局
+/// 主播名是**每个工程**的属性：写进程序级 `config.toml` 会让 A 房间的名字带到 B 工程。
+///
+/// 失败由调用方 `warn` 掉 —— 自动填名字不该让入库/建项目失败。
+pub fn seed_streamer_name(root: &Path, name: Option<&str>) -> Result<()> {
+    let Some(name) = name.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(());
+    };
+    let config_path = root.join("yekitrim.toml");
+    if !config_path.is_file() {
+        return Ok(());
+    }
+    let current = yekitrim_core::config::load_config_at(&config_path)
+        .map(|c| c.detection.vtuber_name)
+        .unwrap_or_default();
+    if !current.trim().is_empty() {
+        return Ok(()); // 手改过 ⇒ 一个字节都不碰
+    }
+    // `patch_config_file` 是递归深合并 + `toml_edit`：别的 section 与注释都留着。
+    yekitrim_core::config::patch_config_file(
+        &config_path,
+        &serde_json::json!({ "detection": { "vtuber_name": name } }),
+    )?;
+    tracing::info!("主播名（只用于产物标题）自动填入：{name}");
+    Ok(())
+}
+
+#[cfg(test)]
+mod streamer_seed_tests {
+    use super::*;
+
+    fn write_cfg(root: &Path, name: &str) {
+        std::fs::write(
+            root.join("yekitrim.toml"),
+            format!(
+                "# 顶注\n[project]\ninput_file = \"a.mp4\"\n\n[detection]\nvtuber_name = \"{name}\"\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    /// 自动填**只填空值**；手改过的一个字节都不碰（这就是「不覆盖」在项目级的形态）。
+    #[test]
+    fn seed_only_fills_an_empty_name_and_keeps_comments() {
+        let dir = tempfile::tempdir().unwrap();
+        write_cfg(dir.path(), "");
+        seed_streamer_name(dir.path(), Some("耶斯yeki")).unwrap();
+        let raw = std::fs::read_to_string(dir.path().join("yekitrim.toml")).unwrap();
+        assert!(raw.contains("vtuber_name = \"耶斯yeki\""), "{raw}");
+        assert!(raw.contains("# 顶注"), "patch 不许把注释吃掉：{raw}");
+
+        // 已经填了（用户手改）⇒ 再来一次不许改
+        seed_streamer_name(dir.path(), Some("别的名字")).unwrap();
+        let raw = std::fs::read_to_string(dir.path().join("yekitrim.toml")).unwrap();
+        assert!(raw.contains("耶斯yeki"), "手改过的值必须留着：{raw}");
+        assert!(!raw.contains("别的名字"));
+    }
+
+    /// 拿不到名字 / 没有工程 ⇒ 什么都不做（也不报错）。
+    #[test]
+    fn seed_is_a_noop_without_a_name_or_a_config() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_streamer_name(dir.path(), None).unwrap();
+        seed_streamer_name(dir.path(), Some("  ")).unwrap();
+        assert!(!dir.path().join("yekitrim.toml").exists());
+        write_cfg(dir.path(), "");
+        seed_streamer_name(dir.path(), None).unwrap();
+    }
+}

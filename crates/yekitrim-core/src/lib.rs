@@ -21,3 +21,5 @@ pub mod process;
 pub mod filelock;
 pub mod tenant;
 pub mod owner;
+/// 产物标题的命名规则（主播名 `【名】` 的唯一实现，见模块头）。
+pub mod naming;

@@ -24,7 +24,6 @@ pub use llm::{
 
 /// LLM 事件后处理参数
 const MIN_EVENT_SECS: f64 = 30.0; // 最短事件时长（保留细分，兜底 30s）
-const MAX_LABEL_LEN: usize = 40; // 标题长度上限（与 prompt 一致）
 
 pub struct EventDetector;
 
@@ -173,22 +172,16 @@ impl Stage for EventDetector {
             }
         }
 
-        // 追加主播标签（无 API key 的默认事件也适用），并控制标题长度上限
-        if !detect_config.vtuber_name.is_empty() {
-            let tag = format!("【{}】", detect_config.vtuber_name);
-            for event in &mut events {
-                if !event.label.ends_with(&tag) {
-                    event.label.push_str(&tag);
-                }
-                if event.label.chars().count() > MAX_LABEL_LEN {
-                    let keep = MAX_LABEL_LEN.saturating_sub(tag.chars().count());
-                    let mut trimmed: String = event.label.chars().take(keep).collect();
-                    trimmed.push_str(&tag);
-                    event.label = trimmed;
-                }
-            }
-            tracing::info!("已追加主播标签: {}", tag);
-        }
+        // ⚠️ **这里以前会把主播名以 `【名】` 追到每一条 `label` 上**（2026-11-22 删除）。
+        //
+        // 为什么删（用户口径）：「主播名只作用于最后产物时的标题添加，前面的一律不用」——
+        // 切片时就把它烧进 `events.json` / `clip.json` / `publish_config.json` 的后果是：
+        // **名字填错，整批片段的标题全错，只能整项目重切**。
+        // 现在 `[detection].vtuber_name` 只在**产物标题**里出现（`naming::streamer_title`），
+        // 由精修页/投稿那条腿合成，切片链路一个字节都不碰它。
+        //
+        // 顺带删掉了 `MAX_LABEL_LEN`(40)：那条闸以前**只在配置了主播名时才生效**
+        // （它要拿 tag 长度算 `keep`）—— 标题长度本来就该由 prompt 约束，不该挂在名字上。
 
         // 事件边界 clamp 到视频时长，丢弃非法事件 (end <= start)
         if let Some(max_end) = video_duration {

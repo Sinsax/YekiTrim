@@ -167,7 +167,7 @@ segment_gap = 1.0         # 段间静音阈值(秒)
 language = "zh"
 
 [detection]
-vtuber_name = ""          # 非空则追加到标题末尾
+vtuber_name = ""          # 主播名：**只**加到产物标题末尾（`标题【名】`），切片/目录命名不用它
 danmaku_window_secs = 10
 
 [cutting]

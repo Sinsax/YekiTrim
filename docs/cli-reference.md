@@ -86,7 +86,7 @@ Stage 3 — LLM 分析转写结果，检测高价值事件。
 - 自动发现优先级：`--transcript` > `transcript_file` > `<output_dir>/transcript.json` > `<output_dir>/video.srt`。
 - 输出 `<output_dir>/events.json`（EventStore 格式），并写入 `yekitrim.toml` 的 `events_file`。
 - 检测逻辑：LLM API key 非空 → 单次调用分析**全部**转录段（64k+ 上下文）；为空 → 降级成单个默认事件（覆盖整段视频）。
-- 传播潜力：仅凭「标题 + 概括」让 LLM 按预测点击率 / 有趣程度 / 爆点强度打分，再与弹幕 / 字幕热度按 `detection.llm_score_weight` 加权，输出 `popularity`（0~1）+ `rank`；无弹幕时基础热度只用字幕密度，LLM 评分失败或关闭时回退基础热度。`detection.vtuber_name` 非空则自动追加到标题末尾。
+- 传播潜力：仅凭「标题 + 概括」让 LLM 按预测点击率 / 有趣程度 / 爆点强度打分，再与弹幕 / 字幕热度按 `detection.llm_score_weight` 加权，输出 `popularity`（0~1）+ `rank`；无弹幕时基础热度只用字幕密度，LLM 评分失败或关闭时回退基础热度。`detection.vtuber_name` 非空则（在**产物标题**里）追加 `【名】` —— 它**不参与切片**、不参与目录命名（2026-11-22 口径：名字填错不该逼着重切整项目）。
 - 状态机：需先完成 `transcribe`（`current >= 2`）。
 
 ### `yekitrim cut`

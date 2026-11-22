@@ -443,6 +443,29 @@ pub fn room_id_from_dir_name(name: &str) -> Option<String> {
         .find_map(normalize_room_id)
 }
 
+/// 从录播姬的**目录名**里取**主播名**（自动填充 `[detection].vtuber_name` 用，2026-11-22）。
+///
+/// 与 [`room_id_from_dir_name`] 同一张分隔符表：默认模板是 `<房间号>-<主播名>`
+/// （实测 `26320007-耶斯yeki`），也可能是 `某主播-26320007`。规则 = **跳过纯数字段与空段**，
+/// 取第一个非数字段 —— 所以日期目录（`2026-09-21`）与纯房间号都返回 `None`。
+///
+/// ⚠️ 取不到就**留空**（用户手填），别拿房间号去凑一个名字。
+/// ⚠️ 这个名字**只用于产物标题**（见 `yekitrim_core::naming`），不参与目录命名。
+pub fn streamer_name_from_dir_name(name: &str) -> Option<String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    name.split(['-', '_', ' ', '.', '(', ')']).find_map(|seg| {
+        let s = seg.trim();
+        if s.is_empty() || s.chars().all(|c| c.is_ascii_digit()) {
+            None
+        } else {
+            Some(s.to_string())
+        }
+    })
+}
+
 /// 纯数字串 → 规范化的房间号（与 [`parse_room_id`] 同一个取值范围）。
 fn normalize_room_id(digits: &str) -> Option<String> {
     if digits.is_empty() {
@@ -503,6 +526,30 @@ pub fn parse_room_id(input: &str) -> Result<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 目录名里的**主播名**（自动填充项目级 `[detection].vtuber_name` 用，2026-11-22）。
+    #[test]
+    fn streamer_name_comes_from_the_recorder_dir_name() {
+        assert_eq!(
+            streamer_name_from_dir_name("26320007-耶斯yeki").as_deref(),
+            Some("耶斯yeki"),
+            "录播姬默认模板 `<房间号>-<主播名>`"
+        );
+        assert_eq!(
+            streamer_name_from_dir_name("某主播-26320007").as_deref(),
+            Some("某主播"),
+            "模板把名字放前面时也要认"
+        );
+        // 拿不到就留空（绝不用房间号凑一个名字）
+        assert_eq!(streamer_name_from_dir_name("26320007"), None);
+        assert_eq!(streamer_name_from_dir_name("2026-09-21"), None, "日期目录不是名字");
+        assert_eq!(streamer_name_from_dir_name(""), None);
+        // 同一个目录名两件事都要能取到（房间号 + 名字）
+        assert_eq!(
+            room_id_from_dir_name("26320007-耶斯yeki").as_deref(),
+            Some("26320007")
+        );
+    }
 
     #[test]
     fn parse_room_id_accepts_common_forms() {
