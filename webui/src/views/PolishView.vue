@@ -1885,14 +1885,13 @@ async function doLoad(opts = {}) {
           subsError.value = '字幕读取失败：' + (e?.message || String(e))
         }
       }
-      try {
-        const r = await fetch(clipMediaUrl(pid.value, dir.value, 'data/danmaku.json'))
-        if (r.ok) dm.value = await r.json()
-      } catch (e) {
-        // 弹幕文件缺失是常态（老工程没有 data/danmaku.json）：只记 debug，不刷屏
-        addClient('debug', `读取弹幕失败（可能没有弹幕文件）：${e.message}`, 'polish')
-        if (!silent) dm.value = []
-      }
+      // **弹幕按需取**（2026-11-21，局域网提速）：`data/danmaku.json` 是精修页最大的单个 JSON
+      // （几 MB 级），而「弹幕」轨眼睛关着时它**一个像素都不画**（模板/`engine.js` 的 `buildIndex`
+      // 按 `lanes` 整类跳过）—— 关着还照拉就是纯浪费。点亮时由 `toggleLane` 补一次。
+      //
+      // ⚠️ `_lanes` 还没到手时是 `{}` ⇒ 按"开"处理（宁可多拉一次，也别让默认可见的弹幕消失）。
+      // ⚠️ 开着时**每次 load 仍要请求**：`process` 会重写它，而它现在有 ETag/304，没变时只花 ~200 B。
+      if (lanesOn.value.danmaku !== false) await fetchDanmaku(silent)
       // §5 T5 真卡拉OK：逐字时刻表（`data/karaoke-cues.json`，`process` 落的结论）。
       //
       // ⚠️ 只在工程真的开了 `karaoke` 时才读：没开的工程**一个请求都不发**
@@ -3021,10 +3020,30 @@ const lanesOn = computed(() => cfg.value?._lanes || {})
 //    「暂且用不到」= 收入口，不是删能力；**别顺手把 Rust 那侧一起拆掉**。
 // ⚠️ 正因为读的是 `cfg.bgm`（GET 回整份 `ProjectFile`），删掉前端这一段**不改变任何落盘字节**：
 //    老工程该有没有 `[bgm]` 段还是照旧（`BgmConfig::is_empty` + `skip_serializing_if` 只影响写盘）。
+/**
+ * 拉 `data/danmaku.json`。
+ *
+ * ⚠️ **只在「弹幕」轨的眼睛亮着时才该被调**（见 `load()` 里那段注释）：关着的时候这份 JSON
+ * 一个像素都不参与渲染，而它是精修页最大的单个响应。
+ */
+async function fetchDanmaku(silentLoad) {
+  try {
+    const r = await fetch(clipMediaUrl(pid.value, dir.value, 'data/danmaku.json'))
+    if (r.ok) dm.value = await r.json()
+  } catch (e) {
+    // 弹幕文件缺失是常态（老工程没有 data/danmaku.json）：只记 debug，不刷屏
+    addClient('debug', `读取弹幕失败（可能没有弹幕文件）：${e.message}`, 'polish')
+    if (!silentLoad) dm.value = []
+  }
+}
+
 /** 点眼睛 = 把这条轨道的显式开关翻面（`[stage]` 整块提交，与其它画面构成项同一条链）。 */
 function toggleLane(lane) {
   const cur = lanesOn.value[lane] === true
   patchStage({ lanes: { ...(stageCfg.value.lanes || {}), [lane]: !cur } })
+  // **点亮弹幕轨 ⇒ 立刻补一次**（2026-11-21）：关着的时候 `load()` 根本没去拉那份 JSON。
+  // 已经在内存里的不重拉（`dm.value.length`），否则每点一次眼睛都白打一趟。
+  if (lane === 'danmaku' && !cur && !dm.value.length) fetchDanmaku(false)
 }
 /** 时间轴上点轨道名 ⇒ 打开「轨道设置」面板（**一个面板装全部轨道**），并滚到那一段。
  *
