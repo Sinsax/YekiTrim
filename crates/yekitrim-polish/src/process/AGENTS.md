@@ -10,7 +10,7 @@
 `polish.toml` 已存在的工程没有别的入口能重跑 parse，老工程靠这一步自愈），
 随后 Step 0 归一化事件时间、0a 运镜倍率迁移、1/1b/1c/1d
 补默认运镜 + 预算抽稀 + 画中画三件事 + 手持摇摆守卫、2/2b1/2b/2c/2d 贴纸来源与落点与运镜锚点、
-3/3b 音效规则引擎与补位、3c 片头 fade_in 补位、4 下载贴纸与 SFX。
+3/3b 音效规则引擎与补位、3c 片头 fade_in 补位、4 下载贴纸与 SFX、7 预览代理保鲜。
 `sfx.rs` = 音效规则引擎 + 解析/屏蔽；`fx.rs` = 缺 `end` 补默认 + 瞬时特效跨度 clamp + 画中画/手持/贴纸对齐守卫；
 `download.rs` = 贴纸 keyword→文件解析 + 资产下载命令；`placement.rs` = 贴纸落点（纯几何，含单测）。
 
@@ -75,10 +75,11 @@
   自动后处理就把值吸回去了 —— 看上去就是"改了没生效"。
   回归：`cargo test -p yekitrim-polish --lib cap_events_never_removes_manual_events`；
   真实工程：`VT_POLISH_DIR=<片段目录> cargo test -p yekitrim-polish --lib diagnose_manual_events_survive_process -- --ignored --nocapture`（**会写回该工程的 polish.toml**，只在临时工程上用）。
-- ⚠️ **ownership（规格 §2.2）与幂等是两条地基判据**（2026-10-19）：`manual` 的 `time/end`、相机 `origin`、
-  `manual_pos` 归用户 —— C3 让 `layout_text_elements` 不写 manual 文字的 x/y（**照写 `source`**，否则丢样式）、
-  `resolve_camera_anchors` 跳过 manual 运镜；B3 在 debug 下由 `cmd_process` 用 `ownership_violations` **assert**
-  （release 零开销）。A2 的 `diagnose_process_idempotent`（5 矩阵 × 两趟，**字段级** diff = 0，比 `toml::Value`
+- ⚠️ **ownership（规格 §2.2）与幂等是两条地基判据**（2026-10-19）：`manual` 的 `time/end`、
+  `manual_pos` 归用户 —— C3 让 `layout_text_elements` 不写 manual 文字的 x/y（**照写 `source`**，否则丢样式）；
+  B3 在 debug 下由 `cmd_process` 用 `ownership_violations` **assert**。
+  ⚠️ **相机的 `origin` 不是所有权字段**（2026-11-21）：它是派生坐标（`panel: false`）——当所有权字段 ⇒ 跳过 manual ⇒ **新建的运镜选起点不生效**。
+  A2 的 `diagnose_process_idempotent`（5 矩阵 × 两趟，**字段级** diff = 0，比 `toml::Value`
   树不比文本）+ `diagnose_process_three_runs`（收敛）—— process 会被预览/出片**隐式触发**，改任何一步先跑它。
 - **元素（贴纸/文字）的时长规矩 —— 最短 / 最长 / 不跨静音空隙**（2026-10-11 用户口径：碎片要撑够、
   长句要封顶，否则时间轴上碎一块长一块"很奇怪"）。实现在 `fx.rs::fit_element_span`，
@@ -143,9 +144,9 @@
   `cap_events` 均匀保留，**手工事件不参与抽稀**（额度只约束 LLM 生成量）。
 - **运镜（camera）**：`process` 给每个 ≥1s 且没有运镜的段补 `zoom="中", anchor="liver"`（整段）——
   所以运镜是**全程开着**的，不是点缀。改默认档位/默认锚点就在这一处
-  （`process/mod.rs` Step 1 与 `llm/mod.rs` Step 4 是两个重复实现，要一起改）。Step 2d 的
-  `resolve_camera_anchors` 把 `anchor`/`anchor_to` 解析成 `origin`/`to_origin`（**每次运行都覆盖**），
-  渲染侧只认这些结果坐标。
+  （`process/mod.rs` Step 1 与 `llm/mod.rs` Step 4 两处同改）。Step 2d 的
+  `resolve_camera_anchors` 把 `anchor`/`anchor_to`（面板「起点 / 终点」，**同一概念的两个端点**）解析成
+  `origin`/`to_origin`（**每次都覆盖，manual 也覆盖**）；终点按**块尾**解析，**与起点相同 ⇒ 清 `to_origin`**。
   - **三档倍率的当前值：中 1.3 / 近 1.5 / 画中画 0.55**（用户定：中 1.3、近 1.5）。
     **放大档位不会露底**：绕不动点 scale，`s ≥ 1` 时四周外扩；露底只发生在画中画（刻意留黑边）。
     再调大是安全的，别再拿「怕露出背景底色」当理由往下压。
@@ -158,16 +159,13 @@
   - **远景进出是硬切，不是缓动**（用户要求）：过渡的一端只要是「远」，「zoom」与不动点就在
     事件起点**一次性到位**。贴纸避让侧走 `placement::transition_secs()` → `CameraShot.transition = 0`
     —— 别写回常量 0.6，否则会按 0.6s 过渡凭空多算一个早已结束的旧状态当障碍。
-  - **硬切 `cut`（切镜）= 同一条规则放开给任意景别**：`Event::Camera` 的 `cut: bool`
-    （serde `skip_serializing_if = "is_false"`，老配置零迁移）。`cut = true` 时这一条**整档瞬间到位**。
-    想「切过去再推」就写两条事件（切 + 平滑），别在求值器里搞两段式。
-  - **位移用 zoom 的同一段窗口与曲线**（`min((end-time)*0.5, 0.6)`、`pow2Out`），不新增旋钮；
-    不写 `anchor_to` 时两端相等，退化成「原地聚焦」。「主播→弹幕→回主播」= 两条事件，不是一条。
+    ⚠️ `med`/没写 `speed` ⇒ **老式子 `min(dur*0.5, 0.6)`**（以前是常量 0.6）；**硬切 `cut` 同理**（只接缝到位、块内位移照走）。
+  - **位置是连续状态**（同 `zoom`）：接缝接**上一块落点** → 本块 `origin`，块内再走到 `to_origin`；
+    没写 `anchor_to` ⇒ 整块静止。⚠️ **别退回「每块绝对赋值」**（块缝瞬跳 928px/一帧；四份实现同改）。
   - **老工程迁移**：`origin = "50% 50%"` 且无锚点的事件补成 `anchor="liver"`（有日志计条数）——
     这个值从来不是用户能设的，所以当成「没指定」。
   - 只读诊断：`VT_POLISH_DIR=<项目目录> cargo test -p yekitrim-polish --lib diagnose_camera_anchors -- --ignored --nocapture`
-    （`VT_CAM_JSON=1` 多打一行 `CAM_JSON={...}`：处理后运镜轨道，可喂给 `templates/index.html` 的
-    `getActiveCamera` 与 `webui/src/polish/engine.js` 的 `cameraAt` 对拍）。
+    （`VT_CAM_JSON=1` 多打一行 `CAM_JSON={...}`，可喂给模板 `getActiveCamera` 与 `engine.js cameraAt` 对拍）。
 - **手工屏蔽区间内的字幕不参与后续预算/位置计算**：`cmd_process` 读 `data/subtitles.json` 后先按
   `config.mute_ranges` 过滤（`MuteRange::overlaps`），后续 position/budget 全基于清理后的字幕。
   ⚠️ **但屏蔽区间不再切段、也不再删事件**（用户要求：屏蔽只做标记）：段表与事件原样留着，

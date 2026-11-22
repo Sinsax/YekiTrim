@@ -125,39 +125,39 @@ const CAMERA: &[Case] = &[
         fields: &[("time", "1.0"), ("end", "3.0"), ("zoom", "\"特写\""), ("anchor", "\"liver\"")],
     },
 
-    // anchor = 聚焦谁（四个取值）—— 提示词: `anchor = 聚焦谁: "liver"(主播) / "danmaku"(弹幕) / ...`
+    // anchor = **起点**（四个取值）—— 提示词: `anchor = 这一块的**起点**…: "liver"(主播) / "danmaku"(弹幕) / ...`
     Case {
-        quote: "anchor = 聚焦谁: liver(主播) / danmaku(弹幕) / sticker(贴纸) / center(画面中央)",
+        quote: "anchor = 这一块的**起点**…: liver(主播) / danmaku(弹幕) / sticker(贴纸) / center(画面中央)",
         needles: &["anchor", "liver"],
         json: r##"{"time":1.0,"end":2.0,"anchor":"liver"}"##,
         tag: "camera",
         fields: &[("anchor", "\"liver\"")],
     },
     Case {
-        quote: "anchor = 聚焦谁: liver(主播) / danmaku(弹幕) / sticker(贴纸) / center(画面中央)",
+        quote: "anchor = 这一块的**起点**…: liver(主播) / danmaku(弹幕) / sticker(贴纸) / center(画面中央)",
         needles: &["anchor", "danmaku"],
         json: r##"{"time":1.0,"end":2.0,"anchor":"danmaku"}"##,
         tag: "camera",
         fields: &[("anchor", "\"danmaku\"")],
     },
     Case {
-        quote: "anchor = 聚焦谁: liver(主播) / danmaku(弹幕) / sticker(贴纸) / center(画面中央)",
+        quote: "anchor = 这一块的**起点**…: liver(主播) / danmaku(弹幕) / sticker(贴纸) / center(画面中央)",
         needles: &["anchor", "sticker"],
         json: r##"{"time":1.0,"end":2.0,"anchor":"sticker"}"##,
         tag: "camera",
         fields: &[("anchor", "\"sticker\"")],
     },
     Case {
-        quote: "anchor = 聚焦谁: liver(主播) / danmaku(弹幕) / sticker(贴纸) / center(画面中央)",
+        quote: "anchor = 这一块的**起点**…: liver(主播) / danmaku(弹幕) / sticker(贴纸) / center(画面中央)",
         needles: &["anchor", "center"],
         json: r##"{"time":1.0,"end":2.0,"anchor":"center"}"##,
         tag: "camera",
         fields: &[("anchor", "\"center\"")],
     },
 
-    // anchor_to —— 提示词: `想从一处移到另一处, 再写 anchor_to (同样的取值)`
+    // anchor_to —— 提示词: `anchor_to = 这一块的**终点**(…; 不写、或写得跟起点一样 ⇒ 静止不动)`
     Case {
-        quote: "想从一处移到另一处, 再写 anchor_to (同样的取值); 不写就是原地聚焦",
+        quote: "anchor_to = 这一块的**终点**…; 不写、或写得跟起点一样 ⇒ 这一块**静止不动**",
         needles: &["anchor_to"],
         json: r##"{"time":5.0,"end":9.0,"zoom":"中","anchor":"liver","anchor_to":"danmaku"}"##,
         tag: "camera",
@@ -165,7 +165,7 @@ const CAMERA: &[Case] = &[
     },
     // cut —— 提示词: `想硬切(切镜, 瞬间换构图、没有推移动画)再加 "cut":true`
     Case {
-        quote: "想硬切(切镜…瞬间换构图、没有推移动画)再加 cut:true",
+        quote: "想硬切(切镜: 这一块瞬间到位、没有推移动画)再加 cut:true",
         needles: &["cut"],
         json: r##"{"time":1.0,"end":2.0,"zoom":"近","cut":true}"##,
         tag: "camera",

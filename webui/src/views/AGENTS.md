@@ -46,7 +46,7 @@
   - `CoverDesigner` 的 `configLoaded` 是**写入门闸**（读失败时拿默认值写回会把磁盘配置清成默认）：
     读失败必须出错误条 + 「重试」；保存失败用与「保存中…」同处的常驻文字（`.save-err`），不是一闪就没的 toast。
   - **误删要有退路**：`TimelineEditor` 保留**最近一次删除**（`lastDeleted`，15 秒）给头部一枚「撤销删除」，
-    事件按**分段对象本身**认位（后处理会整体改写 segments，下标会漂）；只有**分段**保留删除确认。
+    事件按**分段对象本身**认位（后处理会改写 segments，下标会漂）；只有**分段**保留删除确认。
 - **任务完成后的刷新必须静默**：`PolishView.load({silent:true})` 不置 `loading`、不卸载编辑器
   （非静默会把编辑器换成骨架屏，预览与滚动位置全丢）。需重新取数的子组件各用 `:key` 重挂：
   `TimelineEditor`=`segKey`（LLM 剪辑/初始化/去静音）、`CoverDesigner`=`coverKey`（封面完成 ——

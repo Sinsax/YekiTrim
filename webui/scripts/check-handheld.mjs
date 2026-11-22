@@ -147,20 +147,34 @@ const STUB = `
     return typeof v === 'boolean' ? v : true;
   }
 `
-const tplCam = new Function(`${STUB}\n${extractFunction(html, 'getActiveCamera')}\n return getActiveCamera`)()
-// ⚠️ `cameraAt` 现在会调 `cameraTransitionSecs`（运镜速度 §16）—— 这个对拍台是把**函数体从源码里
-// 抠出来 eval** 的，被调用的兄弟函数不会自动跟进来 ⇒ 不显式注入就会
+// ⚠️ **两处都要 `cameraTransitionSecs`**（运镜速度 §16）：这个对拍台是把**函数体从源码里抠出来
+// eval** 的，被调用的兄弟函数不会自动跟进来 ⇒ 不显式注入就是
 // `ReferenceError: cameraTransitionSecs is not defined`（实测：整套门禁在这里炸）。
-// 档位表也要一并给（`cameraTransitionSecs` 读它）。
-// ⚠️ `CAMERA_SPEED_SECS` 是 **`const` 字面量**，不是 `function` 声明 ⇒ 不能走 `extractFunction`
+// ⚠️ 2026-11-21 起**模板也有这一份**（在那之前它写死 `min(dur*0.5, 0.6)`，是唯一不读 speed 的实现）。
+// 所以两边**各抠各的**、不共用同一份 —— 这样这条门禁顺带把"两份速度表/两套夹取"也钉在一起。
+// ⚠️ `CAMERA_SPEED_SECS` 是**变量字面量**、不是 `function` 声明 ⇒ 不能走 `extractFunction`
 // （它会抛"找不到 function CAMERA_SPEED_SECS("）—— 这里按变量声明抓。
-const SPEED_TABLE = new Function(
-  `${/export const CAMERA_SPEED_SECS\s*=\s*\{[^}]*\}/.exec(engineSrc)[0].replace('export ', '')}\n return CAMERA_SPEED_SECS`,
+const speedTableOf = (src) => {
+  const m = /(?:export\s+)?(?:const|var)\s+CAMERA_SPEED_SECS\s*=\s*\{([^}]*)\}/.exec(src)
+  if (!m) throw new Error('找不到 CAMERA_SPEED_SECS 的字面量表')
+  return new Function(`return {${m[1]}}`)()
+}
+const TPL_SPEED = speedTableOf(html)
+const ENG_SPEED = speedTableOf(engineSrc)
+const tplCam = new Function(
+  `${STUB}\nvar CAMERA_SPEED_SECS = ${JSON.stringify(TPL_SPEED)};\n` +
+    `${extractFunction(html, 'cameraTransitionSecs')}\n${extractFunction(html, 'getActiveCamera')}\n return getActiveCamera`,
 )()
 const engCam = new Function(
-  `${STUB}\nvar CAMERA_SPEED_SECS = ${JSON.stringify(SPEED_TABLE)};\n` +
+  `${STUB}\nvar CAMERA_SPEED_SECS = ${JSON.stringify(ENG_SPEED)};\n` +
     `${extractFunction(engineSrc, 'cameraTransitionSecs')}\n${extractFunction(engineSrc, 'cameraAt')}\n return cameraAt`,
 )()
+/** 从一个**被扰动过**的模板副本里抠 `getActiveCamera`（速度档位表 + 接缝时长一起注入）。 */
+const tplCamOf = (stub, src) =>
+  new Function(
+    `${stub}\nvar CAMERA_SPEED_SECS = ${JSON.stringify(speedTableOf(src))};\n` +
+      `${extractFunction(src, 'cameraTransitionSecs')}\n${extractFunction(src, 'getActiveCamera')}\n return getActiveCamera`,
+  )()
 
 // 事件序列：近景开摇摆 → 近景续 → 硬切收 → 远景（硬切，另一端瞬变）→ 中景收
 const CAMS = [
@@ -173,6 +187,78 @@ const CAMS = [
 const engIdx = { vertical: false, cameraOff: false, camera: CAMS, camStyle: {}, cv: { W: 1920, H: 1080 }, layout: {} }
 
 console.log('\n起停状态机对拍（幅度曲线 + 景别，逐采样点）')
+// ── 3b. **位置状态机**（2026-11-21）：接缝过渡 + 块内位移，模板 ↔ engine 逐值对拍 ──
+//
+// 钉住的是一个实测事故：位置曾经是**每块绝对赋值**（`ox = lerp(本块起, 本块终, p)`），
+// `p=0` 时直接等于本块起点、跟上一块落在哪儿无关 ⇒ A 块移到弹幕(16.67%) 之后接一条
+// 「起点=主播」(65%) 的块，**一帧横移 928px（画面宽 48%）**、没有过渡。
+// 同一根因还让「硬切 + 终点」把起点整个吞掉（p=1 直接落到终点）。
+// 现在位置与 zoom 同形：从**当前**出发，接缝把它接到本块起点，块内再从起点走到终点。
+const CAMS_POS = [
+  { time: 0.0, duration: 4.0, ev: { zoom: '中', origin: '65% 50%', to_origin: '16.67% 16.67%' } },
+  { time: 4.0, duration: 4.0, ev: { zoom: '中', origin: '65% 50%' } },
+  { time: 8.0, duration: 4.0, ev: { zoom: '近', origin: '50% 50%', cut: true } },
+  { time: 12.0, duration: 4.0, ev: { zoom: '中', origin: '16.67% 16.67%', to_origin: '65% 50%', speed: 'fast' } },
+  { time: 16.0, duration: 4.0, ev: { zoom: '远', origin: '65% 50%' } },
+]
+const posIdx = { vertical: false, cameraOff: false, camera: CAMS_POS, camStyle: {}, cv: { W: 1920, H: 1080 }, layout: {} }
+
+console.log('\n位置状态机对拍（接缝 + 块内位移，模板 vs engine，逐采样点）')
+let mismatch = 0
+for (let t = 0; t <= 20.0001; t += 0.05) {
+  const a = tplCam(t, CAMS_POS)
+  const b = engCam(posIdx, t)
+  const same = Math.abs(a.ox - b.ox) < 1e-6 && Math.abs(a.oy - b.oy) < 1e-6 && Math.abs(a.zoom - b.zoom) < 1e-9
+  if (!same) {
+    mismatch += 1
+    if (mismatch <= 3) console.log(`         t=${t.toFixed(2)} template=${a.ox.toFixed(2)},${a.oy.toFixed(2)} engine=${b.ox.toFixed(2)},${b.oy.toFixed(2)}`)
+  }
+}
+check('[对拍] 位置/景别逐采样点一致（模板 canvas = engine 预览）', mismatch, 0)
+
+// **连续性**：块缝处不许瞬跳。取样步长 5ms，最大单步位移必须远小于一次跳变
+// （实测旧实现的跳变是 928px；这里阈 60px 仍留了 15 倍余量）。
+console.log('\n块缝连续性（5ms 步长，不许出现瞬跳）')
+{
+  // ⚠️ **硬切块例外**：cut 的定义就是「瞬间到位」，那一步本来就该跳（本例 288px）。
+  //    连续性判据只约束**平滑**的接缝与块内位移。
+  const cutTimes = CAMS_POS.filter((c) => c.ev.cut === true).map((c) => c.time)
+  let worst = 0, worstAt = 0, prev = null, prevT = 0
+  for (let t = 0; t <= 20.0001; t += 0.005) {
+    const c = tplCam(t, CAMS_POS)
+    const straddlesCut = cutTimes.some((ct) => ct >= prevT - 1e-9 && ct < t + 1e-9)
+    if (prev && !straddlesCut) {
+      const d = Math.hypot(c.ox - prev.ox, c.oy - prev.oy)
+      if (d > worst) { worst = d; worstAt = t }
+    }
+    prev = c
+    prevT = t
+  }
+  check(`单步最大位移 ${worst.toFixed(1)}px @ t=${worstAt.toFixed(2)}（阈 60px；旧实现是 928px 一帧）`, worst < 60, true)
+  // 起止两端必须真的落在事件写的位置上（别为了平滑把端点也糊掉）
+  const c0 = tplCam(0.0, CAMS_POS)
+  check('[端点] t=0 落在 65% 50%（片头起点）', Math.round(c0.ox) === 1248 && Math.round(c0.oy) === 540, true)
+  const c4 = tplCam(3.999, CAMS_POS)
+  check('[端点] 第一块块尾到达终点 16.67%', Math.abs(c4.ox - 320.06) < 2, true)
+  const c8 = tplCam(8.0, CAMS_POS)
+  check('[端点] 硬切块起点直接到位 50% 50%（旧实现会直接落到终点）', Math.round(c8.ox) === 960 && Math.round(c8.oy) === 540, true)
+}
+
+// 自证有效：把模板的位置公式退回**绝对赋值**（旧 bug），上面两条必须翻面
+{
+  const brokenHtml = html.replace('ox = lerp(ox, ax, p);', 'ox = lerp(ax, bx, p);')
+  check('[变异前提] 能定位到接缝那一行（ox = lerp(ox, ax, p)）', brokenHtml !== html, true)
+  if (brokenHtml !== html) {
+    const brokenCam = tplCamOf(STUB, brokenHtml)
+    let jump = 0, last = null
+    for (let t = 0; t <= 20.0001; t += 0.005) {
+      const c = brokenCam(t, CAMS_POS)
+      if (last) jump = Math.max(jump, Math.hypot(c.ox - last.ox, c.oy - last.oy))
+      last = c
+    }
+    check(`[变异] 退回绝对赋值 ⇒ 出现瞬跳（${jump.toFixed(0)}px）`, jump > 100, true)
+  }
+}
 for (const t of [0, 0.3, 0.6, 2, 5.9, 6.0, 6.3, 6.6, 9.9, 10.0, 10.2, 12.9, 13.0, 13.5, 16.9, 17.0, 17.3, 18.0, 25.0, 40.0]) {
   const a = tplCam(t, CAMS)
   const b = engCam(engIdx, t)
@@ -189,9 +275,7 @@ for (const t of [0, 0.3, 0.6, 2, 5.9, 6.0, 6.3, 6.6, 9.9, 10.0, 10.2, 12.9, 13.0
 //    下面那条 `verticalOnly` 用例钉的就是这件事。
 {
   const gatedSrc = STUB.replace('vertical: false, lanes: { camera: true }', 'vertical: true, lanes: { camera: false }')
-  const gatedTpl = new Function(
-    `${gatedSrc}\n${extractFunction(html, 'getActiveCamera')}\n return getActiveCamera`
-  )()
+  const gatedTpl = tplCamOf(gatedSrc, html)
   const tv = gatedTpl(2.0, CAMS)
   check('[template] 竖素材进非竖画布 → 幅度归零', tv.handheld, 0)
   check('[template] 竖素材进非竖画布 → 景别也归零（zoom=1）', tv.zoom, 1)
@@ -205,9 +289,7 @@ for (const t of [0, 0.3, 0.6, 2, 5.9, 6.0, 6.3, 6.6, 9.9, 10.0, 10.2, 12.9, 13.0
   // ⚠️ **竖素材 + 眼睛亮着 ⇒ 照样有运镜**（`vertical` 一点作用都没有）——
   //    这条把「模板读的是门、不是源方向」钉死：改回 `CFG.vertical` 立刻翻面。
   const verticalOnlySrc = STUB.replace('vertical: false, lanes: { camera: true }', 'vertical: true, lanes: { camera: true }')
-  const verticalOnlyTpl = new Function(
-    `${verticalOnlySrc}\n${extractFunction(html, 'getActiveCamera')}\n return getActiveCamera`
-  )()
+  const verticalOnlyTpl = tplCamOf(verticalOnlySrc, html)
   const vo = verticalOnlyTpl(2.0, CAMS)
   check('[template] 竖素材进竖画布 → 运镜照常（门是「方向不一致」，不是「源竖」）', vo.zoom, 1.5)
   check('[template] 竖素材进竖画布 → 摆动也照常', vo.handheld, 1)
@@ -221,9 +303,7 @@ for (const t of [0, 0.3, 0.6, 2, 5.9, 6.0, 6.3, 6.6, 9.9, 10.0, 10.2, 12.9, 13.0
   const noGate = html.replace("if (!laneOn('camera')) return { zoom: 1.0,", 'if (false) return { zoom: 1.0,')
   check('[变异] 运镜门确实被摘掉（源码被改了）', noGate !== html, true)
   if (noGate !== html) {
-    const tplNoGate = new Function(
-      `${gatedSrc}\n${extractFunction(noGate, 'getActiveCamera')}\n return getActiveCamera`
-    )()
+    const tplNoGate = tplCamOf(gatedSrc, noGate)
     check('[变异] 摘掉运镜门 → zoom 判据翻面（回到 1.5）', tplNoGate(2.0, CAMS).zoom, 1.5)
     check('[变异] 摘掉运镜门 → 幅度判据翻面（回到 1）', tplNoGate(2.0, CAMS).handheld, 1)
   }

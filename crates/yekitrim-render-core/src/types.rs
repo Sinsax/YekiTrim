@@ -148,22 +148,34 @@ pub enum Event {
         /// 缺省是「全」——只写 `anchor` 的事件也应当能解析（2026-10-20 用户口径）。
         #[serde(default = "default_camera_zoom")]
         zoom: String,
-        /// 聚焦中心的字面坐标 "x% y%"。由 `anchor` 解析回填，也可直接手写。
+        /// **起点**位置的字面坐标 "x% y%"（面板上叫「起点」）。由 `anchor` 解析回填，
+        /// 也可直接手写。**这是派生值**：任何界面都不直接编辑它（词汇表 `panel: false`），
+        /// 真正的输入是 `anchor` —— `process` Step 2d 每次运行都覆盖它，**manual 事件也覆盖**
+        /// （`time`/`end` 才归用户）。
         #[serde(default = "default_camera_origin")]
         origin: String,
-        /// 起点聚焦目标：`liver` | `danmaku` | `sticker` | `center`。
+        /// **起点**的位置意图：`liver` | `danmaku` | `sticker` | `center`。
         /// LLM 只写这个意图，`process` 解析成 `origin`（与贴纸 keyword→name 同一套约定）。
+        ///
+        /// ⚠️ 2026-11-21 起「`anchor` 与 `anchor_to` 是**同一个概念的两个端点**」
+        /// （界面文案 = 起点 / 终点），不是"聚焦"与"移到"两种不同的事。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         anchor: Option<String>,
-        /// 终点聚焦目标。写了就是「从这里移到那里」；不写即原地聚焦。
+        /// **终点**的位置意图。与 `anchor` 同域同义，只是标的是块**末尾**的那个位置。
+        ///
+        /// 不写、或与 `anchor` 解析到同一点 ⇒ **本块静止**（`process` 会把 `to_origin` 清掉，
+        /// 即用户口径「开始和终止位置相同就默认不操作终止位置」）。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         anchor_to: Option<String>,
-        /// 终点坐标（`process` 由 `anchor_to` 解析回填）。
+        /// **终点**坐标（`process` 由 `anchor_to` 在**块尾时刻**解析回填）。
+        /// `None` = 本块没有块内位移（静止在 `origin`）。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         to_origin: Option<String>,
-        /// 硬切（切镜）：这一条**整档瞬间到位** —— 事件起点直接给到目标 `zoom`/不动点，
-        /// 不做 0.6s 缓动、也不从上一个落点推过去（画中画「远」本来就是这条规则，
-        /// 现在放开给任意景别）。缺省 false = 平滑运镜。
+        /// **运镜过渡 = 硬切**（切镜）。它描述的是**接缝**，不是块内逻辑：
+        /// 这一条在事件起点**瞬间**从上一块落下的状态到位（不做缓动、`speed` 失效），
+        /// 块内 `origin → to_origin` 的那段位移照常存在。
+        ///
+        /// 缺省 false = 平滑。画中画「远」两端本来就是这条规则，这里放开给任意景别。
         #[serde(default, skip_serializing_if = "is_false")]
         cut: bool,
         /// **手持摇摆**（附加变种）：把相机换成「手持」——低频位移 + 轻微倾斜 + 呼吸缩放，
@@ -181,9 +193,12 @@ pub enum Event {
         /// **手工定过时间**（见 `Sticker::manual`）：画中画的 `align_pip_shots` 会跳过它。
         #[serde(default, skip_serializing_if = "is_false")]
         manual: bool,
-        /// **运镜速度**（规格 `camera-and-noise-spec.md` §1）：`snap` | `fast` | `med` | `slow`。
+        /// **运镜过渡速度**（规格 `camera-and-noise-spec.md` §1）：`snap` | `fast` | `med` | `slow`。
         ///
-        /// 在这之前过渡时长是**写死**的（`td = min(dur × 0.5, 0.6)`）—— 推近/拉远的快慢
+        /// 与 `cut` 一样，它管的是**接缝**（上一块落下的状态 → 本块 `origin`），
+        /// **不是**块内 `origin → to_origin` 那段的快慢 —— 块内位移铺满整块、没有独立旋钮。
+        ///
+        /// 在这之前过渡时长是**写死**的（`td = min(dur * 0.5, 0.6)`）—— 推近/拉远的快慢
         /// 完全一样，LLM 与用户都改不了。
         ///
         /// ⚠️ **缺省必须走原式**（`med` 的算法一个字节不改）：今天所有工程都没写 `speed`，

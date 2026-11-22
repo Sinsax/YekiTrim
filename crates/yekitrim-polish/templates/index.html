@@ -615,6 +615,35 @@ function camFactor(label){
   else{v=c.zoom_mid;d=1.3;}
   return (typeof v==='number'&&isFinite(v))?v:d;
 }
+// 运镜速度档位表（规格 §16）：`速度 → 过渡秒数`。
+// **同源三处**：本文件、`webui/src/polish/engine.js::CAMERA_SPEED_SECS`、
+// `tools/polish-to-dhampir.mjs::CAMERA_SPEED_SECS`；`process/placement.rs::transition_secs` 是第四处。
+// 门禁 `webui/scripts/check-camera-zoom-parity.mjs` 之外，`check-handheld.mjs` 的起停状态机
+// 对拍也读它 —— 任何一处漏改的症状都是"推进速度在一条腿上没反应"（2026-11-21 实测：
+// 本文件是唯一没跟上的那一份，写死 `min(dur*0.5, 0.6)`，于是"事实来源"反而最旧）。
+//
+// ⚠️ **`med` 不在表里** —— 它是**老式子** `min(dur × 0.5, 0.6)`（与"没写过 `speed`"同一档）。
+// 写成固定秒数就破坏存量零回归：短段的过渡会全变。
+var CAMERA_SPEED_SECS = { snap: 0.10, fast: 0.25, slow: 1.5 };
+/**
+ * 一条运镜的**接缝过渡时长**（秒）：把镜头从**上一块落下的位置**接到**本块的「起点」**。
+ *
+ * 口径与 `engine.js::cameraTransitionSecs` / 转译器 `cameraTransitionFrames` /
+ * `placement::transition_secs` 逐档一致：
+ *  - `hardCut` ⇒ 0（硬切不缓动；`cut` 与速度互斥、以 `cut` 为准）
+ *  - `med` / 没写 / 认不出 ⇒ 老式子 `min(dur × 0.5, 0.6)`
+ *  - `snap` / `fast` ⇒ 固定秒数；`slow` ⇒ `min(1.5, dur × 0.8)`（夹住，否则推不完就切走）
+ *
+ * ⚠ 必须留在**脚本顶层**：canvas 出片那一段（下面的 IIFE）里的 `getActiveCamera` 要用它。
+ */
+function cameraTransitionSecs(ev, dur, hardCut){
+  if(hardCut) return 0;
+  var norm=(ev&&typeof ev.speed==='string')?ev.speed.trim().toLowerCase():'';
+  if(Object.prototype.hasOwnProperty.call(CAMERA_SPEED_SECS,norm)){
+    return norm==='slow'?Math.min(CAMERA_SPEED_SECS.slow,dur*0.8):CAMERA_SPEED_SECS[norm];
+  }
+  return Math.min(dur*0.5,0.6);
+}
 // 手持摇摆（运镜的附加变种，`Event::Camera::handheld`）——
 // 与 Rust `types::handheld_sway`、`webui/src/polish/engine.js::handheldSway` **逐值同源**：
 // Rust↔engine.js 由 `timeline.rs::handheld_sway_matches_js_reference` 钉住，
@@ -1517,6 +1546,30 @@ function init(){
 
   // ---- 状态计算函数 (纯数学) ----
 
+  /**
+   * **运镜求值（位置＝连续状态，2026-11-21 起）**
+   *
+   * # 一条运镜事件 = 一个时间块 [time, end]，块里两个位置
+   *
+   * - **始** = `origin`（面板「起点」，由 `process` 从 `anchor` 解析回填）
+   * - **终** = `to_origin`（面板「终点」，由 `anchor_to` 解析回填）；**缺省或与始相同 ⇒ 本块静止**
+   *
+   * # 块里的两段位移，别混
+   *
+   * ① **接缝「运镜过渡」** `[time, time+td]`：把镜头从**上一块落下的位置**接到**本块的「始」**。
+   *    面板上那一栏（平滑 / 硬切 / 推进速度）**只**管这一段 —— 它作用在前后两块之间。
+   * ② **块内位移** `[time+td, end]`：本块的「始」→「终」，同一条 `pow2_out`。
+   *    始 == 终（`to_origin` 缺省）⇒ 这一段不存在，整块静止在「始」。
+   *
+   * # ⚠️ 为什么位置必须是**连续状态**
+   *
+   * `zoom / handheld / tilt` 一直是 `lerp(当前, 目标, p)`（从上一块的状态出发），
+   * 而位置曾经是**每块绝对赋值** `ox = lerp(本块始, 本块终, p)` —— `p=0` 时它直接等于本块的始，
+   * 与上一块落在哪儿无关。实测：A 块移到弹幕（16.67%）后接一条只写「聚焦主播」(65%) 的 B 块，
+   * **一帧之内横移 928px（画面宽 48%）**、没有过渡（2026-11-21 复现）。
+   * 同一个根因还让「硬切 + 移到」把**起点整个吞掉**（`p=1` ⇒ 直接落到终点）。
+   * 所以位置与 zoom 同形：从**当前**出发，接缝过渡把它接到本块的始。
+   */
   function getActiveCamera(t, cam) {
     var zoom = 1.0, ox = 65, oy = 50;
     // 手持摇摆的**幅度** 0~1：与 zoom 完全同一套状态机（同一段 td / 同一条缓动），
@@ -1544,13 +1597,16 @@ function init(){
     for (var i = 0; i < cam.length; i++) {
       var c = cam[i];
       var tgt = camFactor(c.ev.zoom);
-      var td = Math.min(c.duration * 0.5, 0.6);
-      var ce = c.time + td;
       if (t < c.time) break;
-      // 硬切：本事件写了 cut（编辑器「方式 = 硬切」），或两端任一为远景（画中画）。
-      // 远景进出整档都是硬切 —— 缓动缩过去看着像镜头在拉远，而它要的是喜剧式的切换，
-      // 所以这一段不缓动、连位移也一并瞬间到位；cut 把同一条规则放开给任意景别。
+      // 硬切：本事件写了 cut（面板「运镜过渡 = 硬切」），或两端任一为远景（画中画）。
+      // 远景进出整档都是硬切 —— 缓动缩过去看着像镜头在拉远，而它要的是喜剧式的切换。
+      // ⚠️ 判据必须在**算 td 之前**出来（cameraTransitionSecs 拿它当第一优先）。
       var hardCut = c.ev.cut === true || Math.abs(tgt - wide) < 1e-6 || Math.abs(zoom - wide) < 1e-6;
+      // **接缝过渡时长**：上一块 → 本块「始」。speed 档位就在这里生效（§16）。
+      // ⚠️ 夹到块长：`snap`(0.1) / `fast`(0.25) 是**固定秒数**，落在一个 0.1s 的块上会让
+      // "接缝"占满整块、块内位移永远没窗口。夹住之后短块 = 整块就是接缝，行为可预期。
+      var td = Math.min(cameraTransitionSecs(c.ev, c.duration, hardCut), c.duration);
+      var ce = c.time + td;
       var p = (t >= ce || hardCut) ? 1.0 : E.pow2_out((t - c.time) / td);
       if (t >= ce || hardCut) { zoom = tgt; }
       else { zoom = lerp(zoom, tgt, p); }
@@ -1559,16 +1615,26 @@ function init(){
       // 荷兰角走**与 zoom 逐式同形**的过渡（同 `td`、同 `hardCut`、同 `p`）。
       // ⚠️ `typeof` 判定而不是 `|| 0`：`tilt = 0` 是合法值（不倾斜），falsy 判定会把它当缺省。
       tilt = lerp(tilt, typeof c.ev.tilt === 'number' ? c.ev.tilt : 0.0, p);
-      // 不动点：本事件的 origin → to_origin（缺省即原地不动）。
-      // 起点取事件自己的 origin 而不是上一个事件的落点，与 zoom 同一段窗口、同一条缓动。
+      // ---- 位置：始（本块 origin）→ 终（本块 to_origin，缺省＝始）----
       var oa = (c.ev.origin || defOrigin).split(' ');
+      // ⚠️ 终点缺省**必须落回始**（不是 defOrigin）：否则"只写起点"的块会自己往画面正中飘。
       var ob = (c.ev.to_origin || c.ev.origin || defOrigin).split(' ');
       var ax = parseFloat(oa[0]); if (isNaN(ax)) ax = ox;
       var ay = parseFloat(oa[1]); if (isNaN(ay)) ay = oy;
       var bx = parseFloat(ob[0]); if (isNaN(bx)) bx = ax;
       var by = parseFloat(ob[1]); if (isNaN(by)) by = ay;
-      ox = lerp(ax, bx, p);
-      oy = lerp(ay, by, p);
+      // ① 接缝：**从当前（上一块落下的位置）**接到本块的始。
+      ox = lerp(ox, ax, p);
+      oy = lerp(oy, ay, p);
+      // ② 块内位移：接缝走完之后才开始（`p < 1` 时还在接缝里，别叠第二段）。
+      if (p >= 1.0) {
+        var blockEnd = c.time + c.duration;
+        var blockStart = ce;
+        // ⚠️ 块长不够放接缝（`blockEnd <= blockStart`）⇒ q=0：**停在「始」**，别一路弹到「终」。
+        var q = (blockEnd <= blockStart) ? 0.0 : ((t >= blockEnd) ? 1.0 : E.pow2_out((t - blockStart) / (blockEnd - blockStart)));
+        ox = lerp(ax, bx, q);
+        oy = lerp(ay, by, q);
+      }
     }
     // 竖素材已在函数开头整条返回（zoom 与 handheld 一起归零），走到这里的 handheld 必然是
     // 运镜状态机上的持续项（开了就跟到下一条不带 handheld 的运镜），直接交出。

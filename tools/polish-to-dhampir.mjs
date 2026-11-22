@@ -1532,6 +1532,24 @@ export const CAMERA_SPEED_SECS = {
 ///
 /// 抽成导出函数是为了**能逐值测**（守卫的 `checkCameraSpeed`）——
 /// 它埋在 `translate` 的大循环里，行为判据只能靠"造工程出产物"间接看，太钝。
+/** 同一条接缝过渡的**秒**版本（逐帧重放那一趟用秒，稀疏关键帧那趟用帧）。
+ *
+ * 抽它是因为 `cameraStateAt` 以前**只**抄了老式子、漏了 `speed` —— 症状是手持/荷兰角的
+ * 起停窗口与画面上的缩放长度不一致（边界处台阶，不报错）。
+ *
+ * ⚠️⚠️ **实现上直接复用 `cameraTransitionFrames`，不在这里复制一份分支**（两条理由）：
+ * ① 两份分支必然漂移，而漂移的症状是"预览与成片推得不一样长"；
+ * ② 复制会让**守卫的变异锚点**（硬切的提前 return 与 slow 的夹取那两行）命中**第一处**，
+ *    于是那两条变异打在错的函数上、判据不再翻面 —— 实测 `check-yekitrim-translator.mjs --mutate`
+ *    的 95 / 96 当场变绿（"变异没生效"会伪装成"守卫有洞"）。
+ * 用 1200fps 当足够细的栅格把帧版本折回秒：`snap` 0.10s → 120 帧 → 0.1s，逐档精确。
+ */
+export function cameraTransitionSecs({ speed, hardCut, durationSec }) {
+  const GRID_FPS = 1200;
+  const frames = cameraTransitionFrames({ speed, hardCut, durationSec, fps: GRID_FPS });
+  return Math.min(frames / GRID_FPS, durationSec);
+}
+
 export function cameraTransitionFrames({ speed, hardCut, durationSec, fps }) {
   if (hardCut) return 0;
   const norm = typeof speed === 'string' ? speed.trim().toLowerCase() : '';
@@ -5632,6 +5650,8 @@ export function translate(config, clipDir, outPath, options = {}) {
   // `focus` 现在**恒非空**（= 模板那条 `defOrigin`，见 `templateDefaultOrigin`）——
   // 这里不再自己编一个 0.5/0.5 的兜底：那会让"锚点"与"位移起点"用两个不同的不动点。
   let prevOffset = cameraOffset(1.0, focus);
+  // 上一条的**块内位移**是不是正好在本块起点收尾（见下面 `startEasing` 的理由）。
+  let prevPanEndsHere = false;
   for (let index = 0; index < cameraEvents.length; index += 1) {
     const shot = cameraEvents[index];
     const z = shot.z;
@@ -5642,11 +5662,26 @@ export function translate(config, clipDir, outPath, options = {}) {
     const durationSec = Math.max(1 / fps, (shot.srcEnd - shot.srcStart) / fps);
     const tdFrames = cameraTransitionFrames({ speed: shot.speed, hardCut, durationSec, fps });
 
-    // 过渡的**起点**：zoom 还是上一个状态，但不动点已经是**本事件自己的** origin
-    // （YekiTrim 里 `ox = lerp(ax, bx, p)`，p=0 时就是 ax）。
-    const from = shot.origin ?? focus ?? { x: 0.5, y: 0.5 };
-    const to = shot.originTo ?? from;
-    const off1 = cameraOffset(z, to);
+    // ---- 位置：一条运镜块里两段（2026-11-21，与模板 `getActiveCamera` 逐式一致）----
+    //
+    // ① **接缝**：[srcStart, srcStart+td] 从**上一块落下的位置**接到本块的「起点」`origin`。
+    // ② **块内位移**：[srcStart+td, srcEnd] 从「起点」走到「终点」`originTo`。
+    //
+    // ⚠️ 以前这里把 `from`（= 本块的 origin）当成接缝起点，等于"位置在接缝处一帧跳到
+    // 本块起点"—— 与模板/engine 那份绝对赋值是同一个病（实测 928px 单帧横跳）。
+    // `originTo` 缺省就是 `origin` ⇒ 没有块内位移（静止块）。
+    const start = shot.origin ?? focus ?? { x: 0.5, y: 0.5 };
+    const end = shot.originTo ?? start;
+    const offStart = cameraOffset(z, start);
+    const offEnd = cameraOffset(z, end);
+    const seamEnd = shot.srcStart + tdFrames;
+    const hasPan = (Math.abs(end.x - start.x) > 1e-9 || Math.abs(end.y - start.y) > 1e-9)
+      && shot.srcEnd > seamEnd;
+    // ⚠️ 块起点的缓动：**上一块的块内位移若正好收在这一帧**，这一帧的缓动决定那一段怎么走
+    //    （契约取相邻对 `[a,b]` 里 b 的缓动）—— 而本块的起点键是**后写**的、会在去重里
+    //    把上一块写的 `ease_out` 顶掉。不跟着给 `ease_out` 的话，块内位移会退化成直线
+    //    （预览是 `pow2_out`、成片是直线，两边都不报错）。没有位移的工程逐字节不变。
+    const startEasing = prevPanEndsHere ? 'ease_out' : 'linear';
 
     if (tdFrames === 0) {
       // **硬切**：在**前一帧**把旧状态钉住，这一帧才是瞬时跳变。
@@ -5662,14 +5697,14 @@ export function translate(config, clipDir, outPath, options = {}) {
         const prevOut = remapFrame(shot.srcStart - 1);
         if (prevOut !== null) sparseOutFrames.add(prevOut);
       }
-      placeKeyframe(shot.srcStart, 'scale', z * FIT, 'linear');
-      placeKeyframe(shot.srcStart, 'x', off1.x, 'linear');
-      placeKeyframe(shot.srcStart, 'y', off1.y, 'linear');
+      placeKeyframe(shot.srcStart, 'scale', z * FIT, startEasing);
+      placeKeyframe(shot.srcStart, 'x', offStart.x, startEasing);
+      placeKeyframe(shot.srcStart, 'y', offStart.y, startEasing);
       const cutOut = remapFrame(shot.srcStart);
       if (cutOut !== null) sparseOutFrames.add(cutOut);
     } else {
-      // 过渡：起点用旧 zoom、终点用新 zoom，窗口就是 `td`。
-      const off0 = cameraOffset(prevZoom, from);
+      // 过渡（接缝）：起点是**上一块落下的状态**（旧 zoom + 旧不动点），
+      // 终点是**本块起点**（新 zoom + `origin`）。窗口就是 `td`。
       // **缓动写在"段落终点"那个关键帧上。**
       //
       // 求值用的是 `b.easing`（`curve.rs::channel_from`：相邻对 [a,b] 取 **b** 的缓动），
@@ -5683,16 +5718,33 @@ export function translate(config, clipDir, outPath, options = {}) {
       //   20.30     1.478       1.449
       //   20.50     1.500       1.502   <- 端点对
       // 两端精确、中段偏小 —— 这条形状就是"直线 vs pow2_out"。
-      placeKeyframe(shot.srcStart, 'scale', prevZoom * FIT, 'linear');
-      placeKeyframe(shot.srcStart, 'x', off0.x, 'linear');
-      placeKeyframe(shot.srcStart, 'y', off0.y, 'linear');
+      // ⚠️ 接缝起点键的缓动同样是 `startEasing`（理由见上面）：它与"上一块的块内位移
+      //    正好收在这一帧"是同一个键位，去重只留一个。
+      placeKeyframe(shot.srcStart, 'scale', prevZoom * FIT, startEasing);
+      placeKeyframe(shot.srcStart, 'x', prevOffset.x, startEasing);
+      placeKeyframe(shot.srcStart, 'y', prevOffset.y, startEasing);
       placeKeyframe(shot.srcStart + tdFrames, 'scale', z * FIT, 'ease_out');
-      placeKeyframe(shot.srcStart + tdFrames, 'x', off1.x, 'ease_out');
-      placeKeyframe(shot.srcStart + tdFrames, 'y', off1.y, 'ease_out');
+      placeKeyframe(shot.srcStart + tdFrames, 'x', offStart.x, 'ease_out');
+      placeKeyframe(shot.srcStart + tdFrames, 'y', offStart.y, 'ease_out');
       const tr0 = remapFrame(shot.srcStart);
       const tr1 = remapFrame(shot.srcStart + tdFrames);
       if (tr0 !== null) sparseOutFrames.add(tr0);
       if (tr1 !== null) sparseOutFrames.add(tr1);
+    }
+    // ---- ② 块内位移：接缝走完之后才开始，到**块尾**为止（`pow2_out`，与求值器同一条曲线）----
+    // ⚠️ 只在**真的有位移**时写这两帧：没有 `anchor_to` 的工程（今天全部）一个键都不多，
+    //    存量逐字节零回归。
+    if (hasPan) {
+      placeKeyframe(shot.srcEnd, 'x', offEnd.x, 'ease_out');
+      placeKeyframe(shot.srcEnd, 'y', offEnd.y, 'ease_out');
+      // `scale` 在块内不变（zoom 是每块一个目标、在接缝里就到了），这里不重复写 ——
+      // 写了也只是同值覆盖，但会在去重里跟下一块的起点键抢同一个键位。
+      const panOut = remapFrame(shot.srcEnd);
+      if (panOut !== null) sparseOutFrames.add(panOut);
+      // ⚠️ **不要为「有块内位移」发 NOTE**：NOTE 的语义是「已知差异 / 降级」
+      //    （见 docs/yekitrim-integration.md 第五节），而这里是**正常行为**。发了会让
+      //    check-dhampir-drop-list.mjs 的基线凭空多一条 ⇒ 那条门禁把「报告被削弱」
+      //    与「正常日志」混在一起，红线就失去意义了。
     }
 
     if (hardCut && !shot.cut && tdFrames === 0) {
@@ -5711,7 +5763,11 @@ export function translate(config, clipDir, outPath, options = {}) {
       note(shot.where, '近景未加即时抖 —— YekiTrim 的近景自带轻微推拉，底座只做缩放');
     }
     prevZoom = z;
-    prevOffset = off1;
+    // 下一块的"上一状态"= **本块结束时的位置**：有块内位移且走完了就是 `end`，否则停在 `origin`。
+    prevOffset = hasPan ? offEnd : offStart;
+    // "下一块正好从本块块尾开始" —— 那时本块的位移终点键与下一块的起点键同帧、会撞在一起。
+    const nextShot = cameraEvents[index + 1];
+    prevPanEndsHere = hasPan && !!nextShot && nextShot.srcStart === shot.srcEnd;
   }
   // ---------------------------------------------------------------------
   // 手持摇摆 + 独立 shake：**视频层的纯位移**，按帧采样
@@ -5746,6 +5802,10 @@ export function translate(config, clipDir, outPath, options = {}) {
       cut: shot.cut,
       handheld: shot.handheld,
       tilt: shot.tilt ?? 0,
+      // ⚠️ **speed 必须带进逐帧重放**（2026-11-21 修）：稀疏关键帧那趟一直读 speed，
+      // 而这里以前写死 min(dur*0.5, 0.6) ⇒ 写了 snap/fast/slow 的工程里，
+      // 手持与荷兰角的起停窗口跟画面上的缩放**不是同一个长度**（边界处出现台阶）。
+      speed: shot.speed,
     }))
     .filter((e) => e.outStart !== null)
     .sort((a, b) => a.outStart - b.outStart);
@@ -5764,11 +5824,16 @@ export function translate(config, clipDir, outPath, options = {}) {
     for (const e of camEventsOut) {
       const startT = e.outStart / fps;
       if (t < startT) break;
-      const td = Math.min(e.durationSec * 0.5, 0.6);
-      const ce = startT + td;
+      const blockEnd = startT + e.durationSec;
       const hardCut = e.cut
         || Math.abs(e.z - WIDE_ZOOM) < 1e-6
         || Math.abs(zoom - WIDE_ZOOM) < 1e-6;
+      // 接缝时长（含 speed）夹到块长 —— 与稀疏关键帧那趟 cameraTransitionFrames 同口径。
+      const td = Math.min(
+        cameraTransitionSecs({ speed: e.speed, hardCut, durationSec: e.durationSec }),
+        e.durationSec,
+      );
+      const ce = startT + td;
       const p = (t >= ce || hardCut) ? 1.0 : pow2Out((t - startT) / td);
       zoom = (t >= ce || hardCut) ? e.z : zoom + (e.z - zoom) * p;
       handheld += ((e.handheld ? 1.0 : 0.0) - handheld) * p;
@@ -5777,8 +5842,16 @@ export function translate(config, clipDir, outPath, options = {}) {
       const ay = e.origin.y * 100;
       const bx = e.originTo.x * 100;
       const by = e.originTo.y * 100;
-      ox = ax + (bx - ax) * p;
-      oy = ay + (by - ay) * p;
+      // ① 接缝：从**当前**（上一块落下的位置）接到本块起点。
+      ox = ox + (ax - ox) * p;
+      oy = oy + (ay - oy) * p;
+      // ② 块内位移：接缝走完之后才铺开（与模板 getActiveCamera 逐式同形）。
+      if (p >= 1.0) {
+        const q = blockEnd <= ce ? 0.0
+          : (t >= blockEnd ? 1.0 : pow2Out((t - ce) / (blockEnd - ce)));
+        ox = ax + (bx - ax) * q;
+        oy = ay + (by - ay) * q;
+      }
     }
     return { zoom, handheld, tilt, ox: (ox * width) / 100, oy: (oy * height) / 100 };
   };

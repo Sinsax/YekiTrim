@@ -316,6 +316,12 @@ pub fn get_active_camera(
 
         // 不动点：本事件的 origin → to_origin（缺省即原地不动）。
         // 起点取事件自己的 origin，与 zoom 同一段窗口、同一条缓动。
+        //
+        // ⚠️⚠️ **这一份是旧语义，别照抄**（2026-11-21）：生产链路（模板 `getActiveCamera` /
+        // `engine.js cameraAt` / 转译器）已经把**位置改成连续状态** —— 接缝先接上一块的落点、
+        // 块内再走到 `to_origin`。这里仍是"每块绝对赋值"（`p=0` 直接等于本块 origin），
+        // 那正是块缝瞬跳 928px 的写法。本文件只作 CPU 参考、无生产消费者（见本 crate 卡），
+        // 所以**不跟着改**；但也**不许**被当成口径抄回去。
         let mut it = origin.split_whitespace();
         let ax = it.next().and_then(parse_percent).unwrap_or(ox);
         let ay = it.next().and_then(parse_percent).unwrap_or(oy);

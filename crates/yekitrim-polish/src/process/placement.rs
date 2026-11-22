@@ -186,8 +186,10 @@ pub const CLOSEUP_LABEL: &str = "特写";
 /// 三档「硬切」（`cut` / 本档是远 / 上一档是远）一律 0、**优先于 `speed`**，
 /// 与求值器 `hardCut` 的判据同源。
 ///
-/// `speed = None` 时**逐值等于**改动前的历史行为（= [`TRANSITION_SECS`]）——
-/// 存量工程（今天全都没写 `speed`）走的就是这一档。
+/// `speed = None` / `med` 时走**老式子** `min(dur * 0.5, 0.6)`（不是常量
+/// [`TRANSITION_SECS`]）—— 只有 `dur >= 1.2s` 时才等于 `0.6`。
+/// ⚠️ 2026-11-21 修：这里以前直接 `=> TRANSITION_SECS`，与同一段文档和求值器都不一致，
+/// 短镜头里贴纸避让会多算一个早已结束的旧状态当障碍。
 pub fn transition_secs(
     label: &str,
     prev_label: &str,
@@ -204,7 +206,10 @@ pub fn transition_secs(
         Some("snap") => 0.10,
         Some("fast") => 0.25,
         Some("slow") => 1.5_f64.min(dur * 0.8),
-        _ => TRANSITION_SECS,
+        // ⚠️ **老式子是 `min(dur * 0.5, 0.6)`，不是常量 0.6**（2026-11-21 修）：
+        // 短于 1.2s 的镜头里求值器用的是 `dur * 0.5`，这里却按 0.6 算 =>
+        // 贴纸避让会凭空多算一个"早已结束的旧状态"当障碍（症状：短镜头附近的贴纸被推得格外远）。
+        _ => TRANSITION_SECS.min(dur * 0.5),
     }
 }
 
@@ -398,6 +403,12 @@ pub fn camera_expand(rect: Rect, ox: f64, oy: f64, zoom: f64) -> Rect {
 /// 只有过渡真的落在窗口里才带上「上一个状态」——否则会把早已结束的旧缩放也当成障碍，
 /// 让选框贴得紧的工程凭空没有落点（实测 `clip-61` 就是这样：稳态 1.65 有 466px 走廊，
 /// 强行并上静止态 1.0 后只剩 2.4px）。
+///
+/// ⚠️ **位置状态机（2026-11-21）**：一条运镜块里位置走两段 —— 接缝
+/// `[time, time+transition]` 从**上一块的落点**接到本块的 `origin`，之后
+/// `[time+transition, end]` 再从 `origin` 走到 `origin_to`。
+/// 所以"这一块可能出现在屏幕上的位置"是三个点：**上一块落点 / `origin` / `origin_to`**
+/// —— 下面三段 push 正好一对一（保守并集，宁可多让）。
 pub fn camera_states_for(
     shots: &[CameraShot],
     default_origin: (f64, f64),
@@ -1271,14 +1282,16 @@ mod tests {
     /// 远景进出是硬切：那一段**没有**过渡窗口，所以窗口里不该凭空多出一个早已结束的旧状态。
     #[test]
     fn wide_shot_is_a_hard_cut_with_no_transition_window() {
-        assert_eq!(transition_secs("远", "中", false, None, TRANSITION_SECS), 0.0);
-        assert_eq!(transition_secs("中", "远", false, None, TRANSITION_SECS), 0.0, "退出远景同样是切");
-        assert_eq!(transition_secs("近", "远", false, None, TRANSITION_SECS), 0.0);
-        assert_eq!(transition_secs("远", "远", false, None, TRANSITION_SECS), 0.0);
-        assert_eq!(transition_secs("中", "近", false, None, TRANSITION_SECS), TRANSITION_SECS, "普通档位仍走缓动");
-        // 硬切（编辑器「方式 = 硬切」）：任意档位都能瞬间到位，不只有画中画
-        assert_eq!(transition_secs("中", "近", true, None, TRANSITION_SECS), 0.0);
-        assert_eq!(transition_secs("近", "中", true, None, TRANSITION_SECS), 0.0);
+        // ⚠️ 这里的 `dur` 必须给**真实块长**（>= 1.2s），否则 `med` 的老式子
+        // `min(dur * 0.5, 0.6)` 会小于 `TRANSITION_SECS` —— 那是口径本身，不是回归。
+        assert_eq!(transition_secs("远", "中", false, None, 4.0), 0.0);
+        assert_eq!(transition_secs("中", "远", false, None, 4.0), 0.0, "退出远景同样是切");
+        assert_eq!(transition_secs("近", "远", false, None, 4.0), 0.0);
+        assert_eq!(transition_secs("远", "远", false, None, 4.0), 0.0);
+        assert_eq!(transition_secs("中", "近", false, None, 4.0), TRANSITION_SECS, "普通档位仍走缓动");
+        // 硬切（面板「运镜过渡 = 硬切」）：任意档位都能瞬间到位，不只有画中画
+        assert_eq!(transition_secs("中", "近", true, None, 4.0), 0.0);
+        assert_eq!(transition_secs("近", "中", true, None, 4.0), 0.0);
 
         // 0.5s 处在「刚切到远景」之后：窗口 [0.5, 2.0] 看不到切走之前的旧状态
         let shots = vec![
@@ -1296,7 +1309,7 @@ mod tests {
                 origin: (960.0, 540.0),
                 origin_to: (960.0, 540.0),
                 zoom: 0.55,
-                transition: transition_secs("远", "中", false, None, TRANSITION_SECS),
+                transition: transition_secs("远", "中", false, None, 2.5),
             },
         ];
         let st = camera_states_for(&shots, (1600.0, 540.0), 0.5, 2.0);
@@ -1333,12 +1346,15 @@ mod tests {
         assert_eq!(transition_secs("远", "中", false, Some("slow"), 5.0), 0.0);
         assert_eq!(transition_secs("中", "远", false, Some("slow"), 5.0), 0.0);
 
-        // ⚠️ **存量零回归**：`speed = None` 时逐值等于改动前，**不论 dur 给什么**
-        for dur in [0.0, 0.5, 1.0, 5.0, 60.0] {
+        // ⚠️ **`med` / 没写 speed 走的是老式子本身**：`min(dur * 0.5, 0.6)` ——
+        // 它**吃 dur**，不是常量 0.6（2026-11-21 修：这里以前直接 `=> TRANSITION_SECS`，
+        // 于是短于 1.2s 的镜头里贴纸避让按 0.6 算、求值器按 `dur/2` 算，
+        // 多算出一个"早已结束的旧状态"当障碍）。
+        for (dur, want) in [(0.0, 0.0), (0.5, 0.25), (1.0, 0.5), (1.2, 0.6), (5.0, 0.6), (60.0, 0.6)] {
             assert_eq!(
                 transition_secs("中", "近", false, None, dur),
-                TRANSITION_SECS,
-                "没写 speed ⇒ 老行为（dur={dur}）"
+                want,
+                "没写 speed ⇒ 老式子 min(dur*0.5, 0.6)（dur={dur}）"
             );
         }
     }

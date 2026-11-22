@@ -1953,11 +1953,12 @@ export function cameraAt(idx, t) {
     // 所以这一段顺序不能调：先判 `hardCut`、再算 `td`。早先 `td` 只依赖 `duration`，
     // 顺序无所谓；现在 `speed` 与 `cut` 互斥、以 `cut` 为准，顺序就成了正确性的一部分。
     const hardCut = c.ev.cut === true || Math.abs(tgt - wide) < 1e-6 || Math.abs(zoom - wide) < 1e-6
-    const td = cameraTransitionSecs(c.ev, c.duration, hardCut)
+    // **接缝过渡时长**：上一块 → 本块「始」。夹到块长（`snap`/`fast` 是固定秒数，
+    // 落在超短块上会让接缝占满整块、块内位移没窗口 —— 与模板逐式一致）。
+    const td = Math.min(cameraTransitionSecs(c.ev, c.duration, hardCut), c.duration)
     const ce = c.time + td
-    // 硬切：本事件写了 cut（编辑器「方式 = 硬切」），或远景（画中画）进出整档都是硬切：
-    // 缓动缩过去看着像镜头在拉远，而它要的是喜剧式的切换，所以这一段不缓动、
-    // 连位移也一并瞬间到位。cut 把同一条规则放开给任意景别。
+    // 硬切：本事件写了 cut（面板「运镜过渡 = 硬切」），或远景（画中画）进出整档都是硬切：
+    // 缓动缩过去看着像镜头在拉远，而它要的是喜剧式的切换，所以这一段不缓动。
     const p = t >= ce || hardCut ? 1.0 : E.pow2Out((t - c.time) / td)
     if (t >= ce || hardCut) zoom = tgt
     else zoom = lerp(zoom, tgt, p)
@@ -1966,14 +1967,28 @@ export function cameraAt(idx, t) {
     // 荷兰角走**与 zoom 逐式同形**的过渡（同 `td`、同 `hardCut`、同 `p`）。
     // ⚠️ 用 `typeof === 'number'` 而不是 `|| 0`：`tilt = 0`（不倾斜）是合法值。
     tilt = lerp(tilt, typeof c.ev.tilt === 'number' ? c.ev.tilt : 0, p)
-    // 不动点：本事件的 origin → to_origin（缺省即原地不动）。
-    // 起点取事件自己的 origin，与 zoom 同一段窗口、同一条缓动。
+    // ---- 位置：始（本块 origin）→ 终（本块 to_origin，缺省＝始）----
+    // ⚠️ 终点缺省**落回始**（不是 defOrigin）：否则"只写起点"的块会自己往画面正中飘。
     const oa = String(c.ev.origin || defOrigin).split(' ')
     const ob = String(c.ev.to_origin || c.ev.origin || defOrigin).split(' ')
     const ax = parseFloat(oa[0]); const ay = parseFloat(oa[1])
     const bx = parseFloat(ob[0]); const by = parseFloat(ob[1])
-    ox = lerp(Number.isFinite(ax) ? ax : ox, Number.isFinite(bx) ? bx : ox, p)
-    oy = lerp(Number.isFinite(ay) ? ay : oy, Number.isFinite(by) ? by : oy, p)
+    const startX = Number.isFinite(ax) ? ax : ox
+    const startY = Number.isFinite(ay) ? ay : oy
+    const endX = Number.isFinite(bx) ? bx : startX
+    const endY = Number.isFinite(by) ? by : startY
+    // ① 接缝：**从当前（上一块落下的位置）**接到本块的始。
+    ox = lerp(ox, startX, p)
+    oy = lerp(oy, startY, p)
+    // ② 块内位移：接缝走完之后才开始（`p < 1` 时还在接缝里，别叠第二段）。
+    if (p >= 1.0) {
+      const blockEnd = c.time + c.duration
+      const blockStart = ce
+      const q = blockEnd <= blockStart ? 0.0
+        : (t >= blockEnd ? 1.0 : E.pow2Out((t - blockStart) / (blockEnd - blockStart)))
+      ox = lerp(startX, endX, q)
+      oy = lerp(startY, endY, q)
+    }
   }
   return { zoom, ox: (ox / 100) * idx.cv.W, oy: (oy / 100) * idx.cv.H, handheld, tilt }
 }

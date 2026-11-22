@@ -1273,15 +1273,18 @@ fn writeback_edl(materialized: bool, clips: Vec<project::EdlClip>) -> Option<Vec
 
 /// manual 事件的**所有权字段快照**（规格 §2.2 的 ownership 表）。
 ///
-/// ⚠️ 只收**归用户**的那几个：`time`/`end`（手工定过时间）、相机的 `origin`
-/// （process 只写 origin/to_origin，manual 不覆盖）、以及 `manual_pos`
+/// ⚠️ 只收**归用户**的那几个：`time`/`end`（手工定过时间）与 `manual_pos`
 /// （用户点的落点；**它的派生值 x/y 归 process** —— 几何求解是 process 的活，
 /// 拿 x/y 当判据会把"求解器正常工作"误判成违例）。
+///
+/// ⚠️ **相机的 `origin` 不在表里**（2026-11-21 移出）：它是 `anchor` 解析出来的
+/// **派生坐标**，词汇表里 `panel: false`、任何界面都改不到它 —— 真归用户的是 `time`/`end`。
+/// 把它当所有权字段的直接后果是 `resolve_camera_anchors` 只能对 manual 运镜整条跳过，
+/// 于是"编辑器新建的运镜（一律 manual）选什么起点都不生效"（实测复现）。
 #[derive(Debug, Clone, PartialEq)]
 struct ManualFields {
     time: f64,
     end: Option<f64>,
-    origin: Option<String>,
     manual_pos: Option<String>,
 }
 
@@ -1298,14 +1301,9 @@ fn snapshot_manual(config: &project::ProjectFile) -> Vec<ManualFields> {
             if !ev.is_time_manual() {
                 continue;
             }
-            let origin = match ev {
-                project::Event::Camera { origin, .. } => Some(origin.clone()),
-                _ => None,
-            };
             out.push(ManualFields {
                 time: ev.get_time(),
                 end: ev.end(),
-                origin,
                 manual_pos: ev.manual_pos().map(str::to_owned),
             });
         }
@@ -1340,9 +1338,6 @@ fn ownership_violations(before: &[ManualFields], after: &[ManualFields]) -> Vec<
             (Some(_), None) => diff.push("end 被清空".to_string()),
             // None → Some = 「end 缺省补齐」（规格 §1 允许），不算违例
             _ => {}
-        }
-        if b.origin != a.origin {
-            diff.push(format!("origin {:?} → {:?}", b.origin, a.origin));
         }
         if b.manual_pos != a.manual_pos {
             diff.push(format!("manual_pos {:?} → {:?}", b.manual_pos, a.manual_pos));
@@ -1926,16 +1921,20 @@ struct AnchorCtx {
 impl AnchorCtx {
     fn collect(config: &project::ProjectFile, data_dir: &Path) -> Self {
         let frame = placement::Frame::new(config.canvas_size().0, config.canvas_size().1);
+        // ⚠️⚠️ **两个载体都要认**（2026-11-21 修）：这以前是手写的 `match Event::Sticker`，
+        // 于是编辑器「贴纸轨」新建的 `Element{kind:"sticker"}` **一条都进不来** ⇒
+        // `anchor = "sticker"` 永远解析不出它，面板上选了「起点/终点 = 贴纸」画面却不动
+        // （而 LLM 放的老载体一切正常，两边各自看都没问题 —— 这正是
+        //  `process/AGENTS.md` 里"凡按贴纸处理处必须同时认两个载体"点名的那个坑）。
+        // 走 `sticker_span()` 访问器：坐标是 `Option`，**没落点的先跳过**（没落点就没有中心）。
         let stickers = config
             .segments
             .iter()
             .flat_map(|seg| seg.events.iter())
-            .filter_map(|ev| match ev {
-                crate::project::Event::Sticker { time, end, x, y, .. } => {
-                    let (cx, cy) = sticker_center_pct(x, y, frame)?;
-                    Some((cx, cy, *time, end.unwrap_or(*time)))
-                }
-                _ => None,
+            .filter_map(|ev| {
+                let (x, y, time, end) = ev.sticker_span()?;
+                let (cx, cy) = sticker_center_pct(x?, y?, frame)?;
+                Some((cx, cy, time, end))
             })
             .collect();
         Self {
@@ -2162,41 +2161,48 @@ pub fn ensure_intro_fade_in(config: &mut project::ProjectFile) -> bool {
     true
 }
 
-/// 把 `anchor`/`anchor_to` 解析成 `origin`/`to_origin`。
+/// 把 `anchor`/`anchor_to`（**起点 / 终点**）解析成 `origin`/`to_origin`。
 ///
 /// 与贴纸的 keyword→name 同一套约定：锚点是**意图**（LLM 或人写的），每次 process 重算，
 /// 所以改了选框/挪了贴纸不用手改坐标；解析结果才进渲染侧，四条渲染路径都不需要认识锚点。
 /// 认不出的锚点只告警、保留原 `origin`，不让整条管线失败。
+///
+/// # 三条口径（2026-11-21 改）
+///
+/// ① **手工摆过的运镜也解析**。以前这里对 `manual` 整条 `continue`，理由是"用户改过的归用户"——
+///    但 `origin`/`to_origin` 是**派生坐标**，任何界面都改不到它（词汇表里 `panel: false`），
+///    真正归用户的是 `time`/`end`。旧行为的实际后果：编辑器里点「运镜轨 ＋」新建的块**一律**是
+///    `manual`（`addEventAt` 打的标记）⇒ 面板上选「起点 = 主播/弹幕」**永远不生效**，
+///    画面死盯默认的 `"50% 50%"`（新建事件就写这个值）。这条是实测复现过的。
+/// ② **终点按「块尾」解析**，不再按起点。新语义里终点是**块尾到达的位置** ——
+///    按 `time` 解析等于问"出发那一刻弹幕在哪"，而画面是几秒后到那儿的。
+/// ③ **始 == 终 ⇒ `to_origin` 清空**（用户口径：「开始和终止位置相同那就默认不操作终止位置」）。
+///    留着等值坐标会让渲染侧多算一段零位移，更危险的是它一旦与 `origin` 差一点点
+///    （两次解析之间选框/贴纸动过）就变成一段谁也看不出来的漂移。
 fn resolve_camera_anchors(config: &mut project::ProjectFile, data_dir: &Path) {
     let ctx = AnchorCtx::collect(config, data_dir);
     let mut unknown: Vec<String> = Vec::new();
     let mut resolved = 0usize;
     let mut migrated = 0usize;
-    // C3（规格 §5）：手工摆过的运镜**整条跳过**（origin 与 to_origin 都不解析）——
-    // 用户拖过/改过的运镜归用户；这里覆盖回去的症状是"改完运镜跑一次 process 就回去了"。
-    let mut manual_skipped = 0usize;
+    let mut still = 0usize;
 
     for seg in &mut config.segments {
         for ev in &mut seg.events {
             let crate::project::Event::Camera {
                 time,
+                end,
                 anchor,
                 anchor_to,
                 origin,
                 to_origin,
-                manual,
                 ..
             } = ev
             else {
                 continue;
             };
-            if *manual {
-                manual_skipped += 1;
-                continue;
-            }
             // 老工程迁移：`"50% 50%"` 从来不是用户能设的值——它是 LLM prompt 示例与两个
             // 默认生成器硬编码的常量，一直被当作「没指定」。补成聚焦主播，让这次新增的
-            // 「聚焦」对**已有**工程也生效（否则老切片重跑还是对着画面正中推）。
+            // 「起点」对**已有**工程也生效（否则老切片重跑还是对着画面正中推）。
             if anchor.is_none() && to_origin.is_none() && origin.trim() == PRISTINE_ORIGIN {
                 *anchor = Some("liver".into());
                 migrated += 1;
@@ -2210,8 +2216,10 @@ fn resolve_camera_anchors(config: &mut project::ProjectFile, data_dir: &Path) {
                     None => unknown.push(name.to_string()),
                 }
             }
+            // ② 终点在**块尾**才到达。没有 `end` 的块退回起点时刻（那一块本来就是零长度）。
+            let arrival = end.unwrap_or(*time).max(*time);
             *to_origin = match anchor_to.as_deref() {
-                Some(name) => match ctx.resolve(name, *time) {
+                Some(name) => match ctx.resolve(name, arrival) {
                     Some(o) => {
                         resolved += 1;
                         Some(o)
@@ -2223,11 +2231,17 @@ fn resolve_camera_anchors(config: &mut project::ProjectFile, data_dir: &Path) {
                 },
                 None => None,
             };
+            // ③ 始 == 终 ⇒ 不操作终点。
+            let equal = matches!(to_origin.as_deref(), Some(to) if to.trim() == origin.trim());
+            if equal {
+                *to_origin = None;
+                still += 1;
+            }
         }
     }
 
-    if manual_skipped > 0 {
-        tracing::info!("  · 手工摆过的运镜 {manual_skipped} 条：跳过锚点解析（manual 只读）");
+    if still > 0 {
+        tracing::info!("  · {still} 条运镜的终点与起点相同：不操作终点（画面保持静止）");
     }
     if migrated > 0 {
         tracing::info!("  🎯 {migrated} 条默认运镜已改为聚焦主播（原 origin 50% 50% 是历史常量，非用户设置）");
@@ -2612,11 +2626,14 @@ y = "10%"
         ev
     }
 
-    /// **C3 相机半边**：`manual` 的运镜**整条跳过** —— origin 一个字都不改；
-    /// 同一条件的非 manual 版本（同样的 anchor）必须被解析（证明解析器真的在工作，
-    /// 而不是"这个锚点本来就解析不出来"）。
+    /// **C3 相机半边（2026-11-21 改口径）**：`manual` 的运镜**也解析锚点** ——
+    /// `origin`/`to_origin` 是派生坐标、不是用户字段（见 `ManualFields` 的说明）；
+    /// 归用户的是 `time`/`end`，由 `manual_event_fields_survive_process` 钉着。
+    ///
+    /// ⚠️ 这条**反着**钉住旧行为：以前 manual 整条跳过 ⇒ 编辑器新建的运镜（一律 manual）
+    /// 选什么「起点」都不生效，画面死盯新建时写的 `"50% 50%"`。退回旧行为这条会红。
     #[test]
-    fn manual_camera_origin_survives_anchor_resolution() {
+    fn manual_camera_anchor_is_resolved_like_any_other() {
         let dir = tempfile::tempdir().expect("临时目录");
         let data_dir = dir.path().join("data");
         std::fs::create_dir_all(&data_dir).expect("建 data/");
@@ -2639,20 +2656,98 @@ y = "10%"
                 _ => None,
             })
             .collect();
-        assert_eq!(origins[0], "33% 44%", "manual 运镜的 origin 被覆盖了（C3 回归）");
+        assert_eq!(
+            origins[0], "50.00% 50.00%",
+            "manual 运镜的锚点也必须解析（anchor=center）—— 旧口径「manual 整条跳过」\
+             的后果是编辑器新建的运镜选什么起点都不生效：{origins:?}"
+        );
         assert_eq!(
             origins[1], "50.00% 50.00%",
-            "对照组必须被解析（anchor=center）—— 否则上面那条是空转：{origins:?}"
+            "非 manual 对照组同样解析（否则上面那条是空转）：{origins:?}"
         );
     }
 
     /// **C3 文字半边**：`manual` 或 `manual_pos` 的文字**不排版写回 x/y**，
     /// 但 source（解析出来的样式参数）照写 —— 不写就等于让手工摆位的文字丢掉字号/描边。
 
+    /// **终点与起点相同 ⇒ 不操作终点**（用户口径 2026-11-21：「如果开始和终止位置相同那就
+    /// 默认不操作终止位置的行为，不然可能会有乱动的可能」）。
+    ///
+    /// ⚠️ 判据必须**同时**钉住「相同的被清掉」与「不同的留下来」—— 只写前半条的话，
+    /// 把 `to_origin` 无条件清空也能过（那就变成「终点永远不生效」，是另一种坏）。
+    #[test]
+    fn camera_end_equal_to_start_is_normalized_away() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let data_dir = dir.path().join("data");
+        std::fs::create_dir_all(&data_dir).expect("建 data/");
+        let mut cfg = ProjectFile::example();
+        // 把主播区域钉成一个**肯定不等于画面正中**的格子（否则「两端相等」可能是巧合）
+        cfg.layout.liver.origin = Some("83.33% 50%".into());
+        cfg.layout.liver.origin_grid = None;
+        cfg.segments = vec![Segment {
+            start: 0.0,
+            end: 10.0,
+            fx: "med".into(),
+            note: String::new(),
+            role: String::new(),
+            events: vec![
+                // ① 起点 = 终点（同一个锚点）⇒ 清 to_origin
+                Event::Camera {
+                    time: 1.0,
+                    end: Some(4.0),
+                    zoom: "中".into(),
+                    origin: "10% 10%".into(),
+                    anchor: Some("center".into()),
+                    anchor_to: Some("center".into()),
+                    to_origin: Some("10% 10%".into()),
+                    cut: false,
+                    handheld: false,
+                    manual: false,
+                    speed: None,
+                    tilt: None,
+                },
+                // ② 两端不同 ⇒ 必须真的留下终点（否则上面那条是空转）
+                Event::Camera {
+                    time: 5.0,
+                    end: Some(8.0),
+                    zoom: "中".into(),
+                    origin: "10% 10%".into(),
+                    anchor: Some("center".into()),
+                    anchor_to: Some("liver".into()),
+                    to_origin: None,
+                    cut: false,
+                    handheld: false,
+                    manual: false,
+                    speed: None,
+                    tilt: None,
+                },
+            ],
+            extra: Default::default(),
+        }];
+        resolve_camera_anchors(&mut cfg, &data_dir);
+        let shots: Vec<(&str, &Option<String>)> = cfg.segments[0]
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                Event::Camera { origin, to_origin, .. } => Some((origin.as_str(), to_origin)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(shots[0].1, &None, "起点 == 终点 ⇒ to_origin 必须清掉（这一块该静止）");
+        assert_eq!(shots[1].0, "50.00% 50.00%", "对照组起点解析到画面正中：{shots:?}");
+        assert_eq!(
+            shots[1].1.as_deref(),
+            Some("83.33% 50%"),
+            "两端不同 ⇒ 终点必须留下（否则上面那条是空转）：{shots:?}"
+        );
+    }
+
     /// **端到端 C3 判据**（规格 §5 的 `manual_event_fields_survive_process`）：
-    /// 一条 manual 的贴纸 / 运镜 / 文字，跑完真 `cmd_process` 之后
-    /// **time / end / origin / manual_pos 一个字都不许变**；文字的 x/y 必须来自 manual_pos
-    /// （而不是排版求出来的锚点位置）。
+    /// 一条 manual 的贴纸 / 运镜，跑完真 `cmd_process` 之后
+    /// **time / end / manual_pos 一个字都不许变**。
+    ///
+    /// ⚠️ 相机的 `origin` **不在**这条判据里（2026-11-21）：它是派生坐标，manual 也照常解析，
+    /// 否则"编辑器新建的运镜选起点不生效"。
     #[tokio::test]
     async fn manual_event_fields_survive_process() {
         let dir = tempfile::tempdir().expect("临时目录");
@@ -2696,15 +2791,63 @@ y = "10%"
         assert_eq!(sticker.manual_pos(), Some("20% 30%"), "manual_pos 变了");
 
         let cam = evs.iter().find(|e| matches!(e, Event::Camera { manual: true, .. })).expect("运镜还在");
-        if let Event::Camera { origin, to_origin, .. } = cam {
-            assert_eq!(origin, "33% 44%", "manual 运镜的 origin 变了");
-            assert_eq!(to_origin, &None, "manual 运镜的 to_origin 不该被写");
+        if let Event::Camera { origin, to_origin, time, end, .. } = cam {
+            // 归用户的只有时间：manual 的 time/end 一个字都不许变
+            assert_eq!(*time, 5.0, "manual 运镜的 time 变了");
+            assert_eq!(*end, Some(7.0), "manual 运镜的 end 变了");
+            // 派生坐标照常解析（anchor=center ⇒ 50% 50%），不是用户字段
+            assert_eq!(origin, "50.00% 50.00%", "manual 运镜的 origin 没被解析（面板上的起点会静默失效）");
+            assert_eq!(to_origin, &None, "没写 anchor_to 就不该有 to_origin");
         } else {
             unreachable!()
         }
 
         // ⚠️ 文字层退役（2026-10-20）：这一条原来还断言"manual 文字元素"的 time/end/manual_pos/x/y/source
         // 不被 process 改写。文字层已整条删除，这里只保留贴纸与运镜两条（贴纸侧完全没动）。
+    }
+
+    /// **Step 7 的判据本体**：什么时候该重建预览代理（2026-11-21）。
+    ///
+    /// 两种极端都要防：**漏了** ⇒ 重切之后预览一直读源（局域网里「拖时间轴卡」又回来了）；
+    /// **多了** ⇒ 每次 process 都重压一遍 720p（白烧 CPU，而 process 被预览/出片**隐式触发**）。
+    #[test]
+    fn proxy_refresh_decides_from_source_and_proxy_mtimes() {
+        // 整体关掉时（`VTEDIT_NO_PROXY`）这条判据不适用 —— 与 `tests/preview_proxy.rs` 同口径
+        if proxy::proxy_disabled() {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("临时目录");
+        let root = dir.path();
+        // ① 没有 polish.toml ⇒ 什么都不做
+        assert_eq!(proxy_refresh_source(root), None, "没有工程就不该碰代理");
+
+        let mut cfg = ProjectFile::example();
+        cfg.source.video = "clip.mp4".into();
+        std::fs::write(root.join("polish.toml"), cfg.to_toml_commented().unwrap()).unwrap();
+        // ② 源还没就位 ⇒ 不建（`ensure_preview_proxy` 也建不出来）
+        assert_eq!(proxy_refresh_source(root), None, "没有源就不该建代理");
+
+        std::fs::write(root.join("clip.mp4"), b"src").unwrap();
+        // ③ 源在、代理不在 ⇒ 要补
+        assert_eq!(
+            proxy_refresh_source(root).as_deref(),
+            Some("clip.mp4"),
+            "源在而代理不在 ⇒ 必须补一份"
+        );
+
+        // ④ 代理比源新 ⇒ 不动（幂等：process 会被反复触发）
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::write(root.join(proxy::PREVIEW_PROXY_FILE), b"proxy").unwrap();
+        assert_eq!(proxy_refresh_source(root), None, "代理已是最新 ⇒ 不许重压");
+
+        // ⑤ 源比代理新（重切过）⇒ 要重建
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::write(root.join("clip.mp4"), b"src2").unwrap();
+        assert_eq!(
+            proxy_refresh_source(root).as_deref(),
+            Some("clip.mp4"),
+            "源比代理新 ⇒ 代理已作废，必须重建"
+        );
     }
 
     /// B3 的**判据本体**：五个用户字段里任何一个变了都要被指出来（含条数变化）。
@@ -2714,17 +2857,19 @@ y = "10%"
         let base = || ManualFields {
             time: 1.0,
             end: Some(2.0),
-            origin: Some("10% 20%".into()),
             manual_pos: Some("30% 40%".into()),
         };
         let before = vec![base()];
         // 没改 ⇒ 干净
         assert!(ownership_violations(&before, &[base()]).is_empty());
-        // 五个字段各改一次，都要被抓到（且报出字段名）
-        let cases: [(&str, ManualFields); 5] = [
+        // 四个用户字段各改一次，都要被抓到（且报出字段名）
+        //
+        // ⚠️ 相机的 `origin` **不在这张表里**（2026-11-21 移出）：它是 `anchor` 的派生坐标，
+        //    任何界面都改不到它。把它当所有权字段 = `resolve_camera_anchors` 只能对 manual
+        //    整条跳过 = 编辑器新建的运镜选什么起点都不生效（实测复现）。
+        let cases: [(&str, ManualFields); 4] = [
             ("time", { let mut a = base(); a.time = 9.0; a }),
             ("end", { let mut a = base(); a.end = Some(9.0); a }),
-            ("origin", { let mut a = base(); a.origin = Some("99% 99%".into()); a }),
             ("manual_pos", { let mut a = base(); a.manual_pos = Some("1% 1%".into()); a }),
             ("end 被清空", { let mut a = base(); a.end = None; a }),
         ];

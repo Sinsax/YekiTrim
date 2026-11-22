@@ -120,6 +120,29 @@ function serverClamps(src) {
   }
 }
 
+/** ④③② 三处速度档位表：`CAMERA_SPEED_SECS = { snap: 0.10, fast: 0.25, slow: 1.5 }`（写法各异）。 */
+function speedTableOf(src) {
+  const m = /(?:export\s+)?(?:const|var)\s+CAMERA_SPEED_SECS\s*=\s*\{([^}]*)\}/.exec(src)
+  if (!m) return { snap: null, fast: null, slow: null }
+  const get = (k) => {
+    const mm = m[1].match(new RegExp(`${k}:\\s*([0-9.]+)`))
+    return mm ? Number(mm[1]) : null
+  }
+  return { snap: get('snap'), fast: get('fast'), slow: get('slow') }
+}
+
+/** ① placement.rs：`Some("snap") => 0.10` 这种匹配臂。 */
+function rustSpeedTable(src) {
+  // ⚠️ 用 indexOf + 正则**字面量**取，别拼 `new RegExp`：那串 `Some\\(...\\)` 的转义在
+  //    模板字符串里过一遍就变形了（实测取出来全是 null，判据看起来在跑、其实空转）。
+  const grab = (k) => {
+    const at = src.indexOf('Some("' + k + '")')
+    if (at < 0) return null
+    const m = src.slice(at).match(/=>\s*([0-9.]+)/)
+    return m ? Number(m[1]) : null
+  }
+  return { snap: grab('snap'), fast: grab('fast'), slow: grab('slow') }
+}
 function run(variant) {
   const rust = rustDefaults(variant.rust)
   const tpl = jsCamFactorDefaults(variant.html)
@@ -147,6 +170,42 @@ function run(variant) {
     )
   }
 
+  console.log('\n①b 运镜**过渡时长档位表**四处逐值一致（§16 speed，2026-11-21 加强）')
+  // ⚠️ 这一条以前**不存在**，而模板那份 `getActiveCamera` 当时根本没读 speed（写死
+  //    `min(dur*0.5, 0.6)`）：预览与成片都按档位走、只有「事实来源」那份最旧。
+  //    加进来的目的就是让"四处"变成真的四处 —— 任一路漏改当场红。
+  const spTpl = speedTableOf(variant.html)
+  const spEng = speedTableOf(variant.engine)
+  const spTr = speedTableOf(variant.dhampir)
+  const spRust = rustSpeedTable(variant.placement)
+  const wantSpeed = { snap: 0.10, fast: 0.25, slow: 1.5 }
+  for (const k of ['snap', 'fast', 'slow']) {
+    check(
+      `速度档「${k}」四处一致 = ${wantSpeed[k]}（模板 ${spTpl[k]} / engine ${spEng[k]} / 转译器 ${spTr[k]} / placement ${spRust[k]}）`,
+      eq(spTpl[k], wantSpeed[k]) && eq(spEng[k], wantSpeed[k]) && eq(spTr[k], wantSpeed[k]) && eq(spRust[k], wantSpeed[k]),
+      `期望全部 ${wantSpeed[k]}`,
+    )
+  }
+  // `med` / 没写 / 认不出 ⇒ **老式子** `min(dur*0.5, 0.6)`，四处都得是它（不是常量 0.6）
+  const medOf = (src) => /min\(\s*\w+\s*\*\s*0\.5\s*,\s*0\.6\s*\)/.test(src)
+  check('模板：med 走 min(dur*0.5, 0.6)', medOf(variant.html), true)
+  check('engine：med 走 min(dur*0.5, 0.6)', medOf(variant.engine), true)
+  check('转译器：med 走 min(dur*0.5, 0.6)', medOf(variant.dhampir), true)
+  check('placement：med 走 min(dur*0.5, 0.6)（不是常量 TRANSITION_SECS）', /TRANSITION_SECS\.min\(dur \* 0\.5\)/.test(variant.placement), true)
+  console.log('\n①c 运镜**位置状态机**四处同形（接缝从上一块落点出发、块内走到终点）')
+  // ⚠️ 这条是**源码锚点**判据（不是逐值对拍）：模板 ↔ engine 的严格对拍在
+  //    `webui/scripts/check-handheld.mjs` 的「位置状态机对拍 + 块缝连续性」两段里；
+  //    这里补的是**转译器**那一份 —— 它把同一条曲线写成稀疏关键帧，形状不一样、
+  //    没法拿同一个函数对拍，所以只钉"接缝的起点必须是 prevOffset，不是本块 origin"
+  //    这条曾在 2026-11-21 之前写错、并且**不报错**（块缝瞬跳 928px / 一帧）。
+  check('模板：接缝从**当前**位置出发（ox = lerp(ox, ax, p)）', /ox = lerp\(ox, ax, p\);/.test(variant.html), true)
+  check('engine：接缝从**当前**位置出发（ox = lerp(ox, startX, p)）', /ox = lerp\(ox, startX, p\)/.test(variant.engine), true)
+  check('转译器（稀疏键）：接缝起点键写 prevOffset（不是本块 origin）',
+    /placeKeyframe\(shot\.srcStart, 'x', prevOffset\.x, startEasing\);/.test(variant.dhampir), true)
+  check('转译器（逐帧重放）：接缝从当前出发（ox = ox + (ax - ox) * p）',
+    /ox = ox \+ \(ax - ox\) \* p;/.test(variant.dhampir), true)
+  check('转译器（块内位移）：块尾关键帧写到 offEnd',
+    /placeKeyframe\(shot\.srcEnd, 'x', offEnd\.x, 'ease_out'\);/.test(variant.dhampir), true)
   console.log('\n② 后端写入的**夹取区间**必须与语义一致（§0.6 露边 / 画中画语义）')
   // 中景与近景：下限 1.0 = 不比原始画面更小（< 1 会缩出黑边，那是画中画的语义）
   check('zoom_mid 夹到 [1.0, 3.0]', eq(srv.mid?.[0], 1.0) && eq(srv.mid?.[1], 3.0), `实得 ${JSON.stringify(srv.mid)}`)
@@ -269,6 +328,17 @@ function mutate() {
   expectRed('前端滑杆上限与后端不同（3.0 → 5.0）', { ...base, polishView: base.polishView.replace("key: 'zoom_close', label: '近景', min: 1.0, max: 3.0", "key: 'zoom_close', label: '近景', min: 1.0, max: 5.0") }, run, 'polishView')
   expectRed('默认值掉出夹取区间（近景默认改 0.5）', { ...base, rust: base.rust.replace('fn default_zoom_close() -> f64 {\n    1.5', 'fn default_zoom_close() -> f64 {\n    0.5').replace('fn default_zoom_mid() -> f64 {\n    1.3', 'fn default_zoom_mid() -> f64 {\n    0.5').replace('fn default_zoom_wide() -> f64 {\n    0.55', 'fn default_zoom_wide() -> f64 {\n    0.55'), html: base.html.replace("if(label==='近'){v=c.zoom_close;d=1.5;}", "if(label==='近'){v=c.zoom_close;d=0.5;}").replace("if(label==='远'){v=c.zoom_wide;d=0.55;}", "if(label==='远'){v=c.zoom_wide;d=0.55;}").replace("else{v=c.zoom_mid;d=1.3;}", "else{v=c.zoom_mid;d=0.5;}"), engine: base.engine.replace("pick(c.zoom_close, 1.5)", "pick(c.zoom_close, 0.5)").replace("pick(c.zoom_mid, 1.3)", "pick(c.zoom_mid, 0.5)"), dhampir: base.dhampir.replace('const defaults = { 近: 1.5, 远: 0.55, 中: 1.3 }', 'const defaults = { 近: 0.5, 远: 0.55, 中: 0.5 }') }, run)
 
+  // ── 位置状态机（2026-11-21）：接缝起点这一处必须能翻面 ──
+  expectRed('模板把接缝退回绝对赋值（旧 bug：块缝瞬跳）', { ...base, html: base.html.replace('ox = lerp(ox, ax, p);', 'ox = lerp(ax, bx, p);') }, run, 'html')
+  expectRed('转译器把接缝起点键写成本块 origin（同一 bug）', { ...base, dhampir: base.dhampir.replace("placeKeyframe(shot.srcStart, 'x', prevOffset.x, startEasing);", "placeKeyframe(shot.srcStart, 'x', offStart.x, startEasing);") }, run, 'dhampir')
+
+  // ── 速度档位表（2026-11-21）：四条都要能翻面 ──
+  expectRed('模板的 snap 档改成 0.2', { ...base, html: base.html.replace('snap: 0.10, fast: 0.25, slow: 1.5', 'snap: 0.20, fast: 0.25, slow: 1.5') }, run, 'html')
+  expectRed('engine 的 fast 档改成 0.3', { ...base, engine: base.engine.replace('snap: 0.10, fast: 0.25, slow: 1.5', 'snap: 0.10, fast: 0.30, slow: 1.5') }, run, 'engine')
+  expectRed('转译器的 slow 档改成 2.0', { ...base, dhampir: base.dhampir.replace('  slow: 1.5,', '  slow: 2.0,') }, run, 'dhampir')
+  expectRed('placement 的 snap 臂改成 0.2', { ...base, placement: base.placement.replace('Some("snap") => 0.10', 'Some("snap") => 0.20') }, run, 'placement')
+  expectRed('placement 的 med 退回常量 0.6（短镜头会多算旧状态）', { ...base, placement: base.placement.replace('_ => TRANSITION_SECS.min(dur * 0.5),', '_ => TRANSITION_SECS,') }, run, 'placement')
+
   if (bad > 0) {
     console.log(`\n✗ ${bad} 条变异没有翻面 —— 那些判据是空转的`)
     process.exit(1)
@@ -284,6 +354,8 @@ function loadVariant() {
     dhampir: read('tools/polish-to-dhampir.mjs'),
     server: read('crates/yekitrim-server/src/api/polish.rs'),
     polishView: read('webui/src/views/PolishView.vue'),
+    // ⑤ 运镜过渡时长（§16 speed）的第四处：贴纸避让侧的 `transition_secs`
+    placement: read('crates/yekitrim-polish/src/process/placement.rs'),
   }
 }
 

@@ -290,15 +290,21 @@
 
             <!-- 运镜 -->
             <template v-if="selItem.type === 'camera'">
-              <label>方式</label>
+              <!-- ⚠️⚠️ **「运镜过渡」是接缝，不是块内逻辑**（2026-11-21 用户口径：
+                   「方式改为运镜过渡，是作用于前后两个运镜块的过渡而不是块内的运镜逻辑」）。
+                   它只决定**这一块的起点是怎么来的** —— 从上一块落下的位置**平滑推过来**
+                   （0.6s / 推进速度档位）还是**瞬间硬切到位**；块内「起点 → 终点」那段位移
+                   跟它无关（铺满整块）。旧文案「方式 = 平滑运镜（0.6s 推移）」会被读成
+                   "这一块自己推 0.6 秒"，正是要修的那个误解。 -->
+              <label title="这一块怎么从上一块的落点接过来：平滑推过去 / 瞬间切过去。块内「起点→终点」不受它管">运镜过渡</label>
               <select :value="selItem.cut ? 'cut' : 'smooth'" @change="selItem.cut = $event.target.value === 'cut'">
-                <option value="smooth">平滑运镜（0.6s 推移）</option>
-                <option value="cut">硬切（瞬间切换）</option>
+                <option value="smooth">平滑（从上一块推过来）</option>
+                <option value="cut">硬切（瞬间到位）</option>
               </select>
               <!-- 运镜速度（§16）：只在**平滑**下有意义 —— 硬切本来就是 0 秒，
                    同时写以 cut 为准（转译器与模板都这么判）。所以硬切时置灰、并写明原因，
                    而不是让它看着能点、点了没反应。 -->
-              <label :title="selItem.cut ? '硬切没有过渡，速度不起作用' : '推近/拉远的快慢'">推进速度</label>
+              <label :title="selItem.cut ? '硬切没有过渡，速度不起作用' : '接缝过渡的快慢（上一块落点 → 本块起点）'">推进速度</label>
               <select
                 :value="selItem.speed || 'med'"
                 :disabled="selItem.cut === true"
@@ -323,9 +329,20 @@
                        @change="setHandheld(selItem, $event.target.checked)">
                 手持摇摆
               </label>
+              <!-- ============ 位置：**起点 / 终点**（2026-11-21 用户口径）============
+                   ⚠️⚠️ 旧文案是「聚焦 / 移到」，读起来像两件不同的事 —— 其实**是同一个概念
+                   的两个端点**（都是一次「把画面中心放到哪儿」）。用户口径：「聚焦和移到应该是
+                   一个意思，改变成始和终的概念」。
+
+                   ⚠️ **终点默认「不移动」**：不写 anchor_to、或写成与起点同一个 ⇒ 后处理会把
+                   to_origin 清掉、这一块**整块静止**（用户口径「如果开始和终止位置相同那就默认
+                   不操作终止位置的行为，不然可能会有乱动的可能」）。
+
+                   ⚠️ 这两栏写的是**意图**（anchor / anchor_to）；真正的坐标是后处理解析出来的
+                   origin / to_origin，面板不显示（spec/effects.json 里 panel: false）。 -->
               <div class="row">
                 <div class="flex-1">
-                  <label>聚焦</label>
+                  <label title="这一块开始时画面中心在哪">起点</label>
                   <select :value="selItem.anchor || ''" @change="setEvField(selItem, 'anchor', $event.target.value)">
                     <option value="">（不指定）</option>
                     <option value="liver">主播</option>
@@ -335,9 +352,9 @@
                   </select>
                 </div>
                 <div class="flex-1">
-                  <label>移到</label>
+                  <label title="这一块结束时画面中心在哪；与起点相同就整块不动">终点</label>
                   <select :value="selItem.anchor_to || ''" @change="setEvField(selItem, 'anchor_to', $event.target.value)">
-                    <option value="">（原地不动）</option>
+                    <option value="">不移动（同起点）</option>
                     <option value="liver">主播</option>
                     <option value="danmaku">弹幕</option>
                     <option value="sticker">贴纸</option>
@@ -345,6 +362,9 @@
                   </select>
                 </div>
               </div>
+              <p v-if="cameraStaysStill(selItem)" class="mini-hint">
+                起点与终点相同 ⇒ 这一块不动，终点不生效。
+              </p>
               <!-- 荷兰角（地平线倾斜）：`tilt` 一直是**活的**字段（出片模板 `cam.tilt` 与转译器
                    `dutchFrames` 都在消费它），但此前是靠"自动派生"冒出来的**裸控件** ——
                    没有标签、没有区间提示，用户不知道那几个数字框是干什么的。
@@ -2020,6 +2040,19 @@ function setCameraSpeed(ev, v) {
   if (!v || v === 'med') delete ev.speed
   else ev.speed = v
 }
+/**
+ * 这一条运镜**是不是静止的**（起点 = 终点 ⇒ 后处理不操作终点）。
+ *
+ * 用户口径（2026-11-21）：「如果开始和终止位置相同那就默认不操作终止位置的行为，
+ * 不然可能会有乱动的可能」。真正清 to_origin 的是 Rust 侧
+ * （process::resolve_camera_anchors 的 ③），这里只负责**让用户看见**这件事 ——
+ * 否则面板上「终点 = 主播」看着像"会摇过去"，而画面一动不动。
+ */
+function cameraStaysStill(ev) {
+  if (!ev || ev.type !== 'camera') return false
+  const to = ev.anchor_to
+  return !!to && to === (ev.anchor || '')
+}
 /** `#rgb` / `#rrggbb` → 取色器能认的 `#rrggbb`（认不出时给 `fallback`，淡入/淡出用黑色）。 */
 function hexOf(v, fallback = '#ffffff') {
   const s = String(v || '').trim()
@@ -2077,7 +2110,10 @@ function labelFor(ev) {
     // 硬切的块加个「切」前缀：泳道上一眼能看出哪几段是瞬间换构图（用户要的切镜）
     // 「摇」= 手持摇摆（附加变种），排在最前：它是叠加状态，跟切的"瞬间换构图"是两回事
     const z = (ev.handheld ? '摇·' : '') + (ev.cut ? '切·' : '') + (ev.zoom || '运镜')
-    if (ev.anchor && ev.anchor_to) return `${z} ${ev.anchor}→${ev.anchor_to}`
+    // 位置：**起点 → 终点**。两端相同（或没写终点）就是静止块，只显示一个点 ——
+    // ⚠️ 别退回 if (ev.anchor && ev.anchor_to)：两端相同时那块其实**不动**，
+    //    画成 a→a 会让人以为它在摇（用户口径「相同就默认不操作终点」）。
+    if (ev.anchor && ev.anchor_to && ev.anchor_to !== ev.anchor) return `${z} ${ev.anchor}→${ev.anchor_to}`
     return ev.anchor ? `${z} ${ev.anchor}` : z
   }
   if (ev.type === 'sfx') return ev.name || '音效'

@@ -61,11 +61,11 @@ type = "camera"
 time = 12.5
 end = 16.5
 zoom = "中"          # "远"(画中画) | "中" | "近"
-anchor = "liver"     # 聚焦谁：liver | danmaku | sticker | center（可省）
-anchor_to = "danmaku"  # 可省；写了就是「从 anchor 移到 anchor_to」
+anchor = "liver"     # **起点**：块开始时画面中心在哪 —— liver | danmaku | sticker | center（可省）
+anchor_to = "danmaku"  # **终点**：块结束时画面中心在哪（同样的取值）；写了不同的值 = 块内摇过去
 origin = "83.33% 50%"  # 由 anchor 解析回填；也可直接手写坐标
-to_origin = "16.67% 16.67%"  # 由 anchor_to 解析回填
-cut = true           # 可省；硬切（切镜）—— 瞬间换构图，不做 0.6s 推移
+to_origin = "16.67% 16.67%"  # 由 anchor_to 在**块尾时刻**解析回填；与 origin 相同会被清掉
+cut = true           # 可省；**运镜过渡 = 硬切**：本块的起点瞬间到位（块内位移照常）
 handheld = true      # 可省；手持摇摆（附加变种）—— 只在 zoom = "近" 上有效
 ```
 
@@ -84,9 +84,18 @@ handheld = true      # 可省；手持摇摆（附加变种）—— 只在 zoom
   只有画中画（`zoom_wide < 1`）才是刻意留黑边。所以调大这两档只有观感问题、没有露底风险。
   老工程里写死的旧内建默认由 `cmd_process` Step 0a 迁移成新值（中 `1.15 → 1.3`、近 `1.3 → 1.5`、
   远 `0.7 → 0.55`；**只认这几个旧默认值**，手改过的一律保留，日志会报条数）。
-- **位移**：不动点从 `origin` 线性移到 `to_origin`，与 zoom 同一段窗口 `min((end-time)*0.5, 0.6)`、
-  同一条 `pow2Out` 曲线。不写 `anchor_to` 时两者相等，退化成「原地聚焦」。
-  「主播→弹幕→回主播」= 两条事件（第二条 `anchor = "danmaku", anchor_to = "liver"`）。
+- **位置状态机（2026-11-21 改）**：`anchor` / `anchor_to` 是**同一个概念的两个端点**（面板文案 =「起点 / 终点」）。
+  一条运镜 = 一个时间块，块里的位置分两段走：
+  ① **接缝「运镜过渡」** `[time, time+td]`：把镜头从**上一块落下的位置**接到本块的 `origin`；
+     `td` 由 `cut`（硬切 ⇒ 0）与 `speed` 档位决定，缺省是老式子 `min((end-time)*0.5, 0.6)`。
+  ② **块内位移** `[time+td, end]`：本块的 `origin` → `to_origin`，同一条 `pow2Out` 曲线。
+  `anchor_to` 不写、或与 `anchor` 相同 ⇒ `process` 把 `to_origin` 清掉，这一块**整块静止**
+  （用户口径：「开始和终止位置相同就默认不操作终止位置」）。
+  「主播→弹幕→回主播」= 两条事件：第一条 `anchor="liver", anchor_to="danmaku"`（块内摇过去），
+  第二条 `anchor="liver"`（接缝里 0.6s 自己推回来）。
+  ⚠️ 位置是**连续状态**（与 `zoom` / `handheld` / `tilt` 同形）。它曾经是每块**绝对赋值**，
+  `p=0` 时直接等于本块起点 ⇒ 上一块落在弹幕、下一块写「起点=主播」就是**一帧横移 928px**；
+  同一个根因还让「硬切 + 终点」把起点整个吞掉。
 - **画中画**（`zoom = "远"`）：画面以不动点为中心缩到 0.55，四周留黑边（各 432px @1920）
   （canvas 在 `clearRect` 后透明、导出 JPEG 里是黑；`.stage` 背景本就是 `#000`；wgpu 的 source pass 清屏为黑）。
   ⚠ 判据是 `|zoom-1| > 0.001` 而不是 `zoom > 1`——写成后者会把整档吞掉。
@@ -332,7 +341,7 @@ shape = "radial"            # "linear"(默认) | "radial"，仅 gradient
 | 贴纸的 `keyword` / `sticker_tag` / `name` / `source` | 属性面板两级列表（keyword → 贴纸缩略图） | 同上 |
 | 音效的 `name` / `volume` | 属性面板（音效目录列表） | 同上 |
 | 任意视觉事件的 `sfx` 引用 / `sfx_volume` | 属性面板「配声」 | 同上 |
-| 运镜的**方式**（平滑 / 硬切 `cut`）、`zoom`、`anchor` / `anchor_to` | 属性面板（「方式」+「景别」+「聚焦/移到」） | 同上 |
+| 运镜的**运镜过渡**（平滑 / 硬切 `cut` + `speed`）、`zoom`、`anchor` / `anchor_to` | 属性面板（「运镜过渡」+「景别」+「起点/终点」） | 同上 |
 | 覆盖层 `overlay_type` / `color` / `colors` / `opacity` / `shape` | 属性面板（下拉 + 取色器；fade 两档只留颜色） | 同上 |
 | 瞬时特效 `intensity`（shake）、`color`（flash/hue_shift） | 属性面板 | 同上 |
 | 分段 `note` / `fx` / `start` / `end`（体拖、右缘缩放、面板确认后删） | 时间轴 + 属性面板 | 同上 |
@@ -398,9 +407,9 @@ Step 2b 按它们反选安全区、**重写每个贴纸的 `x/y`**，Step 2d 把
 运镜倍率：[style.camera] zoom_mid 1.3（中） zoom_close 1.5（近） zoom_wide 0.55（远=画中画，四周黑边 432px）
           放大档位不会露底（s≥1 时画面只向外扩张）；老工程里写死的旧默认
           （中 1.15 / 近 1.3 / 远 0.7）由 process Step 0a 按值迁移，手改过的不动
-运镜聚焦：事件 anchor 解析成 origin（liver/danmaku/sticker/center，未知值保留 origin）
+运镜起点/终点：anchor/anchor_to 解析成 origin/to_origin（liver/danmaku/sticker/center，未知值保留 origin）；两端相同则清 to_origin
           没写 anchor 时用 origin 字面量；也没有则 region_origin(liver) → 65% 50%
-运镜位移：写 anchor_to 即从 origin 平移到 to_origin，窗口 min((end-time)*0.5, 0.6)、pow2Out
+运镜位移：块内 origin -> to_origin，窗口 [time+td, end]、pow2Out；td 见「运镜过渡」
           例外：另一端是"远"时整段硬切（zoom + 不动点瞬间到位，跨度不再产生缓动）
 硬切 cut：事件写 cut=true（编辑器「方式 = 硬切」）→ 这一条整档瞬间到位，任意景别都行
 画中画配额：cap_pip_shots —— 整片只留最早的一条，其余降级成"中"；align_pip_shots —— 起止对齐字幕边界（不足 1.5s 往后借）
