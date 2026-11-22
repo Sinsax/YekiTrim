@@ -40,15 +40,21 @@ entirely. This fork moves the protection into the one place every build must pas
 ## The deltas, exactly
 
 1. `RELEASE_BASE_URL` → `https://github.com/Sinsax/sherpa-onnx-prebuilt-no-tts/releases/download`
-2. New constants `PINNED_ARCHIVE_NAME` / `PINNED_ARCHIVE_SHA256`, and a guard that refuses to build
-   for any target/link-mode other than the pinned Windows x64 static archive (which would otherwise
-   silently fall back to the official GPL archive).
+2. **`PINNED_ARCHIVES`** — a `(file name, sha256)` table, and a guard that refuses to build for any
+   target/link-mode not in it (which would otherwise silently fall back to the official GPL archive).
+   The table is a whitelist of **exact bytes**, not "whatever the release carries": a re-upload with
+   the same name must fail the build, not ship a different binary.
+   Currently two rows — `win-x64-static-MT-Release` and `linux-x64-static` (both TTS-off). The
+   release also has no macOS/shared builds, so those targets still stop with a readable error
+   listing what we do carry.
 3. **sha256 verification** (`sha2` build-dependency) on the local-archive copy and on the download;
    a mismatching file is deleted, never left in the cache for the next build to trust.
-4. `assert_placeholders_are_placeholders()` — the three stub libs listed unconditionally by
-   `SHERPA_ONNX_STATIC_LIBS` (`espeak-ng.lib`, `piper_phonemize.lib`, `ucd.lib`) must exist and be
-   **≤ 4096 bytes**. It runs on both paths: after extraction **and on the cache hit**, which is what
-   closes problem 2 above.
+4. `assert_placeholders_are_placeholders(lib_dir, target_os)` — the three stub libs listed
+   unconditionally by `SHERPA_ONNX_STATIC_LIBS` (`espeak-ng` / `piper_phonemize` / `ucd`) must exist
+   and be **≤ 4096 bytes**. ⚠️ The file name is **per-OS** (`espeak-ng.lib` on Windows, `libespeak-ng.a`
+   on Linux) ⇒ the list holds **stems** and `stub_lib_file_name()` resolves them; hard-coding `.lib`
+   is what made the Linux archive fail the assertion. It runs on both paths: after extraction **and
+   on the cache hit**, which is what closes problem 2 above.
 5. **Transfer timeouts** on the download (`timeout_connect` 30 s, `timeout_read` 60 s) and removal of
    the `.part` file when a transfer fails. Upstream sets no timeouts, so a stalled download hangs the
    build indefinitely without printing anything — measured here behind a local proxy
@@ -65,7 +71,7 @@ entirely. This fork moves the protection into the one place every build must pas
 diff vendor/sherpa-onnx-sys/build.rs <new-crate>/build.rs
 
 # 2. copy src/** and LICENSE over verbatim, re-apply the five deltas above
-# 3. update the pinned name/hash and, if the archive was rebuilt,
+# 3. update PINNED_ARCHIVES (name + hash per target) and, if the archive was rebuilt,
 #    https://github.com/Sinsax/sherpa-onnx-prebuilt-no-tts Release v<version>
 # 4. cargo metadata --format-version 1 > /dev/null   # refresh Cargo.lock
 # 5. cargo build --release -p yekitrim-cli --locked

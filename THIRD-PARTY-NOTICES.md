@@ -13,8 +13,8 @@
 
 | 组件 | 版本 | 授权 | 说明 |
 |---|---|---|---|
-| ~~espeak-ng~~ | — | — | **已不再链接（2026-09-18 起）**。本项目只用 ASR、从不调用 TTS，改用自行构建的 TTS-off 预编译归档后，它被替换为 896 B 的**零符号占位 `espeak-ng.lib`**；产物门禁 `cargo xtask scan` 扫描 5 个 espeak 特有标记为 **0 命中**。 |
-| sherpa-onnx / sherpa-onnx-sys | 1.13.3（本地 fork，见 `vendor/sherpa-onnx-sys/FORK-NOTES.md`） | Apache-2.0 | 语音识别（ASR）运行时。本项目用的是 **TTS-off 归档**：`espeak-ng` / `piper_phonemize` / `ucd` 均为零符号占位库（各 896 B）。 |
+| ~~espeak-ng~~ | — | — | **已不再链接（2026-09-18 起）**。本项目只用 ASR、从不调用 TTS，改用自行构建的 TTS-off 预编译归档后，它被替换为 **896 B（Windows `espeak-ng.lib`）/ 1068 B（Linux `libespeak-ng.a`）的零符号占位库**；产物门禁 `cargo xtask scan` 扫描 5 个 espeak 特有标记为 **0 命中**。 |
+| sherpa-onnx / sherpa-onnx-sys | 1.13.3（本地 fork，见 `vendor/sherpa-onnx-sys/FORK-NOTES.md`） | Apache-2.0 | 语音识别（ASR）运行时。本项目用的是 **TTS-off 归档**（Windows x64 / Linux x64 两份，按平台取）：`espeak-ng` / `piper_phonemize` / `ucd` 均为零符号占位库（896 B / 1068 B，见上）。 |
 | onnxruntime | 随同一预编译包 | MIT | 模型推理后端。⚠️ 其预编译包内**不含许可文件**，MIT 声明需由分发方随文档补齐（即本文档）。 |
 | kaldi-* / kissfft / ssentencepiece_core / kaldifst / openfst / simple-sentencepiece | 随同一预编译包 | Apache-2.0 与 BSD 系（随各自上游） | 同一静态包内 ASR 运行时所需的其余依赖。 |
 | piper_phonemize / ucd | — | — | **不再编译**：TTS-off 归档里与 `espeak-ng` 同样处理为零符号占位库。 |

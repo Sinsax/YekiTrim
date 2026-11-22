@@ -25,18 +25,55 @@ use tar::Archive;
 const RELEASE_BASE_URL: &str =
     "https://github.com/Sinsax/sherpa-onnx-prebuilt-no-tts/releases/download";
 
-// YekiTrim delta 2: the only archive this fork will accept. Same file name as upstream so it is a
-// drop-in replacement, different bytes. Bump the name and the hash together.
-const PINNED_ARCHIVE_NAME: &str = "sherpa-onnx-v1.13.3-win-x64-static-MT-Release-lib.tar.bz2";
-const PINNED_ARCHIVE_SHA256: &str =
-    "94d733a9cda2d959b1f924d75f771154a5acc4c8241b4393967afdb725e23b1f";
+// YekiTrim delta 2: the only archives this fork will accept, as `(file name, sha256)`.
+//
+// Same file names as upstream so they are drop-in replacements; different bytes (TTS off).
+// **Bump the name and the hash together**, and add a row when the release carries another target.
+// The table is deliberately a whitelist of exact bytes, not "whatever the release has":
+// a re-upload with the same name must fail the build, not silently ship a different binary.
+//
+// Current release (tag v1.13.3) carries exactly these two; digests read back from the GitHub
+// release API (`assets[].digest`), and the Linux one was re-verified locally by `sha256sum`.
+const PINNED_ARCHIVES: &[(&str, &str)] = &[
+    // Windows x64 static MT-Release — 111,446,628 bytes
+    (
+        "sherpa-onnx-v1.13.3-win-x64-static-MT-Release-lib.tar.bz2",
+        "94d733a9cda2d959b1f924d75f771154a5acc4c8241b4393967afdb725e23b1f",
+    ),
+    // Linux x64 static — 18,984,422 bytes
+    (
+        "sherpa-onnx-v1.13.3-linux-x64-static-lib.tar.bz2",
+        "6172f82807ba60fcc892c9296560caa84514ad243b33be60ea9c04eac4657e17",
+    ),
+];
 
-// Placeholder stubs shipped inside the pinned archive. SHERPA_ONNX_STATIC_LIBS below names them
+/// Pinned sha256 for an archive name, or `None` when this fork does not carry that target.
+fn pinned_sha256(archive_name: &str) -> Option<&'static str> {
+    PINNED_ARCHIVES
+        .iter()
+        .find(|(name, _)| *name == archive_name)
+        .map(|(_, sha)| *sha)
+}
+
+// Placeholder stubs shipped inside the pinned archives. SHERPA_ONNX_STATIC_LIBS below names them
 // unconditionally, so the files must exist -- but with TTS off nothing references an espeak
-// symbol and the linker pulls nothing out of them. The real upstream espeak-ng.lib is 823,674
-// bytes; the placeholder is 896. Anything above STUB_MAX_BYTES is the real library.
-const STUB_LIBS: &[&str] = &["espeak-ng.lib", "piper_phonemize.lib", "ucd.lib"];
+// symbol and the linker pulls nothing out of them. The real upstream espeak-ng is 823,674 bytes;
+// the placeholder is 896 (Windows) / 1068 (Linux, `lib*.a`). Anything above STUB_MAX_BYTES is the
+// real library.
+//
+// ⚠️ The file name differs per OS: Windows archives carry `espeak-ng.lib`, Linux ones `libespeak-ng.a`.
+// So this is a list of **stems**, resolved by `stub_lib_file_name`.
+const STUB_STEMS: &[&str] = &["espeak-ng", "piper_phonemize", "ucd"];
 const STUB_MAX_BYTES: u64 = 4096;
+
+/// `espeak-ng` → `espeak-ng.lib` (windows) / `libespeak-ng.a` (everything else).
+fn stub_lib_file_name(stem: &str, target_os: &str) -> String {
+    if target_os == "windows" {
+        format!("{stem}.lib")
+    } else {
+        format!("lib{stem}.a")
+    }
+}
 
 const SHERPA_ONNX_STATIC_LIBS: &[&str] = &[
     "sherpa-onnx-c-api",
@@ -146,21 +183,26 @@ fn download_prebuilt_libs(
 ) -> Result<PathBuf, DynError> {
     let archive_name = archive_name(link_mode, target_os, target_arch)?;
 
-    // YekiTrim delta 2. Our release only carries the pinned Windows x64 static archive. Any other
-    // target or link mode would have to come from the official upstream release, which links
-    // GPL-3.0-or-later espeak-ng unconditionally -- so fail loudly rather than quietly ship a
-    // GPL binary. SHERPA_ONNX_LIB_DIR (checked first, below) remains the escape hatch.
-    if archive_name != PINNED_ARCHIVE_NAME {
+    // YekiTrim delta 2. Our release carries **two** archives (win-x64 and linux-x64, both static,
+    // both TTS-off); anything else would have to come from the official upstream release, which
+    // links GPL-3.0-or-later espeak-ng unconditionally -- so fail loudly rather than quietly ship
+    // a GPL binary. SHERPA_ONNX_LIB_DIR (checked first, above) remains the escape hatch.
+    let Some(pinned_sha) = pinned_sha256(&archive_name) else {
+        let carried = PINNED_ARCHIVES
+            .iter()
+            .map(|(name, _)| format!("  {name}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         return Err(format!(
-            "YekiTrim's vendored sherpa-onnx-sys only ships the TTS-off archive\n  \
-             {PINNED_ARCHIVE_NAME}\nbut this build resolves to\n  {archive_name}\n\
-             Build for windows/x86_64 with the default (static) feature set, or set \
-             SHERPA_ONNX_LIB_DIR to a lib directory you built yourself. Removing the \
+            "YekiTrim's vendored sherpa-onnx-sys only ships these TTS-off archives:\n{carried}\n\
+             but this build resolves to\n  {archive_name}\n\
+             Build for windows/x86_64 or linux/x86_64 with the default (static) feature set, or \
+             set SHERPA_ONNX_LIB_DIR to a lib directory you built yourself. Removing the \
              [patch.crates-io] entry for sherpa-onnx-sys in the workspace root Cargo.toml opts \
              back in to the upstream crate -- and to its GPL espeak-ng link."
         )
         .into());
-    }
+    };
 
     let archive_stem = archive_name.trim_end_matches(".tar.bz2");
 
@@ -174,7 +216,7 @@ fn download_prebuilt_libs(
         // below, so an extracted dir left behind by an official-archive build would win and
         // nothing downstream would notice. Check the contents instead of trusting the path.
         // This is what makes a bare `cargo build` (and an IDE build) safe.
-        assert_placeholders_are_placeholders(&lib_dir)?;
+        assert_placeholders_are_placeholders(&lib_dir, target_os)?;
         return Ok(lib_dir);
     }
 
@@ -186,11 +228,11 @@ fn download_prebuilt_libs(
     // nothing), so hash it before use. On mismatch, drop it and re-acquire below.
     if archive_path.is_file() {
         match sha256_of_file(&archive_path) {
-            Ok(found) if found == PINNED_ARCHIVE_SHA256 => {}
+            Ok(found) if found == pinned_sha => {}
             Ok(found) => {
                 println!(
                     "cargo:warning=cached {archive_name} has sha256 {found}, expected \
-                     {PINNED_ARCHIVE_SHA256}; re-acquiring"
+                     {pinned_sha}; re-acquiring"
                 );
                 fs::remove_file(&archive_path)?;
             }
@@ -214,7 +256,7 @@ fn download_prebuilt_libs(
 
             // Offline path, but still the pinned bytes: pointing this at the official archive
             // must fail, not build.
-            verify_pinned_sha256(&local_archive_path)?;
+            verify_pinned_sha256(&local_archive_path, pinned_sha)?;
             copy_file_atomically(&local_archive_path, &archive_path)?;
         } else {
             let version = env!("CARGO_PKG_VERSION");
@@ -251,7 +293,7 @@ fn download_prebuilt_libs(
 
             // YekiTrim delta 3. Never leave an unverified 106 MiB file in the cache: the next
             // build would find it, skip the download, and unpack it without looking.
-            if let Err(err) = verify_pinned_sha256(&archive_path) {
+            if let Err(err) = verify_pinned_sha256(&archive_path, pinned_sha) {
                 let _ = fs::remove_file(&archive_path);
                 return Err(err);
             }
@@ -290,7 +332,7 @@ fn download_prebuilt_libs(
     // YekiTrim delta 4, fresh-extraction half. The archive's hash was checked just above, so this
     // cannot realistically fail -- which is why it is worth having: it is the one check that also
     // covers a cache that was populated by hand.
-    assert_placeholders_are_placeholders(&lib_dir)?;
+    assert_placeholders_are_placeholders(&lib_dir, target_os)?;
 
     eprintln!("Extracted TTS-off sherpa-onnx libs to {}", extracted_dir.display());
 
@@ -316,14 +358,14 @@ fn sha256_of_file(path: &Path) -> Result<String, DynError> {
 
 /// Refuse anything that is not the pinned TTS-off archive. Both the download and a local
 /// SHERPA_ONNX_ARCHIVE_DIR copy go through here, so a swapped archive cannot build either way.
-fn verify_pinned_sha256(path: &Path) -> Result<(), DynError> {
+fn verify_pinned_sha256(path: &Path, expected: &str) -> Result<(), DynError> {
     let found = sha256_of_file(path)?;
-    if found == PINNED_ARCHIVE_SHA256 {
+    if found == expected {
         return Ok(());
     }
 
     Err(format!(
-        "{} has the wrong sha256.\n  expected: {PINNED_ARCHIVE_SHA256}\n  actual:   {found}\n\
+        "{} has the wrong sha256.\n  expected: {expected}\n  actual:   {found}\n\
          That is not the TTS-off archive this project pins. Linking it would put GPL \
          espeak-ng back into the binary. Refusing to build.",
         path.display()
@@ -333,10 +375,11 @@ fn verify_pinned_sha256(path: &Path) -> Result<(), DynError> {
 
 /// The three stub libs must exist -- SHERPA_ONNX_STATIC_LIBS names them unconditionally, so the
 /// files have to be there for the link to resolve -- and must still be placeholders. A real
-/// espeak-ng.lib is 823,674 bytes; the placeholder is 896.
-fn assert_placeholders_are_placeholders(lib_dir: &Path) -> Result<(), DynError> {
-    for name in STUB_LIBS {
-        let path = lib_dir.join(name);
+/// espeak-ng is 823,674 bytes; the placeholder is 896 (Windows) / 1068 (Linux).
+fn assert_placeholders_are_placeholders(lib_dir: &Path, target_os: &str) -> Result<(), DynError> {
+    for stem in STUB_STEMS {
+        let name = stub_lib_file_name(stem, target_os);
+        let path = lib_dir.join(&name);
         if !path.is_file() {
             return Err(format!(
                 "{name} is missing from {}.\n\
