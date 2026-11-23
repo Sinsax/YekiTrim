@@ -110,8 +110,38 @@ pub(super) async fn project_data_transcript_put(scope: Scope, Json(body): Json<s
     blocking(move || data_transcript_put_impl(&ws, &body)).await
 }
 
+/// `POST /api/project-data/events` 的请求体（手工建一条事件）。
+///
+/// ⚠️ 时间有**两条通道**且都还在用：新前端传 `start_sec`/`end_sec`，老调用方与 CLI 传
+/// `start`/`end` —— 用 `alias` 保留，别删任何一条。`ranges`（多段剪）优先于单段起终点。
+#[derive(serde::Deserialize)]
+pub(super) struct CreateEventBody {
+    /// 标题。**必填**（空串由 impl 回 400「标题不能为空」，与改造前同口径）。
+    pub label: String,
+    #[serde(default, alias = "start")]
+    pub start_sec: Option<f64>,
+    #[serde(default, alias = "end")]
+    pub end_sec: Option<f64>,
+    #[serde(default)]
+    pub ranges: Vec<EventRangeBody>,
+    #[serde(default)]
+    pub event_type: Option<String>,
+    #[serde(default)]
+    pub summary: Option<String>,
+}
+
+/// `CreateEventBody.ranges` 的一条（多段剪的一段）。同样兼容 `start_sec`/`start` 两种写法。
+#[derive(serde::Deserialize)]
+pub(super) struct EventRangeBody {
+    #[serde(default, alias = "start")]
+    pub start_sec: Option<f64>,
+    #[serde(default, alias = "end")]
+    pub end_sec: Option<f64>,
+}
+
 pub(super) async fn project_data_events_create(scope: Scope, Json(body): Json<serde_json::Value>) -> ApiResult {
     let ws = scope.ws;
+    let body: CreateEventBody = parse_body(body)?;
     // events.json 是 read-modify-write：并发 PUT/POST 会丢事件
     let path = ws.output_dir().join("events.json");
     let _guard = yekitrim_core::filelock::lock_path(&path).await;
@@ -816,7 +846,7 @@ pub(super) fn sec_to_ts_value(sec: f64) -> serde_json::Value {
     serde_json::json!({ "h": ts.h, "m": ts.m, "s": ts.s, "ms": ts.ms })
 }
 
-pub(super) fn data_events_create_impl(ws: &Workspace, body: &serde_json::Value) -> ApiResult {
+pub(super) fn data_events_create_impl(ws: &Workspace, body: &CreateEventBody) -> ApiResult {
     let path = ws.output_dir().join("events.json");
     if !path.exists() {
         if let Some(parent) = path.parent() {
@@ -824,7 +854,7 @@ pub(super) fn data_events_create_impl(ws: &Workspace, body: &serde_json::Value) 
         }
         std::fs::write(&path, "{\"events\":[]}").map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("创建 events.json 失败: {e}")))?;
     }
-    let label = body.get("label").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    let label = body.label.trim().to_string();
     if label.is_empty() {
         return Err(err(StatusCode::BAD_REQUEST, "标题不能为空"));
     }
@@ -833,13 +863,9 @@ pub(super) fn data_events_create_impl(ws: &Workspace, body: &serde_json::Value) 
     // 传了就**以 ranges 为准**：`start/end` 拉成首段起、末段末（与 `Event::normalize_ranges` 同一条）。
     // ⚠️ 单段（1 条 ranges）与不传 ranges 完全等价 ⇒ 老的「标记入点/出点 → 切片」一个字节不变。
     let mut ranges: Vec<yekitrim_core::types::EventRange> = Vec::new();
-    if let Some(arr) = body.get("ranges").and_then(|v| v.as_array()) {
-        for r in arr {
-            let rs = r.get("start_sec").and_then(|v| v.as_f64())
-                .or_else(|| r.get("start").and_then(|v| v.as_f64()));
-            let re = r.get("end_sec").and_then(|v| v.as_f64())
-                .or_else(|| r.get("end").and_then(|v| v.as_f64()));
-            if let (Some(rs), Some(re)) = (rs, re) {
+    if !body.ranges.is_empty() {
+        for r in &body.ranges {
+            if let (Some(rs), Some(re)) = (r.start_sec, r.end_sec) {
                 if re > rs {
                     ranges.push(yekitrim_core::types::EventRange::new(rs, re));
                 }
@@ -854,12 +880,8 @@ pub(super) fn data_events_create_impl(ws: &Workspace, body: &serde_json::Value) 
         yekitrim_core::types::merge_overlapping_ranges(&mut ranges);
     }
     let (start_sec, end_sec) = if ranges.is_empty() {
-        let start = body.get("start_sec").and_then(|v| v.as_f64())
-            .or_else(|| body.get("start").and_then(|v| v.as_f64()))
-            .unwrap_or(0.0);
-        let end = body.get("end_sec").and_then(|v| v.as_f64())
-            .or_else(|| body.get("end").and_then(|v| v.as_f64()))
-            .unwrap_or(start + 10.0);
+        let start = body.start_sec.unwrap_or(0.0);
+        let end = body.end_sec.unwrap_or(start + 10.0);
         (start, end)
     } else {
         (
@@ -870,8 +892,8 @@ pub(super) fn data_events_create_impl(ws: &Workspace, body: &serde_json::Value) 
     if end_sec <= start_sec {
         return Err(err(StatusCode::BAD_REQUEST, "结尾必须大于开头"));
     }
-    let event_type = body.get("event_type").and_then(|v| v.as_str()).unwrap_or("other").to_string();
-    let summary = body.get("summary").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let event_type = body.event_type.clone().unwrap_or_else(|| "other".to_string());
+    let summary = body.summary.clone().unwrap_or_default();
     let raw = std::fs::read_to_string(&path).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取失败: {e}")))?;
     let mut store: serde_json::Value = serde_json::from_str(&raw).unwrap_or_else(|_| serde_json::json!({ "events": [] }));
     if !store.get("events").and_then(|a| a.as_array()).is_some() {
@@ -1407,6 +1429,41 @@ fn sync_order_title(output_dir: &Path, dir_name: &str, title: &str) {
     }
 }
 
+/// `PUT /api/project-data/clips/:rank/title` 的请求体。
+#[derive(serde::Deserialize)]
+pub(super) struct ClipTitleBody {
+    /// 发布标题。**必填**（空串 = 清掉标题，与前端 `setClipTitle` 同口径）。
+    pub title: String,
+    /// 主播名覆盖，**三态**直接映射成 `StreamerPatch`（键缺席 = Keep / `null` = Follow /
+    /// 字符串 = Set）。见下面那个 `Deserialize` impl。
+    #[serde(default)]
+    pub streamer_name: StreamerPatch,
+}
+
+impl Default for StreamerPatch {
+    fn default() -> Self {
+        StreamerPatch::Keep
+    }
+}
+
+/// **三态反序列化**（`#[serde(default)]` 落到 `Keep`）：键缺席 = 不动；`null` = 跟随项目级；
+/// 字符串 = 锁定（空串 = 这段不用）；其它类型 ⇒ 400 且文案点名 `streamer_name`。
+///
+/// ⚠️ **不能**写成 `Option<serde_json::Value>`：serde 的 `Option<T>` 会把 `null` 解析成 `None`，
+/// 于是"键缺席"与"显式 null"混成一档 —— 而这两个语义**相反**（一个不动、一个清掉用户的覆盖）。
+/// 实测（2026-11-24）：写成 Option 后 ⑤「清回 null ⇒ 恢复跟随」那条老用例立刻红。
+impl<'de> serde::Deserialize<'de> for StreamerPatch {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        match serde_json::Value::deserialize(d)? {
+            serde_json::Value::Null => Ok(StreamerPatch::Follow),
+            serde_json::Value::String(s) => Ok(StreamerPatch::Set(s.trim().to_string())),
+            _ => Err(serde::de::Error::custom(
+                "streamer_name 必须是字符串或 null",
+            )),
+        }
+    }
+}
+
 /// PUT /api/project-data/clips/:rank/title —— 改发布标题（正文见 clip_title_put_impl）。
 pub(super) async fn project_data_clip_title_put(
     scope: Scope,
@@ -1414,12 +1471,8 @@ pub(super) async fn project_data_clip_title_put(
     Json(body): Json<serde_json::Value>,
 ) -> ApiResult {
     let ws = scope.ws;
-    let title = body
-        .get("title")
-        .and_then(|t| t.as_str())
-        .unwrap_or("")
-        .trim()
-        .to_string();
+    let ClipTitleBody { title, streamer_name } = parse_body(body)?;
+    let title = title.trim().to_string();
     let len = title.chars().count();
     if len > MAX_TITLE_CHARS {
         return Err(err(
@@ -1427,19 +1480,10 @@ pub(super) async fn project_data_clip_title_put(
             format!("标题最多 {MAX_TITLE_CHARS} 字（当前 {len}）"),
         ));
     }
-    // 主播名的改动意图（三态，见 `yekitrim_core::naming`）：
-    //   键缺席 = 不动；`null` = 清除覆盖（恢复跟随项目级）；字符串 = 设成这个名字（空串 = 这段不用）。
-    let patch = match body.get("streamer_name") {
-        None => StreamerPatch::Keep,
-        Some(serde_json::Value::Null) => StreamerPatch::Follow,
-        Some(serde_json::Value::String(s)) => StreamerPatch::Set(s.trim().to_string()),
-        Some(_) => {
-            return Err(err(
-                StatusCode::BAD_REQUEST,
-                "streamer_name 必须是字符串或 null",
-            ));
-        }
-    };
+    // 主播名的改动意图（三态，见 `yekitrim_core::naming`）：**结构体层的 `Deserialize` impl
+    // 已经把它映射好了**（缺席 = Keep / null = Follow / 字符串 = Set / 其它 = 400 点名），
+    // 这里不用再 match 一遍 —— 两处判据各写一份必然漂。
+    let patch = streamer_name;
     // publish_config.json 是 read-modify-write（Cutter 也在写它）：与它走同一条路径锁
     let path = ws.output_dir().join("publish_config.json");
     let _guard = yekitrim_core::filelock::lock_path(&path).await;
@@ -2657,9 +2701,18 @@ async fn clip_delete_runs_sync_io_off_the_worker() {
             beats.fetch_add(1, Ordering::SeqCst);
         }
     });
-    // 先让它真的跳起来 —— 否则"心跳 0 次"可能只是还没开始跳，什么也测不出来
-    sleep(Duration::from_millis(5)).await;
-    assert!(ticks.load(Ordering::SeqCst) > 0, "心跳应当已经跳起来");
+    // 先让它真的跳起来 —— 否则"心跳 0 次"可能只是还没开始跳，什么也测不出来。
+    // ⚠️ **轮询**而不是死等 5ms：并行跑整套测试时机器可能正被别的用例占满，
+    //    5ms 内一次都没轮到它就会假红（2026-11-24 实测过：整套跑了 135s 的那轮）。
+    let mut waited = 0u32;
+    while ticks.load(Ordering::SeqCst) == 0 && waited < 2_000 {
+        sleep(Duration::from_millis(5)).await;
+        waited += 5;
+    }
+    assert!(
+        ticks.load(Ordering::SeqCst) > 0,
+        "心跳应当已经跳起来（等了 {waited}ms）"
+    );
 
     let before = ticks.load(Ordering::SeqCst);
     let t0 = std::time::Instant::now();
@@ -3438,6 +3491,88 @@ async fn clip_title_writes_publish_config_and_leaves_clip_json_alone() {
         .call(put("/project-data/clips/clip-01/title?project=1", serde_json::json!({"title": long})))
         .await;
     assert_eq!(res.status(), StatusCode::BAD_REQUEST, "超长标题必须 400");
+}
+
+/// **T9**：`CreateEventBody`（`POST /project-data/events`）—— 缺字段 / 类型错一律 400 且**点名字段**。
+///
+/// ⚠️ 这里特别钉住 `ranges` / `start_sec`：它们是"建一条片段"的核心参数，写错名字就会静默落盘一条
+/// **起止 0-10s 的假事件**（改造前就是这样：`get()` 取不到 → `unwrap_or(默认)`），比 400 难查得多。
+#[tokio::test]
+async fn create_event_body_is_typed_and_names_the_field() {
+    let t = test_app().await;
+    let uri = "/project-data/events?project=1";
+
+    // 缺 label
+    let (status, text) = call_json(&t, "POST", uri, serde_json::json!({})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "缺 label 必须 400：{text}");
+    assert!(text.contains("label"), "报错要点名 label：{text}");
+
+    // label 类型错
+    let (status, text) = call_json(&t, "POST", uri, serde_json::json!({ "label": 5 })).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "label 类型错必须 400：{text}");
+    assert!(text.contains("label"), "报错要点名 label：{text}");
+
+    // ranges 类型错（不是数组）
+    let (status, text) = call_json(
+        &t,
+        "POST",
+        uri,
+        serde_json::json!({ "label": "x", "ranges": "nope" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "ranges 类型错必须 400：{text}");
+    assert!(text.contains("ranges"), "报错要点名 ranges：{text}");
+
+    // start_sec 类型错（字符串）
+    let (status, text) = call_json(
+        &t,
+        "POST",
+        uri,
+        serde_json::json!({ "label": "x", "start_sec": "abc" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "start_sec 类型错必须 400：{text}");
+    assert!(text.contains("start_sec"), "报错要点名 start_sec：{text}");
+
+    // 宽松解析：多传的陌生键照旧忽略（走到下游「标题不能为空」而不是解析错）
+    let (status, text) = call_json(
+        &t,
+        "POST",
+        uri,
+        serde_json::json!({ "label": "", "nobody_knows": 1 }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(text.contains("标题不能为空"), "多余字段被忽略，于是走原有校验：{text}");
+}
+
+/// **T9**：`ClipTitleBody`（`PUT /project-data/clips/:rank/title`）。
+///
+/// `title` 是**必填**（缺了它这个接口没有任何意义）；`streamer_name` 的三态由 handler 判，
+/// 结构体只负责"它得是个 JSON 值"—— 传数字仍然 400，且文案点名它。
+#[tokio::test]
+async fn clip_title_body_is_typed_and_names_the_field() {
+    let t = test_app().await;
+    let uri = "/project-data/clips/clip-01/title?project=1";
+
+    let (status, text) = call_json(&t, "PUT", uri, serde_json::json!({})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "缺 title 必须 400：{text}");
+    assert!(text.contains("title"), "报错要点名 title：{text}");
+
+    let (status, text) = call_json(&t, "PUT", uri, serde_json::json!({ "title": 5 })).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "title 类型错必须 400：{text}");
+    assert!(text.contains("title"), "报错要点名 title：{text}");
+
+    // 三态之外的写法（数字/null 之外的类型）仍由 handler 明确拒绝，文案点名 streamer_name
+    let (status, text) = call_json(
+        &t,
+        "PUT",
+        uri,
+        serde_json::json!({ "title": "x", "streamer_name": 5 }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "streamer_name 不是字符串/null 必须 400：{text}");
+    assert!(text.contains("streamer_name"), "报错要点名 streamer_name：{text}");
 }
 
 }

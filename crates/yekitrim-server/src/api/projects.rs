@@ -108,13 +108,48 @@ pub(super) async fn projects_list(
 /// 而是**素材落位之后**（`ingest_worker` / `download_worker` 里调
 /// `yekitrim_service::ingest::landing`）。在这里放行只会建出一个**没有视频的空项目**。
 /// 提交入口在 `POST /api/ingest/bilibili`。
+/// `POST /api/projects` 的请求体。
+///
+/// ⚠️ 目前只有 `source.kind = "local"` 一条路（其它 kind 由 handler 明确回 400 并指路），
+/// 所以这些字段名就是**契约**：前端 `stores/project.js::createLocalProject` 与
+/// `WorkbenchView.addRecording` 都按这组名字发（改名字 = 同时改前端）。
+#[derive(serde::Deserialize, Default)]
+pub(super) struct CreateProjectBody {
+    #[serde(default)]
+    pub source: CreateProjectSource,
+}
+
+/// `CreateProjectBody.source` 那一段。
+#[derive(serde::Deserialize, Default)]
+pub(super) struct CreateProjectSource {
+    /// `local`（`recorder` / `bilibili` 走各自的入库入口，这个端点会明确拒绝）。
+    #[serde(default)]
+    pub kind: String,
+    /// 服务器上的根提示（相对租户根）。只有 CLI 与过渡别名会用到。
+    #[serde(default)]
+    pub root: String,
+    #[serde(default)]
+    pub dir: String,
+    /// 显式指定的视频（相对 `dir`）；留空 = 自动挑目录里第一个视频。
+    #[serde(default)]
+    pub input: String,
+    /// 可选弹幕（相对 `dir`）。`local` 来源**不自动发现**同名 .ass，只认显式给的。
+    #[serde(default)]
+    pub danmaku: Option<String>,
+    #[serde(default)]
+    pub output_dir: Option<String>,
+    /// 目录里已有 `yekitrim.toml` 时是否**显式**重建（默认 false = 只登记、不覆盖）。
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
 pub(super) async fn projects_create(
     State(state): State<Arc<AppState>>,
     Extension(user): Extension<crate::auth::CurrentUser>,
     Json(body): Json<serde_json::Value>,
 ) -> ApiResult {
-    let source = body.get("source").cloned().unwrap_or(serde_json::Value::Null);
-    let kind = source.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+    let CreateProjectBody { source } = parse_body(body)?;
+    let kind = source.kind.as_str();
     match kind {
         "local" => {}
         "bilibili" => {
@@ -144,19 +179,15 @@ pub(super) async fn projects_create(
     // ⚠️ 重建（覆盖已有 `yekitrim.toml`）必须由调用方**显式**要求：
     // 前端在"目录已有工程、但用户又手动挑了视频"时弹二次确认，确认后才带这个位。
     // 默认 false —— 不带它的调用（含老前端、CLI 别名）行为与以前**一模一样**。
-    let overwrite = source
-        .get("overwrite")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
     create_local_project(
         &state,
         &user,
-        source.get("root").and_then(|v| v.as_str()).unwrap_or(""),
-        source.get("dir").and_then(|v| v.as_str()).unwrap_or(""),
-        source.get("input").and_then(|v| v.as_str()).unwrap_or(""),
-        source.get("danmaku").and_then(|v| v.as_str()),
-        source.get("output_dir").and_then(|v| v.as_str()),
-        overwrite,
+        &source.root,
+        &source.dir,
+        &source.input,
+        source.danmaku.as_deref(),
+        source.output_dir.as_deref(),
+        source.overwrite,
     )
     .await
 }
@@ -844,6 +875,44 @@ async fn source_delete_removes_sources_but_keeps_products() {
         v["removed"].as_array().map(|a| !a.is_empty()).unwrap_or(false),
         "至少要报一份被删的文件: {v}"
     );
+}
+
+/// **T9**：`CreateProjectBody` / `CreateProjectSource`（`POST /projects`）。
+///
+/// 字段名是**契约**：前端 `stores/project.js::createLocalProject` 与 `WorkbenchView.addRecording`
+/// 都按这组名字发。判据：`source` 或其字段类型错 → 400 且报错点名；缺 `kind` 仍走原来那条
+/// 「未知来源 kind」400（宽松解析 + 原有语义都保住）。
+#[tokio::test]
+async fn create_project_body_is_typed_and_names_the_field() {
+    let t = test_app().await;
+
+    // source 整个不是对象（⚠️ 别用 `[]`：serde 允许**结构体按位置**从数组反序列化，
+    // `[]` 会被当成"所有字段都用默认值"，于是走到下游的「未知来源」而不是类型错）
+    let (status, text) = call_json(&t, "POST", "/projects", serde_json::json!({ "source": 5 })).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "source 类型错必须 400：{text}");
+    assert!(text.contains("source"), "报错要点名 source：{text}");
+
+    // source.dir 类型错（数字）
+    let (status, text) = call_json(
+        &t,
+        "POST",
+        "/projects",
+        serde_json::json!({ "source": { "kind": "local", "dir": 5 } }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "source.dir 类型错必须 400：{text}");
+    assert!(text.contains("source"), "报错要点名 source（顶层键）：{text}");
+
+    // 宽松解析：多传的陌生键被忽略 ⇒ 走到原来的「未知来源」（而不是解析错）
+    let (status, text) = call_json(
+        &t,
+        "POST",
+        "/projects",
+        serde_json::json!({ "source": { "kind": "nope", "junk": true } }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(text.contains("未知来源"), "多余字段被忽略，于是走原有校验：{text}");
 }
 
 }

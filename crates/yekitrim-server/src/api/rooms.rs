@@ -169,6 +169,18 @@ pub(super) async fn rooms_list(
     }
 }
 
+/// `POST /api/rooms` 的请求体：`{url}`（直播间链接）或 `{room_id}`（房间号）**二选一**。
+///
+/// ⚠️ 两个字段都**可选**（老脚本可能只给一个），但**至少要有一个非空** ——
+/// 都没有时 handler 回 400 **点名这两个字段**，而不是让 `parse_room_id` 去抱怨空串。
+#[derive(serde::Deserialize)]
+pub(super) struct RoomAddBody {
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub room_id: Option<String>,
+}
+
 /// `POST /api/rooms {url|room_id}`：登记直播间。
 ///
 /// - 录播姬：去它那边加房间（开播即录）；
@@ -178,12 +190,16 @@ pub(super) async fn rooms_add(
     Extension(user): Extension<crate::auth::CurrentUser>,
     Json(body): Json<serde_json::Value>,
 ) -> ApiResult {
-    let input = body
-        .get("url")
-        .or_else(|| body.get("room_id"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+    let RoomAddBody { url, room_id } = parse_body(body)?;
+    let input = match url.or(room_id) {
+        Some(v) if !v.trim().is_empty() => v,
+        _ => {
+            return Err(err(
+                StatusCode::BAD_REQUEST,
+                "缺少 url 或 room_id（直播间链接 / 房间号至少给一个）",
+            ))
+        }
+    };
     let room_id = yekitrim_service::recorder::parse_room_id(&input)
         .map_err(|e| err(StatusCode::BAD_REQUEST, format!("{e}")))?;
 
@@ -898,4 +914,23 @@ fn recorder_visibility_and_project_id_are_owner_scoped() {
     assert!(added);
     assert_eq!(pid, Some(pid_a));
 }
+
+    /// **T9**：`RoomAddBody`（`POST /rooms`）—— `url` / `room_id` 二选一。
+    ///
+    /// 两个都缺 → 400 且**同时点名这两个字段**；`url` 类型错 → 400 点名 `url`。
+    /// （改造前 `{"url": 5}` 会被 `as_str()` 静默当成空串，报的是「请填写直播间号或链接」，
+    /// 用户看不出是自己把字段写成了数字。）
+    #[tokio::test]
+    async fn room_add_body_is_typed_and_names_the_field() {
+        let t = test_app().await;
+
+        let (status, text) = call_json(&t, "POST", "/rooms", serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "url/room_id 都没给必须 400：{text}");
+        assert!(text.contains("url"), "报错要点名 url：{text}");
+        assert!(text.contains("room_id"), "报错要点名 room_id：{text}");
+
+        let (status, text) = call_json(&t, "POST", "/rooms", serde_json::json!({ "url": 5 })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "url 类型错必须 400：{text}");
+        assert!(text.contains("url"), "报错要点名 url：{text}");
+    }
 }

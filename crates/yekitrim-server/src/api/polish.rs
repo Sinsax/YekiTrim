@@ -401,8 +401,39 @@ pub(super) fn scope_pid(ext: Option<axum::extract::Extension<crate::scope::Scope
     ext.map(|e| e.0.0).filter(|v| *v > 0)
 }
 
+/// `POST /api/polish/init` / `process` 的请求体：`dir` = **项目内相对目录**
+/// （越界由 `scope::enforce_scope` 挡，绝对路径与存在性由 `validated_project_dir` 挡）。
+///
+/// ⚠️ `dir` **必填**：空目录会让 `cmd_init` 在 server 进程的 CWD 里写出 polish.toml / data / sfx
+/// （见 `validated_project_dir` 的注释），所以这里不给默认值 —— 老前端从来都带它。
+#[derive(serde::Deserialize)]
+pub(super) struct PolishDirBody {
+    pub dir: String,
+}
+
+/// `POST /api/polish/render` 的请求体。
+#[derive(serde::Deserialize)]
+pub(super) struct PolishRenderBody {
+    pub dir: String,
+    /// 输出文件名（项目内相对路径）。空串 = 跟随工程 `[project] output`（缺省 `vtuber-clip.mp4`）。
+    #[serde(default)]
+    pub output_file: Option<String>,
+    /// 出片通道：**白名单只有 `dhampir`**，认不出的值由 handler 回 400（不用 enum：
+    /// 报错文案要把可用值列出来，且 `chrome` 那条腿已删除要能明确说清）。
+    #[serde(default)]
+    pub renderer: Option<String>,
+}
+
+/// `POST /api/polish/cover` 的请求体。`renderer` 只**透传**（白名单在 `cover.rs`，别抄第二份）。
+#[derive(serde::Deserialize)]
+pub(super) struct PolishCoverBody {
+    pub dir: String,
+    #[serde(default)]
+    pub renderer: Option<String>,
+}
+
 pub(super) async fn polish_init(State(state): State<Arc<AppState>>, Extension(user): Extension<crate::auth::CurrentUser>, pid: Option<Extension<crate::scope::ScopeProjectId>>, Json(body): Json<serde_json::Value>) -> ApiResult {
-    let dir = body.get("dir").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let PolishDirBody { dir } = parse_body(body)?;
     polish_spawn(&state, crate::auth::owner_of(&user), scope_pid(pid), "init", dir, PolishJobOpts::default()).await
 }
 
@@ -438,12 +469,12 @@ pub(super) async fn polish_llm_segment(State(state): State<Arc<AppState>>, Exten
 }
 
 pub(super) async fn polish_process(State(state): State<Arc<AppState>>, Extension(user): Extension<crate::auth::CurrentUser>, pid: Option<Extension<crate::scope::ScopeProjectId>>, Json(body): Json<serde_json::Value>) -> ApiResult {
-    let dir = body.get("dir").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let PolishDirBody { dir } = parse_body(body)?;
     polish_spawn(&state, crate::auth::owner_of(&user), scope_pid(pid), "process", dir, PolishJobOpts::default()).await
 }
 
 pub(super) async fn polish_render(State(state): State<Arc<AppState>>, Extension(user): Extension<crate::auth::CurrentUser>, pid: Option<Extension<crate::scope::ScopeProjectId>>, Json(body): Json<serde_json::Value>) -> ApiResult {
-    let dir = body.get("dir").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let PolishRenderBody { dir, output_file, renderer } = parse_body(body)?;
     let path = validated_project_dir(&dir)?;
     if !{
         let __p = path.join("polish.toml");
@@ -455,17 +486,13 @@ pub(super) async fn polish_render(State(state): State<Arc<AppState>>, Extension(
     } { return Err(err(StatusCode::BAD_REQUEST, "目录未初始化 polish")); }
     // 输出文件名**不在这里写**：任务可能被排到后面，等它真开跑时再落到 polish.toml
     // （见 polish_spawn 的 render 分支）—— 否则排队期间别的任务/用户改动会被这次预写覆盖。
-    let output_file = body
-        .get("output_file")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string());
+    let output_file = output_file.filter(|s| !s.is_empty());
     // 出片通道：**白名单**（不给就跟随 CLI 的默认值 —— 现在也只有底座 dhampir 一个值）。
     // ⚠️ 非法值回 **400**，不静默当默认：那会让人以为"选了别的通道却在跑底座"，
     // 而两版成片的差别只有对着看才发现（与 CLI 侧"认不出就报错"同一条口径）。
     // ⚠️ `chrome` 也要落进 400：那条本仓 headless Chrome 的兜底腿已于 2026-10-01 整条删除，
     // 但还会有人照老文档/老脚本传它 —— 白名单是最先能给出明确答复的地方。
-    let renderer = match body.get("renderer").and_then(|v| v.as_str()) {
+    let renderer = match renderer.as_deref() {
         None | Some("") => None,
         Some(r @ "dhampir") => Some(r.to_string()),
         Some(other) => {
@@ -494,10 +521,10 @@ pub(super) async fn polish_render(State(state): State<Arc<AppState>>, Extension(
 }
 
 pub(super) async fn polish_cover(State(state): State<Arc<AppState>>, Extension(user): Extension<crate::auth::CurrentUser>, pid: Option<Extension<crate::scope::ScopeProjectId>>, Json(body): Json<serde_json::Value>) -> ApiResult {
-    let dir = body.get("dir").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let PolishCoverBody { dir, renderer } = parse_body(body)?;
     // 通道由**前端**给（现在只有 `takumi`）；这里只透传，取值口径在 `cover.rs`（只一份）——
     // 传 `chrome` 会由那里**明确报错**（那条截图腿已删除），这一层不抄第二份白名单。
-    let renderer = body.get("renderer").and_then(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let renderer = renderer.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     // 配额预检（review B7/D14）：与 polish_render 同一道闸（封面 jpg 相对小，但口径要一致）。
     super::quota_gate(&state, &user, scope_pid(pid)).await?;
     polish_spawn(&state, crate::auth::owner_of(&user), scope_pid(pid), "cover", dir, PolishJobOpts { renderer, ..Default::default() }).await
@@ -6082,3 +6109,119 @@ mod translation_cache_tests {
         assert!(a.chars().all(|c| c.is_ascii_hexdigit()), "只许十六进制：{a}");
     }
 }
+
+// ===================== T9：请求体强类型化（缺字段 / 类型错 → 400 且**点名字段**）=====================
+
+/// 把一次拒绝拆成 `(状态码, error 文案)`。
+///
+/// ⚠️ 结构体层的判据**故意不走 HTTP**：`/polish/*` 外面还有 `scope::enforce_scope`，它先按
+/// `dir` 判归属 —— `dir` 给数字/空串会先被它回 **404**，那样测到的是中间件，而不是"结构体
+/// 把字段类型/必填性收紧了"。HTTP 那一条另有用例（valid dir + 错类型）证明 handler 真的用它。
+#[cfg(test)]
+fn t9_reject<T: serde::de::DeserializeOwned>(v: serde_json::Value) -> (StatusCode, String) {
+    match parse_body::<T>(v) {
+        Ok(_) => panic!("这个 body 应当被拒"),
+        Err((status, body)) => (
+            status,
+            body.0.get("error").and_then(|e| e.as_str()).unwrap_or("").to_string(),
+        ),
+    }
+}
+
+/// `PolishDirBody`（`/polish/init` 与 `/polish/process` 共用一份结构体）。
+///
+/// 判据：缺 `dir` / `dir` 类型错 **都** 400 且报错**点名 dir**（不是 axum 的裸 422）；
+/// 多传的陌生键**照旧被忽略**（宽松解析）。
+#[tokio::test]
+async fn polish_dir_body_is_typed_and_names_the_field() {
+    use crate::api::test_support::{call_json, test_app};
+
+    // ① 缺字段：结构体层
+    let (status, msg) = t9_reject::<PolishDirBody>(serde_json::json!({}));
+    assert_eq!(status, StatusCode::BAD_REQUEST, "缺 dir 必须 400：{msg}");
+    assert!(msg.contains("missing field"), "要是 serde 的缺字段提示：{msg}");
+    assert!(msg.contains("dir"), "报错要点名 dir：{msg}");
+
+    // ② 类型错：结构体层
+    let (status, msg) = t9_reject::<PolishDirBody>(serde_json::json!({ "dir": 5 }));
+    assert_eq!(status, StatusCode::BAD_REQUEST, "dir 类型错必须 400：{msg}");
+    assert!(msg.contains("dir"), "报错要点名 dir：{msg}");
+
+    // ③ 宽松解析：多传一个没人认识的键，解析照样过
+    assert!(
+        parse_body::<PolishDirBody>(serde_json::json!({ "dir": "output/clips/x", "junk": [1, 2] })).is_ok(),
+        "陌生键必须被忽略（不 deny_unknown_fields）"
+    );
+
+    // ④ HTTP 面：空 body 也必须是 400 + 点名字段（`{}` 不触发 scope，能真走到 handler）
+    let t = test_app().await;
+    for uri in ["/polish/init", "/polish/process"] {
+        let (status, text) = call_json(&t, "POST", uri, serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{uri} 缺 dir 必须 400：{text}");
+        assert!(text.contains("dir"), "{uri} 报错要点名字段 dir：{text}");
+    }
+}
+
+/// `PolishRenderBody`：`dir` 必填；`output_file` / `renderer` 可选。
+///
+/// ⚠️ 三个字段都必须在**解析阶段**就 400 —— 等走到 `validated_project_dir` 之后才拦的话，
+/// 文件名/通道写错会变成一个"已经开始渲染的任务"，用户看不到错在哪。
+#[tokio::test]
+async fn polish_render_body_is_typed_and_names_the_field() {
+    use crate::api::test_support::{call_json, test_app};
+
+    let (status, msg) = t9_reject::<PolishRenderBody>(serde_json::json!({}));
+    assert_eq!(status, StatusCode::BAD_REQUEST, "缺 dir 必须 400：{msg}");
+    assert!(msg.contains("dir"), "报错要点名 dir：{msg}");
+
+    let (status, msg) = t9_reject::<PolishRenderBody>(serde_json::json!({ "dir": "x", "output_file": 5 }));
+    assert_eq!(status, StatusCode::BAD_REQUEST, "output_file 类型错必须 400：{msg}");
+    assert!(msg.contains("output_file"), "报错要点名 output_file：{msg}");
+
+    let (status, msg) = t9_reject::<PolishRenderBody>(serde_json::json!({ "dir": "x", "renderer": 5 }));
+    assert_eq!(status, StatusCode::BAD_REQUEST, "renderer 类型错必须 400：{msg}");
+    assert!(msg.contains("renderer"), "报错要点名 renderer：{msg}");
+
+    // HTTP 面（valid dir 才过得去 scope）：handler 真的用了这个结构体
+    let t = test_app().await;
+    let clip = t.root.join("output/clips/t9-render");
+    std::fs::create_dir_all(&clip).unwrap();
+    let (status, text) = call_json(
+        &t,
+        "POST",
+        "/polish/render",
+        serde_json::json!({ "dir": clip.to_string_lossy(), "renderer": 5 }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "renderer 类型错必须 400：{text}");
+    assert!(text.contains("renderer"), "报错要点名 renderer：{text}");
+}
+
+/// `PolishCoverBody`：`dir` 必填、`renderer` 可选（只透传给 `cover.rs` 的白名单）。
+#[tokio::test]
+async fn polish_cover_body_is_typed_and_names_the_field() {
+    use crate::api::test_support::{call_json, test_app};
+
+    let (status, msg) = t9_reject::<PolishCoverBody>(serde_json::json!({}));
+    assert_eq!(status, StatusCode::BAD_REQUEST, "缺 dir 必须 400：{msg}");
+    assert!(msg.contains("dir"), "报错要点名 dir：{msg}");
+
+    let (status, msg) = t9_reject::<PolishCoverBody>(serde_json::json!({ "dir": "x", "renderer": [1] }));
+    assert_eq!(status, StatusCode::BAD_REQUEST, "renderer 类型错必须 400：{msg}");
+    assert!(msg.contains("renderer"), "报错要点名 renderer：{msg}");
+
+    // HTTP 面
+    let t = test_app().await;
+    let clip = t.root.join("output/clips/t9-cover");
+    std::fs::create_dir_all(&clip).unwrap();
+    let (status, text) = call_json(
+        &t,
+        "POST",
+        "/polish/cover",
+        serde_json::json!({ "dir": clip.to_string_lossy(), "renderer": [1] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "renderer 类型错必须 400：{text}");
+    assert!(text.contains("renderer"), "报错要点名 renderer：{text}");
+}
+

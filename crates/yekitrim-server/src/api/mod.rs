@@ -61,6 +61,54 @@ where
     }
 }
 
+/// 把已经解析成 `serde_json::Value` 的请求体收成**强类型结构**（T9：46 处 `Json<Value>` 分批改造）。
+///
+/// 为什么不在 handler 签名上直接写 `Json<T>`：axum 对 `Json<T>` 的反序列化失败回 **422 + 纯文本**，
+/// 而前端 `api/client.js` 只认 JSON（非 JSON 会显示成「接口不存在或返回格式错误」）。这里统一换成
+/// 既有的 `err(400, …)` 形状，并**点名字段**：
+///   · 「缺字段」serde 自带名字（missing field `label`）；
+///   · 「字段类型错」serde_json **不给路径**（axum 的 `Json<T>` 也一样），所以用
+///     [`pinpoint_field`] 把冒犯的那个顶层键找出来写进文案。
+///
+/// ⚠️ 宽松解析照旧：结构体**不写** `deny_unknown_fields`，旧前端多传的键一律忽略 ——
+///    这是"字段名拼错 → 400"和"多传字段 → 照常"两条的分界线，别改。
+pub(crate) fn parse_body<T: serde::de::DeserializeOwned>(v: serde_json::Value) -> Result<T, AppError> {
+    match serde_json::from_value::<T>(v.clone()) {
+        Ok(t) => Ok(t),
+        Err(e) => {
+            let msg = e.to_string();
+            // "missing field `x`" 已经点名了，不用再猜；类型错才去 pinpoint。
+            let culprit = if msg.contains("missing field") {
+                None
+            } else {
+                pinpoint_field::<T>(&v)
+            };
+            Err(err(
+                StatusCode::BAD_REQUEST,
+                match culprit {
+                    Some(k) => format!("请求体字段 `{k}` 不对: {msg}"),
+                    None => format!("请求体字段不对: {msg}"),
+                },
+            ))
+        }
+    }
+}
+
+/// 找出让反序列化失败的那个**顶层键**：单独把每个键喂给 `T` 试一遍 ——
+/// 只有它自己时还报「类型错」⇒ 就是它（报「缺字段」的那次是在抱怨别的必填键，跳过）。
+fn pinpoint_field<T: serde::de::DeserializeOwned>(v: &serde_json::Value) -> Option<String> {
+    let obj = v.as_object()?;
+    for (k, val) in obj {
+        let mut probe = serde_json::Map::new();
+        probe.insert(k.clone(), val.clone());
+        match serde_json::from_value::<T>(serde_json::Value::Object(probe)) {
+            Err(e) if !e.to_string().contains("missing field") => return Some(k.clone()),
+            _ => {}
+        }
+    }
+    None
+}
+
 /// 在**当前线程**上把一个 future 跑完（自带一个 current-thread runtime）。
 ///
 /// 只给任务专用线程 / blocking 线程用 —— 在 runtime worker 上调用它正是我们要避免的事。

@@ -165,6 +165,29 @@ pub(crate) async fn body_json(res: Response) -> serde_json::Value {
     serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
 }
 
+/// 发一个 **JSON 请求**，回 `(状态码, body 文本)`。
+///
+/// 给 T9（请求体强类型化）的判据用：那些用例断言的是"400 **且 body 里点名字段**"，
+/// 所以要拿到响应文本本身，而不是解析过的 `Value`。
+pub(crate) async fn call_json(
+    t: &TestApp,
+    method: &str,
+    uri: &str,
+    body: serde_json::Value,
+) -> (StatusCode, String) {
+    let res = t
+        .call(
+            t.req(method, uri)
+                .header(axum::http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await;
+    let status = res.status();
+    let bytes = axum::body::to_bytes(res.into_body(), 64 * 1024).await.unwrap();
+    (status, String::from_utf8_lossy(&bytes).to_string())
+}
+
 /// `GET /api/projects` 的项目 id 列表。
 ///
 /// 断言"某项目在/不在列表里"时**一定要先确认响应是好的**：接口报错会返回 `{error:…}`，
