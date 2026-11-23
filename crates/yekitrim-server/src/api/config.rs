@@ -1278,6 +1278,48 @@ mod tests {
 
     use axum::body::Body;
 
+    /// 建一个**落在指定 uid** 的非 admin 账号并返回它（先建占位账号把"下一个 id"顶到 `want`）。
+    ///
+    /// **为什么必须按号分片**：`owner::state_dir(Owner::User(uid))` 落在 **exe 旁的共享目录**
+    /// （`target/debug/users/<uid>/.yekitrim`；测试二进制在 `target/debug/deps/`，是同一棵树），
+    /// 而每个用例的账号账本都是**新建的临时库** ⇒ uid 一律从 2 数起。于是"两条用例各自建的第 1 个
+    /// 用户"会指向**同一个** `users/2/.yekitrim/llm.toml`，并行跑就互相覆盖 —— 实测两种翻法：
+    /// ① 读到对方写的公网 `base_url` ⇒ 真发请求 ⇒ 500（期望 403）；
+    /// ② PUT 撞上对方残留的 `127.0.0.1` ⇒ 403（期望 200）。
+    ///
+    /// 凡是**会写**这个目录的用例都按下表取号，各拿专属 uid（断言写在调用点，uid 漂了要立刻红）：
+    /// `cfg_p`=2 · `cfg_a`=3 · `cfg_b`=4 · `b8_user`=5。
+    /// 只读、或根本在写盘前就被拦下的用例不必取号（`cfg_q` 的坏值 400 在校验期返回、`llm_plain` 只打 GET）。
+    ///
+    /// ⚠️ **别改成 `YEKITRIM_DATA_DIR`**：`test_support::test_app` 的注释写明"测试是并行跑的、改全局
+    /// 环境变量会互相踩"（账号账本正因此走 tempdir 而不是环境变量）；uid 分片是本文件里唯一不碰
+    /// 全局状态的做法。
+    fn user_at_uid(t: &TestApp, want: i64, name: &str, hash: &str) -> i64 {
+        let db = t.auth.db();
+        let next_id = db.list_users().unwrap().iter().map(|u| u.id).max().unwrap_or(0) + 1;
+        assert!(
+            next_id <= want,
+            "uid {want} 已被占用（下一个可用 id 是 {next_id}）—— 前面是不是多建了用户？"
+        );
+        // 占位账号把"下一个 id"一路顶到 want（名字带序号，不会重名）。
+        for i in next_id..want {
+            db.create_user(&format!("pad_{name}_{i}"), hash, "user", false, 0).unwrap();
+        }
+        let uid = db.create_user(name, hash, "user", false, 0).unwrap();
+        assert_eq!(uid, want, "{name} 应落在 uid {want}");
+        uid
+    }
+
+    /// 用例收尾：清掉该账号树（`users/<uid>/.yekitrim`）。
+    ///
+    /// 不清的话同一份 `llm.toml` 会留到**下一次跑测试**（uid 复用，见 `user_at_uid`），
+    /// 于是"乙还没配 key"那类断言第二次跑就红（实测 left: true / right: false）。
+    fn wipe_state_dir(uid: i64) {
+        let _ = std::fs::remove_dir_all(yekitrim_core::owner::state_dir(
+            yekitrim_core::owner::Owner::User(uid),
+        ));
+    }
+
     /// **方言清单必须从注册表现算**（server 里不许抄一份）：id 去重后的条数 == `DIALECTS` 的 id 数；
     /// 每条都有非空 label 与至少一个输出字段名；`none` 也在清单里（前端用它表示"不发推理参数"）。
     ///
@@ -1468,7 +1510,8 @@ mod tests {
     async fn every_provider_key_is_redacted_and_blank_key_keeps_the_stored_one() {
         let t = test_app().await;
         let hash = yekitrim_service::auth::hash_password("pass-12345678").unwrap();
-        t.auth.db().create_user("cfg_p", &hash, "user", false, 0).unwrap();
+        let uid = user_at_uid(&t, 2, "cfg_p", &hash);
+        assert_eq!(uid, 2, "cfg_p 固定占 uid 2（见 user_at_uid 的分片表）");
         let a = t.auth.login("cfg_p", "pass-12345678", None, None).unwrap();
 
         async fn put(t: &TestApp, sid: &str, csrf: &str, body: serde_json::Value) -> axum::response::Response {
@@ -1557,6 +1600,7 @@ model = "kimi-k3"
             "⚠️ 没带 api_key = 不修改：那条已存的 key 要按 id 填回去（否则保存一次就抹了）：{j}"
         );
         assert!(!j.to_string().contains("key-provider-a"), "填回去的 key 也不许回显：{j}");
+        wipe_state_dir(uid);
     }
 
     /// 协议写错要**报错**（不静默回退成 openai-chat —— 那会让人以为在走别的协议）。
@@ -1657,8 +1701,13 @@ model = "kimi-k3"
 async fn config_is_per_account_and_llm_key_does_not_leak() {
     let t = test_app().await;
     let hash = yekitrim_service::auth::hash_password("pass-12345678").unwrap();
-    t.auth.db().create_user("cfg_a", &hash, "user", false, 0).unwrap();
-    t.auth.db().create_user("cfg_b", &hash, "user", false, 0).unwrap();
+    let uid_a = user_at_uid(&t, 3, "cfg_a", &hash);
+    let uid_b = user_at_uid(&t, 4, "cfg_b", &hash);
+    assert_eq!(
+        (uid_a, uid_b),
+        (3, 4),
+        "cfg_a / cfg_b 固定占 uid 3 / 4（见 user_at_uid 的分片表）"
+    );
     let a = t.auth.login("cfg_a", "pass-12345678", None, None).unwrap();
     let b = t.auth.login("cfg_b", "pass-12345678", None, None).unwrap();
 
@@ -1800,6 +1849,9 @@ model = \"m-b\"
     let ja4 = get_cfg(&t, &a.session_id, &a.csrf).await;
     assert_eq!(ja4["api_key_set"], serde_json::json!(true), "原样保存不许把真 key 抹掉：{ja4}");
     assert_eq!(model_of(&ja4), "m-a2");
+
+    wipe_state_dir(uid_a);
+    wipe_state_dir(uid_b);
 }
 
 /// 单人形态（`Owner::Local`）读的就是**现状那两个文件**，零迁移。
@@ -2497,7 +2549,8 @@ fn llm_put_rejects_private_base_url_for_normal_user() {
 async fn llm_test_rejects_private_base_url_for_normal_user() {
     let t = test_app().await;
     let hash = yekitrim_service::auth::hash_password("pass-12345678").unwrap();
-    let uid = t.auth.db().create_user("b8_user", &hash, "user", false, 0).unwrap();
+    let uid = user_at_uid(&t, 5, "b8_user", &hash);
+    assert_eq!(uid, 5, "b8_user 固定占 uid 5（见 user_at_uid 的分片表）");
     let b = t.auth.login("b8_user", "pass-12345678", None, None).unwrap();
 
     // 直接把"他自己的" llm.toml 写进他账号树的**真实解析位置**（`load_llm_config_for` 走
@@ -2528,6 +2581,6 @@ async fn llm_test_rejects_private_base_url_for_normal_user() {
         .await;
     assert_ne!(res.status(), StatusCode::FORBIDDEN, "公网地址不该被 403：{res:?}");
 
-    let _ = std::fs::remove_dir_all(&home);
+    wipe_state_dir(uid);
 }
 }
