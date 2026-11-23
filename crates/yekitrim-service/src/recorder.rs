@@ -212,8 +212,20 @@ impl BiliLiveToolsClient {
         if !status.is_success() {
             let brief = text.trim();
             let brief = if brief.len() > 200 { &brief[..200] } else { brief };
+            // 401/403 单独给一句能直接照做的提示（2026-11-24 实测踩坑）：最常见的原因不是"网络不通"，
+            // 而是**用户抄的那把密钥不是实际生效的那把** —— biliLive-tools 的 passKey 优先读环境变量
+            // BILILIVE_TOOLS_PASSKEY（容器里常设），而它的设置界面显示的是 appConfig.json 里那份，
+            // 两者不一致时"从界面抄来的"永远 401。
+            let hint = match status.as_u16() {
+                401 | 403 => {
+                    "\n  → 密钥不匹配：以 biliLive-tools 里**实际生效**的 passKey 为准 \
+（容器设了 BILILIVE_TOOLS_PASSKEY 环境变量时，它优先于设置界面显示的那份）。\
+填进「访问密钥」后点「测试连接」再确认一次。"
+                }
+                _ => "",
+            };
             anyhow::bail!(
-                "biliLive-tools{what}失败（HTTP {}）{}",
+                "biliLive-tools{what}失败（HTTP {}）{}{hint}",
                 status.as_u16(),
                 if brief.is_empty() { String::new() } else { format!(": {brief}") }
             );

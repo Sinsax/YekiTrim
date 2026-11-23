@@ -170,7 +170,21 @@ async function save() {
 async function test() {
   testResult.value = '测试中…'
   try {
-    const d = await api('/api/admin/recorder/test', { method: 'POST', body: '{}' })
+    // ⚠️ 把**当前输入**一起送过去（2026-11-24）：只测已存配置的话，
+    // 「改完密钥 → 点测试 → 报 401」实际验的是旧值，锅会被甩给"网络/对方服务"
+    // （实测踩过：biliLive-tools 的 passKey 被 BILILIVE_TOOLS_PASSKEY 覆盖）。
+    // 空串 / 未填 = 没改，服务端沿用已存值（表单占位符是「已设置（留空 = 不修改）」）。
+    const payload = {
+      kind: isBlt.value ? 'bililive-tools' : 'bililive',
+      api_base: form.value.api_base
+    }
+    if (isBlt.value) {
+      if (form.value.api_key) payload.api_key = form.value.api_key
+    } else {
+      if (form.value.api_user) payload.api_user = form.value.api_user
+      if (form.value.api_pass) payload.api_pass = form.value.api_pass
+    }
+    const d = await api('/api/admin/recorder/test', { method: 'POST', body: JSON.stringify(payload) })
     testResult.value = `连接成功：${d?.rooms ?? 0} 个录制对象`
     toast('连接正常')
   } catch (e) {
