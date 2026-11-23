@@ -15,6 +15,14 @@ path = "src/lib.rs"
 # **整条已删除**（用户拍板：GPU 那侧交给独立的 Dhampir 底座，见根卡）。`/api/health` 不再有
 # `wgpu_render` 这一位。别再把 feature 加回来。
 
+# **封面静态渲染（Takumi）的转发开关**（整改 T12，2026-11-24）。
+# 默认仍**不带**（理由与 CLI 侧那三条一样：拉长构建、Windows 上 libwebp-sys 的 LNK4098、发行产物许可面要重核）。
+# 不带它的后果是：`yekitrim-polish` 的 `render/takumi.rs`（约 1.1k 行）与 `tests/takumi_font_id.rs`
+# 在 `cargo test -p yekitrim-server` / `cargo check --workspace --all-targets` 下**整份不参与编译**，
+# 而它正是 WebUI「生成封面」的后端 ⇒ `/api/health.cover_static.compiled` 在 server 语境**恒 false**，
+# 谁也不知道那一半还能不能编过。打开方式：`cargo check -p yekitrim-server --features cover-takumi`。
+cover-takumi = ["yekitrim-polish/cover-takumi"]
+
 [dependencies]
 yekitrim-llm = { path = "../yekitrim-llm" }
 yekitrim-core = { path = "../yekitrim-core" }

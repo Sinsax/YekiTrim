@@ -56,8 +56,14 @@
 - ⚠️ **`wgpu-render` feature 已整条删除**：`api/` ×3 与 `model.rs` ×5 那些 `#[cfg(feature = "wgpu-render")]`
   分支（单帧真渲染预览 `POST /api/polish/render-frame`、常驻后端槽、`/api/health` 的 `wgpu_render` 能力位）
   连同 `yekitrim-polish/wgpu-render`、`yekitrim-render-core/wgpu`、`yekitrim-wasm` 一起没了 ——
-  GPU 那侧交给独立的 Dhampir 底座。所以本 crate **没有任何 feature**。
-  **别再把它加回来**：加了不报错，只会让前端以为还有 GPU 出片入口。
+  GPU 那侧交给独立的 Dhampir 底座。**别再把它加回来**：加了不报错，只会让前端以为还有 GPU 出片入口。
+- ⚠️ **本 crate 唯一的 feature 是 cover-takumi 的转发**（整改 T12，2026-11-24）：
+  `cover-takumi = ["yekitrim-polish/cover-takumi"]`，**默认关**。
+  不带它时 yekitrim-polish 的 `render/takumi.rs`（约 1.1k 行）与 `tests/takumi_font_id.rs` **整份不参与编译**
+  ⇒ `/api/health.cover_static.compiled` 在本 crate 语境**恒 false**，于是「WebUI 生成封面那一半还能不能编过」没有判据。
+  判据两头都有：`cargo test -p yekitrim-server --features cover-takumi` 里 `cover_static_compiled_is_true_with_the_feature`，
+  不带 feature 时 `…is_false_without_the_feature`；发布路径另由 `cargo xtask package` 拦一次（cli 的 default 必须带它）。
+  **封面仍未接 Dhampir**（静态单帧 + HTML/CSS 才是设计器的不变式），别把这条转发当成「可以换渲染器」的口子。
 - ⚠️ **WebUI 两个来源，按构建形态自动选**（2026-10-03）：**release 内嵌**（`build.rs` 把
   `webui/dist` 用 `include_bytes!` 编进 exe）· **debug 读盘** · `--webui-dir`/`YEKITRIM_WEBUI_DIR`
   两种形态都覆盖。规则 = `web.rs::choose()`（纯函数，四种组合都有判据）。

@@ -465,6 +465,24 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
         }
     };
 
+    // ------------------------------------------------- 发布构建的封面通道（整改 T12）
+    //
+    // `yekitrim-polish` 的 `cover-takumi` 默认是**关**的（拉长构建、Windows 上 libwebp-sys 的
+    // LNK4098、发行产物许可面要重核），只有 `yekitrim-cli` 的 `default` 带上它 —— 而发布包正是
+    // `package` 用 `-p yekitrim-cli` 默认 feature 编出来的。
+    // 一旦有人把它从 cli 的 default 里拿掉，产物里 `/api/health.cover_static.compiled` 会恒 false、
+    // WebUI「生成封面」直接置灰，而**构建与打包全程都不报错**。所以在打包入口拦一次。
+    let cli_manifest = root.join("crates").join("yekitrim-cli").join("Cargo.toml");
+    let cli_manifest_text = std::fs::read_to_string(&cli_manifest)
+        .map_err(|e| format!("读不到 {}: {e}", cli_manifest.display()))?;
+    if !release_features_include_cover_takumi(&cli_manifest_text) {
+        return Err(format!(
+            "{} 的 [features] default 里没有 cover-takumi —— 这个包发出去后\n               WebUI 的「生成封面」会整条置灰（/api/health.cover_static.compiled 恒 false），\n               而构建与打包都不会报错。要么把 cover-takumi 加回 default，\n               要么明确接受一个没有封面静态渲染的发行包（那就显式改这条判据并写清理由）。",
+            cli_manifest.display()
+        )
+        .into());
+    }
+
     let version = match &options.version {
         Some(version) => version.clone(),
         None => cli_version(&root)?,
@@ -1616,6 +1634,56 @@ fn cli_version(root: &Path) -> Result<String, Box<dyn std::error::Error>> {
     .into())
 }
 
+/// `crates/yekitrim-cli/Cargo.toml` 的 `[features] default` 里有没有 `cover-takumi`（整改 T12）。
+///
+/// 发布包是 `package` 用 `-p yekitrim-cli` 的**默认 feature** 编出来的，所以这一行决定了
+/// 发行产物里有没有封面静态渲染（Takumi）。刻意的**朴素解析**：只认 `[features]` 表里的
+/// `default` 键、把数组跨行拼起来再看有没有那个名字 —— 本仓这份清单永远是一行，够用且不引 TOML 依赖。
+///
+/// ⚠️ 比对要求**带引号的完整名字**：数组求和式的 `contains("cover-takumi")` 会把
+/// `"cover-takumi-off"` 也算命中（那正是"以为带上了、其实没带"的一种）。
+fn has_feature_token(buf: &str, name: &str) -> bool {
+    buf.contains(&format!("\"{name}\""))
+}
+
+fn release_features_include_cover_takumi(manifest: &str) -> bool {
+    let mut in_features = false;
+    let mut collecting = false;
+    let mut buf = String::new();
+    for raw in manifest.lines() {
+        let line = raw.trim();
+        if line.starts_with('[') {
+            in_features = line == "[features]";
+            collecting = false;
+            continue;
+        }
+        if !in_features {
+            continue;
+        }
+        let bare = line.split('#').next().unwrap_or("").trim();
+        if !collecting {
+            if let Some(rest) = bare.strip_prefix("default") {
+                if let Some(value) = rest.trim_start().strip_prefix('=') {
+                    buf.push_str(value);
+                    collecting = !value.contains(']');
+                    if !collecting && has_feature_token(&buf, "cover-takumi") {
+                        return true;
+                    }
+                }
+            }
+        } else {
+            buf.push_str(bare);
+            if bare.contains(']') {
+                collecting = false;
+                if has_feature_token(&buf, "cover-takumi") {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 /// Naive scan for a literal `version = "…"` inside the named TOML table.
 ///
 /// Deliberately not `version.workspace = true`-aware: an inherited version is not a
@@ -1703,6 +1771,34 @@ mod tests {
         assert_eq!(dhampir_bin_name("linux"), "dhampir");
         // 宿主是什么平台都不影响：这两条断言在 Linux 与 Windows 上都必须绿。
         assert_ne!(dhampir_bin_name("windows"), dhampir_bin_name("linux"));
+    }
+
+    /// 发布构建必须带 cover-takumi（整改 T12）：cli 的 default features 决定发行包有没有封面静态渲染。
+    ///
+    /// 反自证两头：把 cover-takumi 从 default 里拿掉（空数组）必须判 false；
+    /// 名字只是**前缀相同**（cover-takumi-off）、或只出现在注释/别的键里，也必须判 false。
+    #[test]
+    fn release_features_must_include_cover_takumi() {
+        assert!(release_features_include_cover_takumi(
+            "[features]\ndefault = [\"cover-takumi\"]\n"
+        ));
+        // 真实清单形态：同时带别的 feature，跨行数组。
+        assert!(release_features_include_cover_takumi(
+            "[package]\nname = \"yekitrim-cli\"\n[features]\nother = [\"x\"]\ndefault = [\n  \"cover-takumi\",\n]\n"
+        ));
+        assert!(!release_features_include_cover_takumi("[features]\ndefault = []\n"));
+        // 只有前缀相同不算
+        assert!(!release_features_include_cover_takumi(
+            "[features]\ndefault = [\"cover-takumi-off\"]\n"
+        ));
+        // 只在别的键里出现不算
+        assert!(!release_features_include_cover_takumi(
+            "[features]\ncover-takumi = [\"yekitrim-polish/cover-takumi\"]\ndefault = []\n"
+        ));
+        // 注释里出现不算
+        assert!(!release_features_include_cover_takumi(
+            "[features]\ndefault = [] # 曾经有 \"cover-takumi\"\n"
+        ));
     }
 
     #[test]

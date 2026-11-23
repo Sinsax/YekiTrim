@@ -450,6 +450,33 @@ mod tests {
     use super::*;
     use crate::jobs::{JobClass, JobSpec};
 
+/// 整改 T12：`/api/health.cover_static.compiled` 在**带 feature 的构建**里必须是 true。
+///
+/// 锚的正是 `health()` 那一列（`yekitrim_polish::cover::cover_static_capability().0`）。
+/// 不带 feature 时 `render/takumi.rs`（约 1.1k 行）整份不参与编译 ⇒ 恒 false，
+/// 于是「WebUI 生成封面那一半还能不能编过」在服务端语境里**没有任何判据**。
+/// 带 feature 跑：`cargo test -p yekitrim-server --features cover-takumi`。
+#[cfg(feature = "cover-takumi")]
+#[test]
+fn cover_static_compiled_is_true_with_the_feature() {
+    let (compiled, _fonts, _dir) = yekitrim_polish::cover::cover_static_capability();
+    assert!(
+        compiled,
+        "带 cover-takumi 时 cover_static.compiled 必须是 true（/api/health 靠它给前端置灰）"
+    );
+}
+
+/// 反过来：不带 feature 时必须为 false —— 否则「到底编没编进来」就没有判据了。
+#[cfg(not(feature = "cover-takumi"))]
+#[test]
+fn cover_static_compiled_is_false_without_the_feature() {
+    let (compiled, _fonts, _dir) = yekitrim_polish::cover::cover_static_capability();
+    assert!(
+        !compiled,
+        "不带 cover-takumi 时 cover_static.compiled 必须是 false"
+    );
+}
+
 
 
 
