@@ -284,3 +284,35 @@ qwen3 文本 + sensevoice 时间轴，双模型同音频解码：
 
 `句末标点（。！？）强制切` > `停顿 gap>segment_gap 强制切` > `逗号软切（段>6s 或 >20 字）` > `单段 ≤8s` > `无标点按 16 字比例切`；
 短段 <1.5s 并入前段。segment_gap 配置保留并作为第二优先级（对齐后的字符级静音间隔是可靠切段信号）。
+
+---
+
+## 整改决策登记（2026-11-24 架构评估 → 整改计划）
+
+> 依据：`docs/plan/architecture-review-2026-11-24.md`（问题与证据）、
+> `docs/plan/remediation-plan-2026-11-24.md`（T1–T23 任务书）。
+> 本节只登记**已定口径但本轮不做（或不完全做）**的决策，避免它们散落在 `docs/plan` 里被当成新提议重开。
+
+- **D-1（2026-11-24 用户拍板）DOM 近似预览允许"语义接近"，不追求与成片逐像素一致。**
+  依据：出片已统一到 Dhampir 一条腿，`engine.js`（DOM）是无 WebGPU 时的降级腿。
+  后果：13 条 parity 判据里只降级 2 条（`check-dom-camera-parity` 容差 ±1px、`check-noise-parity` 只验开关/强度透传），
+  其余 11 条（时间/时刻/落点/宽度语义）**继续像素级之外的精确对拍**。真实收益不在放宽判据，而在删掉第三套渲染实现本身。
+  落地任务：T13（判据边界写进 `crates/yekitrim-polish/AGENTS.md`）、T14（删旧模板腿）、T15（`engine.js` 定位改成"近似"）。
+
+- **D-2 `cover-takumi` 默认仍只在 CLI 侧启用。**
+  T12 只给 `yekitrim-server` 加 **feature 转发**（`cover-takumi = ["yekitrim-polish/cover-takumi"]`）+ 一条 check-only 岗位，
+  **不**把它设成 `yekitrim-polish` 的默认（三条理由见 `crates/yekitrim-cli/Cargo.toml`：构建时长、Windows `LNK4098`、发行产物许可面）。
+
+- **D-3（2026-11-24 用户拍板）CI 暂不做，先做本地 `scripts/gate.mjs`。**
+  已具备的前置：`webui/dist` 入库（✅）、`vendor/sherpa-onnx-sys` 会按需下载并 sha256 校验（✅）。
+  仍缺的前置：**没有 Windows runner 时 ASR/出片相关测试怎么跑通**、以及底座产物的离线可用性 —— 下一步再评估。
+  在 CI 落地之前，判据的"执行者"是 `node scripts/gate.mjs`（T5）、`scripts/check-api-contract.mjs`（T7）与发布前手工清单。
+
+- **D-4 `config::merge()`（130 行手写）本轮不改（10-15 的 C5）。**
+  它现在是对的，只是"加字段容易漏"；已有配置五步协议 + 两条结构门禁兜底。
+  真要动，前置是先补"每个字段都能被 merge 到"的枚举式测试，再重写 —— 先取证再改。
+
+- **D-5 本轮不做**（`remediation-plan` 末节已列）：`core/detection → core/cutting` 横边（C1/C2）、
+  `detection/mod.rs::run()` 的 283 行拆分（C6）、前端迁 TS、`server` 直接 `use yekitrim_core::` 的 4 处（core 是共享底座，不是违规）。
+  前端迁 TS 的**顺序**也一并定下：先 T5/T7/T9（契约 + 门禁 + 请求体类型），再评估 TS —— 反了就是花大钱买小收益。
+
