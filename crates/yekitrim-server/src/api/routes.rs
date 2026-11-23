@@ -6,6 +6,8 @@
 use std::sync::Arc;
 
 use axum::{
+    extract::{MatchedPath, Request},
+    middleware::Next,
     Router,
     http::StatusCode,
     response::{IntoResponse, Response},
@@ -18,7 +20,148 @@ use super::*;
 use super::{auth::*, config::*, invite::*, logs::*, pipeline::*, polish::*,
             project_data::*, projects::*, rooms::*};
 
+// ---- 公开路由白名单（P2 T10）----
+//
+// 全仓**唯一**一份"不需要会话"的清单：兜底中间件 `require_authenticated_or_whitelist` 只对
+// 这里列出的 (method, path) 放行，其余**匹配到的**路由一律要求会话。
+//
+// ⚠️ 它存在的理由（2026-11-24 整改 T10）：以前只有一条手写的"未登录必须 401"清单（33 行），
+//    而实际注册了 127+ 条路由 —— 新加一条路由忘了挂 `protected`，**没有任何测试会红**，
+//    它就成了匿名可调的接口。现在反过来：漏挂认证 ⇒ 401（这条规则由整张表兜住），
+//    而白名单要明写、要写理由、还有测试（`every_public_route_is_reachable_without_a_session`）
+//    逐条真访问一遍。**新增白名单条目 = 在这里加一行 + 写清为什么它必须先于会话。**
+//
+// path 模板：`:xxx` 段匹配**任意一个非空段**（与 axum 的 `:param` 同义）；
+// `*xxx` 段匹配剩余全部（本表当前没用到，留着给以后带尾路径的通道）。
+pub(crate) const PUBLIC_ROUTES: &[(&str, &str, &str)] = &[
+    (
+        "GET",
+        "/health",
+        "存活探测：前端登录页 / 托盘 / `yekitrim doctor` 在**拿到会话之前**就要知道服务在不在；\
+         且按 review B6 它只回布尔与状态（不含路径、账号数、是否仍用初始密码）",
+    ),
+    (
+        "POST",
+        "/auth/login",
+        "登录本身：这是唯一的凭据入口，先要会话就成死循环了",
+    ),
+    (
+        "POST",
+        "/auth/register",
+        "自助注册：凭证是**邀请码 + 注册开关**（服务端校验，失败一律 403、不区分哪条不过），\
+         与登录同一条理由 —— 注册页是在登录页上点的，那时还没有会话",
+    ),
+    (
+        "POST",
+        "/ingest/bililive/:token",
+        "录播姬 webhook：录制软件只会把事件 POST 到它自己填的那个 URL，**加不了自定义头或会话**\
+         （§4.1）；鉴权是 URL 里的 token（`token_shape_ok` 先挡形状 + 常量时间比较）",
+    ),
+    (
+        "POST",
+        "/ingest/webhook/:token",
+        "通用「录制完成」webhook（biliLive-tools / 任意脚本）：同上，token 在 URL 里；\
+         不开口子等于采集链路直接断",
+    ),
+    (
+        "POST",
+        "/shutdown",
+        "托盘控通道：要在**没有会话**的进程里被敲响；它自带 `YEKITRIM_SHUTDOWN_TOKEN` 令牌 + \
+         loopback 两道闸，未设 env 时 handler 直接 404（连「这里有控制通道」都不透露）",
+    ),
+];
+
+/// `(method, path)` 是否在白名单里。
+///
+/// `path` 一律用 `req.uri().path()`：`nest("/api")` 之后它已去掉前缀，路由单测里直接就是 `/me`。
+/// ⚠️ **别拿 `MatchedPath` 来比白名单**：它带不带 `/api` 前缀取决于有没有 nest（生产带、单测不带），
+/// 拿它做安全判断会在两套装配下给出不同答案。
+pub(crate) fn is_public_route(method: &str, path: &str) -> bool {
+    PUBLIC_ROUTES
+        .iter()
+        .any(|(m, pat, _)| m.eq_ignore_ascii_case(method) && path_matches(pat, path))
+}
+
+/// `pattern` ↔ `path` 的**段级**匹配（`:` 段 = 任意一个非空段，`*` 段 = 剩余全部）。
+///
+/// 刻意不引正则（也刻意不复用 axum 的 matchit）：白名单是**安全判据**，规则越少越好审。
+/// 这也是整改计划否掉「方案 A：在 Rust 里重写一条正则」的同一个理由 —— 两份规则必然漂。
+fn path_matches(pattern: &str, path: &str) -> bool {
+    let mut pat = pattern.trim_start_matches('/').split('/');
+    let mut got = path.trim_start_matches('/').split('/');
+    loop {
+        match (pat.next(), got.next()) {
+            (None, None) => return true,
+            (Some(p), Some(g)) => {
+                if p.starts_with('*') {
+                    return true; // 通配吞掉剩余：`*` 之后不再比较
+                }
+                let hit = if p.starts_with(':') { !g.is_empty() } else { p == g };
+                if !hit {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+    }
+}
+
+/// 认证兜底（P2 T10）：**任何匹配到路由的请求都必须有会话**，白名单除外。
+///
+/// 存在理由：`require_user` / `require_admin` 是**逐层挂**的（`protected` / `admin` 各一份），
+/// 新加一条路由忘了挂 —— 它就成了匿名公开接口，而当时没有任何测试会红。
+/// 这层挂在**整张路由表外层**，把"漏配"的结局从「公开」改成「401」。
+///
+/// ⚠️ 它**不替代** `require_user` / `require_admin`：CSRF 与角色仍由那两层负责（这层跑的是
+///    同一份 `crate::auth::authenticate`，所以 CSRF 不会因为"漏配"而少一次）。
+/// ⚠️ 挂载位置（见 `router_inner` 尾部）：在 `access_log` **之内** —— 被 401 的请求照样留一行
+///    日志、且它读得到明文 body；在 `compress_json` **之外** —— 压缩挂在 `protected` 里，
+///    提前压会让 access_log 读到 gzip 字节（error 文案变乱码）。
+pub(crate) async fn require_authenticated_or_whitelist(
+    State(state): State<Arc<AppState>>,
+    mut req: Request,
+    next: Next,
+) -> Response {
+    // ① 内层已经认证过（`protected` / `admin` 的 require_user 注入了 CurrentUser）⇒ 放行。
+    if req.extensions().get::<crate::auth::CurrentUser>().is_some() {
+        return next.run(req).await;
+    }
+    // ② 压根没匹配到任何路由 ⇒ 交给 JSON 404 兜底。"不存在"和"漏配认证"是两回事：
+    //    未注册的 /api/* 一直是 404（`api_not_found`，前端靠它判断"这条通道没有"），别把它变成 401。
+    //    `MatchedPath` 只在**路由真的匹配上**时才被 axum 插进 extensions（fallback 分支不插）。
+    if req.extensions().get::<MatchedPath>().is_none() {
+        return next.run(req).await;
+    }
+    // ③ 白名单（每条都写了理由）
+    if is_public_route(req.method().as_str(), req.uri().path()) {
+        return next.run(req).await;
+    }
+    // ④ 其余一律真认证一次：过了就**把 CurrentUser 注进请求**再放行 —— 这是"漏配路由"还能
+    //    正常工作的前提（否则 handler 里的 `Extension<CurrentUser>` / `Scope` 拿不到身份）。
+    //    内层有 require_user 的路由会再认证一遍，结论相同；多出来的那次会话查询是**故意**的：
+    //    宁可多查一次，也不让任何一条路由少查一次。
+    match crate::auth::authenticate(&state, &mut req) {
+        Ok(()) => next.run(req).await,
+        Err(resp) => resp,
+    }
+}
+
 pub fn router(state: Arc<AppState>) -> Router {
+    router_inner(state, Router::new())
+}
+
+/// 生产装配 + 一张只给单测用的额外路由表。
+///
+/// `extra` 会 merge 进**生产同一张**路由表（在兜底层**之内**）—— 单测用它钉住
+/// "新加的路由忘了挂 `require_user` 也必须 401"（`tests::route_without_auth_layer_is_still_401`）。
+/// 生产入口 `router()` 传空表，装配结果与"没有这个参数"完全一致。
+///
+/// ⚠️ 那条探针路由是**源码字面量**注册的，所以 `scripts/route_manifest.py`（源码级抽取器）
+/// 会在清单里多列一条 `POST /__t10_unprotected_probe` —— 名字带 `__t10_` 前缀，一眼是测试专用；
+/// `node scripts/check-api-contract.mjs` 对它只记"后向提示"，不参与红（实测 exit 0）。
+/// ⚠️ **别在注释里写带括号的 route 调用**（连反引号里也不行）：`route_manifest.py` 是纯正则抽
+///    取、不剥注释，读到「点 + route + 左括号 + 一把省略号」会当成一条 1 参数的注册直接报错退出。
+pub(crate) fn router_inner(state: Arc<AppState>, extra: Router<Arc<AppState>>) -> Router {
     // 白名单（§10.1 step-2.1）：登录端点与 /health 之外，**所有**接口都要会话。
     let public = Router::new()
         .route("/health", get(health))
@@ -312,9 +455,22 @@ pub fn router(state: Arc<AppState>) -> Router {
     public
         .merge(admin)
         .merge(protected)
+        // 单测注入的额外路由（生产 = 空表）：**必须在兜底层之内**，否则测不出"漏配 = 公开"。
+        .merge(extra)
         // 未匹配的 /api/* 必须是 JSON 404：外层 fallback 是 SPA HTML，
         // 若让它兜住 API 请求，前端会把 200 HTML 解析成 null 并静默失败。
         .fallback(api_not_found)
+        // ---- 认证兜底（P2 T10）：漏挂认证层 = 401，而不是匿名公开 ----
+        // 位置（两个"必须"）：
+        // · 在 `access_log` **之内** ⇒ 被这里 401 的请求照样留一行日志，且 access_log
+        //   对 ≥400 会读 body，读到的是**明文** error 文案；
+        // · 在 `compress_json` **之外** ⇒ 压缩只挂在 `protected` 里，先压再记日志会把
+        //   日志里的 error 变成 gzip 字节。
+        // 链序 = `ratelimit → access_log → 认证兜底 → compress → require_user → handler`。
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            require_authenticated_or_whitelist,
+        ))
         // 访问日志挂最外层：**每次前端交互都留痕**（含上面这个 JSON 404）。
         // 挂在 api::router 里而不是 `nest("/api", …)` 外面，是为了让路由单测也走它。
         .layer(axum::middleware::from_fn(crate::access_log::access_log))
@@ -908,14 +1064,86 @@ async fn core_routes_are_reachable() {
     }
 }
 
-/// 除白名单外，**未登录一律 401**（含 loopback：没有免登录分支，§3.5.1）。
+/// 匿名请求（**不带**会话 cookie）。
+///
+/// ⚠️ 别用 `TestApp::req` 造"未登录"请求：它自带 admin 的 cookie，那样测的是"已登录"、
+/// 401 断言会**永远绿**（第一版就是那么写错的，注释还留在下面的保护路由循环里）。
+fn anon(method: &str, uri: &str, body: &str) -> axum::http::Request<Body> {
+    HttpRequest::builder()
+        .method(method)
+        .uri(uri)
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+/// 发出去，取 (状态码, body 文本)。
+async fn status_and_body(t: &TestApp, req: axum::http::Request<Body>) -> (StatusCode, String) {
+    let res = t.call(req).await;
+    let status = res.status();
+    let bytes = axum::body::to_bytes(res.into_body(), 64 * 1024).await.unwrap();
+    (status, String::from_utf8_lossy(&bytes).to_string())
+}
+
+/// `PUBLIC_ROUTES` 的路径模板 → 一条具体 URI（`:token` 段换成一个假 token）。
+fn probe_uri(pattern: &str) -> String {
+    let mut out = String::new();
+    for seg in pattern.trim_start_matches('/').split('/') {
+        out.push('/');
+        if seg.starts_with(':') {
+            out.push_str("t10_whitelist_probe");
+        } else {
+            out.push_str(seg);
+        }
+    }
+    out
+}
+
+/// 白名单条目的探针 body。
+///
+/// `/auth/login` 喂**真凭据** —— "白名单生效"最终就是"登录页打得开"，所以那一条必须真的 200；
+/// 注册喂一个必然无效的邀请码（白名单生效 ⇒ 走到业务校验 ⇒ 403，而不是 401）。
+fn probe_body(pattern: &str) -> &'static str {
+    match pattern {
+        "/auth/login" => r#"{"username":"admin","password":"initial-pass-1234"}"#,
+        "/auth/register" => {
+            r#"{"username":"t10probe","password":"pass-12345678","invite":"not-a-real-code"}"#
+        }
+        _ => "{}",
+    }
+}
+
+/// 除 `PUBLIC_ROUTES` 白名单外，**未登录一律 401**（含 loopback：没有免登录分支，§3.5.1）。
+///
+/// ⚠️ P2 T10 起判据是**表**而不是手写清单：白名单每一条都在这里真访问一遍
+/// （未登录 ⇒ 不能是兜底层那一条 401）；"非白名单"那一侧由下面的代表性样本 + 兜底层本身
+/// 保证（任何"忘了挂认证层"的新路由都会被判 401，见 `route_without_auth_layer_is_still_401`）。
 #[tokio::test]
 async fn unauthenticated_requests_are_401_except_whitelist() {
     let t = test_app().await;
-    // 白名单：/health 必须公开（前端靠它判断服务是否活着）
-    let res = t
-        .call(HttpRequest::builder().uri("/health").body(Body::empty()).unwrap())
-        .await;
+
+    // ---- ① 白名单逐条真访问（表驱动：以后加/删白名单**不用改这个用例**）----
+    for (method, pattern, reason) in PUBLIC_ROUTES {
+        let uri = probe_uri(pattern);
+        let (status, body) = status_and_body(&t, anon(method, &uri, probe_body(pattern))).await;
+        // 只认**兜底层那一条** 401（"未登录，请先登录"）：webhook 用错 token 时 handler
+        // 自己也回 401（"token 无效"），那是白名单生效的证据，不是没生效。
+        assert!(
+            !(status == StatusCode::UNAUTHORIZED && body.contains("未登录，请先登录")),
+            "{method} {uri} 被认证兜底层拦了 —— 它列在白名单（{reason}），是不是从 PUBLIC_ROUTES 删了？body = {body}"
+        );
+        if *pattern == "/auth/login" {
+            assert_eq!(status, StatusCode::OK, "白名单里的登录端点必须能真登录（否则登录页打不开）：{body}");
+        }
+        if *pattern != "/shutdown" {
+            // 除了 /shutdown（没设令牌 env 时它**故意**回 404、当自己不存在），
+            // 白名单里的路径必须真的注册过 —— 否则这条白名单是死的。
+            assert_ne!(status, StatusCode::NOT_FOUND, "{method} {uri} 列在白名单里却没注册？");
+        }
+    }
+
+    // ---- ② 白名单也不是"什么都回"：/health 的内容约束（原样保留）----
+    let res = t.call(anon("GET", "/health", "")).await;
     assert_eq!(res.status(), StatusCode::OK);
     let health = body_json(res).await;
     assert_eq!(health["listening"], "loopback");
@@ -927,6 +1155,7 @@ async fn unauthenticated_requests_are_401_except_whitelist() {
         "health 不得暴露「是否仍用初始密码」（等于给攻击者指路）: {health}"
     );
 
+    // ---- ③ 受保护路由的代表性样本：未登录仍然必须 401 ----
     for (method, uri) in [
         ("GET", "/me"),
         ("GET", "/jobs"),
@@ -946,24 +1175,137 @@ async fn unauthenticated_requests_are_401_except_whitelist() {
         ("POST", "/polish/dhampir-project"),
         ("GET", "/polish/dhampir-wasm/engine.js"),
     ] {
-        let res = t
-            .call(
-                HttpRequest::builder()
-                    .method(method)
-                    .uri(uri)
-                    .header(axum::http::header::CONTENT_TYPE, "application/json")
-                    .body(Body::from("{}"))
-                    .unwrap(),
-            )
-            .await;
-        assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "{method} {uri} 未登录必须 401");
+        let (status, body) = status_and_body(&t, anon(method, uri, "{}")).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {uri} 未登录必须 401（body = {body}）");
     }
 
-    // 未知路径仍走 JSON 404（不因为没登录就变成 401/HTML）
-    let res = t
-        .call(HttpRequest::builder().uri("/does-not-exist").body(Body::empty()).unwrap())
-        .await;
-    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    // ---- ④ 未知路径仍走 JSON 404（不因为没登录就变成 401/HTML）----
+    let (status, _) = status_and_body(&t, anon("GET", "/does-not-exist", "")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+/// **T10 的正向判据**：一条**故意不带 `require_user`** 的路由，未登录必须 401、带会话必须 200。
+///
+/// 它挂在**生产同一张路由表**上（`router_inner` 的 `extra` 参数；生产入口传空表），所以：
+/// ⚠️ **变异自证**：把 `router_inner` 里那层 `require_authenticated_or_whitelist` 摘掉，
+/// 下面的未登录请求会直接 200 —— 那时它就是一条匿名公开接口，本用例立刻红。
+#[tokio::test]
+async fn route_without_auth_layer_is_still_401() {
+    use tower::ServiceExt;
+
+    let t = test_app().await;
+    let app = router_inner(
+        t.state.clone(),
+        Router::new().route("/__t10_unprotected_probe", post(t10_unprotected_probe)),
+    );
+
+    // ① 未登录 ⇒ 401，且错误体与 `authenticate` **逐字同形**（前端按 error 文案弹登录框）
+    let res = app
+        .clone()
+        .oneshot(
+            HttpRequest::builder()
+                .method("POST")
+                .uri("/__t10_unprotected_probe")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        res.status(),
+        StatusCode::UNAUTHORIZED,
+        "漏挂认证层的路由也必须 401（否则「漏配 = 匿名公开」这个洞就还在）"
+    );
+    let body = body_json(res).await;
+    assert_eq!(body["ok"], false, "{body}");
+    assert_eq!(
+        body["error"], "未登录，请先登录",
+        "错误体必须与 authenticate 同形（前端按这句弹登录框）: {body}"
+    );
+
+    // ② 有 cookie 但**缺 CSRF**（写请求）⇒ 403：兜底层跑的是同一份 `authenticate`，
+    //    "漏配"不能让 CSRF 跟着漏。
+    let res = app
+        .clone()
+        .oneshot(
+            HttpRequest::builder()
+                .method("POST")
+                .uri("/__t10_unprotected_probe")
+                .header(axum::http::header::COOKIE, t.cookie())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::FORBIDDEN, "漏挂认证层的**写**路由同样不能绕过 CSRF");
+
+    // ③ 受保护路由的 401 走的是**外层**兜底（在 `protected` 里那层 `compress_json` 之外）⇒
+    //    响应**不压缩**，access_log 对 ≥400 才读得到明文 error 文案。
+    //    ⚠️ 变异判据：把兜底层挪进 `protected`（compress 之内），这条立刻红（body 变 gzip）。
+    let res = t.call(anon("GET", "/me", "")).await;
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    assert!(
+        res.headers().get(axum::http::header::CONTENT_ENCODING).is_none(),
+        "兜底层的 401 不能被 gzip（access_log 要读明文 body）: {:?}",
+        res.headers()
+    );
+
+    // ④ 带会话（`t.req` 自带 cookie + CSRF 头）⇒ 200，且**兜底层把身份注进了请求**：
+    //    `saw_user = true` 是"handler 拿得到 CurrentUser"的直接证据 —— 漏配路由还能正常
+    //    工作的前提（否则 `Extension<CurrentUser>` / `Scope` 提取器直接 500）。
+    let res = app
+        .clone()
+        .oneshot(t.req("POST", "/__t10_unprotected_probe").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK, "带会话必须能走通（兜底层要注入 CurrentUser）");
+    let body = body_json(res).await;
+    assert_eq!(
+        body["saw_user"], true,
+        "兜底层必须把 CurrentUser 注进请求，否则漏配路由的 handler 拿不到身份: {body}"
+    );
+}
+
+/// 探针路由：**刻意不挂任何认证层** —— 它就是"新加路由忘了挂 protected"的样子。
+async fn t10_unprotected_probe(req: axum::extract::Request) -> Response {
+    let saw_user = req.extensions().get::<crate::auth::CurrentUser>().is_some();
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({ "ok": true, "saw_user": saw_user })),
+    )
+        .into_response()
+}
+
+/// 白名单匹配是**段级**的：方法要一致、`:token` 只吞一段、不允许前缀误命中。
+///
+/// 这是安全判据，所以拿纯函数直接钉（不走 HTTP）：任何一处放宽都在这里翻面。
+#[test]
+fn public_route_matching_is_segment_exact() {
+    // 该命中的
+    assert!(is_public_route("GET", "/health"));
+    assert!(is_public_route("POST", "/auth/login"));
+    assert!(is_public_route("POST", "/ingest/bililive/tok123"));
+    assert!(is_public_route("POST", "/ingest/webhook/abc-DEF_1"));
+    // 方法不一致 ⇒ 不算白名单（否则别的 verb 也一起放出去了）
+    assert!(!is_public_route("GET", "/auth/login"));
+    assert!(!is_public_route("DELETE", "/shutdown"));
+    // `:token` 只吞**一个非空段**
+    assert!(!is_public_route("POST", "/ingest/bililive/"));
+    assert!(!is_public_route("POST", "/ingest/bililive/a/b"));
+    // 前缀不算命中（`/healthz` 不是 `/health`）
+    assert!(!is_public_route("GET", "/healthz"));
+    assert!(!is_public_route("GET", "/health/x"));
+    // 受保护路由一条都不在白名单里
+    for p in [
+        "/me",
+        "/jobs",
+        "/config",
+        "/project-data/clips",
+        "/polish/fonts",
+        "/admin/users",
+    ] {
+        assert!(!is_public_route("GET", p), "{p} 不该在白名单里");
+    }
 }
 
 /// 写请求缺 CSRF / CSRF 不匹配一律 403（cookie 会话 + 自定义头双提交）；

@@ -46,6 +46,20 @@
 - ⚠️ **文件出口只有一个入口：`media::serve_file_from_headers`** —— `/api/media/*`、`/polish/{font,sticker-file,asset,video-thumb}`、`/polish/stickers/:pack/files/:name`、`/polish/dhampir-wasm/*` **一律**走它：`ETag` + `no-cache` → 304、文本类 gzip、Range；**有 `Range` 头不压不 304**。
   ⚠️ **`/api/*` 的 JSON 也 gzip**（`api/compress.rs`；**SSE 不在白名单**，超限原样放行）。
 - **`routes` 是唯一的路由权威**；加接口 = 在 `routes.rs` 挂一条 + 在对应领域模块写 handler。
+  ⚠️ **新增路由不用手动挂 protected —— 有一层认证兜底**（整改 T10，2026-11-24）：
+  `require_authenticated_or_whitelist` 挂在 public/admin/protected **merge 之后、资源级 layer 之外**，
+  规则四步 = 已有 CurrentUser ⇒ 放行 / `MatchedPath` 缺失（真没这条路由）⇒ 放行给 JSON 404 /
+  命中 `PUBLIC_ROUTES` ⇒ 放行 / 其余一律走 `crate::auth::authenticate`（过了**把 CurrentUser 注进请求**再放行）。
+  所以「漏配 = 匿名公开」这个洞没有了 —— 判据 `route_without_auth_layer_is_still_401` 用一条
+  **故意不挂认证层**的探针路由钉住它（摘掉兜底层立刻红：`left: 200 / right: 401`）。
+  ⚠️ **白名单全仓只有一份** `PUBLIC_ROUTES`（每条带理由）：只有「该端点另有独立凭证（URL token / env 令牌 /
+  邀请码+开关）或前端在无会话时必须调到它」才准进；其余一律不进。
+  ⚠️ 挂载位置两条硬约束：在 `access_log` **之内**（401 也要留日志、且它要读到明文 body）、
+  在 `compress_json` **之外**（压缩只在 protected 里；挂反了日志读到的是 gzip 字节，判据是「受保护路由未登录的 401
+  不许带 content-encoding」）。
+  ⚠️ 它**不替代** `require_user` / `require_admin`（那两层仍管 CSRF 与角色），代价是非白名单请求会认证两次
+  （结论相同、CSRF 不会少）；别为省这一次查询给 `require_user` 加「已有 CurrentUser 就跳过」——
+  那等于让兜底层接管它的职责。
   ⚠️ **本地免登录（`--local-no-auth`）/ `POST /api/shutdown` 控制通道**：正文（两道闸、三道闸、互斥与开机守卫、哨兵会话、令牌头名与托盘各写一份字面量）见 `docs/deploy.md`；四条判据见 `docs/server-api.md` §④。
   ⚠️ `GET /api/project-data/config` 同时回 `config`（**合并后**生效值）与 `project_config`（**项目文件自己**那份）：预处理页靠后者区分"本工程写了"与"跟随全局"（`merge` 对空串不覆盖 ⇒ 清空即恢复跟随全局）。
   ⚠️ 两层的顺序**不能反**：`require_user` 必须在外层（先跑并写入 `CurrentUser`），改密强制门在内层才读得到用户。axum 里"后加的 layer 在外层"⇒ `routes.rs` 那两行**看起来是倒着写的**，别"顺手改正"。

@@ -665,7 +665,12 @@ fn tls_terminated_with(headers: &HeaderMap, trust_proxy: bool) -> bool {
 
 // ---- 中间件 ----
 
-fn json_error(status: StatusCode, msg: impl Into<String>) -> Response {
+/// 全仓**唯一**的 JSON 错误体形状（`{"ok":false,"error":…}`）。
+///
+/// `pub(crate)`：`api::routes::require_authenticated_or_whitelist` 的 401 必须与
+/// [`authenticate`] 的**逐字同形**（前端按 `error` 文案弹登录框），所以两处共用这一份，
+/// 不许在路由层另写一个 `json!({...})`。
+pub(crate) fn json_error(status: StatusCode, msg: impl Into<String>) -> Response {
     (status, Json(serde_json::json!({ "ok": false, "error": msg.into() }))).into_response()
 }
 
@@ -843,7 +848,13 @@ fn guard_local_request(req: &Request) -> Result<(), Response> {
 /// 会拿它去查会话）。本地模式本来就没有"登录"这件事，这个取舍是有意的。
 pub const LOCAL_SESSION_ID: &str = "local-no-auth";
 
-fn authenticate(state: &Arc<AppState>, req: &mut Request) -> Result<(), Response> {
+/// 会话/CSRF 校验 + 注入 [`CurrentUser`]。
+///
+/// ⚠️ 调用方有两处，**都要过这一份**（别各写一条认证路径）：
+/// ① [`require_user`] / [`require_admin`]（受保护 / 管理路由）；
+/// ② `api::routes::require_authenticated_or_whitelist` —— 挂在**整张路由表外层**的兜底：
+///    它自己认证一次，好让"新路由忘了挂认证层"也**401**而不是匿名公开（P2 T10）。
+pub(crate) fn authenticate(state: &Arc<AppState>, req: &mut Request) -> Result<(), Response> {
     // ---- 本地免登录（`--local-no-auth`，只有 loopback 才可能开启）----
     // 注入本机管理员，不查会话、不查 CSRF；但**必须先过两道闸**：
     //   ① Host 是 loopback 主机名 ⇒ 防 DNS rebinding
