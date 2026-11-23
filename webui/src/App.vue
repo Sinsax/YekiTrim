@@ -18,6 +18,7 @@
       @open="openProject"
       @remove="removeProject"
       @logout="doLogout"
+      @change-password="openChangePassword()"
       @open-jobs="openJobs()"
       @close-mobile="closeMobileNav"
     />
