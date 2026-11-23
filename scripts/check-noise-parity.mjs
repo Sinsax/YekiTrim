@@ -304,7 +304,11 @@ function mutate() {
   // ── `PolishPreview.vue`：「复用」这条路不能断 ──
   // ⚠️ 这几条是**替代**原来那两条"必须有实现"的死判据（它们天生红）。
   {
-    const m = mut(base.preview, /,\s*noiseTile\s*\}/, ' }')
+    // ⚠⚠ 锚点别写「列表末尾那一项」（2026-11-24 修）：`noiseTile` 后面又加了
+    //     `textTiltTransform` / `perCharSpans` / `animPreset`，它**不在末尾**了 ——
+    //    旧的 `/,\s*noiseTile\s*\}/` 于是永远匹配不上 ⇒ 变异 no-op ⇒ 报成「判据没翻面」（假失败）。
+    //    锚「中间那一项」：`,\s*noiseTile\s*,` → `,`（删掉这一项、不留双逗号）。
+    const m = mut(base.preview, /,\s*noiseTile\s*,/, ',')
     expectRed('删掉 PolishPreview 对 noiseTile 的 import',
       { ...base, preview: m.src }, [m])
   }

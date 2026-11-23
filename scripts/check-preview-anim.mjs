@@ -1100,6 +1100,26 @@ try {
 }
 
 // ---- 结果 ----
+// ⚠️⚠️ **变异台的结论必须机器可判**（2026-11-24 修）：上一版在 `--mutate` 下照样走
+//    「有问题 ⇒ exit 1」那条路 ⇒ 闸门把它记成**失败**，而它报的 17 处**正是想要的**
+//    （摘掉逐字那条路之后判据翻红）。两边口径对不上，这条自证于是长期是红的。
+//    现在按 `check-noise-parity.mjs` 的 `expectRed` 那套：**变异后必须翻红 = 通过**；
+//    **变异后还全绿 = 判据空转 ⇒ 红**。
+//    ⚠️ 基线（未变异）必须绿 —— 那由 gate 里**不含** `--mutate` 的那一次负责；两条合起来才是自证。
+const ANY_MUTATE = MUTATE || MUTATE_TRANS || MUTATE_EAT
+if (ANY_MUTATE) {
+  if (!mutated) {
+    console.log('✗ 变异**没打上**（副本没生成）—— 这次自证是空转的，别放过')
+    process.exit(1)
+  }
+  if (fails.length === 0) {
+    console.log(`✗ 变异**没有翻面**：改坏实现之后 ${checks} 项判据照样全绿 ⇒ 它们是空转的`)
+    process.exit(1)
+  }
+  console.log(`✓ 变异自证：改坏实现后有 ${fails.length} 处判据翻红（共 ${checks} 项）—— 判据不是空转`)
+  for (const f of fails) console.log('    · 翻红：' + f.split('\n')[0])
+  process.exit(0)
+}
 if (fails.length === 0) {
   console.log(`✓ 三轴 9 档预览会动（${checks} 项：逐档求值 + 逐字不退化成整行 + 字幕那条分支`
     + ` + 接线 + 三条轴同时生效）`)

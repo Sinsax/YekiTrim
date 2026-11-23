@@ -441,21 +441,33 @@ async function mutate() {
   // 把 `from` 换成 `to` 后，`bucket` 那条探针**必须**从 different:true 翻成 false。
   const MUTATIONS = [
     {
-      label: '§element 的洞本身：`getElements` 里 `kind !== "sticker"` 提前 continue（**原始缺陷 a**）',
-      from: "    if (kind !== 'sticker') continue\n",
-      to: "    continue\n",
+      // ⚠️ **锚点必须跟着「分离」之后的代码走**（2026-10-14 起 `getElements` **只装文字**：
+      //    贴纸在**索引期**就归一到 `idx.sticker` 了，`idx.element` 里只剩 text）。
+      //    ⇒ 旧的「`kind !== 'sticker'` 恒真」那条锚点**在源码里已经不存在**（命中 0 次 ⇒
+      //      变异台自己报错、整条 `--mutate` 崩）。换成今天等价的形态：
+      //      **一进循环就 continue** —— 整条 element 通道出局、求值器不抛、预览一片空白。
+      label: '§element 的洞本身：`getElements` 每个元素都提前 continue（整条通道出局）',
+      from: '  for (const e of idx.element || []) {\n',
+      to: '  for (const e of idx.element || []) {\n    continue\n',
       bucket: 'element',
     },
     {
-      label: '§element 的洞之二：字段路径错位 `e.kind` →（索引里其实是 `e.ev.kind`）',
-      from: "    const kind = String(e.kind ?? '').trim().toLowerCase()\n",
-      to: "    const kind = String(e.kind ?? '').trim().toLowerCase()\n    if (String(e.kind ?? '').trim() === '') continue\n",
+      // 原始缺陷 b（读 `e.kind` 而不是 `e.ev.kind`）：形态没变，锚点要跟着**修好后**的写法
+      // （`e.ev?.kind`）。读错路径 ⇒ `kind` 恒空 ⇒ 文字支永不进入 ⇒ 桶恒空。
+      label: '§element 的洞之二：字段路径退回 `e.kind`（索引里其实是 `e.ev.kind`）',
+      from: "    const kind = String(e.ev?.kind ?? '').trim().toLowerCase()\n",
+      to: "    const kind = String(e.kind ?? '').trim().toLowerCase()\n",
       bucket: 'element',
     },
     {
-      label: '`getElements` 干脆不往 out 里推（画不出来但也不抛 —— 静默空白）',
-      from: '    out.push({ src: (idx.stickerSrc || (() => \'\'))(e.text || \'\'), opacity, scale, rot, yOff })\n',
-      to: '    void 0\n',
+      // 静默空白：算完了什么都不推。
+      // ⚠️ 锚点取 `out.push({` 在**文字支里唯一那一处**（缩进 6；另三处缩进 4 在别的函数里）——
+      //    旧锚点写的是 `out.push({ src: (idx.stickerSrc || …)(e.text || …), … })`，
+      //    那是**贴纸还在 element 桶里**时代的形状，早已删除（命中 0 次）。
+      // ⚠️ 换成 `void ({ … })` 而不是删掉：**保持语法合法**，只把「推出去」改成「算完就扔」。
+      label: '`getElements` 算完了不往 out 里推（画不出来但也不抛 —— 静默空白）',
+      from: '      out.push({\n',
+      to: '      void ({\n',
       bucket: 'element',
     },
     {
@@ -463,8 +475,8 @@ async function mutate() {
       // 出现**两次**（`getElements` 与 `stickersAt` 各一次）—— 只写那一行会命中 2 次，
       // 被上面的"命中 1 次"断言当场拦下（这是它该有的行为，我第一版就是这么写错的）。
       label: '`stickersAt` 的窗口条件写反（贴纸永远出不来）',
-      from: '  for (const e of idx.sticker) {\n    const et = e.time, dur = e.duration || 2.5\n    if (t < et || t > et + dur) continue\n',
-      to: '  for (const e of idx.sticker) {\n    const et = e.time, dur = e.duration || 2.5\n    if (true) continue\n',
+      from: '  for (const e of idx.sticker || []) {\n    const et = e.time, dur = e.duration || 2.5\n    if (t < et || t > et + dur) continue\n',
+      to: '  for (const e of idx.sticker || []) {\n    const et = e.time, dur = e.duration || 2.5\n    if (true) continue\n',
       bucket: 'sticker',
     },
     {

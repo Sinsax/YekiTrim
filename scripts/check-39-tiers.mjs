@@ -85,7 +85,6 @@ const legacyDropdownKeys = [...vueSrc.matchAll(/\{ value: '([a-z_0-9]+)', label:
 console.log('39 档 × 四标准验收表');
 console.log('='.repeat(72));
 console.log(`  档位来源：引擎 ${engineKeys.length} · 转译器 ${translatorKeys.length} · 下拉 ${dropdownKeys.length}`);
-console.log('');
 
 // ⚠⚠ 2026-10-14（三轴收敛）：档位从 **39 收到 9**（两边各 9 档）。
 //   硬编码 39 在收敛后**永远红** —— 而它又正好在**每次都要跑**的路上，
@@ -133,6 +132,15 @@ const ENGINE_KEYS = new Set([
 /** ④ **转译器侧**的键名白名单（蛇形，直传底座）。 */
 const TRANSLATOR_KEYS = new Set([
   'scale_in_from', 'scale_in_peak', 'scale_in_ms', 'shake_px', 'shake_hz', 'shake_phase',
+  // ⚠️ **2026-10-18 底座新增的三条原语**（本判据 2026-11-24 才补进来）：
+  //    `per_char_out_frames`（出场逐字窗口，窗口锚在出点）
+  //    `scale_curve` + `scale_cycle_ms`（周期缩放，心跳那一档）
+  //    底座侧证据：`Dhampir/crates/dhampir-timeline/src/layer.rs:971`（字段声明）、
+  //    `crates/dhampir-core/src/overlay.rs:626`（读 `style.per_char_out_frames`）、
+  //    `overlay.rs:565-571`（`text_motion::scale_curve_params` 求值）、
+  //    `schema/doc-v1.schema.json` 的 `SubtitleStyle.properties`（v0.5.0）。
+  //    ⇒ 缺这三条时**转译器与底座都是对的**、只有本表报“写出底座不认的键”（假红）。
+  'per_char_out_frames', 'scale_curve', 'scale_cycle_ms',
   'plate_color', 'plate_pad_px', 'squashY',
   'per_char', 'vertical', 'safe_width_ratio', 'font_family', 'font_weight',
   'scale_from', 'scale_to', 'rotation_from', 'rotation_to',
@@ -149,6 +157,137 @@ const PERCHAR_KEYS = new Set([
   'spread_x_em', 'spread_y_em', 'spread_x_from', 'spread_x_to', 'spread_y_from', 'spread_y_to',
   'scale_spread',
 ]);
+
+// ===========================================================================
+// ④ 的取数工具（2026-11-24 修：按花括号配对切档，不再按行）
+// ===========================================================================
+//
+// ⚠️⚠️ 上一版是「从 `    <tier>: {` 那一行起、到下一个 `    },` 止」，两个坏处：
+//
+//   ① **单行档会吃进后面档位的键**。档位表里 `pop` / `fade` / `shake` 都是**单行**
+//      （`fade: { sort: 'transition' },`）—— 它们的 `},` 就在**同一行**，而循环
+//      只找「下一条以 4 空格 `},` 开头的行」⇒ 一路吃到 `perchar` 那个多行档的结尾。
+//      实测症状：`vtext` / `pop` / `fade` / `shake` **四档全被报出 `per_char_out_frames`**
+//      ——而那是 `perchar` 那一档的键。**假红**，而且指向一个不存在的缺陷。
+//   ② **驼峰键根本进不了样本**：取键的正则写的是 `^ {6}([a-z_0-9]+):`，
+//      `tiltDeg` / `fontWeight` / `arcToDefault` 这些**首字母后就有大写**的键
+//      永远匹配不上 ⇒ 它们从未被核过（那一半判据是**空转**的）。
+//
+// ⇒ 改成**按花括号配对**切出这一档的对象体，再用一个极小的扫描器取 depth-1 的键
+//    （跳过注释与字符串）。单行 / 多行 / 嵌套三种写法一视同仁。
+
+/** 从 `ANIM_PRESETS` 源码里切出 `<tier>: { … }` 的**对象体**（不含外层花括号）。 */
+function slicePresetBody(text, tier) {
+  const re = new RegExp('(?:^|\\n) {4}' + tier + ': \\{');
+  const m = re.exec(text);
+  if (!m) return null;
+  const open = m.index + m[0].length - 1; // 指向 `{`
+  const from = open + 1;
+  let depth = 1;
+  for (let i = from; i < text.length; i += 1) {
+    const c = text[i];
+    if (c === '/' && text[i + 1] === '/') { while (i < text.length && text[i] !== '\n') i += 1; continue; }
+    if (c === '"' || c === "'" || c === '`') {
+      const q = c; i += 1;
+      while (i < text.length && text[i] !== q) { if (text[i] === '\\') i += 1; i += 1; }
+      i += 1; continue;
+    }
+    if (c === '{') depth += 1;
+    else if (c === '}') { depth -= 1; if (depth === 0) return text.slice(from, i); }
+  }
+  return null;
+}
+
+/** 对象体里 **depth 1** 的键名（嵌套对象/数组里的不算）；跳过注释与字符串。 */
+function topLevelKeys(body) {
+  const keys = [];
+  let depth = 0;
+  let i = 0;
+  while (i < body.length) {
+    const c = body[i];
+    if (c === '/' && body[i + 1] === '/') { while (i < body.length && body[i] !== '\n') i += 1; continue; }
+    if (c === '"' || c === "'" || c === '`') {
+      const q = c; i += 1;
+      while (i < body.length && body[i] !== q) { if (body[i] === '\\') i += 1; i += 1; }
+      i += 1; continue;
+    }
+    if (c === '{' || c === '[') { depth += 1; i += 1; continue; }
+    if (c === '}' || c === ']') { depth -= 1; i += 1; continue; }
+    if (depth === 0 && /[A-Za-z_]/.test(c)) {
+      let j = i;
+      while (j < body.length && /[A-Za-z_0-9]/.test(body[j])) j += 1;
+      let k = j;
+      while (k < body.length && /\\s/.test(body[k])) k += 1;
+      if (body[k] === ':') keys.push(body.slice(i, j));
+      i = j; continue;
+    }
+    i += 1;
+  }
+  return keys;
+}
+
+/** `key: { … }` / `key: [ … ]` 的**内层**原文；不是对象/数组就返回 null。 */
+function subBody(body, key) {
+  const re = new RegExp('(?:^|[{,\\s])' + key + '\\s*:');
+  const m = re.exec(body);
+  if (!m) return null;
+  let i = m.index + m[0].length;
+  while (i < body.length && /\\s/.test(body[i])) i += 1;
+  const open = body[i];
+  if (open !== '{' && open !== '[') return null;
+  const close = open === '{' ? '}' : ']';
+  const from = i + 1;
+  let depth = 0;
+  for (; i < body.length; i += 1) {
+    const c = body[i];
+    if (c === '/' && body[i + 1] === '/') { while (i < body.length && body[i] !== '\n') i += 1; continue; }
+    if (c === '"' || c === "'" || c === '`') {
+      const q = c; i += 1;
+      while (i < body.length && body[i] !== q) { if (body[i] === '\\') i += 1; i += 1; }
+      continue;
+    }
+    if (c === open) depth += 1;
+    else if (c === close) { depth -= 1; if (depth === 0) return body.slice(from, i); }
+  }
+  return null;
+}
+
+/** 扁平对象列表（如 `scale_curve: [{ ms, scale }, …]`）里出现的**全部**键名。 */
+function flatKeys(text) {
+  return [...text.matchAll(/[{,]\\s*([A-Za-z_][A-Za-z_0-9]*)\\s*:/g)].map((m) => m[1]);
+}
+
+// ===========================================================================
+// ④ 的**键集权威**：底座的 `doc-v1.schema.json`
+// ===========================================================================
+//
+// ⚠️ 为什么不再只用手抄白名单：白名单是**手抄的底座键集**，底座加了新原语它**不会
+//    自己知道**。2026-10-18 底座加了 `per_char_out_frames` / `scale_curve` /
+//    `scale_cycle_ms`，本表没跟 ⇒ 报「写出底座不认的键」，而**转译器与底座都正确**。
+//    手抄表的老化是**单向**的（只会漏、不会多），症状恰好是「判据全红、代码全对」。
+//
+// ⇒ 读得到底座 schema 就以它为准（机器判据），读不到再退回手抄白名单并**明说没跑**。
+const DHAMPIR_ROOT = process.env.DHAMPIR_ROOT || join(ROOT, '..', 'Dhampir');
+const BASE_SCHEMA = join(DHAMPIR_ROOT, 'schema', 'doc-v1.schema.json');
+function loadBaseKeySets() {
+  if (!existsSync(BASE_SCHEMA)) return null;
+  let doc;
+  try { doc = JSON.parse(readFileSync(BASE_SCHEMA, 'utf8')); } catch { return null; }
+  const defs = doc.$defs || doc.definitions || {};
+  const props = (n) => new Set(Object.keys(defs?.[n]?.properties ?? {}));
+  const style = props('SubtitleStyle');
+  if (style.size === 0) return null;
+  return { style, perChar: props('PerCharSpec'), scalePoint: props('ScalePoint') };
+}
+const BASE_KEYS = loadBaseKeySets();
+const STYLE_KEYS = BASE_KEYS ? BASE_KEYS.style : TRANSLATOR_KEYS;
+const PERCHAR_ALLOWED = BASE_KEYS ? BASE_KEYS.perChar : PERCHAR_KEYS;
+const SCALE_POINT_ALLOWED = BASE_KEYS && BASE_KEYS.scalePoint.size > 0
+  ? BASE_KEYS.scalePoint
+  : new Set(['ms', 'scale']);
+console.log('  ④ 键集权威：' + (BASE_KEYS
+  ? (BASE_SCHEMA + '（底座 SubtitleStyle / PerCharSpec / ScalePoint）')
+  : '底座 schema 不在 -> 退回手抄白名单（· SKIP 交叉核对）'));
 
 const rows = [];
 for (const tier of engineKeys) {
@@ -247,47 +386,41 @@ for (const tier of engineKeys) {
   //    ⇒ 成片里那一档**什么都没发生**，而报告里一行差异都没有。
   //    这正是 R1 那条纪律（新效果 = 词汇表 + 转译器 case + 底座原语）里最容易漏的一环。
   //
-  // ⚠️⚠️ **按行取块，不用正则跨块匹配**。第一版我写的是
-  //    `new RegExp('^    X: \\{[\\s\\S]*?\\n    \\},?', 'm')` ——
-  //    非贪婪在**多行**上会一路吃到**下一个** `\n    }`，于是"这一档的键"
-  //    里混进了**后面所有档位名**，判据报出 `["slam_std","slam_lg",…]`
-  //    这种明显荒谬的"底座不认的键"。
-  //    ⇒ 症状是**判据全红、而代码是对的**（代价是去查一个不存在的问题）。
-  //    改成按行扫：从 `    <tier>: {` 那一行起，缩进回到 `    },` 为止。
-  const lines = tBlock[1].split('\n');
-  const startAt = lines.findIndex((l) => l.startsWith(`    ${tier}: {`));
-  let block = null;
-  if (startAt >= 0) {
-    const acc = [];
-    for (let i = startAt; i < lines.length; i += 1) {
-      acc.push(lines[i]);
-      // 顶层那一档在缩进 4 的 `},` 处结束。
-      if (i > startAt && /^ {4}\},?\s*$/.test(lines[i])) break;
-    }
-    block = acc.join('\n');
-  }
-  const raw = block === null ? null : block;
-  const emitted = new Set();
-  if (block !== null) {
-    // 只取缩进 **6** 的键（档位自己的字段）；更深的属于 perChar 子对象。
-    for (const m of block.matchAll(/^ {6}([a-z_0-9]+):/gm)) emitted.add(m[1]);
-  }
-  // ⚠ ⚠ 2026-10-14：排除 `sort` —— 它是**表内部的三轴归属标签**，从不被写出去；发射路径是
-  //   `motionFields` 里逐个 `put('…')` 的**白名单**，不是把预设对象整个展开。
+  // ⚠️⚠️ **按花括号配对切档**（2026-11-24 修）。第一版写成「从 `    <tier>: {` 那一行起、
+  //    到下一个 `^    },` 止」，对**单行档**（`fade: { sort: 'transition' },`）会一路
+  //    吃到**后面**那个多行档的结尾 ⇒ `vtext` / `pop` / `fade` / `shake` 四档都拿到了
+  //    `perchar` 的 `per_char_out_frames`，被报成「写出底座不认的键」（**假红**）。
+  //    而且取键正则 `^ {6}([a-z_0-9]+):` 看不见**驼峰键**（`tiltDeg` / `fontWeight` …）
+  //    ⇒ 那一半判据一直在**空转**。两处一起改：切档按 `{}` 配对、取键按 depth 1 扫。
+  const body = slicePresetBody(tBlock[1], tier);
+  const topKeys = body === null ? [] : topLevelKeys(body);
+  // ⚠️ 排除 `sort` —— 它是**表内部的三轴归属标签**，从不被写出去（2026-10-14 记）。
+  // ⚠️ **驼峰键是表内部字段**（`tiltDeg` / `squashY` / `fontWeight` / `arcToDefault` /
+  //    `heartbeatAmp` …）：`translate` 拿它们算 `transform` 关键帧，或经
+  //    `put('font_weight', …)` 转成蛇形再写 —— **从不原样落到底座**。所以 ④ 只核蛇形键。
   const TABLE_ONLY = new Set(['sort']);
-  const badKeys = [...emitted].filter((k) => !TRANSLATOR_KEYS.has(k) && k !== 'perChar' && !TABLE_ONLY.has(k));
-  // perChar 的子键也要逐个核（缩进 8 及以上）
-  const badPerChar = block === null
-    ? []
-    : [...block.matchAll(/^ {8,}([a-z_0-9]+):/gm)]
-        .map((m) => m[1])
-        .filter((k) => !PERCHAR_KEYS.has(k));
-  row.c4 = raw !== null && badKeys.length === 0 && badPerChar.length === 0;
-  ok(raw !== null, `④ ${tier}：转译器表里找不到这一档（结构没对上）`);
+  const emitted = topKeys.filter((k) => /^[a-z][a-z_0-9]*$/.test(k) && !TABLE_ONLY.has(k));
+  const badKeys = emitted.filter((k) => !STYLE_KEYS.has(k));
+  // `per_char` 的子键（底座 `PerCharSpec`）
+  const perCharKeys = body === null ? [] : topLevelKeys(subBody(body, 'perChar') ?? '');
+  const badPerChar = perCharKeys.filter((k) => !PERCHAR_ALLOWED.has(k));
+  // `scale_curve` 的点（底座 `ScalePoint`：`ms` / `scale`）
+  const scaleKeys = body === null ? [] : flatKeys(subBody(body, 'scale_curve') ?? '');
+  const badScale = [...new Set(scaleKeys)].filter((k) => !SCALE_POINT_ALLOWED.has(k));
+  row.c4 = body !== null && badKeys.length === 0
+    && badPerChar.length === 0 && badScale.length === 0;
+  ok(body !== null, `④ ${tier}：转译器表里找不到这一档（结构没对上）`);
+  // ⚠️ **反空转**：每档至少得提出一个键来（连 `fade` 都有 `sort`）。提不出来 = 切档/取键
+  //    那一步又坏了 —— 那时 `badKeys` 恒空，判据会**假装通过**。
+  ok(topKeys.length > 0,
+    `④ ${tier}：一个键都没取到 —— 判据空转（切档/取键的锚点漂了）`);
   ok(badKeys.length === 0, `④ ${tier}：转译器写出了底座**不认**的键 ${JSON.stringify(badKeys)}`
-    + ` —— 底座对认不出的键**静默忽略** ⇒ 成片里这一档什么都没发生`);
+    + ` —— 底座对认不出的键**静默忽略** ⇒ 成片里这一档什么都没发生`
+    + `（键集来源：${BASE_KEYS ? BASE_SCHEMA : '手抄白名单'}）`);
   ok(badPerChar.length === 0, `④ ${tier}：per_char 里有底座**不认**的子键 ${JSON.stringify(badPerChar)}`
     + ' —— 同上，静默忽略');
+  ok(badScale.length === 0, `④ ${tier}：scale_curve 里有底座**不认**的字段 ${JSON.stringify(badScale)}`
+    + ' —— 同样是静默忽略（心跳那一档会整个退化成恒等）');
 
   rows.push(row);
 }

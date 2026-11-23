@@ -96,13 +96,21 @@ for (const ch of ['😭', '‼️', '🩸']) {
 console.log('  ✓ 直接粘的 emoji 字符可用')
 
 if (process.argv.includes('--mutate')) {
-  // 变异自证：把"多码点序列"那条分支拆掉，① 必须变红。
-  // 判据与显式断言一致 —— 先证明替换**真的命中**了，否则"没红"可能只是没改到。
+  // 变异自证：把「多码点序列」那条分支拆掉，① 必须变红。
+  // ⚠️ 判据与显式断言一致 —— 先证明替换**真的命中**了，否则「没红」可能只是没改到。
+  //
+  // ⚠️⚠️ 命中次数**不再写死 2**（2026-11-24 修）：同一个「码点写法」正则现在有**三处**用法 ——
+  //    `isEmojiName` / `safeEmoji` / `emojiGifUrl`（后者是内建 emoji 的 CDN 地址，2026-10-15 才加，
+  //    只认码点写法）⇒ 写死 2 会把**多出来的那个合法用法**报成「变异目标出现 3 次，变异无效」，
+  //    而**判据与代码都是对的**（那是假红）。
+  //    ⇒ 这里只要求**至少命中一次**（防「目标串已经不存在 ⇒ 变异是 no-op」）；
+  //    「变异到底有没有生效」由下面 `broken.length` 那条**行为**断言负责：替换之后 `safeEmoji`
+  //    若仍能解多码点，那条当场红。三处一起替换是**有意的**（它们本来就是同一份解码口径）。
   const src = readFileSync(join(repo, 'webui', 'src', 'polish', 'engine.js'), 'utf8')
   const target = "/^[0-9a-f]+(_[0-9a-f]+)*$/i"
   const hits = src.split(target).length - 1
-  if (hits !== 2) {
-    console.log(`  ✗ 变异目标出现 ${hits} 次（期望 2：safeEmoji + isEmojiName），变异无效`)
+  if (hits < 1) {
+    console.log(`  ✗ 变异目标一次都没命中 —— 正则写法改了？变异无效`)
     process.exit(1)
   }
   const mutated = src.replaceAll(target, '/^[0-9a-f]+$/i')
@@ -113,7 +121,7 @@ if (process.argv.includes('--mutate')) {
     console.log('  ✗ 变异后仍全部可解码 —— 这条判据抓不住这个缺陷')
     process.exit(1)
   }
-  console.log(`  ✓ 变异自证：去掉多码点支持 ⇒ ${broken.length} 条解不出（判据有效）`)
+  console.log(`  ✓ 变异自证：去掉多码点支持（${hits} 处同源正则）⇒ ${broken.length} 条解不出（判据有效）`)
 }
 
 console.log(fail ? `\n✗ ${fail} 项失败` : '\n✓ 全部通过')

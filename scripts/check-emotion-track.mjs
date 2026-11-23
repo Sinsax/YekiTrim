@@ -124,12 +124,20 @@ if (process.argv.includes('--self-test')) {
   const noBadge = tl.replace('v-if="block.emo"', 'v-if="false"');
   assert.notEqual(noBadge, tl, '自证：徽标变异必须命中');
   assert.equal(/v-if="block\.emo"/.test(noBadge), false, '自证③：拿掉徽标后必须红');
+  self += 1;
   // ④ 把情绪**改回单开一条泳道** ⇒ 也必须红（防止有人再"顺手加一行"）
-  const reLane = tl.replace('<div class="lane ruler-lane">', '<div class="lane emotion-lane"><i></i></div><div class="lane ruler-lane">');
+  // ⚠️⚠️ 锚点**别带结尾的 `>`**（2026-11-24 修）：这条泳道后来多了一个 `:class`
+  //    （`<div class="lane ruler-lane" :class="{ 'heat-on': heatOn }">`），
+  //    带 `>` 的旧锚点**再也匹配不上** —— 而 `assert.notEqual` 一红就抛
+  //    `AssertionError`，整条 `--self-test` **当场崩**（不是「自证失败」，是「自证没跑」）。
+  //    ⇒ 锚在**标签前缀**上（不含 `>`），将来再加属性也不会漂。
+  const laneAnchor = '<div class="lane ruler-lane"';
+  const reLane = tl.replace(laneAnchor,
+    '<div class="lane emotion-lane"><i></i></div>' + laneAnchor);
   assert.notEqual(reLane, tl, '自证：加回泳道的变异必须命中');
   assert.equal(/class="lane emotion-lane"/.test(reLane), true, '自证④：加回泳道后判据必须能看见它');
   self += 1;
-  console.log(`✓ 情绪轨道接线自证：${self} 项（拿掉调用 / 换平局序 / 拿掉徽标，都必须红）`);
+  console.log(`✓ 情绪轨道接线自证：${self} 项（拿掉调用 / 换平局序 / 拿掉徽标 / 加回泳道，都必须红）`);
   process.exit(0);
 }
 
