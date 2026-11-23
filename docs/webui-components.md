@@ -1151,11 +1151,7 @@ A 的 `polish.toml` 逐字节不变、B 的磁盘标题仍是 B 自己的）。
 
 ## ⑥ 其他组件逐个
 
-- `ProjectClipsSection`：切片页**列表视图**（2026-11-24 用户口径：大卡改列表）—— 一行一个片段，
-  左缩略图（132×74）/ 中标题与标签与区间 / 右动作；已剪片段 + 未剪切事件混排、两级筛选、热度排序。
-  **两档密度都保留**（用户 2026-11-24 口径）：`list`（列表，带缩略图，默认）/ `compact`（紧凑，
-  同一张列表压到一行：去缩略图与摘要，扫条目快）。偏好存 localStorage `yekitrim.slices.density`；
-  旧值 `big`（大卡）按 `list` 处理 —— 大卡已改列表，不必清缓存。
+- `ProjectClipsSection`：切片页卡片墙（已剪片段 + 未剪切事件混排、两级筛选、热度排序）。
   **切片↔事件对应（`clipMatchesEvent`）、`:clip` 用目录名、排序回落到 `SORT_OPTIONS[0]` 已在 `webui/src/AGENTS.md`**，不重复。
   ⚠️ **删除不是任务（不发 job），刷新只能由前端自己驱动**：`ProjectClipsSection` 的数据是父页面
   （`ProjectSlicesView`）传下来的**快照**，删完不 `emit('changed')` 让父页面 `load({silent:true})` 重新取数，
@@ -1185,10 +1181,10 @@ A 的 `polish.toml` 逐字节不变、B 的磁盘标题仍是 B 自己的）。
 | `rangesGapSecs(src)` | 段间**被丢掉**的时长 = 外沿 − 内容之和 |
 | `rangesHint(src)` | 悬停 title：段数 + 全部区间 + 丢掉多少空隙（**四处卡片墙共用这一份**） |
 
-- **可见的那一行**只在**切片页列表**（`.range-line`，已剪 + 未剪切两种行各一处，`v-if="it.ranges.length"`）：
+- **可见的那一行**只在**切片页卡片墙**（`.range-line`，已剪 + 未剪切两种卡片各一处，`v-if="it.ranges.length"`）：
   `① 07:21.4–08:06.5 ② 15:29.0–16:43.0 … 空隙 1054s`，段号按行内 `segColor(i)` 上色。
-  ⚠️ **普通片段一个像素都不动**（没有这一行）；行高不再固定（列表行按内容长），
-  但仍保留 `max-height:52px` 的截断，完整清单在悬停 `title` 里。
+  ⚠️ **普通片段一个像素都不动**（没有这一行）；⚠️ `max-height:52px` = **量出来的**（4 段 + 空隙读数 = 51px）——
+  卡在 32px 会把第三行**静默切掉**（`overflow:hidden` 不报错），探针钉了 `scrollHeight ≤ clientHeight`。
 - **精修片段条 / 首页总览**卡片太小，只把区间放进**悬停 title**（`rangesHint`）。
 - ⚠️ **"丢掉多少空隙"的外沿取 `max(end) − min(start)`**，不是"排序后最后一段的 `end`"：
   段**可以互相重叠**（项目 12 那条就是 1625.7–1653.8 包着 1632–1643），写成后者少算 11s 且不报错
@@ -1529,147 +1525,3 @@ headless harness 就能真挂载组件、真量几何，`.workbuddy/`（已 giti
 - 判据：`check-layout-invariants.mjs` **㉗**（3 项 + 3 处变异：按钮不接 `runLlmJob` / 挪回轨道设置 /
   排到渲染导出下面）+ 真页面 `probe-lane-ui.mjs` 第 ④ 组（轨道设置面板里**没有**它、
   右栏里有、且在渲染导出上面、title 说清"全部重做"）。
-
----
-
-## ⑧ 卡瘦身搬迁正文（2026-11-24，P0 T3）
-
-> 为什么有这一节：`webui/src/components/AGENTS.md` 在 P0 T3 里按「改代码前必须知道、否则会写错」重新收窄
-> （22277 B → 14444 B，指令链 `root + webui + webui-src + webui-components` 回到 50000 B 以内）。
-> 下面这些段落是**从卡里原文搬出**的历史叙述、实测数字与逐项枚举 —— 卡里只留规则句与 ⚠️ 行。
-> 判断标准同文首：**要追根问底就来这里；改代码前不必读。**
-
-### ⑧.1 `components/ui/` 九个共享原语的逐项清单（原「共享原语」表）
-
-这一节回答「新页面该用哪个原语、它替代掉什么手写物」。卡里只留一句『无状态 + 优先用它们』。
-
-
-**无状态**：只吃 props、发 events，不 import stores、不发请求。数据访问留在页面。
-新页面**优先用它们**，别再造第 N 套手写标题/工具条/空态。
-
-| 组件 | 用途 | 替代掉的手写物 |
-|---|---|---|
-| `UiPageHeader` | 标题 / 描述 / eyebrow / 右侧动作，`compact` 档 | `.page-head` 手写 |
-| `UiSection` | 分区标题 + 描述 + 动作 | `.section-title` 手写 |
-| `UiSegmented` | 互斥分段（受控 `v-model`） | `.mode-seg` / `.wb-tabs` / `.subfilters` |
-| `UiToolbar` | 过滤 / 搜索 / 排序一行，`end` 槽右推 | 各页 `.sort-bar` |
-| `UiStat` | 指标块（数值 + 标签 + tone） | 无 |
-| `UiEmpty` | 空态（图标环 + 主次动作），`inline` 内嵌档 | 与 `AppEmptyState` 同形 |
-| `UiSkeleton` | 骨架屏 `line/card/grid/block` × N | 各处裸 `.skeleton` |
-| `UiField` | 标签 + 控件 + 说明 + 错误，`inline` 档 | 设置页手写 `.fld` |
-| `UiKbd` | 快捷键角标 | 无 |
-
-
-### ⑧.2 `SetupChecklist`：v8 把「运行状况」卡整卡并入（2026-11-15 用户口径）
-
-卡里只留『唯一状态卡 + 数据源 + ⚠️ 待处理项逐项可见』。
-
-
-- `SetupChecklist`（v8 起 = 首页环境与模型的**唯一**状态卡，2026-11-15 用户口径：原「运行状况」卡整卡
-  并入）：「运行环境」行 = ffmpeg/ffprobe/**出片底座**实测 chips（数据源 `/api/health`，与 doctor 同一批
-  命令、一样现场实测）+ 缺项一行指路（底座 → 程序目录 `dhampir/bin/`）；「字幕模型」行内嵌 `ModelList`
-  （缺模型才展开，下载仅管理员）；全就绪收成一行「开始使用 · 环境就绪」。数据仍是 health + doctor +
-  models 三口一起发一起刷，`doctorError` 要传进来照实报（读失败 ≠ 缺失，不许拿旧 doctor 快照充数）。
-
-  没有展示位（用户实测）；页头汇总 chip 随之删除（同一件事不说三遍）。口径见 `docs/web-ui-design.md` 附录 E。
-
-
-### ⑧.3 时间轴：202px 的几何来历、事件字段迁移与控件收敛
-
-卡里只留『202px / 别新增泳道』与『time+end、控件统一』这些规矩句。
-
-
-- **布局必须保持紧凑**（它**独占一整行** = 整个内容宽度）：泳道 **26px ×7 条 + 标尺 20px = 202px**（标尺带里
-  叠了条 16px 的**热度曲线**：弹幕按条 + 字幕按字量，口径 `polish/heat.js`，开着时 218px —— 几何、四条
-  装配纪律与"眼睛不进 `[stage.lanes]`"见 ①.8）；标题/提示经 `<slot name="head">` 进 `.tl-head`（见 ①）。
-
-- 用户明确**不要**电平参考线/刻度、**不要**新增泳道（保持 7 条 202px）、**不要**把字幕块改半透明。
-- 事件字段是 `time` + `end`，**没有 `duration` 了**；老工程的 `duration` 由 `legacy.rs::upgrade_event_times`
-  在**反序列化前**换算；三处求值器统一走各自的 `evDur()` / `evDuration()`，别再直接读 `.duration`。
-- **控件统一**：**体拖移动 / 左缘改开始 / 右缘改结束 / 双击删除**，字幕与屏蔽块也能拖；唯一例外是想换轨道就
-  删掉重加，别再退回 15 种全类型下拉。**属性面板 = 标配块 + 类型专属块**；**「保存修改」按钮已删**。
-
-
-### ⑧.4 精修预览：音量/静音与 Dhampir 双源（2026-10-02「完全没声音」之后）
-
-卡里只留『总音量落到所有会出声的 video』与『覆盖 dhampirSourceVideos ∪ dhampirTwins』这两条规矩。
-
-
-- 音量/静音 = **总音量，必须落到所有会出声的 `<video>` 元素**（**只调 SFX 播放器即 bug**）；读回用
-
-  唯一在响的元素**：`applyAudio()` 必须覆盖 `dhampirSourceVideos` ∪ `dhampirTwins`（**不能只遍历
-  `dhampirVideos`** —— 换绑中间态里旧元素会掉出数组却仍在播 ⇒ **声音翻倍**）；备用那批一直 `muted`（判据
-  `dhampirIsTwin`）；**`tick()` 的 Dhampir 分支不许漏 `player.sync(...)`**（"让出重活"让的是**渲染**，音效是
-  **出声**）；出声时纠偏速率要收窄。详见 **`docs/webui-components.md` ②.6**；判据 =
-  `node scripts/check-preview-audio.mjs`。
-
-
-### ⑧.5 运镜：三档倍率的几何推导、位置面板的用户口径（2026-11-21）
-
-卡里只留『中 1.3 / 近 1.5 / 画中画 0.55』与『起点/终点 + 运镜过渡』的规矩。
-
-
-- **三档倍率当前值：中 1.3 / 近 1.5 / 画中画 0.55**。**放大档没有「推出框露背景」的风险**（绕不动点 `scale`，
-  `s ≥ 1` 四周一律向外；露底只在画中画 `zoom_wide < 1`，刻意留黑边 `(1-factor)/2×1920 = 432px`）。三处兜底
-  默认值（`default_zoom_*()`、模板与 `engine.js` 的 `camFactor`）一起改。
-
-  **画中画到点收工**：`close_pip_shots` 补一条**回镜头**真事件，档位/不动点取**时间上**前一条非画中画运镜的
-
-- ⚠️ **位置面板是「起点 / 终点」+「运镜过渡」**（2026-11-21 用户口径：「聚焦和移到应该是一个意思，
-  改变成始和终的概念」「方式改为运镜过渡，是作用于前后两个运镜块的过渡而不是块内的运镜逻辑」）：
-  两个下拉是**同一件事的两个端点**（`anchor` / `anchor_to`），文案**不许**退回「聚焦 / 移到」；
-  **终点默认「不移动（同起点）」**—— 两端相同 ⇒ 后处理清掉 `to_origin`，这一块整块静止，
-  面板上 `cameraStaysStill()` 会给一句提示（别让人以为它要摇过去）；
-  「**运镜过渡**」= 接缝（`cut` + `speed`），管「上一块的落点 → 本块的起点」，
-  **不是**块内 `起点 → 终点` 那段位移的快慢。旧文案「平滑运镜（0.6s 推移）」正是要修的那个误解。
-
-  以前是每块**绝对赋值** ⇒ 块缝处瞬跳（实测 928px / 一帧，画面宽 48%）。判据：
-  `node webui/scripts/check-handheld.mjs` 的「位置状态机对拍」+「块缝连续性（5ms 步长）」两段（带变异自证）。
-
-
-### ⑧.6 其他组件：历史、实测与逐项枚举
-
-卡里只留逐组件的一句规矩与 ⚠️ 行；这一节是它们原来的正文（含实测数字与症状描述）。
-
-
-- `ProjectClipsSection`（切片页卡片墙）：⚠️ **删除不是任务（不发 job），刷新只能由前端自己驱动**：它拿的是父页面
-  （`saveEdit`/`addClip` 同理）。`silent` 必须真的静默；**「剪切」按钮不禁用，忙时只改文案**（占用本来就排队）。
-  ⚠️ 卡片的「精修」按钮（`goPolish`）：剪切收尾已把工程建好了，正常直接跳；**只有老片段**才补 init，且
-  **必须 `await waitJobDone(id)` 再跳**（发完就跳会先撞 `polish.toml not found`；细节见 ⑥）。`polishOpening` 防
-  连点，`jobClosers` 在 `onUnmounted` 里关订阅。
-- `MediaLibrary`（首页素材库，**文件夹管理器**布局，2026-10-09 重写；`FontLibrary`/`StickerPacks`
-  **已删除**、能力全并入它 —— 改素材库只改这一处）：左=类型导航、右=该类型网格；三种素材折成同一
-  形状（`items` 的映射），**一个网格画三种** —— ⚠️ 别再退回"三块各自实现"。规则与坑见
-  `docs/webui-components.md`「素材库」：**视频没有上传**（几 GB，拖拽直接 return）· 缩略图抽不出是
-  **404 不是 500** · 删除一律 `confirmDialog` · 前端上传上限预检必须留着（超限回 413 纯文本，
-  `client.js` 只认 JSON，会误报成"接口不存在"）。
-
-  - **任务行的"卡住"提示**：`JobSummary.updated_at`（epoch 秒，`Job::push` 每次事件都更新）—— 运行中但
-    `IDLE_WARN_SECS`(120s) 没有新事件，就在行上写"可能卡在外部进程或网络盘上"。
-
-  - 编辑器里被推迟的后处理（时间轴自动保存 / 选框保存触发的 process）：**不进队列**，只记 `pendingProcess`
-    （带片段名），该片段空闲时自动补跑一次 —— 一次编辑风暴不该塞十几条任务。
-
-- `LogConsole`：**挂载连 SSE、卸载断**，只在设置页 `monitor` 挂；颜色一律走 tokens。品牌标
-  `src/assets/logo.png`（favicon 在 `public/`），别改回内联 SVG。`AppModal`/`AppDialog`/`ToastHost`
-  （`stores/toast`）—— **别再手搓弹窗/确认**。
-
-- `ServerDirPicker`：进下一级用 `{dir, enter}`、**路径由服务端拼**。⚠ `update:dir`（onMounted 也发）要**清已选
-  文件**；外部改 `startDir` 要跟着 browse；`update:listing` 供判可用性。⚠ **`projectFile` prop 默认须空
-  （opt-in）**：传了才有绿框与「工程配置」标签。弹出用 **`ServerFileBrowser`**（双栏；细节见 ⑥）。
-
-- `RecorderConfig`：`GET /api/admin/ingest` **绝不回 `api_pass` 明文/token_hash**，只回 `api_pass_set` 布尔；
-  `api_base` 非空要带 scheme。⚠ 卡内只有两块：**录制软件**（`kind`：录播姬 / biliLive-tools / 不接；选谁
-  只显示谁的字段：bili-tools 要 API 地址 + 密钥 + 容器路径，录播姬要 API 地址 + Basic 账号）与**自动入库**
-  （`webhook_enabled` + 地址 + 生成）。**没有「录播姬 / Webhook / 两样都收」的模式切换** —— 自动入库是开关，
-  不是通道。保存形状仍是同一张 `[ingest.recorder]` + `[ingest.webhook]`；账号密码、白名单、自动流程、
-  容器路径都在「高级」`<details>` 里默认折叠。
-
-- `AppModal` / `AppDialog` / `JobDrawer`：焦点圈定 / Esc / 滚动锁统一走 `composables/useOverlay.js`。
-  ⚠️ **AppDialog 不再整块挂 `@keydown.enter`**（以前焦点落在哪、一按回车就确认，危险操作也能被误触）：
-  默认焦点在**取消**，只有 prompt 的输入框允许 Enter 提交。
-
-- 其余：`HomeClipsOverview`（自动 `polish init` 传**绝对目录**）· `SubtitlePanel`/`SubtitleEditor`（`addSub()`
-  后按 `start` 排序）· `prepare/SubtitleTrack`（常驻横排属性条，不要右侧竖面板）· `prepare/MaterialList`
-  （**改一边等于改两边**）· `polish/StickerPicker`/`SfxPicker`（`name` = **去扩展名的文件名**）。
-
