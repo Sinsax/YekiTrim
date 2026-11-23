@@ -52,12 +52,16 @@ pub(super) fn owned_project(
     }
 }
 
-pub(super) fn owner_name(db: &yekitrim_service::db::Db, owner_id: i64) -> Option<String> {
-    db.list_users()
-        .ok()?
-        .into_iter()
-        .find(|u| u.id == owner_id)
-        .map(|u| u.username)
+/// id → 用户名 的映射，**只查一次**。
+///
+/// ⚠️ 这里曾是 `owner_name(db, id)` = 每个项目调一次 `db.list_users()`（**全表扫**）——
+/// `projects_list` 里 10 个项目就是 10 次全表扫，而且**都持同一把** `Db { conn: Mutex<Connection> }`
+/// 的锁（DB 是单连接，见 `db.rs`）。项目一多，列表接口就在"锁 + 全表扫"上排队（整改 T11 的 N+1）。
+fn owner_name_map(db: &yekitrim_service::db::Db) -> Result<std::collections::HashMap<i64, String>, AppError> {
+    let users = db
+        .list_users()
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取账号列表失败: {e:#}")))?;
+    Ok(users.into_iter().map(|u| (u.id, u.username)).collect())
 }
 
 /// `GET /api/projects`：只列本人项目；admin 额外看到所有人的（含 owner 列）。
@@ -74,16 +78,19 @@ pub(super) async fn projects_list(
     // 每个项目的摘要都要读它的 `yekitrim.toml` + 对产物目录做十几次 `exists()`
     // （`summary_json` → `project_snapshot`）。项目在网络盘上时这就是十几秒级的往返，
     // 而前端一次页面加载会成串地打这个接口 —— 整段算在 blocking 池里，别占 worker。
-    let st = state.clone();
+    // 用户表进闭包前查一次（映射是纯内存查表，闭包里不再碰 DB）
+    let owner_names = owner_name_map(db)?;
     let out = blocking(move || {
-        let db = st.auth.db();
         let out: Vec<serde_json::Value> = rows
             .iter()
             .map(|p| {
                 // `missing` 由 `summary_json` 按**磁盘当场算**（目录不在 / 配置解析失败），
                 // 这里**不再顺手写库**（读接口有副作用是最容易踩的一类坑，review P3）。
                 // DB 里那一列由启动时的 `projects::refresh_all_bytes` 双向校准。
-                yekitrim_service::projects::summary_json(p, owner_name(db, p.owner_id).as_deref())
+                yekitrim_service::projects::summary_json(
+                    p,
+                    owner_names.get(&p.owner_id).map(|s| s.as_str()),
+                )
             })
             .collect();
         Ok(out)
@@ -742,6 +749,61 @@ async fn overwrite_rebuilds_config_only_when_explicitly_asked() {
     let after = std::fs::read_to_string(&cfg).unwrap();
     assert_ne!(after, cfg_before, "显式 overwrite 必须真的重写");
     assert!(after.contains("b.mp4"), "重写后的输入应当是刚选的那个视频: {after}");
+}
+
+/// 整改 T11：`GET /api/projects` 的 owner 名**不再逐项目查一次用户表**（N+1）。
+///
+/// 以前 `owner_name(db, p.owner_id)` 在闭包里逐项目调 `db.list_users()`（全表扫 + 同一把
+/// `Mutex<Connection>`），10 个项目 = 10 次全表扫。现在闭包外查一次、闭包里纯内存查表。
+///
+/// 判据取"**每条都要有 owner 名**"：映射接错（键类型 / 键错列）时的症状是整列变成 `null`，
+/// 而"少查了几次"本身没法在 server 侧计数 —— `yekitrim-service` 作为依赖被编译时**没有** `cfg(test)`，
+/// 所以计划里推荐的 `#[cfg(test)]` 计数器在这个断言侧看不见（要么污染生产代码常驻一个计数器，
+/// 要么就靠这条功能判据）。这里选后者，并把理由写在这里，免得下一个人以为漏了。
+#[tokio::test]
+async fn projects_list_resolves_every_owner_name() {
+    let t = test_app().await;
+    for i in 0..10 {
+        let dir = t.root.join(format!("p{i}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.mp4"), b"x").unwrap();
+        let body = serde_json::json!({
+            "source": {
+                "kind": "local",
+                "dir": yekitrim_core::path::display(&dir),
+                "input": "a.mp4",
+            }
+        });
+        let res = t
+            .call(
+                t.req("POST", "/projects")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(res.status(), StatusCode::OK, "第 {i} 个项目应当建成");
+    }
+
+    let res = t
+        .call(t.req("GET", "/projects").body(Body::empty()).unwrap())
+        .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let v = body_json(res).await;
+    let projects = v["projects"].as_array().expect("projects 必须是数组");
+    assert_eq!(
+        projects.len(),
+        11,
+        "夹具自带 1 个 + 新建 10 个；实际 {}",
+        projects.len()
+    );
+    for p in projects {
+        assert_eq!(
+            p["owner"].as_str(),
+            Some("admin"),
+            "每条项目都必须解析出 owner 名（映射接错的症状是整列 null）: {p}"
+        );
+    }
 }
 
 }
