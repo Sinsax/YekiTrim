@@ -805,5 +805,45 @@ async fn projects_list_resolves_every_owner_name() {
         );
     }
 }
+/// 整改 T4a：`DELETE /api/projects/:id/source` 此前**零测试覆盖**（T4 只做机械搬移）。
+///
+/// 判据三件事：①源被删（含根目录分片）②产物与项目本身**一个都不动** ③计量真的刷新
+/// （`source_bytes` 归 0、`freed_bytes` = 删掉那几份的字节数）。
+#[tokio::test]
+async fn source_delete_removes_sources_but_keeps_products() {
+    let t = test_app().await;
+    // 夹具自带项目 1（root + a.mp4）。再加一个分片（录播姬多分片会话的形态）与一份产物。
+    let shard = t.root.join("shard-02.mp4");
+    std::fs::write(&shard, vec![0u8; 4096]).unwrap();
+    let clip = t.root.join("output").join("clips").join("clip-01").join("clip.mp4");
+    std::fs::create_dir_all(clip.parent().unwrap()).unwrap();
+    std::fs::write(&clip, b"product-bytes").unwrap();
+    let cfg = t.root.join("yekitrim.toml");
+    let cfg_before = std::fs::read_to_string(&cfg).unwrap();
+
+    let res = t
+        .call(t.req("DELETE", "/projects/1/source").body(Body::empty()).unwrap())
+        .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let v = body_json(res).await;
+
+    // ① 源没了（a.mp4 是夹具里的 input_file；shard-02.mp4 是根目录分片）
+    assert!(!t.root.join("a.mp4").exists(), "input_file 必须被删: {v}");
+    assert!(!shard.exists(), "根目录下的分片也算源，必须被删: {v}");
+    // ② 产物、工程配置、项目登记一个都不动
+    assert!(clip.exists(), "产物必须留着（删源 ≠ 删产物）: {v}");
+    assert_eq!(std::fs::read_to_string(&cfg).unwrap(), cfg_before, "工程配置不许变");
+    assert!(project_ids(&t).await.contains(&1), "项目还在（删源 ≠ 移除项目）");
+    // ③ 计量刷新：源归零、释放量 > 0
+    assert_eq!(v["source_bytes"].as_u64(), Some(0), "删完源占用应当归 0: {v}");
+    assert!(
+        v["freed_bytes"].as_u64().unwrap_or(0) > 0,
+        "释放字节数必须大于 0: {v}"
+    );
+    assert!(
+        v["removed"].as_array().map(|a| !a.is_empty()).unwrap_or(false),
+        "至少要报一份被删的文件: {v}"
+    );
+}
 
 }
