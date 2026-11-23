@@ -1,7 +1,8 @@
 [package]
 name = "yekitrim-llm"
 version.workspace = true
-edition = "2021"
+edition = "2024"
+rust-version.workspace = true
 description = "YekiTrim LLM 传输层：协议/方言/模型能力/用量采集（隔离 crate，不认识配置与业务）"
 authors = ["Sinsax"]
 license = "Apache-2.0"

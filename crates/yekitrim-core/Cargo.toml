@@ -1,7 +1,8 @@
 [package]
 name = "yekitrim-core"
 version.workspace = true
-edition = "2021"
+edition = "2024"
+rust-version.workspace = true
 description = "YekiTrim 核心：管线编排 + ASR / 事件检测 / 剪切全部业务逻辑"
 authors = ["Sinsax"]
 license = "Apache-2.0"

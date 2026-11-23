@@ -2186,16 +2186,16 @@ mod tests {
         assert_eq!(yekitrim_core::path::DATA_DIR_ENV, "YEKITRIM_DATA_DIR");
 
         // ② 设了覆盖 ⇒ 账本落在**覆盖目录本身**（不是它下面的 .yekitrim/cloud）
-        std::env::set_var(yekitrim_core::path::DATA_DIR_ENV, &tmp);
+        unsafe { std::env::set_var(yekitrim_core::path::DATA_DIR_ENV, &tmp) };
         assert_eq!(data_dir(), tmp, "覆盖值就是账本目录");
         assert_eq!(db_path(), tmp.join("yekitrim.db"));
 
         // ③ 覆盖为空串 ⇒ 等同没设（别把账本写到根目录去）
-        std::env::set_var(yekitrim_core::path::DATA_DIR_ENV, "");
+        unsafe { std::env::set_var(yekitrim_core::path::DATA_DIR_ENV, "") };
         assert_eq!(data_dir(), yekitrim_core::path::yekitrim_home().join("cloud"));
 
         // ④ 没设 ⇒ 落到 `<数据目录>/.yekitrim/cloud`，且**状态目录名是新名**
-        std::env::remove_var(yekitrim_core::path::DATA_DIR_ENV);
+        unsafe { std::env::remove_var(yekitrim_core::path::DATA_DIR_ENV) };
         let expected = yekitrim_core::path::yekitrim_home().join("cloud");
         assert_eq!(data_dir(), expected);
         assert!(
@@ -2205,8 +2205,8 @@ mod tests {
         );
 
         match old {
-            Some(v) => std::env::set_var(yekitrim_core::path::DATA_DIR_ENV, v),
-            None => std::env::remove_var(yekitrim_core::path::DATA_DIR_ENV),
+            Some(v) => unsafe { std::env::set_var(yekitrim_core::path::DATA_DIR_ENV, v) },
+            None => unsafe { std::env::remove_var(yekitrim_core::path::DATA_DIR_ENV) },
         }
     }
 }

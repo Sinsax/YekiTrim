@@ -1844,7 +1844,7 @@ mod llm_link_tests {
         let mut p = LlmProvider { api_key: "direct".into(), api_key_env: "SHOULD_NOT_READ".into(), ..Default::default() };
         assert_eq!(provider_key(&p), "direct");
         p.api_key.clear();
-        std::env::set_var("VT_TEST_LLM_KEY_ENV", "from-env");
+        unsafe { std::env::set_var("VT_TEST_LLM_KEY_ENV", "from-env") };
         p.api_key_env = "VT_TEST_LLM_KEY_ENV".into();
         assert_eq!(provider_key(&p), "from-env");
         p.api_key_env = "VT_TEST_LLM_KEY_MISSING".into();

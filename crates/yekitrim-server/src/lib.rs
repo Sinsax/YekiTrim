@@ -378,7 +378,7 @@ where
         // 写成字面量时，改名只改读端漏改写端 ⇒ `--data-dir` **静默失效**：
         // server 用一个目录、CLI 侧命令读另一个，症状是"命令行说没这个用户、网页里明明有"，
         // 而且**只有传了 `--data-dir` 才暴露**。
-        std::env::set_var(yekitrim_core::path::DATA_DIR_ENV, &data_dir);
+        unsafe { std::env::set_var(yekitrim_core::path::DATA_DIR_ENV, &data_dir) };
     }
     prepare_data_dir(&data_dir)?;
     // 日志落盘（<data_dir>/logs/yekitrim-YYYYMMDD.log）。要在启动横幅**之前**开，

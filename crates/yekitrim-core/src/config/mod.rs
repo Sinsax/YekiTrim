@@ -2179,7 +2179,7 @@ fn global_config_parse_error_points_at_the_real_file_and_needs_a_real_break() {
     std::fs::create_dir_all(dir.join(".yekitrim")).unwrap();
     std::fs::write(dir.join(".yekitrim/config.toml"), "顶层已退役 [[[\n").unwrap();
     let old = std::env::var_os("YEKITRIM_DATA_DIR");
-    std::env::set_var("YEKITRIM_DATA_DIR", &dir);
+    unsafe { std::env::set_var("YEKITRIM_DATA_DIR", &dir) };
 
     // ① 文件都不在 = 正常（`ensure_global_config` 会补齐），不是错
     assert_eq!(super::global_config_parse_error(), None, "缺失不该报错");
@@ -2201,8 +2201,8 @@ fn global_config_parse_error_points_at_the_real_file_and_needs_a_real_break() {
     assert!(msg.contains("llm.toml"), "要指出是哪个文件: {msg}");
 
     match old {
-        Some(v) => std::env::set_var("YEKITRIM_DATA_DIR", v),
-        None => std::env::remove_var("YEKITRIM_DATA_DIR"),
+        Some(v) => unsafe { std::env::set_var("YEKITRIM_DATA_DIR", v) },
+        None => unsafe { std::env::remove_var("YEKITRIM_DATA_DIR") },
     }
     // 收尾清干净：不清的话每跑一轮就往 temp 里留一个目录（实测攒到过 68 个）
     let _ = std::fs::remove_dir_all(&dir);
@@ -2776,11 +2776,11 @@ mod config_migration_tests {
         std::fs::write(&proj_file, "input_file = \"a.mp4\"\n").unwrap();
 
         let old = std::env::var_os("YEKITRIM_DATA_DIR");
-        std::env::set_var("YEKITRIM_DATA_DIR", &home);
+        unsafe { std::env::set_var("YEKITRIM_DATA_DIR", &home) };
         let cfg = load_config_at(&proj_file).unwrap();
         match old {
-            Some(v) => std::env::set_var("YEKITRIM_DATA_DIR", v),
-            None => std::env::remove_var("YEKITRIM_DATA_DIR"),
+            Some(v) => unsafe { std::env::set_var("YEKITRIM_DATA_DIR", v) },
+            None => unsafe { std::env::remove_var("YEKITRIM_DATA_DIR") },
         }
 
         assert_eq!(

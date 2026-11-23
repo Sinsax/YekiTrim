@@ -1,7 +1,8 @@
 [package]
 name = "yekitrim-server"
 version.workspace = true
-edition = "2021"
+edition = "2024"
+rust-version.workspace = true
 description = "YekiTrim 服务端：axum HTTP API + WebUI 宿主 + 任务队列（被 yekitrim 二进制嵌入）"
 authors = ["Sinsax"]
 license = "Apache-2.0"

@@ -2,6 +2,7 @@
 name = "yekitrim-render-core"
 version.workspace = true
 edition = "2024"
+rust-version.workspace = true
 description = "YekiTrim 渲染核心：事件/时间线类型与时间线数学（被 yekitrim-polish 用，不依赖 yekitrim-core/yekitrim-polish/tokio）"
 authors = ["Sinsax"]
 license = "Apache-2.0"

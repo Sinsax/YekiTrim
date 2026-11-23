@@ -466,16 +466,11 @@ fn cover_static_compiled_is_true_with_the_feature() {
     );
 }
 
-/// 反过来：不带 feature 时必须为 false —— 否则「到底编没编进来」就没有判据了。
-#[cfg(not(feature = "cover-takumi"))]
-#[test]
-fn cover_static_compiled_is_false_without_the_feature() {
-    let (compiled, _fonts, _dir) = yekitrim_polish::cover::cover_static_capability();
-    assert!(
-        !compiled,
-        "不带 cover-takumi 时 cover_static.compiled 必须是 false"
-    );
-}
+/// ⚠️ **为什么没有「不带 feature 时必须 false」的反向断言**：`cargo test --workspace` 会做
+/// 特性统一 —— 工作区里 `yekitrim-cli` 的 default 带 `cover-takumi`，于是整盘测试时
+/// `yekitrim-polish` 的 takumi 是**编进来的**，`cover_static_capability().0` 必然是 true。
+/// 反向断言只在**单包**构建里成立（`cargo test -p yekitrim-server`，不掺 cli），
+/// 所以写成注释而不是会随跑法翻脸的断言（2026-11-24 实测：workspace 跑法下它红过一次）。
 
 
 

@@ -127,7 +127,8 @@ fn open_exclusive(path: &Path) -> std::io::Result<File> {
 #[cfg(unix)]
 fn lock_exclusive(file: &File) -> std::io::Result<()> {
     use std::os::unix::io::AsRawFd;
-    extern "C" {
+    // edition 2024：extern 块必须显式 unsafe。
+    unsafe extern "C" {
         fn flock(fd: i32, operation: i32) -> i32;
     }
     const LOCK_EX: i32 = 2;

@@ -1,7 +1,8 @@
 [package]
 name = "yekitrim-cli"
 version.workspace = true
-edition = "2021"
+edition = "2024"
+rust-version.workspace = true
 description = "YekiTrim CLI 入口（clap 命令；服务端在 yekitrim-server crate，二进制名 yekitrim）"
 authors = ["Sinsax"]
 license = "Apache-2.0"

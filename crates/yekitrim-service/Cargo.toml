@@ -1,7 +1,8 @@
 [package]
 name = "yekitrim-service"
 version.workspace = true
-edition = "2021"
+edition = "2024"
+rust-version.workspace = true
 description = "YekiTrim 服务层：CLI 与服务端共用的领域逻辑（账号账本 / 项目 / 录播姬 / 用量）"
 authors = ["Sinsax"]
 license = "Apache-2.0"

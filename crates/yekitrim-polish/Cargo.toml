@@ -2,6 +2,7 @@
 name = "yekitrim-polish"
 version.workspace = true
 edition = "2024"
+rust-version.workspace = true
 description = "VTuber clip polish engine (GSAP rendering + effects + assets)"
 authors = ["Sinsax"]
 license = "Apache-2.0"
