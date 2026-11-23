@@ -1153,7 +1153,9 @@ A 的 `polish.toml` 逐字节不变、B 的磁盘标题仍是 B 自己的）。
 
 - `ProjectClipsSection`：切片页**列表视图**（2026-11-24 用户口径：大卡改列表）—— 一行一个片段，
   左缩略图（132×74）/ 中标题与标签与区间 / 右动作；已剪片段 + 未剪切事件混排、两级筛选、热度排序。
-  「大卡 / 紧凑」两档密度与它的 localStorage 偏好已**删除**（列表是唯一形态，不再有切换按钮）。
+  **两档密度都保留**（用户 2026-11-24 口径）：`list`（列表，带缩略图，默认）/ `compact`（紧凑，
+  同一张列表压到一行：去缩略图与摘要，扫条目快）。偏好存 localStorage `yekitrim.slices.density`；
+  旧值 `big`（大卡）按 `list` 处理 —— 大卡已改列表，不必清缓存。
   **切片↔事件对应（`clipMatchesEvent`）、`:clip` 用目录名、排序回落到 `SORT_OPTIONS[0]` 已在 `webui/src/AGENTS.md`**，不重复。
   ⚠️ **删除不是任务（不发 job），刷新只能由前端自己驱动**：`ProjectClipsSection` 的数据是父页面
   （`ProjectSlicesView`）传下来的**快照**，删完不 `emit('changed')` 让父页面 `load({silent:true})` 重新取数，

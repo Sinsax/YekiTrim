@@ -48,6 +48,15 @@
         {{ shownTotal }}<template v-if="filterKey !== 'all'">/{{ poolTotal }}</template> 个片段<template v-if="uncutEvents.length"> · 未剪切 {{ uncutEvents.length }}</template>
       </span>
       <span class="v-sep"></span>
+      <!-- 视图密度（两档都保留，用户 2026-11-24 口径）：
+           列表 = 一行一个片段（缩略图 + 标题标签区间 + 动作，默认）；
+           紧凑 = 同一张列表压到一行（去掉缩略图与摘要），扫条目快。偏好持久化。 -->
+      <button class="mini-btn" :class="{ selected: density === 'compact' }"
+              :title="density === 'compact' ? '切回列表（带缩略图）' : '切到紧凑视图（一行一条，无缩略图）'"
+              @click="toggleDensity">
+        <Icon :name="density === 'compact' ? 'list' : 'grid'" :size="12" />
+        {{ density === 'compact' ? '紧凑' : '列表' }}
+      </button>
       <span class="v-sep"></span>
       <button v-if="publishConfigured && isAdmin()" class="mini-btn" :disabled="!publishableClips.length || publishAllBusy"
               title="把当前所有已剪片段提交到 biliLive-tools 的 B站投稿队列"
@@ -61,7 +70,7 @@
     <!-- 列表视图（2026-11-24 用户口径：大卡改列表）：一行一个片段 ——
          左缩略图 / 中标题与标签 / 右动作。未剪切事件同样一行，缩略图位留空占位，
          于是"已剪"与"未剪"在同一列里始终对齐（两种仍然混排、共用同一个排序键）。 -->
-    <div class="clip-list">
+    <div class="clip-list" :class="{ 'is-compact': density === 'compact' }">
       <template v-for="it in shownItems" :key="it.id">
         <div
           v-if="it.kind === 'clip'"
@@ -715,6 +724,18 @@ const savedSub = (() => {
     return LEGACY_SUB_FILTERS[v] || ''
   } catch { return '' }
 })()
+/** 视图密度：`list`（列表，带缩略图，默认）/ `compact`（紧凑，一行一条、无缩略图）。
+ *  偏好持久化到 localStorage。⚠️ 老值 `big`（大卡）不再是独立形态 —— 大卡已改列表，
+ *  所以 `big` 一律按 `list` 处理（用户不必清缓存）。 */
+const DENSITY_KEY = 'yekitrim.slices.density'
+const density = ref((() => {
+  try { return localStorage.getItem(DENSITY_KEY) === 'compact' ? 'compact' : 'list' } catch { return 'list' }
+})())
+function toggleDensity() {
+  density.value = density.value === 'compact' ? 'list' : 'compact'
+  try { localStorage.setItem(DENSITY_KEY, density.value) } catch { /* 隐私模式忽略 */ }
+}
+
 const filterKey = ref(savedFilter.primary)
 /** 二级筛选：没存过就用「全部」（= 一级「已剪切」的原义）。 */
 const polishFilter = ref(savedSub || SUB_FILTERS[0].key)
@@ -1720,6 +1741,16 @@ onUnmounted(() => {
 .cut-btn { min-width:72px; justify-content:center; white-space:nowrap; }
 /* 加载骨架 = 一个行高 */
 .row-skeleton { height:84px; }
+/* ── 紧凑档（第二形态，**保留**）：同一张列表压到一行 —— 去缩略图、去摘要，只留标题/标签/动作。
+   与列表共用同一份模板与同一套动作，只改密度（用户口径：两档都要在）。 */
+.clip-list.is-compact { gap:4px; }
+.clip-list.is-compact .clip-row { padding:5px 12px; min-height:0; gap:10px; }
+.clip-list.is-compact .row-thumb { display:none; }
+.clip-list.is-compact .row-main { gap:1px; }
+.clip-list.is-compact .row-title h2 { font-size:12.5px; }
+.clip-list.is-compact .row-sub .row-summary { display:none; }
+.clip-list.is-compact .range-line { max-height:18px; }
+
 .v-sep { width:1px; height:14px; background:var(--line); margin:0 4px; flex:none; }
 /* 二级筛选（精修中 / 已导出）：做成挂在「已剪切」旁边的一个**内嵌分组**——
    虚线边 + 略浅的底 + 更小的字号，一眼看出它从属于左边那颗一级按钮，不是并列的第五档。
