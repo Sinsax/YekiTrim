@@ -171,6 +171,15 @@
     `project_data_{status,events,clips,polish,transcript,config}` / `clips/:rank/thumb` /
     `clips/:rank`(删除) / `clips/:rank/silence` / `events/:rank/cut` / `events/cut-all` /
     `polish_project_get` / `polish_subtitles_get`。**新增读项目目录的接口照着做**。
+    - 2026-11-24（整改 T4）补的三处，逐个有 `grep -n 'std::fs::'` 核对过：
+      `clip_delete_impl`（`remove_dir_all` 删**含成片的整个片段目录** + `prune_clip_from_index`
+      读两份索引再重建 `index.json` —— 两步在**同一个闭包**里，只搬一半等于没搬）、
+      `projects_source_delete`（`Workspace::load` + 读分片 + `canonicalize/metadata/remove_file`
+      + `refresh_bytes` 递归计量，整段）、`create_local_project`（`create_dir_all` 租户根 +
+      `find_first_video` 的 `read_dir` 扫描）。
+      ⚠️ 判据不是"看起来像 IO"，而是**一条能红的用例**：`clip_delete_runs_sync_io_off_the_worker`
+      （单 worker runtime + 1ms 心跳，删片段期间心跳必须照跳）。搬回同步写法它立刻红 ——
+      变异自证时还顺手抓出"测试体直接 `await` 卡的是 main 线程、根本测不出 worker"这个坑。
   - 需要「async 判定 + 同步 IO」混在一起的实现（如删除片段要先问 `busy_with`）用
     `blocking(move || block_on_here(xxx_impl(...)))` —— 整段搬到 blocking 线程，自带一个
     current-thread runtime。
