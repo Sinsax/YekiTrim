@@ -222,3 +222,69 @@ cmd_llm 只写 segments/filter、cmd_process 只写 segments/processed、cmd_cov
 - 这两个行号是给"读快照的 agent"用的定位锚点，改函数体后要一起更新。
 
 ---
+
+## §12 三条预览腿与判据边界（决策 D-1，2026-11-24 用户拍板）
+
+> 卡里只留三条规矩（真值方向 / 11+2 的降级清单 / 新增判据的登记义务），决策推导与"为什么不再加像素判据"在这里。
+
+### 12.1 当时的问题：三套渲染实现同时在跑
+
+同一条时间线被三处实现消费，而它们的**可信度并不相同**：
+
+1. **转译器 + 时间线数学**：`tools/polish-to-dhampir.mjs`（出片唯一真实路径）+ `yekitrim-render-core/src/timeline.rs`。
+   这是**真值方向** —— 成片由它决定。
+2. **Dhampir wasm 预览腿**：主预览通道（用户默认看到的那个）。
+3. **`webui/src/polish/engine.js` 那条 DOM 腿**：**无 WebGPU 时的降级近似** —— 它的定位就是"没底座也要能看见画面"，
+   所以**允许视觉细节差**（噪点图案、部分特效强度等），**不要求与成片逐像素一致**。
+
+问题出在判据上：过去按"这两条腿应该一模一样"来写 parity 判据，于是同一份代码要维护 13 条像素级比较，
+而且**每删/改一处实现，都要同步改 13 条判据**——判据本身成了第三套实现的维护成本。
+
+### 12.2 降级清单的划法（11 条继续 + 2 条降级）
+
+划分判据只有一句：**这条判据守的是不是"语义"**（数值 / 时刻 / 落点 / 宽度），还是"像素观感"。
+
+- **11 条继续精确对拍（守语义）**：`camera-zoom` / `anim-presets` / `karaoke` / `perchar` / `text-motion` / `sway` /
+  `sfx-fade` / `stroke-outward` / `grid` / `element-pos` / `color`。
+  这些量在两条腿上**必须逐值相等**——飘一点就是"预览与成片用不同倍率/不同落点"那类静默 bug。
+- **2 条降级**：
+  - `check-dom-camera-parity` → 容差 **±1px**（DOM 腿的布局盒与 canvas 采样本来就差半像素量级；
+    原来按 0 容差写，等于把"取整差异"当成 bug 报）；
+  - `check-noise-parity` → **只验"开关 / 强度值透传"**，不验噪点图案（噪点图案是 DOM 腿的近似产物，
+    逐像素比它只能比出"两条腿实现不同"，而这件事**已经知道**）。
+
+### 12.3 为什么"像素判据不再新增"
+
+"近似预览 vs 出片"的像素判据**不再新增**：要验像素就走**底座那条**（`scripts/check-render-visible.mjs`，
+或 `.workbuddy/` 里的真像素探针，见 `docs/plan/text-layer-wasm-pixel-proof-2026-10-14.md`）。
+理由：像素判据的价值在于"抓到会伤害成片的变化"，而 DOM 腿的像素**本来就不代表成片** ——
+在它上面加判据只会产出"按设计的红"，然后下一个人为了让它绿去改判据（把判据废掉的第一步）。
+
+**真实收益不在放宽判据，而在删掉第三套渲染实现本身**（T14 分三步删模板腿）——判据边界只是过渡期的止血。
+
+### 12.4 同一轮整改里对"出片路径"的校正（T13）
+
+2026-11-24 的校正：`templates/index.html` 的 canvas `renderFrame` **不是出片路径**。
+真实出片走 `tools/polish-to-dhampir.mjs` → 底座；`pipeline.rs` 里对模板的两处提及都是**注释**。
+全仓只有两处 `include_str!(index.html)`：`render/server.rs`（预览服务 = `polish preview` 的 CLI 兜底 +
+服务端 `/polish/preview`、`/polish/cover-preview`）与 `project/config.rs` 那条「模板必须消费 `_canvas`」契约测试。
+旧文写的"出片路径的唯一实现"是 **wgpu 时代**的口径，复盘见 §9。
+
+⚠️ **但模板腿的两条消费点仍然必须对**（它会端出给人看的预览）：canvas `renderFrame` **不读 DOM**，
+只把 `_canvas.stage`（画面摆放）与 `CFG.lanes`（六条轨道开关）消费在 DOM 上的话，预览与成片会**静默分叉**
+（竖素材进横画布 → 成片被拉成宽屏、竖素材照旧被 zoom 拖走，用户 2026-09-21 报的原文；预览全程正常、不报错）。
+两条消费点：
+
+- `stageDrawRect`（`axis=fill` + 无 padding + 源比例 == 画布比例 必须仍**精确等于整块画布** = 横屏存量零回归）；
+- `getActiveCamera` 开头的 `!CFG.lanes.camera` 早退（`zoom=1 / handheld=0`，与 `engine.js::cameraAt` 同口径）。
+
+⚠️ `yekitrim-render-core::evaluate_frame` 是**已删除**的 wgpu 路径留下的平行实现，只归零 handheld、
+且早已没有生产消费者 —— 别拿它对口径。细节见 `templates/AGENTS.md`、`src/project/AGENTS.md`。
+
+### 12.5 维护这条边界的操作口径
+
+- **新增 parity 判据前，先在卡里登记它属于哪一类**（语义精确 / 降级），并在本节补一行"为什么"；
+- 降级那两条**不许再放宽**（容差只能往 0 收，不能往大放）；
+- 想加"像素"判据 ⇒ 走底座真渲染，不进 parity 家族。
+
+---
