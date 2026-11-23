@@ -40,12 +40,33 @@
 
 ## 边界
 
+### 三条预览腿与判据边界（决策 D-1，2026-11-24 用户拍板）
+
+- **真值方向 = 转译器 + 时间线数学**：`tools/polish-to-dhampir.mjs`（出片唯一真实路径）+ `yekitrim-render-core/src/timeline.rs`。
+  `webui/src/polish/engine.js` 那条 DOM 腿是**无 WebGPU 时的降级近似**，允许视觉细节差（噪点图案、部分特效强度），
+  **不要求与成片逐像素一致**；Dhampir wasm 是主预览腿。
+- **13 条 parity 判据里 11 条继续精确对拍**（守的是数值/时刻/落点/宽度这类语义）：
+  camera-zoom / anim-presets / karaoke / perchar / text-motion / sway / sfx-fade / stroke-outward / grid / element-pos / color。
+- **只有 2 条降级**：`check-dom-camera-parity` → 容差 **±1px**；`check-noise-parity` → 只验"开关/强度值透传"，不验噪点图案。
+- ⚠️ **新增 parity 判据前先在这里登记它属于哪一类**；"近似预览 vs 出片"的**像素**判据不再新增 ——
+  要验像素就走底座那条（`scripts/check-render-visible.mjs` 或 `.workbuddy/` 的真像素探针）。
+  真实收益不在放宽判据，而在**删掉第三套渲染实现本身**（T14 分三步删模板腿）。
+
 - **依赖方向**：本 crate 只依赖 `yekitrim-core` + `yekitrim-render-core`（`Cargo.toml` 是硬门禁）。
   polish 不许认识 `yekitrim_service` / `yekitrim_server` / `yekitrim_cli` —— 反向依赖会直接编译失败。
 - **长任务写 `polish.toml` 一律走 `project::update_polish_toml(dir, |cfg| …)`**（锁内重新 load + 只覆盖自己负责的字段：cmd_llm 写 segments/filter、cmd_process 写 segments/processed、cmd_cover 只写 cover.*）。**不许再"开头 load、结尾整份写回"** —— 那样 LLM 跑两分钟期间用户存的选框/封面/屏蔽会被结尾那次覆写静默吞掉（覆写事故复盘见 §8）。
 - ⚠️ **改了 `templates/index.html` 必须重建二进制**：它经 `include_str!` 进 `yekitrim-polish`（`render/server.rs::INDEX_HTML`），运行中的 `yekitrim server` 端出的仍是旧页面 ——「改完没反应」十有八九是没重建/没重启。
 - ⚠️ **出片逐帧路径里任何 `ReferenceError` 都是"整块 chunk 失败 → 整个 render job 失败"**（实测：A5 折行改造留下一句未声明的 `fs` ⇒ **所有带字幕的片段都导不出来、无字幕的正常**；复盘见 §9）。改了 `renderFrame` 附近后至少跑一次带字幕的出片；`node webui/scripts/check-stage-backdrop.mjs` 的 ③b 段钉住这类裸变量（判据走**去注释后的源码**：注释里同样的字样会把判据自己顶翻）。
-- ⚠️ **`templates/index.html` 是出片路径的唯一实现，DOM/CSS 那层不算数**：canvas `renderFrame` **不读 DOM**。只把 `_canvas.stage`（画面摆放）与 `CFG.lanes`（六条轨道的显示开关）消费在 DOM 上的话，成片与预览会**静默分叉**（竖素材进横画布 → 成片被拉成宽屏、竖素材照旧被 zoom 拖走，用户 2026-09-21 报的原文；预览全程正常、不报错）。两条消费点：`stageDrawRect`（`axis=fill` + 无 padding + 源比例 == 画布比例 必须仍**精确等于整块画布** = 横屏存量零回归）与 `getActiveCamera` 开头的 `!CFG.lanes.camera` 早退（`zoom=1 / handheld=0`，与 `engine.js::cameraAt` 同口径）。
+- ⚠️ **校正（2026-11-24，整改 T13）：`templates/index.html` 的 canvas `renderFrame` 不是出片路径** ——
+  真实出片走 `tools/polish-to-dhampir.mjs` → 底座；`pipeline.rs` 里对模板的两处提及都是**注释**。
+  全仓只有两处 `include_str!(index.html)`：`render/server.rs`（预览服务 = `polish preview` 的 CLI 兜底 +
+  服务端 `/polish/preview`、`/polish/cover-preview`）与 `project/config.rs` 那条「模板必须消费 `_canvas`」契约测试。
+  ⚠️ **但模板腿的两条消费点仍然必须对**（它会端出给人看的预览）：canvas `renderFrame` **不读 DOM**，
+  只把 `_canvas.stage`（画面摆放）与 `CFG.lanes`（六条轨道开关）消费在 DOM 上的话，预览与成片会**静默分叉**
+  （竖素材进横画布 → 成片被拉成宽屏、竖素材照旧被 zoom 拖走，用户 2026-09-21 报的原文；预览全程正常、不报错）。
+  两条消费点：`stageDrawRect`（`axis=fill` + 无 padding + 源比例 == 画布比例 必须仍**精确等于整块画布** = 横屏存量零回归）
+  与 `getActiveCamera` 开头的 `!CFG.lanes.camera` 早退（`zoom=1 / handheld=0`，与 `engine.js::cameraAt` 同口径）。
+  旧文写的"出片路径的唯一实现"是 wgpu 时代口径，复盘见 §9。
   ⚠️ `yekitrim-render-core::evaluate_frame` 是**已删除**的 wgpu 路径留下的平行实现，只归零 handheld、且早已没有生产消费者 —— 别拿它对口径。复盘见 §9，细节见 `templates/AGENTS.md`、`src/project/AGENTS.md`。
 - ⚠️ **消费侧纵深防御**：渲染封面时对 `cover.image` 再做一次 `tenant::ensure_within`
   （`yekitrim-polish/src/cover.rs`）。handler 层的校验只覆盖"走 API 的那些入口"，别删这道。
