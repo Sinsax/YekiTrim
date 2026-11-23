@@ -26,10 +26,11 @@
   - **口径**：扫 `/api` 字面量 —— **剥注释、剥查询串**，**插值 → `:x`**（只吞一段），`+` 拼接同一套规则续喂；**对称相交**判据（前向/后向同一个函数）。**白名单只降级、不扩大**（不许吞掉真差集）；另有**交叉验证专抓被注释掉的 `.route(`**（`route_manifest.py` 不剥注释）。五步与逐条理由见 §⑧。
   - ⚠️ **它抓不到**：请求体字段名（46 个 handler 收 `Json<serde_json::Value>`）、method（只提示，axum 回 405）、handler 体 / 中间件 / `.route_layer`（归 `cargo test -p yekitrim-server`）。**缺样本：—**。
 - **`check-dhampir-wiring.mjs`** —— **Dhampir 预览接线**。**守**三处**隔着边界**的名字：前端 HTTP 路径 ←→ `routes.rs` 的路由；前端 `/api` 前缀 ←→ `nest("/api", …)`；`engine.js` 的 wasm 导出 ←→ `timeline_host.rs` 的 `pub fn`。**三处都不在编译期报错，错了的症状都是"点了没反应"**（URL 少了 `/api`：146 条用例全绿、只有真浏览器 404）。**怎么跑**：`node scripts/check-dhampir-wiring.mjs`。**缺样本：—**。
-- **`check_module_boundaries.py`** —— 边界门禁：**19 条规则**（17 行级 + 1 **成对判据** + 1 **卫生判据**），违规**非零退出**。**怎么跑**：`python3 scripts/check_module_boundaries.py [-v]`。**缺样本：—**。
+- **`check_module_boundaries.py`** —— 边界门禁：**21 条规则**（17 行级 + 3 **成对判据** + 1 **卫生判据**），违规**非零退出**。**怎么跑**：`python3 scripts/check_module_boundaries.py [-v]`。**缺样本：—**。
   ⚠️ 第三类「卫生判据」查**整棵工作区**的属性，不是"某行不许出现 X"：目前一条 —— **工作副本不许有 CRLF**（`git ls-files --eol` 出现 `w/crlf` 即违规）；为什么必须机器拦见 §⑨.1（实测连踩三轮、无任何报错）。
   覆盖：分层方向（`core`/`render-core`/`polish` 不认识上层；`service` 不认识 `server`；`server` 不认识 `cli`；`cli` 只用 server 入口）+ P4 隔离（`downloader` 不开子进程/不认识 B站；`bilibili` 不认识下载器；`net/` 不认识 B站；`download_worker` 不引用 `ingest_worker`）+ 前端（`components` 不 import `views`；查询串只在 `webui/src/api/` 拼）。**加规则**：往 `RULES` 表加 `(规则名, 路径列表, 正则, 为什么)`。
   ⚠️ **"用了 X 就必须同时有 Y"这类文件级约束加进 `PAIRED_RULES`**（`(规则名, 路径, trigger, need, why)`）：行级正则表达不了跨行成对关系（`Agent::new(` 与 `with_cancel(` 不同行）。现有那条是「批量 LLM 循环必须交出取消探针」，判据刻意做粗（文件级）；自证：放一个只含 `Agent::new(` 的文件进 `crates/yekitrim-polish/src/llm/`，应 exit 1。
+  ⚠️ 同一张表的 **`need = None`** 是**禁止形态**（命中 `trigger` 即违规）——给「这个文件不许出现对方的领域词」这类**语义隔离**用：整改 T17 拿它拦 `ingest/webhook.rs` 与 `ingest/bilibili.rs` 互相串味（门禁原本只防 import 汇合，于是那个 3235 行的单文件成了**合法绕过通道**）。自证：往 `webhook.rs` 写一句含 `bvid` 的代码，应 exit 1。
 - **`check_module_map.py`** —— 模块卡门禁：读 `docs/module-map.json`，校验**覆盖率 / 预算 / 四节骨架 / 索引一致 / ⚠️ 行数下限**，违规非零退出；`coverage_roots` 下**每个源文件都必须落在某张卡的目录内**，**任何没登记进注册表的 `AGENTS.md` 也算失败**。**怎么跑**：`python3 scripts/check_module_map.py [-v|--json]`。**缺样本：—**。
 - **`check-llm-models.mjs`** —— 能力表门禁：产物 vs 入库源 `vendor/pi-ai-models/`。**怎么跑**：`node scripts/check-llm-models.mjs [--self-test]`。**缺样本**：缺源 ⇒ SKIP。
 - **`check-yekitrim-translator.mjs`** —— 转译器守卫（**node，不是 python**），被测对象 `tools/polish-to-dhampir.mjs`。**守**十二段逐项判据：曲线 / 颜色 / 映射 / 画面构成 / 几何 / 密集键 / 字体族名 / 夹取 / 变速 / TOML 父级 / 素材 / 片头片尾（每段钉什么见 §②）。**怎么跑**：`node scripts/check-yekitrim-translator.mjs [--mutate]`（`--mutate` = 59 处变异逐一真改源码、要求全部打红）。**缺样本：—**；改了 `tools/` 必须跑它。
@@ -88,4 +89,4 @@ node scripts/check-dhampir-wiring.mjs
 node scripts/check-cover-takumi.mjs --golden scripts/fixtures/cover-golden --project <精修工程目录>
 ```
 
-两条都要求 **0 违规**：前者看模块结构（覆盖率 / 预算 / 骨架 / 索引一致 / ⚠️ 下限），后者看边界（19 条）。加/改规则后**一定重跑两条** —— 判据写错的表现是"看起来全过"，比报错更难发现。
+两条都要求 **0 违规**：前者看模块结构（覆盖率 / 预算 / 骨架 / 索引一致 / ⚠️ 下限），后者看边界（21 条）。加/改规则后**一定重跑两条** —— 判据写错的表现是"看起来全过"，比报错更难发现。

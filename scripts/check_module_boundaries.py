@@ -199,13 +199,15 @@ RULES: list[tuple[str, list[str], str, str]] = [
     ),
 ]
 
-# 成对判据：**命中 `trigger` 的文件必须同时出现 `need`**。
+# 成对判据，两种形态：
+#   * **`need` 是正则**：命中 `trigger` 的文件必须同时出现 `need`（"用了 X 就必须有 Y"）；
+#   * **`need` 是 `None`**：命中 `trigger` 就是违规（"这个文件不许出现这些词"）。
 #
 # 为什么单独立一类：`RULES` 是"某行不许出现 X"的行级正则，而"用了 Agent 就必须交出取消探针"
 # 是文件级约束 —— 正确写法里 `Agent::new(` 与 `with_cancel(` 本来就在不同行（有时还隔着
 # `match`），行级正则表达不出来。判据刻意做粗（文件级），因为它的目的是"别漏掉新的批量循环"，
 # 不是精确到语句；宁可偶尔要求一次人工确认，也不要脆到一改格式就失效。
-PAIRED_RULES: list[tuple[str, list[str], str, str, str]] = [
+PAIRED_RULES: list[tuple[str, list[str], str, str | None, str]] = [
     (
         "把取消探针交给 Agent",
         ["crates/yekitrim-polish/src/llm", "crates/yekitrim-core/src/asr/correct.rs"],
@@ -213,6 +215,37 @@ PAIRED_RULES: list[tuple[str, list[str], str, str, str]] = [
         r"with_cancel\(",
         "批量 LLM 循环必须在**窗口边界**响应取消（`Agent::with_cancel`）：只在阶段边界查一次 = "
         "用户点了停止、后台仍把窗口一个个（甚至成批）跑完 —— 检测链路实测 18 个窗口、十几分钟",
+    ),
+    # ---- 领域词隔离（整改 T17）----
+    # 为什么要有这一类：门禁原本只防「import 汇合」（两个 worker 不许互相 import），于是
+    # 3,235 行的单文件成了**合法绕过通道** —— 录播姬的待分配池语义与 B站的提交即下载语义
+    # 住在同一个文件里，两个入口相隔 2000 行。**语义汇合得用语义判据拦**，而代价最低的抓手
+    # 就是对方的领域词：真把两类逻辑混进来，这些词几乎必然出现在代码里。
+    # ⚠️ 匹配前已剥注释（`strip_comments`），所以文档里写"别写 bvid"是安全的。
+    (
+        "webhook 侧不许出现 B站领域词",
+        # `webhook.rs` 只是入口；解析（`webhook_event`）与路径/产物（`webhook_path`）同样是
+        # **录播姬那一侧**，一起受约束 —— 只钉一个文件的话，混进来的语义换个文件名就能躲过去。
+        # ⚠️ `mod.rs` 刻意不在名单里：它的 `pub use bilibili::{…}` / `pub use webhook::{…}`
+        # 必须同时提到两侧（那是这个目录的对外面，不是业务逻辑）。
+        [
+            "crates/yekitrim-server/src/ingest/webhook.rs",
+            "crates/yekitrim-server/src/ingest/webhook_event.rs",
+            "crates/yekitrim-server/src/ingest/webhook_path.rs",
+        ],
+        r"bilibili|bvid|yt-dlp|yt_dlp",
+        None,
+        "录播姬 webhook 是「无身份 → 待分配池 → 靠空闲窗口完结」，B站是「用户主动提交 → 有身份 → "
+        "进程退出即完结」：两种语义混在一个文件里就会互相踩（当年就是这么绕过 worker 那条禁令的）。"
+        "要写 B站的东西放 ingest/bilibili.rs",
+    ),
+    (
+        "bilibili 侧不许出现录播姬领域词",
+        ["crates/yekitrim-server/src/ingest/bilibili.rs"],
+        r"\brecorder\b|\broom_id\b|待分配",
+        None,
+        "上一条的反向：B站链路（resolve / submit）不许长出录播姬的会话 / 房间语义 —— "
+        "ingest_sessions 是两条链共用的，靠 kind 区分，别拿 room_id 塞 bvid",
     ),
 ]
 
@@ -350,7 +383,7 @@ def main() -> int:
     # 成对判据（文件级）：见 PAIRED_RULES 的说明
     for name, paths, trigger, need, why in PAIRED_RULES:
         tx = re.compile(trigger)
-        nx = re.compile(need)
+        nx = re.compile(need) if need is not None else None
         files: list[Path] = []
         for rel in paths:
             files.extend(source_files(rel))
@@ -364,6 +397,16 @@ def main() -> int:
                 strip_comments(line)
                 for line in f.read_text(encoding="utf-8", errors="replace").splitlines()
             )
+            if nx is None:
+                # 禁止形态：出现了就算违规（不看别的文件）
+                if tx.search(body):
+                    total += 1
+                    say(f"[!!] {name}  —— {why}")
+                    say(
+                        f"       {f.relative_to(REPO).as_posix()}："
+                        f"出现了禁止的领域词 `{trigger}`（这一行该挪到对方的文件里）"
+                    )
+                continue
             if tx.search(body) and not nx.search(body):
                 total += 1
                 say(f"[!!] {name}  —— {why}")

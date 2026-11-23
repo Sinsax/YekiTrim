@@ -140,6 +140,10 @@
 
 ### 采集入库（录播姬 / B站）
 
+> 代码在 **`src/ingest/`**（整改 T17 从一个 3,235 行的 `src/ingest.rs` 拆成 10 个文件，语义 / 逐条纪律见
+> `crates/yekitrim-server/src/ingest/AGENTS.md`）。本节保留的是**跨文件的**那几条不变式。
+
+
 - ⚠️ **会话状态机只有 `closing` 会被入库**（`ingest_worker::is_finalized()` 只认它）：**指派/导入必须把待分配会话
   推到 `closing`**（`Db::assign_ingest_session`）；`'finalized'` = **项目已建好**，别当"已指派"用；扫描
   （`register_scan_session`）每两轮重走一遍，**不能把已有归属的会话打回 `unassigned`**（改状态前先看 `owner_id`）。
@@ -157,7 +161,7 @@
 - B站会话与录播姬**共用 `ingest_sessions`**（靠 `kind` 列区分）：⚠️ **别拿 `room_id` 塞 bvid** —— 会被 `channel_map`
   按房间号查的规则命中。⚠️ `projects.room` 也**不能**塞 bvid。命令构造/哨兵/弹幕旁路见
   `crates/yekitrim-service/src/{downloader,bilibili}/AGENTS.md`。
-- **采集配置端点（`src/ingest.rs` 在 crate 根，三个都挂在 `require_admin` 层下）**：
+- **采集配置端点（`src/ingest/config.rs`；三个都挂在 `require_admin` 层下）**：
   - `GET /api/admin/ingest` → `config_view_json()`：**只回 `api_pass_set` 布尔，绝不回 `api_pass` 明文或
     `token_hash`**（表单回填不需要它们；要看原文走 `GET /api/config` 的 `global_raw`，那是 admin 专用、
     也是源码编辑器 round-trip 的前提）。
@@ -189,7 +193,7 @@
   `register|<ip>` 独立限流、账本 v5 邀请码**明文落库可重复查看** —— 正文在
   `crates/yekitrim-service/AGENTS.md`，本卡不重复搬运。
 - `src/ratelimit.rs`：全站按客户端 IP 的通用额度 + 入库 webhook 专用额度；挂在 `api::router`**最外层、访问日志之外**。
-  `ingest.rs::token_shape_ok` 的形状检查在 scrypt **之前**快速否掉垃圾请求；形状不过**不写 audit**。
+  `ingest/webhook.rs::token_shape_ok` 的形状检查在 scrypt **之前**快速否掉垃圾请求；形状不过**不写 audit**。
 - `src/access_log.rs`：最外层 `from_fn`，**每次前端交互都留痕**（≥400 时额外读响应体取 `error` 文案）。**别退回
   "只打成功"或"只打错误"**（`err(...)` 与内联 `{"ok":false,...}` 从不自己打日志，前端又有大量 `.catch(() => [])`）。
   **不记录请求体**；必须 `redact_path` 掉 webhook 的 token 段（它是**路径段**）。高频接口成功路径降级为 `debug`：

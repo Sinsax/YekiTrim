@@ -33,7 +33,7 @@ fn global_config_path() -> PathBuf {
 
 /// 录播姬 webhook token 的前缀。
 ///
-/// ⚠️ **唯一权威，生成端与校验端必须同源**。校验端在 `yekitrim-server/src/ingest.rs`
+/// ⚠️ **唯一权威，生成端与校验端必须同源**。校验端在 `yekitrim-server/src/ingest/webhook.rs`
 /// 的 `token_shape_ok`（它是 webhook 鉴权的**快速否决闸**，形状不对直接 401）。
 /// 这两处**曾经各写一个字面量**：改名时只改了生成端 ⇒ `generate_token()` 产出的每个 token
 /// 都通不过自己的校验 ⇒ **用户在设置页点「生成/轮换」拿到的 token 100% 401**，

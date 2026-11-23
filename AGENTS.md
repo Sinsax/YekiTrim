@@ -33,7 +33,7 @@ yekitrim-render-core ←── yekitrim-polish ──┐
 | `crates/yekitrim-cli` | 只剩入口（clap 命令 + tracing 装配），二进制名 `yekitrim` |
 | `crates/xtask` | 构建/打包/产物门禁（`xtask scan|package`） |
 
-硬规矩（`scripts/check_module_boundaries.py` 逐条机器检查，**19 条**：17 行级（新增 llm_is_a_leaf / only_llm_knows_wire）+ 1 成对判据 + 1 卫生）：
+硬规矩（`scripts/check_module_boundaries.py` 逐条机器检查，**21 条**：17 行级（新增 llm_is_a_leaf / only_llm_knows_wire）+ 3 成对判据（含 2 条「领域词隔离」）+ 1 卫生）：
 
 - `yekitrim-service` **绝不能** `use yekitrim_server::*`（它能被抽出来的全部理由）；
 - `yekitrim-server` 只依赖 `yekitrim-service`，不碰 `yekitrim_cli`；
@@ -100,6 +100,7 @@ yekitrim-render-core ←── yekitrim-polish ──┐
 | `service-net` | `crates/yekitrim-service/src/net` | `crates/yekitrim-service/src/net/AGENTS.md` | 动 HTTP 小工具之前 |
 | `server` | `crates/yekitrim-server` | `crates/yekitrim-server/AGENTS.md` | 动 HTTP/任务队列/宿主之前 |
 | `server-api` | `crates/yekitrim-server/src/api` | `crates/yekitrim-server/src/api/AGENTS.md` | 加接口/改路由之前 |
+| `server-ingest` | `crates/yekitrim-server/src/ingest` | `crates/yekitrim-server/src/ingest/AGENTS.md` | 动采集入库（录播姬 / B站）之前 |
 | `cli` | `crates/yekitrim-cli` | `crates/yekitrim-cli/AGENTS.md` | 加命令/改入口之前 |
 | `xtask` | `crates/xtask` | `crates/xtask/AGENTS.md` | 动构建/打包/产物门禁之前 |
 | `webui` | `webui` | `webui/AGENTS.md` | 改构建/dist/契约脚本时 |
@@ -173,7 +174,7 @@ yekitrim-render-core ←── yekitrim-polish ──┐
 ```bash
 # 结构门禁（本文件与模块卡的预算/覆盖率/骨架/索引一致/⚠️ 下限）
 python3 scripts/check_module_map.py
-# 边界门禁（19 条：分层方向 + P4 隔离 + 前端 + LLM 隔离 + 成对判据 + 工作区卫生）
+# 边界门禁（21 条：分层方向 + P4 隔离 + 前端 + LLM 隔离 + 成对判据（含领域词隔离）+ 工作区卫生）
 python3 scripts/check_module_boundaries.py
 
 # 一次改动跑完全部相关守卫：按 git diff 的改动面自动选脚本（--all 全量；--check-structure 只跑上面两条）
