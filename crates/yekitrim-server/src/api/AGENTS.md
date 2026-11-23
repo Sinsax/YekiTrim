@@ -101,7 +101,7 @@
 
 ⚠️ 相关的两个既有约定也别松：`every /api/media` 走 `jail_existing`；`is_safe_component` 挡路径拼接（删除片段/贴纸文件名）。
 
-⚠️ **`Path::is_absolute()` 在 Windows 上挡不住根相对路径**（`/etc/passwd` 返回 **false**，而 `join` 会替换掉基准 ⇒ `C:\proj` + `/etc/passwd` = `C:/etc/passwd`）：判"工程内相对路径"必须**逐字符**来（空 / 绝对 / 以 `/` 或 `\` 开头 / 含 `:` / 含 `..` / 含 `\` 全挡）。唯一一份在 `scope.rs::is_safe_project_relative`（`pub(crate)`），**不许各写一遍**；**都要有一条单测**钉住 `/etc/passwd` 与 `\windows\x`。
+⚠️ **`Path::is_absolute()` 在 Windows 上挡不住根相对路径**（`/etc/passwd` 返回 **false**，而 `join` 会替换掉基准 ⇒ `C:\proj` + `/etc/passwd` = `C:/etc/passwd`）：判"工程内相对路径"必须**逐字符**来（空 / 绝对 / 以 `/` 或 `\` 开头 / 含 `:` / 含 `..` / 含 `\` 全挡）。**唯一实现**是 `yekitrim_core::tenant::is_safe_relative_with`（严格度是显式参数：请求面 STRICT、`jail_*` LENIENT），`scope.rs::is_safe_project_relative` 只是**请求面那个调用点的薄委托**（整改 T19：以前是 scope 一份、tenant 一份，差异只在严格度上，那种差异要写成参数）—— **不许各写一遍**；**都要有一条单测**钉住 `/etc/passwd` 与 `\windows\x`。
 
 > 改动只允许落在本目录；跨模块改动先读对方卡，并跑两条门禁。
 

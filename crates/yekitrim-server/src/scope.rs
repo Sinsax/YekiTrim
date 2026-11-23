@@ -250,14 +250,10 @@ const EXTRA_PATH_FIELDS: [&str; 2] = ["source", "cover.image"];
 /// handler 侧兜底，本模块的中间件用它做第一道收口 —— 两层缺一不可，
 /// `/etc/passwd` 那条洞就是"只有一份实现、且藏在 handler 里没有第二道"留下的）。
 pub(crate) fn is_safe_project_relative(p: &str) -> bool {
-    !p.is_empty()
-        && !std::path::Path::new(p).is_absolute()
-        && !p.starts_with('/')
-        && !p.starts_with('\\')
-        && !p.starts_with('.')   // `../x` 与隐藏目录都不该从请求里进来
-        && !p.contains("..")
-        && !p.contains(':')
-        && !p.contains('\\')
+    // **判据只有一份**（整改 T19）：字符规则住在 `yekitrim_core::tenant::is_safe_relative_with`，
+    // 这里只是「请求面」这个调用点，严格度取最严（拒绝隐藏段 / 反斜杠 / 任何 `..` 字样）。
+    // ⚠️ 别再把这组字符规则抄回来 —— 抄一份就必然有一天两边不一样。
+    yekitrim_core::tenant::is_safe_relative(p)
 }
 
 /// 收口贴纸路径字段（[`is_safe_project_relative`] 的中间件入口）。

@@ -18,6 +18,12 @@ use anyhow::{bail, Context, Result};
 /// 判断"看起来是绝对路径/越界写法"的输入。
 fn is_escape_attempt(rel: &str) -> Option<&'static str> {
     let trimmed = rel.trim();
+    // ① **逐字符判据只有一份**（`is_safe_relative_with`）。这里只负责把它翻成「人话原因」——
+    //    严格度用 LENIENT：`jail_*` 的既有语义允许隐藏段与 `\` 分隔符。
+    if is_safe_relative_with(trimmed, LENIENT_RELATIVE) {
+        return None;
+    }
+    // ② 逐条给出原因（顺序对用户友好）
     if trimmed.is_empty() {
         return Some("路径不能为空");
     }
@@ -82,6 +88,68 @@ fn canonicalize_deepest(path: &Path) -> Result<PathBuf> {
     }
 }
 
+/// 「项目内相对路径」的判据严格度（整改 T19：判据只有一份，严格度是**显式开关**）。
+#[derive(Debug, Clone, Copy)]
+pub struct RelativePathRules {
+    /// 允许以 `.` 开头的段（隐藏目录）。**请求面必须 false** —— 服务端拼路径时隐藏目录就在项目根下，
+    /// 放它过去等于给了一条旁路（`.yekitrim/llm.toml` 就在项目根的上一级之外）。
+    pub allow_hidden: bool,
+    /// 允许 `\` 当分隔符（Windows 本地写法）。**请求面必须 false**。
+    pub allow_backslash: bool,
+}
+
+/// 请求面（最严）：拒绝隐藏段、反斜杠、以及任何 `..` 字样。
+pub const STRICT_RELATIVE: RelativePathRules =
+    RelativePathRules { allow_hidden: false, allow_backslash: false };
+
+/// 本地/内部面（`jail_join` 的既有语义）：允许隐藏段与 `\` 分隔符，但 `..` 段与盘符照旧拒绝。
+pub const LENIENT_RELATIVE: RelativePathRules =
+    RelativePathRules { allow_hidden: true, allow_backslash: true };
+
+/// **逐字符判据（唯一一份，不做 IO）**。
+///
+/// 三条防线里的①（`scope.rs::enforce_scope` 的字段收口）、②（`config.rs` 的项目路径键）与
+/// `core` 自己的 `jail_*` 都从这一个函数走 —— 以前是「`scope.rs` 一份、`tenant.rs` 一份」两套写法，
+/// 差异只在严格度上，那种差异必须写成参数而不是第二份正则（整改 T19）。
+///
+/// 规则：非空；不以 `/` 或 `\` 开头；不是绝对路径；不含 `:`（盘符 / NTFS ADS）；不含 NUL；
+/// `!allow_backslash` 时不许出现 `\`；任何一段是 `..` 一律拒绝；
+/// `!allow_hidden` 时以 `.` 开头的段一律拒绝，且**任何位置的 `..` 字样**都拒（`a..b` 也算）。
+pub fn is_safe_relative_with(rel: &str, rules: RelativePathRules) -> bool {
+    if rel.is_empty() {
+        return false;
+    }
+    if rel.starts_with('/') || rel.starts_with('\\') {
+        return false;
+    }
+    if Path::new(rel).is_absolute() {
+        return false;
+    }
+    if rel.contains(':') || rel.contains('\0') {
+        return false;
+    }
+    if !rules.allow_backslash && rel.contains('\\') {
+        return false;
+    }
+    if !rules.allow_hidden && rel.contains("..") {
+        return false;
+    }
+    for seg in rel.split(['/', '\\']) {
+        if seg == ".." {
+            return false;
+        }
+        if !rules.allow_hidden && seg.starts_with('.') {
+            return false;
+        }
+    }
+    true
+}
+
+/// 请求面的标准入口（最严）。**新增收口判据都走它**，别再写第二份字符规则。
+pub fn is_safe_relative(rel: &str) -> bool {
+    is_safe_relative_with(rel, STRICT_RELATIVE)
+}
+
 /// 把项目内相对路径拼成绝对路径（不要求该路径已存在，例如写入新文件）。
 pub fn jail_join(root: &Path, rel: impl AsRef<str>) -> Result<PathBuf> {
     let rel = rel.as_ref();
@@ -132,6 +200,40 @@ pub fn ensure_within(root: &Path, candidate: &Path) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 整改 T19：一条判据、两档严格度 —— 请求面（严）与 `jail_*`（宽）。
+    ///
+    /// 请求面这一组就是 `/etc/passwd` 那次事故的全部形态（`Path::is_absolute` 在 Windows 上对
+    /// `/etc/passwd` 返回 false，而 `join` 会替换基准）。宽的那档只放宽「隐藏段」与「反斜杠分隔符」，
+    /// `..` 段与盘符照旧拒绝 —— 严格度必须写成参数，不能写成第二份正则。
+    #[test]
+    fn relative_path_rules_are_one_predicate_two_strictness() {
+        for bad in [
+            "",
+            "/etc/passwd",
+            "\\windows\\x",
+            "C:foo",
+            "C:\\x",
+            "a/../b",
+            "../x",
+            ".hidden/x",
+            "a..b",
+            "a\\b",
+            "a/b\\c",
+        ] {
+            assert!(!is_safe_relative(bad), "请求面必须拒绝 {bad:?}");
+        }
+        for good in ["a.mp4", "output/clips/clip-01", "videos/子目录/a.mp4"] {
+            assert!(is_safe_relative(good), "请求面必须接受 {good:?}");
+        }
+        // 本地/内部面（jail_* 的既有语义）：隐藏段与 `\\` 分隔符放行，`..` 段与盘符照旧拒绝。
+        assert!(is_safe_relative_with(".yekitrim/config.toml", LENIENT_RELATIVE));
+        assert!(is_safe_relative_with("a\\b", LENIENT_RELATIVE));
+        assert!(!is_safe_relative_with("../x", LENIENT_RELATIVE));
+        assert!(!is_safe_relative_with("a/../b", LENIENT_RELATIVE));
+        assert!(!is_safe_relative_with("C:foo", LENIENT_RELATIVE));
+        assert!(!is_safe_relative_with("", LENIENT_RELATIVE));
+    }
 
     /// 自建临时目录（yekitrim-core 不依赖 tempfile；用 pid + 纳秒保证并发测试不撞名）。
     struct TmpDir(PathBuf);
