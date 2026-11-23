@@ -29,6 +29,7 @@
 //   JPEG，再转一次等于**二次编码**，噪声会叠；从它出封面时的 PNG 中转一次更干净。
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -139,7 +140,10 @@ if (has('self-test')) selfTest()
 if (has('mutate')) {
   const refPath = path.join(__dirname, 'fixtures', 'cover-golden', 'ref-cover.jpg')
   if (!fs.existsSync(refPath)) { console.log(`❌ 找不到参照帧: ${refPath}`); process.exit(2) }
-  const tmp = path.join(process.env.TEMP || '.', 'yekitrim-cover-mutate')
+  // ⚠️ 别用 `process.env.TEMP || '.'`：Linux 上 TEMP 不存在 ⇒ 落到 cwd ⇒ 往仓库根
+  // 里丢一个 2 MB 的 `yekitrim-cover-mutate/base.gray`（2026-11-24 实测：跑一轮就脏了工作区，
+  // `git status` 多出一个未跟踪目录，gate 汇总里也分不清它是产物还是垃圾）。
+  const tmp = path.join(os.tmpdir(), 'yekitrim-cover-mutate')
   fs.mkdirSync(tmp, { recursive: true })
   // ⚠️ 不能调 `gray()`：它定义在下面（`const` 的 TDZ），`--mutate` 在模块顶层跑到这儿就炸。
   // 自己用 ffmpeg 转一次 rawvideo —— 几行代码换掉一个"顺序耦合"，值。
@@ -170,7 +174,7 @@ if (has('mutate')) {
 
 const EXE = opt('exe', 'F:\\para\\Code\\YekiTrim\\target\\cl\\debug\\yekitrim.exe')
 const FONT = opt('font', 'C:\\Windows\\Fonts\\msyh.ttc')
-const WORK = opt('work', path.join(process.env.TEMP || '.', 'yekitrim-cover-gate'))
+const WORK = opt('work', path.join(os.tmpdir(), 'yekitrim-cover-gate'))
 const PROJECT = opt('project', process.env.VTEDIT_COVER_FIXTURE || '')
 const skip = (why) => {
   console.log(`SKIP：${why}`)
