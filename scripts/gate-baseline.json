@@ -1,0 +1,6 @@
+{
+  "scripts/check-39-tiers-pixels.mjs": "环境性：脚本里写死 Windows 底座二进制路径 F:/para/Code/Dhampir/target/debug/dhampir.exe，Linux 检出上不存在（本机没编 dhampir-worker）。判据本身没红 —— 有底座二进制的机器上它会真跑。",
+  "scripts/check-perchar-stagger.mjs": "环境性：同上，缺底座二进制 dhampir.exe（写死 Windows 路径 F:/para/Code/Dhampir/…），本机无法对拍逐字错峰。不是判据红。",
+  "scripts/check-render-visible.mjs": "环境性：主检查是验收工具，必须给 --project <真实片段目录>（或 --self-test）；本机没有可用的切片样本与底座二进制，裸跑只打印它自己的用法（'用法：node scripts/check-render-visible.mjs --project <片段目录> [--kind text|sticker]'）。它的 --self-test 在 gate 里单独跑并通过。",
+  "webui/scripts/check-polish-page-loads.mjs#self-test": "环境性：self-test 要真浏览器（CDP）+ 127.0.0.1:26320 上跑着的服务；本机没有，于是等 20~30s 后报'工位页/精修页没挂起来'。主检查已按仓库约定自己 SKIP（'没有在跑的服务'），这条只是它把 self-test 的失败当退出码 1。"
+}
