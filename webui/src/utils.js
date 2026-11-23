@@ -293,7 +293,7 @@ export const SETTINGS_SECTIONS = [
   { key: 'integrations', label: '接入', sub: 'biliLive-tools / 录播姬 / B站下载 / 存储', adminOnly: true },
   // 账号与诊断合并：它们都是"这台机器/这个部署"的事，不是日常处理参数。
   // 单人（默认）时「账号与邀请」「账号配额」两块隐藏，多人（`[auth] multi_user = true`）原样回来。
-  { key: 'system', label: '系统', sub: '账号与邀请 · LLM 用量 · 运行日志', adminOnly: true }
+  { key: 'system', label: '系统', sub: '账号 · 改密 · 用量 · 日志', adminOnly: true }
 ]
 
 /** 路由名（settings-llm）或子页 key（llm）→ 子页定义；认不出来时回第一项（程序配置）。 */

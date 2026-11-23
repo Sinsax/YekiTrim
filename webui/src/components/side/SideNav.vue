@@ -100,9 +100,6 @@
             <b>{{ authState.user?.username }}</b>
             <span class="muted small">{{ isAdmin ? '管理员' : '用户' }}</span>
           </span>
-          <button class="mini-btn side-pwd" title="修改登录密码" @click="emit('change-password')">
-            <Icon name="key" :size="12" /> 改密
-          </button>
           <button class="mini-btn side-logout" title="退出登录（会再确认一次）" @click="emit('logout')">
             <Icon name="logout" :size="12" /> 退出
           </button>
@@ -173,7 +170,7 @@ const props = defineProps({
   /** 本地免登录（`/api/health.local_no_auth`）：没有会话可退，收起「退出」入口 */
   localNoAuth: { type: Boolean, default: false }
 })
-const emit = defineEmits(['open', 'remove', 'logout', 'change-password', 'open-jobs', 'close-mobile'])
+const emit = defineEmits(['open', 'remove', 'logout', 'open-jobs', 'close-mobile'])
 
 const route = useRoute()
 const router = useRouter()
@@ -408,8 +405,6 @@ defineExpose({ openJobs: () => emit('open-jobs') })
 /* 用户块只做展示（登出改成了右侧按钮 + 二次确认），光标别留成可点的手型 */
 .user-chip { cursor:default; }
 .side-logout { margin-left:auto; flex:none; padding:3px 8px; font-size:11.5px; }
-/* 「改密」与「退出」并排：改密不抢 auto（右推留给退出），宽度同档不挤用户名 */
-.side-pwd { flex:none; padding:3px 8px; font-size:11.5px; }
 /* 本地模式（免登录）：那块用户信息里**没有"某个人"也没有可退的会话** ——
    不画头像、不写用户名/角色，只留这句状态标（用户口径）。 */
 .local-mark { flex:1; font-size:12px; font-weight:600; color:var(--green-deep); }

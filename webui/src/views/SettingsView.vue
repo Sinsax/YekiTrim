@@ -382,6 +382,21 @@
       </div>
     </div>
 
+    <!-- 修改密码（2026-11-23 用户口径：入口放系统子页，侧栏不再放）—— 与登录后横幅那条
+         「立即修改」共用同一个 API（PUT /api/auth/password）；本地免登录没有会话可改，整块不渲染。 -->
+    <div class="settings-block" data-cap="settings.password" v-if="!localNoAuth">
+      <div class="section-title">修改密码</div>
+      <div class="card">
+        <div class="mb-12"><label for="spwd-old">当前密码</label><input id="spwd-old" v-model="pwdOld" type="password" autocomplete="current-password" /></div>
+        <div class="mb-12"><label for="spwd-new">新密码（至少 8 位）</label><input id="spwd-new" v-model="pwdNew" type="password" autocomplete="new-password" /></div>
+        <div class="mb-12"><label for="spwd-new2">确认新密码</label><input id="spwd-new2" v-model="pwdNew2" type="password" autocomplete="new-password" /></div>
+        <div class="error-banner" v-if="pwdErr">{{ pwdErr }}</div>
+        <div class="row mt-12">
+          <button class="btn btn-primary" :disabled="pwdBusy" @click="submitPwd">{{ pwdBusy ? '保存中…' : '保存新密码' }}</button>
+        </div>
+      </div>
+    </div>
+
     <div class="settings-block" data-cap="settings.monitor">
       <div class="section-title">LLM 用量</div>
       <div class="card">
@@ -427,7 +442,7 @@ import DownloaderConfig from '../components/DownloaderConfig.vue'
 import LlmUsage from '../components/LlmUsage.vue'
 import LogConsole from '../components/LogConsole.vue'
 import { SETTINGS_SECTIONS, settingsSection } from '../utils'
-import { authState } from '../stores/auth'
+import { authState, changePassword } from '../stores/auth'
 import { localNoAuth as localNoAuthFromServer, localNoAuthKnown, multiUser as multiUserFromServer, multiUserKnown } from '../stores/health'
 import { useDisclosure } from '../composables/useDisclosure'
 import { confirmDialog } from '../stores/dialog'
@@ -469,6 +484,30 @@ const asrModeHint = computed(() => form.asr.mode === 'hybrid' ? 'SenseVoice 打�
  * ⚠️ 读失败就当 `false`（照旧显示）—— 别默认 true，否则一次请求抖动就把整块藏了。
  */
 const localNoAuth = ref(localNoAuthKnown())
+
+// 修改密码（系统子页）：校验与初始密码横幅那条腿同口径（不一致 / 不足 8 位在本地拦下），
+// 服务端仍是最终裁判（旧密码错 → 400 原样显示）。
+const pwdOld = ref('')
+const pwdNew = ref('')
+const pwdNew2 = ref('')
+const pwdBusy = ref(false)
+const pwdErr = ref('')
+async function submitPwd() {
+  if (pwdBusy.value) return
+  pwdErr.value = ''
+  if (pwdNew.value !== pwdNew2.value) { pwdErr.value = '两次输入的新密码不一致'; return }
+  if (pwdNew.value.length < 8) { pwdErr.value = '新密码至少 8 个字符'; return }
+  pwdBusy.value = true
+  try {
+    await changePassword(pwdOld.value, pwdNew.value)
+    pwdOld.value = pwdNew.value = pwdNew2.value = ''
+    toast('密码已修改')
+  } catch (e) {
+    pwdErr.value = e?.message || '修改密码失败'
+  } finally {
+    pwdBusy.value = false
+  }
+}
 /**
  * 多人位（`GET /api/health.multi_user`，默认 false = 单人）—— 与 `localNoAuth` **同一份缓存**。
  * 决定「系统」页里邀请码 / 账号配额这两块渲染不渲染（隐藏 ≠ 删除：组件与接口都保留）。
