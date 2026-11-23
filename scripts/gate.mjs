@@ -649,10 +649,28 @@ function killTree(child) {
   }
 }
 
+// ⚠️ **逐项超时覆盖（下限，秒）**：有的门禁天生分钟级，`--timeout × 2` 也不够 —— 在这里点名，
+//    别用 `--timeout` 全局放大（那等于给**每个**脚本都发 20 分钟）。
+//
+//    今天只有一项，参数来自 2026-11-24 实测：
+//      `scripts/check-yekitrim-translator.mjs --mutate` = **109 处变异**（逐条真改源码 + 重新 import
+//      变异体 + 跑同一份 348+ 项检查），**空载 203s**；而首轮 `--all` 里它在 600s 预算内只跑到
+//      第 41 处（机器同时有 cargo / 别的 teammate 在跑，每处慢 4~8 倍）⇒ 被 SIGKILL、记成 SKIP。
+//      ⚠️ SKIP 不是通过：那等于「最有价值的那条自证」长期没跑（本仓已经栽过'自检没进 gates'）。
+//      取 1200s ≈ 空载 6 倍余量；**若仍被 SIGKILL，下一步不是继续加超时** —— 而是
+//      ① 给它 batching（脚本侧要先支持 `--only=<起>-<止>`，**目前并没有**；`--only` 是 gate 自己的过滤参数）
+//      或 ② 在调度器里给它「独占」标志（默认 `--jobs 1` 已串行，但机器上可能有别的重活）。
+const TIMEOUT_OVERRIDES = {
+  'scripts/check-yekitrim-translator.mjs#mutate': 1200,
+}
+
 // 每项的**有效**超时：--mutate 相位默认 ×2（变异台要真改源码、逐个加载变异体跑同一份检查，
-// 59 处变异分钟级是正常的；用同一个 300s 把它卡成 SKIP = 让最有价值的自证永远"没跑"）。
+// 59→**109** 处变异分钟级是正常的；用同一个 300s 把它卡成 SKIP = 让最有价值的自证永远"没跑"）。
+// 覆盖表按**下限**生效（`--timeout` 给得更大时以它为准）。
 function effectiveTimeout(item, timeoutSec) {
-  return item.phase === 'mutate' ? timeoutSec * 2 : timeoutSec
+  const base = item.phase === 'mutate' ? timeoutSec * 2 : timeoutSec
+  const floor = TIMEOUT_OVERRIDES[item.key]
+  return floor === undefined ? base : Math.max(base, floor)
 }
 
 function runItem(item, timeoutSec) {
