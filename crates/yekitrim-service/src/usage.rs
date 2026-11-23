@@ -39,13 +39,16 @@ impl UsageSink for DbSink {
 /// 装进程级默认 sink（重复调用以最后一次为准）。
 pub fn install(db: Arc<Db>) {
     yekitrim_llm::usage::set_default_sink(Arc::new(DbSink::new(db)));
+    // ⚠️ 装完一定打一行（整改 T22）：漏装/装错的表现是"所有 token 不记账，且一声不响"，
+    // 日志里没痕迹就只能靠"用量表怎么是空的"反推。
+    tracing::info!("usage sink: installed（LLM 用量会写进账本）");
 }
 
 /// CLI 入口用：开账本并装上 sink。失败只 warn（没有账本不该拦住 `yekitrim correct` 这类命令）。
 pub fn try_install_cli_sink() {
     match Db::open_default() {
         Ok(db) => install(Arc::new(db)),
-        Err(e) => tracing::warn!("LLM 用量记账未启用（打开账本失败）: {e}"),
+        Err(e) => tracing::warn!("LLM 用量记账未启用（打开账本失败，本次调用的 token 不会记账）: {e}"),
     }
 }
 

@@ -204,6 +204,11 @@ static LOCAL_ADMIN_UID: std::sync::atomic::AtomicI64 = std::sync::atomic::Atomic
 pub fn set_local_admin(uid: i64) {
     if uid > 0 {
         LOCAL_ADMIN_UID.store(uid, std::sync::atomic::Ordering::Relaxed);
+        // ⚠️ 打一行（整改 T22）：漏设的失败模式是**所有人静默落到 users/1/**，
+        // 而"到底解析到谁"只能从这一行看出来。
+        tracing::info!("local admin uid = {uid}（Owner::Local 的落点）");
+    } else {
+        tracing::warn!("set_local_admin 收到非正 uid={uid}，保持原值（写 0 会让所有人落到 users/0/）");
     }
 }
 

@@ -46,6 +46,19 @@ pub fn cmd_doctor(url: &str) -> Result<()> {
 
     println!("YekiTrim 安全与运行状况摘要（版本 {}）", env!("CARGO_PKG_VERSION"));
 
+    // ---- 两处进程级全局（整改 T22）----
+    // 失败模式都是"静默降级"：漏装 sink = token 全不记账；漏设 uid = 所有人落到 users/1/。
+    // doctor 是只读诊断、自己不跑 LLM，所以这里的"本进程未装"是**正常**，
+    // 要看服务端启动日志里那句 usage sink: installed。
+    println!(
+        "  数据归谁: local admin uid = {}（Owner::Local 的落点；漏设会让所有人落到 users/1/）",
+        yekitrim_core::owner::local_admin_uid()
+    );
+    println!(
+        "  LLM 用量记账: {}（doctor 进程不跑 LLM；服务端启动会打一行 usage sink: installed）",
+        if yekitrim_llm::usage::sink_installed() { "已装" } else { "本进程未装" }
+    );
+
     // ---- 账号数据 ----
     line("账号数据");
     // 只读诊断：数据目录还不存在时不去创建它，改测父目录的可写性

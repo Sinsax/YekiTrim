@@ -92,6 +92,18 @@ pub fn default_sink() -> Option<Arc<dyn UsageSink>> {
     slot().lock().ok().and_then(|g| g.clone())
 }
 
+/// 进程级默认 sink 装没装（只读，不初始化 OnceLock）。
+///
+/// 用途只有一个：启动时把"记账到底开没开"打进日志（2026-11-24 整改 T22）。
+/// 漏装的失败模式是**静默降级** —— 所有 token 不记账、也不报错，事后只能从
+/// "用量表怎么是空的"反推。
+pub fn sink_installed() -> bool {
+    DEFAULT_SINK
+        .get()
+        .and_then(|m| m.lock().ok().map(|g| g.is_some()))
+        .unwrap_or(false)
+}
+
 /// 记录一次调用（走进程默认 sink）。没有 sink 时只打日志——**不影响调用方**。
 pub fn emit(record: UsageRecord) {
     emit_with(None, record);
