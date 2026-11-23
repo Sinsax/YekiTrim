@@ -193,7 +193,60 @@ pub fn unique_output_path(path: &Path) -> std::path::PathBuf {
     }
 }
 
+/// 出片参数（**显式传递**）：整改 T21 把 `VTEDIT_RENDERER` / `VTEDIT_STRICT` 从「进程级环境变量当参数」
+/// 改成可选参数 —— 环境变量只保留为 **CLI 入口的默认值来源**（老脚本照旧能用）。
+///
+/// 为什么改：进程级 env 就是「两个任务互相改对方参数」的来源。现在只有一个后端所以无害，
+/// 一旦并发两种渲染配置就是静默串味；edition 2024 里 `set_var` 还是 unsafe，升工具链时会先炸这里。
+#[derive(Debug, Clone, Default)]
+pub struct RenderOpts {
+    pub renderer: Option<String>,
+    pub strict: Option<bool>,
+}
+
+impl RenderOpts {
+    /// 从环境变量读（CLI 入口 / 老脚本兼容）。
+    pub fn from_env() -> Self {
+        Self {
+            renderer: std::env::var("VTEDIT_RENDERER").ok(),
+            strict: std::env::var("VTEDIT_STRICT")
+                .ok()
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true")),
+        }
+    }
+}
+
+/// 解析**生效的渲染后端**：显式参数 > 环境变量 > 默认 `dhampir`。
+///
+/// ⚠️ 「认不出就报错、不静默换路」的口径只在这里一份（CLI 侧不许再抄一份判断）。
+pub fn resolve_renderer(explicit: Option<&str>) -> anyhow::Result<RenderBackendKind> {
+    let picked = explicit
+        .map(std::string::ToString::to_string)
+        .or_else(|| std::env::var("VTEDIT_RENDERER").ok());
+    match picked {
+        Some(v) => RenderBackendKind::parse(&v).ok_or_else(|| {
+            anyhow::anyhow!(
+                "认不出的渲染后端 `{v}`（VTEDIT_RENDERER / --renderer）。现在只有 dhampir 一个值"
+            )
+        }),
+        None => Ok(RenderBackendKind::Dhampir),
+    }
+}
+
+/// 解析**生效的严格模式**：显式参数 > 环境变量 > false。
+pub fn resolve_strict(explicit: Option<bool>) -> bool {
+    explicit.unwrap_or_else(|| {
+        std::env::var("VTEDIT_STRICT")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    })
+}
+
 pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
+    cmd_render_with(project_path, RenderOpts::from_env()).await
+}
+
+pub async fn cmd_render_with(project_path: &Path, opts: RenderOpts) -> anyhow::Result<()> {
     // ⚠️ **先把工程目录变成绝对路径**（2026-09-30 实测踩到）：`resolve_paths` 把
     // `project.output` 归一成 `<工程目录>/export.mp4` —— 工程目录是**相对**的时候，
     // 后面"不是绝对路径就再 join 一次工程目录"那一步会把目录名**拼两遍**
@@ -369,19 +422,8 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
     // `--renderer` 默认值一致 —— 两处不一致会让"库里调用"与"命令行调用"走出两条不同的路。
     // 老命令行里的 `wgpu` / `native` 由 `RenderBackendKind::parse` 认成 Dhampir（它们本来就是
     // "用 GPU 出片"的意思，而 GPU 出片现在只有底座这一条）。
-    let renderer = match std::env::var("VTEDIT_RENDERER") {
-        Ok(v) => RenderBackendKind::parse(&v).ok_or_else(|| {
-            // **打错字不许被静静当成别的通道**：静默误路由表现为"选错了渲染器却没报错"，
-            // 而两版成片的差别只有对着看才发现。
-            anyhow::anyhow!(
-                "认不出的渲染后端 `{v}`（VTEDIT_RENDERER / --renderer）。现在只有 dhampir 一个值\n  \
-                 （老写法 wgpu / native 等同 dhampir —— GPU 出片现在只有底座那一条路；\n  \
-                 `chrome` 那条本仓 headless Chrome 的兜底腿已于 2026-10-01 **整条删除**，\n  \
-                 装外部浏览器的出片路径不再存在）"
-            )
-        })?,
-        Err(_) => RenderBackendKind::Dhampir,
-    };
+    // 派生于 RenderOpts > 环境变量 > 默认 dhampir（口径只在 resolve_renderer 一份）。
+    let renderer = resolve_renderer(opts.renderer.as_deref())?;
     tracing::info!("  Renderer: {}", renderer.as_str());
 
     // 网页服务器与页面 `window.__SOUND_DATA` 都是**已删除的 Chrome 那条腿**的依赖：
@@ -453,9 +495,7 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
         // 从转译产物里读（唯一权威）。
         // `style.subtitle.font` 要传下去：库里选了字体就得让底座用那一支（与预览/@font-face 同一份字节）。
         // `VTEDIT_STRICT=1`（`polish render --strict`）= 转译报告里 DROP > 0 就拒绝出片。
-        let strict = std::env::var("VTEDIT_STRICT")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
+        let strict = resolve_strict(opts.strict);
         let (_, translate_report) =
             render::dhampir::render_video_only(project_path, &clip_dir, &config.style.subtitle.font, strict)?;
         // ⚠️ 总方案 §4「转译报告可见」：报告**必须播报**，否则新效果的失败形态
@@ -1918,5 +1958,33 @@ mod tests {
         );
         // 有 EDL 但推不出帧数（理论上的空 resolve）⇒ 没有可卡的值，只能不卡。
         assert_eq!(super::mux_check_frames(true, None), None);
+    }
+
+    /// 整改 T21：出片参数是**显式**的 —— 两个不同的 RenderOpts 互不影响。
+    ///
+    /// 以前这两件事都读进程级 env（CLI 里 set_var）。现在显式值优先、env 只在没给时兜底，
+    /// 所以同一进程里两种渲染配置不会再互相改对方参数。
+    #[test]
+    fn render_opts_do_not_leak_into_each_other() {
+        assert!(matches!(
+            super::resolve_renderer(Some("dhampir")).unwrap(),
+            super::RenderBackendKind::Dhampir
+        ));
+        // 老别名 wgpu / native 仍等同 dhampir
+        assert!(matches!(
+            super::resolve_renderer(Some("native")).unwrap(),
+            super::RenderBackendKind::Dhampir
+        ));
+        // 认不出的后端必须报错，不许静默换路（口径只此一份）
+        assert!(super::resolve_renderer(Some("chrome")).is_err());
+
+        let a = super::RenderOpts { renderer: Some("dhampir".to_string()), strict: Some(true) };
+        let b = super::RenderOpts { renderer: Some("wgpu".to_string()), strict: Some(false) };
+        assert!(super::resolve_strict(a.strict));
+        assert!(!super::resolve_strict(b.strict));
+        assert!(super::resolve_renderer(a.renderer.as_deref()).is_ok());
+        assert!(super::resolve_renderer(b.renderer.as_deref()).is_ok());
+        // 回头再读 a：还是 true（env 时代这两句会互相踩）
+        assert!(super::resolve_strict(a.strict));
     }
 }

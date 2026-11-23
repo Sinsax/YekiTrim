@@ -14,7 +14,7 @@
 
 ## 入口
 
-- `pipeline`：`cmd_render(project_path)`、`resolve_paths(project_path, config) -> ResolvedPaths`、`inject_assets(project_path, config_json)`、`prepare_sticker_data(project_path, config)`、`unique_output_path(path)`、`get_video_size` / `get_video_duration`、`measure_loudness_curve(_cached)` / `measure_segment_loudness` / `measure_audio_loudness`、`spec_effects_path`、`print_final_stats`、`cleanup`。
+- `pipeline`：`cmd_render(project_path)`（= `cmd_render_with(path, RenderOpts::from_env())` 的薄壳）、`cmd_render_with(project_path, RenderOpts { renderer, strict })`、`resolve_renderer(explicit) -> RenderBackendKind` / `resolve_strict(explicit) -> bool`（**显式参数 > 环境变量 > 默认**，口径只此一份；环境变量只是 CLI 的默认值来源，整改 T21）、`resolve_paths(project_path, config) -> ResolvedPaths`、`inject_assets(project_path, config_json)`、`prepare_sticker_data(project_path, config)`、`unique_output_path(path)`、`get_video_size` / `get_video_duration`、`measure_loudness_curve(_cached)` / `measure_segment_loudness` / `measure_audio_loudness`、`spec_effects_path`、`print_final_stats`、`cleanup`。
 - `server`：`RenderServer::{new, build_html, start_with, start, start_cover}`、`start_file_server(project_path, injected_html)`、`build_sticker_map(project_path)`、`build_cover_html`、`font_face_css` / `font_face_css_in` / `font_family_with_stack` / **`fallback_stack`（动态兜底栈，唯一权威）** / `SYSTEM_FONT_STACK`（空库回落态常量）。
 - `ffmpeg`：`detect_encoder() -> EncoderInfo`、`concat`、`extract_audio`、`apply_limiter`、`mix_sfx(..., &[SfxEvent])`、`cut_ranges(input, ranges, output)`、`mux(video, audio, output)`。
 - `dhampir`：`render_video_only(project_path, clip_dir, project_font, strict)`、`prepare_project(_reporting)`、`readiness(font, strict)`、`find_translator()`（`VTEDIT_TRANSLATOR` 可覆盖 —— 手动探针靠它做变异）。

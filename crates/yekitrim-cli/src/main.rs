@@ -535,11 +535,18 @@ Command::Polish(action) => {
                     renderer,
                     strict,
                 } => {
-                    std::env::set_var("VTEDIT_RENDERER", renderer);
-                    // `--strict` 走环境变量：出片的判据在 `pipeline.rs` / `dhampir.rs` 里，
-                    // 而那条链路是**库**（WebUI 与 CLI 共用），不给它塞 CLI 类型的参数。
-                    std::env::set_var("VTEDIT_STRICT", if *strict { "1" } else { "0" });
-                    render::cmd_render(input).await?;
+                    // 整改 T21：显式传参，**不再** set_var 改进程环境。
+                    // 环境变量那条路只有两个坏处没有好处：并发两种渲染配置会互相串味，
+                    // 而且 edition 2024 里 std::env::set_var 是 unsafe（升工具链先炸这里）。
+                    // 老脚本仍然能用 VTEDIT_RENDERER / VTEDIT_STRICT —— `RenderOpts::from_env` 收着它。
+                    render::cmd_render_with(
+                        input,
+                        render::RenderOpts {
+                            renderer: Some(renderer.clone()),
+                            strict: Some(*strict),
+                        },
+                    )
+                    .await?;
                 }
                 cli::PolishAction::Cover { input, template, renderer } => {
                     if let Some(t) = template {

@@ -127,13 +127,16 @@
   传绝对路径永远匹配不上；vue-router 会把 `%20` 解回来）。工程还没登记进项目库 ⇒ 退回 `/#/workbench`
   并打一条 info（回去还能导入工程）。**改路由先看 `webui/src/router.js`**，别凭记忆调。
 - `polish llm` 在 CLI 保留**断点续传**（`cmd_llm(input, false)`）——长片重跑很贵；编辑器那颗按钮走的是 `full=true`。
-- `polish render` 用 `std::env::set_var("VTEDIT_RENDERER", renderer)` 传后端。⚠️ **默认 `dhampir`**
+- `polish render` **显式传参**：`render::cmd_render_with(input, RenderOpts { renderer, strict })`。
+  ⚠️ **不要再退回 `std::env::set_var`（整改 T21）**：进程级 env 就是「两个任务互相改对方参数」的来源，
+  而且 edition 2024 里 `set_var` 是 unsafe。环境变量只保留为**默认值来源**（`RenderOpts::from_env`，老脚本照旧能用）。
+  ⚠️ **默认 `dhampir`**
   （**出片只剩这一条腿**，2026-09-30 用户拍板切换）；老写法 `wgpu` / `native` 视作 dhampir，
   `chrome` 是本仓那条**已整条删除**的兜底腿 —— 现在 `RenderBackendKind::parse("chrome")` 返回 `None`、
   出片**明确报错**（不静默改走底座）
   （它们本来就是"用 GPU 出片"，而 GPU 出片现在只有底座那一条路）。**认不出的值由 `pipeline.rs`
   一处报错**（不静默换路）—— 校验别在 `cli.rs` 里再抄一份。
-  ⚠️ `--strict` 走 `VTEDIT_STRICT=1`：转译报告里 `DROP > 0` 就拒绝出片（判据在
+  ⚠️ `--strict` 同样是**显式参数**（`RenderOpts.strict`；不传才回落 `VTEDIT_STRICT=1`）：转译报告里 `DROP > 0` 就拒绝出片（判据在
   `dhampir.rs`，CLI 只是传个开关）。`polish doctor` 里也有 `[dhampir]` 块（读
   `dhampir::readiness()` 的同一份判断）。
 - `Command::Status` 自己组装输出：`yekitrim_service::Workspace::load` + `project_snapshot`（`current_stage` 由
