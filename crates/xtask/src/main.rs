@@ -670,14 +670,12 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
             package_dir.join("dhampir").join("VERSION"),
         )?;
         fs::create_dir_all(package_dir.join("dhampir").join("bin"))?;
-        let base_name = if cfg!(windows) {
-            "dhampir.exe"
-        } else {
-            "dhampir"
-        };
         fs::copy(
             &base_exe,
-            package_dir.join("dhampir").join("bin").join(base_name),
+            package_dir
+                .join("dhampir")
+                .join("bin")
+                .join(dhampir_bin_name("windows")),
         )?;
         println!("    + dhampir/（出片二进制 + 预览产物 + VERSION）");
     }
@@ -891,6 +889,23 @@ fn dhampir_contract_floor_problems(version_text: &str) -> Vec<String> {
 
 const MAX_GLIBC: (u32, u32) = (2, 39);
 
+/// 包内底座二进制的文件名 —— **按目标平台**，不按宿主。
+///
+/// 包内形状 dhampir/bin/<exe> 是运行时认死的（`yekitrim_polish::render::dhampir::find_binary`
+/// 在**目标机**上按 `cfg!(windows)` 拼名字），所以这里必须同样按目标算。
+///
+/// ⚠️ 2026-11-24 踩过：这里原本写的是 `cfg!(windows)` —— 那是**宿主编译期**的常量。
+/// 在 Linux 上交叉打 Windows 包时它求值为 false，于是包里落进无后缀的 dhampir，
+/// 而用户机器上的运行时找 dhampir.exe ⇒ 界面报「底座没装 · 放到程序目录 dhampir/bin/」。
+/// 二进制本身没坏（PE 头完好），只是名字不对、找不到。
+fn dhampir_bin_name(target_os: &str) -> &'static str {
+    if target_os == "windows" {
+        "dhampir.exe"
+    } else {
+        "dhampir"
+    }
+}
+
 fn run_package_linux(
     options: &PackageOptions,
     root: &Path,
@@ -1050,7 +1065,7 @@ fn run_package_linux(
             Some(path) => {
                 let bin_dir = package_dir.join("dhampir").join("bin");
                 fs::create_dir_all(&bin_dir)?;
-                fs::copy(path, bin_dir.join("dhampir"))?;
+                fs::copy(path, bin_dir.join(dhampir_bin_name("linux")))?;
                 println!("    dhampir: {}", path.display());
             }
             None => {
@@ -1676,6 +1691,18 @@ mod tests {
     fn picked(root: &Path) -> Option<String> {
         newest_dhampir_dist(root)
             .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+    }
+
+    /// 底座二进制的包内文件名**跟目标平台走，不跟宿主走**（2026-11-24 的回归）。
+    ///
+    /// 在 Linux 上打 Windows 包时若按 cfg!(windows) 取名字，包里会落进无后缀的 dhampir，
+    /// 而目标机的运行时找 dhampir.exe —— 下载即坏，界面报「底座没装」。
+    #[test]
+    fn dhampir_bin_name_follows_target_not_host() {
+        assert_eq!(dhampir_bin_name("windows"), "dhampir.exe");
+        assert_eq!(dhampir_bin_name("linux"), "dhampir");
+        // 宿主是什么平台都不影响：这两条断言在 Linux 与 Windows 上都必须绿。
+        assert_ne!(dhampir_bin_name("windows"), dhampir_bin_name("linux"));
     }
 
     #[test]
