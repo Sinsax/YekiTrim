@@ -176,6 +176,10 @@ python3 scripts/check_module_map.py
 # 边界门禁（19 条：分层方向 + P4 隔离 + 前端 + LLM 隔离 + 成对判据 + 工作区卫生）
 python3 scripts/check_module_boundaries.py
 
+# 一次改动跑完全部相关守卫：按 git diff 的改动面自动选脚本（--all 全量；--check-structure 只跑上面两条）
+# ⚠️ 输出里的 SKIP 一律是「没跑」（缺样本 / 缺浏览器 / 缺底座二进制），**不是通过**
+node scripts/gate.mjs --changed
+
 # 改任何 crate 之后
 cargo check --workspace --all-targets          # 0 warnings
 cargo test -p yekitrim-server                   # HTTP 侧（JobManager / Range / 路由 / 配置 patch）

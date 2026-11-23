@@ -12,6 +12,8 @@
 
 ### 门禁（改动必跑）
 
+- **`gate.mjs`** —— 统一执行入口（T5）：`--changed` / `--all` / `--check-structure`；口径全在文件头。
+
 - **`check-dhampir-wiring.mjs`** —— **Dhampir 预览接线**（模块 `dhampir-preview`：WebUI 的 Dhampir 预览接线，
   HTTP 路径 / wasm 导出名 / 引擎方法）。守三处**隔着边界**的名字：前端调的 HTTP 路径 ←→ `routes.rs` 注册的路由；
   前端引用的 `/api` 前缀 ←→ 生产里 `nest("/api", …)` 那一层；`engine.js` 调的 wasm 导出 ←→ `timeline_host.rs`
