@@ -170,8 +170,13 @@ pub(super) async fn create_local_project(
     overwrite: bool,
 ) -> ApiResult {
     let tenant = yekitrim_core::owner::owner_root(owner_of(&user));
-    std::fs::create_dir_all(&tenant)
-        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("创建租户目录失败: {e}")))?;
+    // `create_dir_all` 是同步 IO（租户根在 `[storage] projects_root` 里，可能是网络盘），下 blocking 池。
+    let mkdir = tenant.clone();
+    blocking(move || {
+        std::fs::create_dir_all(&mkdir)
+            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("创建租户目录失败: {e}")))
+    })
+    .await?;
 
     // ---- 这里**曾经**放过一道容量预检，已删除（2026-10-10）----
     //
@@ -214,10 +219,15 @@ pub(super) async fn create_local_project(
         }
         let hint = input_hint.trim();
         let input = if hint.is_empty() {
-            // 未指定文件时自动挑目录里第一个视频
-            find_first_video(&dir).ok_or_else(|| {
-                err(StatusCode::BAD_REQUEST, "目录里没有可用的视频文件（mp4/flv/mkv/ts）")
-            })?
+            // 未指定文件时自动挑目录里第一个视频。`find_first_video` 里是 `read_dir` +
+            // 逐项 `is_file` + 逐项 `extension`，全是同步 IO —— 网络盘上一样卡 worker，下 blocking 池。
+            let scan_dir = dir.clone();
+            blocking(move || {
+                find_first_video(&scan_dir).ok_or_else(|| {
+                    err(StatusCode::BAD_REQUEST, "目录里没有可用的视频文件（mp4/flv/mkv/ts）")
+                })
+            })
+            .await?
         } else {
             yekitrim_core::tenant::jail_existing(&dir, hint)
                 .map_err(|e| err(StatusCode::BAD_REQUEST, format!("视频不可用: {e:#}")))?
@@ -379,58 +389,72 @@ pub(super) async fn projects_source_delete(
     let db = state.auth.db();
     let project = owned_project(db, &user, id)?;
 
-    let mut removed: Vec<String> = Vec::new();
-    let mut freed = 0u64;
-    let ws = Workspace::load(Some(&project.config_file)).ok();
-    let mut targets: Vec<PathBuf> = Vec::new();
-    if let Some(ws) = &ws {
-        if let Ok(cfg) = ws.load_config() {
-            for raw in [cfg.project.input_file.clone().unwrap_or_default(), cfg.project.danmaku_file.clone().unwrap_or_default()] {
-                if !raw.trim().is_empty() {
-                    targets.push(ws.resolve(&raw));
+    // 这一段全是同步文件访问：`Workspace::load` / `load_config` 读工程配置，`read_dir` 扫项目根
+    // 目录的分片（录播姬多分片会话能有几十个），逐个 `canonicalize` + `metadata` + `remove_file`
+    // 删源，最后 `refresh_bytes` 还要递归 `read_dir` 累计源/产物大小。项目目录常在网络盘上，
+    // 整段（含计量）一起下 blocking 池 —— 别把它留在 worker 上。
+    let scan_root = project.root_dir.clone();
+    let cfg_file = project.config_file.clone();
+    let row = project.clone();
+    let st = state.clone();
+    let (removed, freed, (source_bytes, output_bytes)) = blocking(move || {
+        let mut removed: Vec<String> = Vec::new();
+        let mut freed = 0u64;
+        let ws = Workspace::load(Some(&cfg_file)).ok();
+        let mut targets: Vec<PathBuf> = Vec::new();
+        if let Some(ws) = &ws {
+            if let Ok(cfg) = ws.load_config() {
+                for raw in [cfg.project.input_file.clone().unwrap_or_default(), cfg.project.danmaku_file.clone().unwrap_or_default()] {
+                    if !raw.trim().is_empty() {
+                        targets.push(ws.resolve(&raw));
+                    }
                 }
             }
         }
-    }
-    // 根目录下的分片（录播姬多分片会话）也算源
-    if let Ok(entries) = std::fs::read_dir(&project.root_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_file() {
+        // 根目录下的分片（录播姬多分片会话）也算源
+        if let Ok(entries) = std::fs::read_dir(&scan_root) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_file() {
+                    continue;
+                }
+                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+                if matches!(ext.as_str(), "mp4" | "flv" | "mkv" | "ts") {
+                    targets.push(path);
+                }
+            }
+        }
+        // 去重后逐个删除（只删项目根目录内的文件）
+        let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+        let root = scan_root.canonicalize().unwrap_or_else(|_| scan_root.clone());
+        for target in targets {
+            let real = target.canonicalize().unwrap_or_else(|_| target.clone());
+            if !seen.insert(real.clone()) {
                 continue;
             }
-            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
-            if matches!(ext.as_str(), "mp4" | "flv" | "mkv" | "ts") {
-                targets.push(path);
+            if !real.starts_with(&root) {
+                tracing::warn!("跳过项目目录外的源文件: {}", real.display());
+                continue;
+            }
+            if !real.is_file() {
+                continue;
+            }
+            let size = std::fs::metadata(&real).map(|m| m.len()).unwrap_or(0);
+            match std::fs::remove_file(&real) {
+                Ok(()) => {
+                    freed += size;
+                    removed.push(real.to_string_lossy().into_owned());
+                }
+                Err(e) => tracing::warn!("删除源文件失败 {}: {e}", real.display()),
             }
         }
-    }
-    // 去重后逐个删除（只删项目根目录内的文件）
-    let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
-    let root = project.root_dir.canonicalize().unwrap_or_else(|_| project.root_dir.clone());
-    for target in targets {
-        let real = target.canonicalize().unwrap_or_else(|_| target.clone());
-        if !seen.insert(real.clone()) {
-            continue;
-        }
-        if !real.starts_with(&root) {
-            tracing::warn!("跳过项目目录外的源文件: {}", real.display());
-            continue;
-        }
-        if !real.is_file() {
-            continue;
-        }
-        let size = std::fs::metadata(&real).map(|m| m.len()).unwrap_or(0);
-        match std::fs::remove_file(&real) {
-            Ok(()) => {
-                freed += size;
-                removed.push(real.to_string_lossy().into_owned());
-            }
-            Err(e) => tracing::warn!("删除源文件失败 {}: {e}", real.display()),
-        }
-    }
-    let (source_bytes, output_bytes) = yekitrim_service::projects::refresh_bytes(db, &project)
-        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("刷新占用失败: {e:#}")))?;
+        // 计量同样要递归遍历源/产物目录 —— 跟删源在同一个闭包里一次算完（写库也是同步的）
+        let db = st.auth.db();
+        let (source_bytes, output_bytes) = yekitrim_service::projects::refresh_bytes(db, &row)
+            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("刷新占用失败: {e:#}")))?;
+        Ok((removed, freed, (source_bytes, output_bytes)))
+    })
+    .await?;
     let _ = db.audit(
         Some(user.id),
         "project_source_delete",

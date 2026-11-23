@@ -1225,9 +1225,25 @@ pub(super) async fn clip_delete_impl(ws: &Workspace, arg: &str, state: &AppState
         tracing::info!("拒绝删除 {}：{busy}", busy.resource);
         return Err(err(StatusCode::CONFLICT, format!("{busy}，请等它结束再删这个片段")));
     }
-    std::fs::remove_dir_all(&clip_dir)
-        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("删除 {dir_name} 失败: {e}")))?;
-    prune_clip_from_index(&ws.output_dir(), &dir_name);
+    // 下面两步都是同步文件访问，一起下 blocking 池：`remove_dir_all` 删的是**含成片的整个片段目录**
+    // （项目在网络盘上时最重的就是这一处），`prune_clip_from_index` 内部要读
+    // `publish_config.json` / `clips_order.txt` 再重建 `index.json` —— 同样同步 IO，
+    // 所以必须跟删除落在**同一个闭包**里，不能只搬一半。
+    // ⚠️ `busy_with` 是 async，留在闭包外（见上）。
+    let del_dir = clip_dir.clone();
+    let del_name = dir_name.clone();
+    let output_dir = ws.output_dir();
+    blocking(move || {
+        std::fs::remove_dir_all(&del_dir).map_err(|e| {
+            err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("删除 {del_name} 失败: {e}"),
+            )
+        })?;
+        prune_clip_from_index(&output_dir, &del_name);
+        Ok(())
+    })
+    .await?;
     tracing::info!("已删除片段目录: {}", clip_dir.display());
     ok(serde_json::json!({ "ok": true, "removed": dir_name }))
 }
@@ -2588,6 +2604,99 @@ async fn clip_danmaku_count_falls_back_to_source_and_delete_prunes_index() {
     let res = t.call(t.req("DELETE", "/project-data/clips/abc?project=1").body(Body::empty()).unwrap()).await;
     assert_eq!(res.status(), StatusCode::NOT_FOUND, "不存在的目录名 → 404");
     assert!(clips.join("clip-01").is_dir(), "不存在的名字不能误删");
+}
+
+/// **T4（同步 IO 三处补 blocking）**：`clip_delete_impl` 里的"删整个片段目录 + 重写发布索引"
+/// 必须真的跑到 blocking 池上 —— 单 worker runtime 下证明它不占住 worker。
+///
+/// 判据与 `api::tests::blocking_helper_keeps_workers_free` 同一条思路：只留 **1 个 worker**，
+/// 另起一个每 1ms 跳一次的心跳任务；**删片段期间心跳必须继续跳**。把这两段同步 IO 留在
+/// worker 上（本次整改前的写法），心跳一次都跑不动（`during == 0`）—— 这正是"剪切的时候
+/// 整个服务器连不上"的机制：项目常在网络盘上，一次 `remove_dir_all` 就够把 worker 占住。
+///
+/// fixture 是最小目录（临时目录 + 几千个几字节的小文件）：删掉它要几十毫秒，够心跳跳几十次；
+/// **不依赖网络盘**，也不构造真实成片。
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn clip_delete_runs_sync_io_off_the_worker() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::time::{sleep, Duration};
+
+    // ---- 最小 fixture：一个待删的片段目录（内容量刚好让 remove_dir_all 有真实耗时）----
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("proj");
+    let clips = root.join("output").join("clips");
+    let clip = clips.join("clip-01");
+    std::fs::create_dir_all(&clip).unwrap();
+    for i in 0..6000 {
+        std::fs::write(clip.join(format!("f{i:05}.bin")), b"x").unwrap();
+    }
+    std::fs::write(clip.join("clip.mp4"), b"fake").unwrap();
+    // 发布索引里登记它：删完这两份都得把它摘掉（`prune_clip_from_index` 也在同一个闭包里）
+    std::fs::write(
+        root.join("output").join("publish_config.json"),
+        r#"{"video_source":"a.mp4","clips":[{"directory":"clip-01"},{"directory":"clip-02"}]}"#,
+    )
+    .unwrap();
+    std::fs::write(clips.join("clips_order.txt"), "clip-01 / 甲\nclip-02 / 乙").unwrap();
+
+    // `clip_delete_impl` 只需要 `AppState` 里的 JobManager（这里没有任何任务在跑）
+    let auth = crate::auth::AuthService::open(tmp.path().join("auth"), crate::auth::Listening::Loopback)
+        .unwrap();
+    let state = Arc::new(AppState::with_auth(auth));
+    let ws = Workspace {
+        config_file: root.join("yekitrim.toml"),
+        root_dir: root.clone(),
+    };
+
+    // ---- 心跳：只有 1 个 worker，同步 IO 若留在 worker 上它就再也跳不动 ----
+    let ticks = Arc::new(AtomicUsize::new(0));
+    let beats = ticks.clone();
+    let beat = tokio::spawn(async move {
+        loop {
+            sleep(Duration::from_millis(1)).await;
+            beats.fetch_add(1, Ordering::SeqCst);
+        }
+    });
+    // 先让它真的跳起来 —— 否则"心跳 0 次"可能只是还没开始跳，什么也测不出来
+    sleep(Duration::from_millis(5)).await;
+    assert!(ticks.load(Ordering::SeqCst) > 0, "心跳应当已经跳起来");
+
+    let before = ticks.load(Ordering::SeqCst);
+    let t0 = std::time::Instant::now();
+    // ⚠️ 必须 `spawn` 上去：`#[tokio::test]` 的**测试体本身跑在 block_on 的 main 线程上**，
+    // 直接在测试体里 `await` 它，被同步 IO 卡住的就是 main 线程而不是 worker ——
+    // 那样无论实现对不对，心跳都在另一个线程上照跳，测不出任何东西（变异自证当场抓出来的坑）。
+    let del = tokio::spawn(async move { clip_delete_impl(&ws, "clip-01", &state, 1).await });
+    let res = del.await.expect("删除任务不该 panic");
+    let elapsed = t0.elapsed();
+    let during = ticks.load(Ordering::SeqCst) - before;
+    beat.abort();
+
+    // ---- 功能面：目录删干净了，两份索引里的引用也摘掉了 ----
+    assert!(res.is_ok(), "删除片段应当成功: {:?}", res.as_ref().err());
+    assert_eq!(res.unwrap().0["removed"], "clip-01");
+    assert!(!clip.exists(), "整个片段目录必须被删掉");
+    let publish = std::fs::read_to_string(root.join("output").join("publish_config.json")).unwrap();
+    assert!(
+        !publish.contains("clip-01") && publish.contains("clip-02"),
+        "发布索引里不能再指向已删片段: {publish}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(clips.join("clips_order.txt")).unwrap(),
+        "clip-02 / 乙",
+        "clips_order.txt 里那行也要摘掉"
+    );
+
+    // ---- 判据：删除期间 worker 一直被让出来 ----
+    assert!(
+        elapsed.as_millis() >= 5,
+        "fixture 太小（删除只用了 {elapsed:?}）：测不出 worker 是否被占，请加大文件数"
+    );
+    assert!(
+        during >= 3,
+        "删片段期间 worker 必须还能跑别的任务（心跳只跳了 {during} 次 / 删除用时 {elapsed:?}）\
+         —— 同步 IO 又回到 worker 上了？"
+    );
 }
 
 /// **磁盘预检把一键全切拦停**（2026-11-15 事故回归钉）：`[cutting] min_free_gb` 拉满时，
