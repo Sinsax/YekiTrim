@@ -62,6 +62,11 @@
   `dhampir/bin/<exe>` + `dhampir/preview/{engine.js,pkg/*}` + `dhampir/VERSION`
   （包内形状由 `yekitrim_polish::render::dhampir::{find_binary,wasm_dirs,preview_dir}` 定义；
   ⚠️ `VERSION` 在 **`dhampir/` 下**、不在 `preview/` 里 —— 摆错报错只说"缺 VERSION"）。
+  ⚠️ **包内文件名跟目标平台走，不跟宿主走**（`dhampir_bin_name(target_os)`，2026-11-24 修）：
+  Windows 包必须是 `dhampir/bin/dhampir.exe`、Linux 包是 `dhampir/bin/dhampir`。原先那里写
+  `cfg!(windows)` —— 那是**宿主编译期**常量：在 Linux 上交叉打 Windows 包会给出无后缀的 `dhampir`，
+  而目标机运行时找 `dhampir.exe` ⇒ 用户装完就报「底座没装 · 放到程序目录 dhampir/bin/」，
+  二进制本身却完好（PE 头正常，只是名字不对）。回归：`dhampir_bin_name_follows_target_not_host`。
   底座来源 = 同层 `../Dhampir`（产物默认 `../Dhampir/out`、二进制默认 `../Dhampir/target/release/dhampir.exe`）；
   可用 `--dhampir-artifact <dir>` / `--dhampir-exe <path>` 覆盖。**找不到就拒绝打包** ——
   确实要打"没有底座"的包得显式 `--no-dhampir`（那台机器上默认通道会不可用）。

@@ -48,13 +48,14 @@
         {{ shownTotal }}<template v-if="filterKey !== 'all'">/{{ poolTotal }}</template> 个片段<template v-if="uncutEvents.length"> · 未剪切 {{ uncutEvents.length }}</template>
       </span>
       <span class="v-sep"></span>
-      <!-- 视图密度：大卡（默认，带缩略图）/ 紧凑（一行一条，扫条目快）。
-           偏好持久化；卡片内部结构不变，只改网格列宽与媒体区高度。 -->
+      <!-- 视图密度（两档都保留，用户 2026-11-24 口径）：
+           列表 = 一行一个片段（缩略图 + 标题标签区间 + 动作，默认）；
+           紧凑 = 同一张列表压到一行（去掉缩略图与摘要），扫条目快。偏好持久化。 -->
       <button class="mini-btn" :class="{ selected: density === 'compact' }"
-              :title="density === 'compact' ? '切回大卡（带缩略图）' : '切到紧凑视图（一行一条）'"
+              :title="density === 'compact' ? '切回列表（带缩略图）' : '切到紧凑视图（一行一条，无缩略图）'"
               @click="toggleDensity">
         <Icon :name="density === 'compact' ? 'list' : 'grid'" :size="12" />
-        {{ density === 'compact' ? '紧凑' : '大卡' }}
+        {{ density === 'compact' ? '紧凑' : '列表' }}
       </button>
       <span class="v-sep"></span>
       <button v-if="publishConfigured && isAdmin()" class="mini-btn" :disabled="!publishableClips.length || publishAllBusy"
@@ -62,90 +63,84 @@
               @click="publishAll">{{ publishAllBusy ? '提交中…' : '发布全部' }}</button>
     </div>
 
-    <!-- 已剪切片段与未剪切事件**同在一面卡片墙**上（用户要求合并），按同一个排序键**混排**：
+    <!-- 已剪切片段与未剪切事件**在同一张列表里混排**（用户要求合并），按同一个排序键：
          热度是数值（两边都算得出来），所以重新检测后剩下的旧片段也能一起参与排序。
          未剪切事件没有缩略图，动作是「剪切 / 编辑」，带一枚「未剪切」chip 作区分；
-         已剪卡片先认自己的 clip.json（`orphan` = 独立片段），不会跟着新事件改名。 -->
-    <div class="grid cols-3" :class="`wall-${density}`">
+         已剪行先认自己的 clip.json（`orphan` = 独立片段），不会跟着新事件改名。 -->
+    <!-- 列表视图（2026-11-24 用户口径：大卡改列表）：一行一个片段 ——
+         左缩略图 / 中标题与标签 / 右动作。未剪切事件同样一行，缩略图位留空占位，
+         于是"已剪"与"未剪"在同一列里始终对齐（两种仍然混排、共用同一个排序键）。 -->
+    <div class="clip-list" :class="{ 'is-compact': density === 'compact' }">
       <template v-for="it in shownItems" :key="it.id">
         <div
           v-if="it.kind === 'clip'"
           :data-clipname="it.view.c.name"
-          class="pcard clip-card"
+          class="clip-row"
         >
-          <span class="ribbon">{{ typeZh[it.view.type] || it.view.type || 'other' }}</span>
-          <div class="head card-title">
-            <div>
-              <h2>{{ it.view.title }}</h2>
-            </div>
-          </div>
-          <!-- 媒体区固定高度：已剪显示缩略图；缺图用虚线占位，保证下面每个区域都从同一高度开始。
-               只有点预览图才弹出视频预览，卡片其他区域不响应点击。 -->
-          <div class="media-slot" :class="{ 'media-empty': !hasThumb(it.view.c) }">
+          <div class="row-thumb" :class="{ 'row-thumb-empty': !hasThumb(it.view.c) }">
             <img
               v-if="hasThumb(it.view.c)"
               :src="thumbSrc(it.view.c)"
-              class="thumb"
               alt="海报"
               title="点击预览片段"
               @click="previewClip(it.view.c)"
               @error="$event.target.style.display='none'"
             >
             <template v-else>
-              <Icon name="film" :size="22" />
+              <Icon name="film" :size="16" />
               <span>剪出后显示预览</span>
             </template>
           </div>
-          <!-- tag 统一成一行紧凑文字，不再用多个彩色药丸；状态只保留文字色。
-               导出相关仍**只剩一枚**：出过片或出过封面都算「已导出」；进过精修但还没导出 → 「精修中」。 -->
-          <div class="tag-row mt-8">
-            <span class="tag b">{{ Math.round(it.view.c.duration_secs) }}s</span>
-            <span class="tag n">{{ Math.round(it.view.c.size_bytes / 1024 / 1024) }}MB</span>
-            <span v-if="Number(it.view.c.danmaku_count)" class="tag a">弹幕 {{ it.view.c.danmaku_count }}</span>
-            <span v-if="Number(it.view.c.subtitle_count)" class="tag n">字幕 {{ it.view.c.subtitle_count }}</span>
-            <!-- 剪辑质量分（§3）：**没精修过就不显示**（后端回 null）。
-                 它量的是"剪得顺不顺"（可感知的打断次数），**不是**"好不好看" ——
-                 所以 hover 里把扣分项逐条列出来：只给一个数字，用户没法判断该不该管。 -->
-            <span
-              v-if="clipQuality(it.view.c)"
-              class="tag"
-              :class="qualityTagClass(clipQuality(it.view.c).score)"
-              :title="qualityHint(clipQuality(it.view.c))"
-            >剪辑 {{ clipQuality(it.view.c).score }}</span>
-            <span
-              v-if="clipRangeCount(it.view.c)"
-              class="tag r"
-              :title="rangesHint(it.ranges)"
-            >{{ clipRangeCount(it.view.c) }} 段</span>
-            <span
-              v-if="it.view.orphan"
-              class="tag n orphan-chip"
-              title="重新检测后已经没有和它对应的事件了：这里按剪出时的信息显示，删掉重切才会重新关联"
-            >独立</span>
-            <span v-if="isExported(it.view.c)" class="tag g">已导出</span>
-            <!-- ⚠️ 文案是「未导出」不是「精修中」：判据只是**没出过片/封面**（isExported 的反面），
-                 并不表示有一条精修任务正在跑（用户截图实测会误读）。 -->
-            <span v-else-if="polishMap[it.view.c.dir]?.polish_ready" class="tag b"
-                  title="已剪出，但还没导出成片或封面（与二级筛选「精修中」同口径）">未导出</span>
+
+          <div class="row-main">
+            <div class="row-title">
+              <span class="row-type">{{ typeZh[it.view.type] || it.view.type || 'other' }}</span>
+              <h2 :title="it.view.title">{{ it.view.title }}</h2>
+            </div>
+            <!-- tag 一行：时长/体积/弹幕/字幕 + 质量分 + 段数 + 状态，口径与旧卡片一字不差 -->
+            <div class="tag-row">
+              <span class="tag b">{{ Math.round(it.view.c.duration_secs) }}s</span>
+              <span class="tag n">{{ Math.round(it.view.c.size_bytes / 1024 / 1024) }}MB</span>
+              <span v-if="Number(it.view.c.danmaku_count)" class="tag a">弹幕 {{ it.view.c.danmaku_count }}</span>
+              <span v-if="Number(it.view.c.subtitle_count)" class="tag n">字幕 {{ it.view.c.subtitle_count }}</span>
+              <span
+                v-if="clipQuality(it.view.c)"
+                class="tag"
+                :class="qualityTagClass(clipQuality(it.view.c).score)"
+                :title="qualityHint(clipQuality(it.view.c))"
+              >剪辑 {{ clipQuality(it.view.c).score }}</span>
+              <span
+                v-if="clipRangeCount(it.view.c)"
+                class="tag r"
+                :title="rangesHint(it.ranges)"
+              >{{ clipRangeCount(it.view.c) }} 段</span>
+              <span
+                v-if="it.view.orphan"
+                class="tag n orphan-chip"
+                title="重新检测后已经没有和它对应的事件了：这里按剪出时的信息显示，删掉重切才会重新关联"
+              >独立</span>
+              <span v-if="isExported(it.view.c)" class="tag g">已导出</span>
+              <!-- ⚠️ 文案是「未导出」不是「精修中」：判据只是**没出过片/封面**（isExported 的反面），
+                   并不表示有一条精修任务正在跑（用户截图实测会误读）。 -->
+              <span v-else-if="polishMap[it.view.c.dir]?.polish_ready" class="tag b"
+                    title="已剪出，但还没导出成片或封面（与二级筛选「精修中」同口径）">未导出</span>
+            </div>
+            <!-- **复合片段**：各段源区间（按时间）—— 只有多段才渲染，普通片段一个像素都不动。 -->
+            <div v-if="it.ranges.length" class="range-line" :title="rangesHint(it.ranges)">
+              <span v-for="(r, i) in it.ranges" :key="i" class="range-item">
+                <b :style="{ color: segColor(i).line }">{{ segMark(i) }}</b>
+                <span class="mono">{{ fmtSpan(r.start) }}–{{ fmtSpan(r.end) }}</span>
+              </span>
+              <span v-if="it.gap >= 1" class="range-gap">空隙 {{ Math.round(it.gap) }}s</span>
+            </div>
+            <div class="row-sub">
+              <span class="muted small mono">{{ fmt(it.view.start) }} → {{ fmt(it.view.end) }}</span>
+              <span class="tag b">{{ Math.round(it.view.popularity * 100) }}%</span>
+              <span v-if="it.view.summary" class="row-summary muted small" :title="it.view.summary">{{ it.view.summary }}</span>
+            </div>
           </div>
-          <!-- **复合片段**：各段源区间（按时间）—— 只有多段才渲染，普通片段一个像素都不动。
-               段号 `segMark` + 颜色 `segColor`（与预处理页提段时同一套调色板）；
-               完整区间串与"丢掉多少空隙"在悬停 title 里（`rangesHint`，四处卡片墙共用一份）。 -->
-          <div v-if="it.ranges.length" class="range-line" :title="rangesHint(it.ranges)">
-            <span v-for="(r, i) in it.ranges" :key="i" class="range-item">
-              <b :style="{ color: segColor(i).line }">{{ segMark(i) }}</b>
-              <span class="mono">{{ fmtSpan(r.start) }}–{{ fmtSpan(r.end) }}</span>
-            </span>
-            <span v-if="it.gap >= 1" class="range-gap">空隙 {{ Math.round(it.gap) }}s</span>
-          </div>
-          <div class="row mt-8 meta-slot">
-            <span class="muted small mono">{{ fmt(it.view.start) }} → {{ fmt(it.view.end) }}</span>
-            <span class="tag b">{{ Math.round(it.view.popularity * 100) }}%</span>
-          </div>
-          <div class="summary-slot mt-8">
-            <div v-if="it.view.summary" class="muted small">{{ it.view.summary }}</div>
-          </div>
-          <div class="foot">
+
+          <div class="row-actions">
             <button v-if="it.view.ev" class="mini-btn" :disabled="!!outBusy"
                     :title="outBusy ? '该项目正在' + kindText(outBusy.kind) : ''"
                     @click.stop="editEvent(it.view.ev)">编辑</button>
@@ -166,47 +161,50 @@
         <div
           v-else
           :data-eventrank="it.ev.rank"
-          class="pcard clip-card uncut-card"
+          class="clip-row clip-row-uncut"
         >
-          <span class="ribbon">{{ typeZh[it.ev.event_type] || it.ev.event_type || 'other' }}</span>
-          <div class="head card-title">
-            <div>
-              <h2>{{ it.ev.label }}</h2>
+          <!-- 未剪切事件还没有成片：缩略图位保留（对齐用），里面只画一枚虚线提示 -->
+          <div class="row-thumb row-thumb-empty">
+            <Icon name="scissors" :size="16" />
+            <span>未剪出</span>
+          </div>
+
+          <div class="row-main">
+            <div class="row-title">
+              <span class="row-type">{{ typeZh[it.ev.event_type] || it.ev.event_type || 'other' }}</span>
+              <h2 :title="it.ev.label">{{ it.ev.label }}</h2>
+            </div>
+            <div class="tag-row">
+              <span class="tag a">未剪切</span>
+              <span class="tag b">{{ Math.round((it.ev.end_sec || 0) - (it.ev.start_sec || 0)) }}s</span>
+              <span v-if="Number(it.ev.danmaku_count)" class="tag a">弹幕 {{ it.ev.danmaku_count }}</span>
+              <span v-if="Number(it.ev.subtitle_count)" class="tag n">字幕 {{ it.ev.subtitle_count }}</span>
+              <span
+                v-if="eventRangeCount(it.ev)"
+                class="tag r"
+                :title="rangesHint(it.ranges)"
+              >将切 {{ eventRangeCount(it.ev) }} 段</span>
+              <span
+                v-if="!it.ev.clip_dir && occupiedRanks.has(Number(it.ev.rank))"
+                class="tag r"
+                title="这个序号上有一个属于别的事件的旧片段：先把它删掉再剪，否则会覆盖它"
+              >序号被占用</span>
+            </div>
+            <div v-if="it.ranges.length" class="range-line" :title="rangesHint(it.ranges)">
+              <span v-for="(r, i) in it.ranges" :key="i" class="range-item">
+                <b :style="{ color: segColor(i).line }">{{ segMark(i) }}</b>
+                <span class="mono">{{ fmtSpan(r.start) }}–{{ fmtSpan(r.end) }}</span>
+              </span>
+              <span v-if="it.gap >= 1" class="range-gap">空隙 {{ Math.round(it.gap) }}s</span>
+            </div>
+            <div class="row-sub">
+              <span class="muted small mono">{{ fmt(it.ev.start_sec) }} → {{ fmt(it.ev.end_sec) }}</span>
+              <span class="tag b">{{ Math.round((it.ev.popularity || 0) * 100) }}%</span>
+              <span v-if="it.ev.summary" class="row-summary muted small" :title="it.ev.summary">{{ it.ev.summary }}</span>
             </div>
           </div>
-          <!-- 未剪切事件还没有成片，**不占缩略图区域**：省下来的高度全部让给下面的摘要。 -->
-          <div class="tag-row mt-8">
-            <span class="tag a">未剪切</span>
-            <span class="tag b">{{ Math.round((it.ev.end_sec || 0) - (it.ev.start_sec || 0)) }}s</span>
-            <span v-if="Number(it.ev.danmaku_count)" class="tag a">弹幕 {{ it.ev.danmaku_count }}</span>
-            <span v-if="Number(it.ev.subtitle_count)" class="tag n">字幕 {{ it.ev.subtitle_count }}</span>
-            <span
-              v-if="eventRangeCount(it.ev)"
-              class="tag r"
-              :title="rangesHint(it.ranges)"
-            >将切 {{ eventRangeCount(it.ev) }} 段</span>
-            <span
-              v-if="!it.ev.clip_dir && occupiedRanks.has(Number(it.ev.rank))"
-              class="tag r"
-              title="这个序号上有一个属于别的事件的旧片段：先把它删掉再剪，否则会覆盖它"
-            >序号被占用</span>
-          </div>
-          <!-- 未剪切事件也能看出"剪出来是复合片段"：同一套区间行（内容与已剪卡片一致）。 -->
-          <div v-if="it.ranges.length" class="range-line" :title="rangesHint(it.ranges)">
-            <span v-for="(r, i) in it.ranges" :key="i" class="range-item">
-              <b :style="{ color: segColor(i).line }">{{ segMark(i) }}</b>
-              <span class="mono">{{ fmtSpan(r.start) }}–{{ fmtSpan(r.end) }}</span>
-            </span>
-            <span v-if="it.gap >= 1" class="range-gap">空隙 {{ Math.round(it.gap) }}s</span>
-          </div>
-          <div class="row mt-8 meta-slot">
-            <span class="muted small mono">{{ fmt(it.ev.start_sec) }} → {{ fmt(it.ev.end_sec) }}</span>
-            <span class="tag b">{{ Math.round((it.ev.popularity || 0) * 100) }}%</span>
-          </div>
-          <div class="summary-slot mt-8">
-            <div v-if="it.ev.summary" class="muted small">{{ it.ev.summary }}</div>
-          </div>
-          <div class="foot">
+
+          <div class="row-actions">
             <button class="mini-btn" :disabled="!!outBusy"
                     :title="outBusy ? '该项目正在' + kindText(outBusy.kind) : ''"
                     @click.stop="editEvent(it.ev)">编辑</button>
@@ -233,7 +231,7 @@
         <!-- 空态只给"下一步"那一条路（P1）：没事件 → 去识别；全剪完 → 去出片；其余筛选空态不给路。 -->
         <router-link v-if="emptyCta" class="btn btn-primary mt-12" :to="emptyCta.to">{{ emptyCta.label }}</router-link>
       </div>
-      <div v-for="i in 3" v-show="loading" :key="'sk' + i" class="skeleton"></div>
+      <div v-for="i in 3" v-show="loading" :key="'sk' + i" class="skeleton row-skeleton"></div>
     </div>
 
     <AppModal :show="showAdd" title="添加片段" @close="showAdd = false">
@@ -726,13 +724,15 @@ const savedSub = (() => {
     return LEGACY_SUB_FILTERS[v] || ''
   } catch { return '' }
 })()
-/** 视图密度：`big`（大卡，带缩略图）/ `compact`（紧凑，一行一条）。持久化到 localStorage。 */
+/** 视图密度：`list`（列表，带缩略图，默认）/ `compact`（紧凑，一行一条、无缩略图）。
+ *  偏好持久化到 localStorage。⚠️ 老值 `big`（大卡）不再是独立形态 —— 大卡已改列表，
+ *  所以 `big` 一律按 `list` 处理（用户不必清缓存）。 */
 const DENSITY_KEY = 'yekitrim.slices.density'
 const density = ref((() => {
-  try { return localStorage.getItem(DENSITY_KEY) === 'compact' ? 'compact' : 'big' } catch { return 'big' }
+  try { return localStorage.getItem(DENSITY_KEY) === 'compact' ? 'compact' : 'list' } catch { return 'list' }
 })())
 function toggleDensity() {
-  density.value = density.value === 'compact' ? 'big' : 'compact'
+  density.value = density.value === 'compact' ? 'list' : 'compact'
   try { localStorage.setItem(DENSITY_KEY, density.value) } catch { /* 隐私模式忽略 */ }
 }
 
@@ -1711,22 +1711,46 @@ onUnmounted(() => {
 <style scoped>
 .sort-bar { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-bottom:10px; }
 .sort-bar .sort-count { margin-left:auto; }
-/* 删除（破坏性）推到卡片右下角，离「精修」远一点，别误点 */
-/* ── 紧凑视图：一行一条。只压媒体区与内边距，卡片内部结构与动作一个不动 ── */
-.wall-compact { grid-template-columns:1fr; gap:var(--s-2); }
-.wall-compact .pcard { padding:10px 14px; }
-.wall-compact .media-slot { display:none; }
-.wall-compact .clip-card .card-title { height:auto; min-height:0; }
-.wall-compact .clip-card .card-title h2 { -webkit-line-clamp:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.wall-compact .summary-slot { max-height:40px; overflow:hidden; }
-.wall-compact .clip-card .foot { min-height:0; margin-top:6px; }
+/* ── 列表视图（2026-11-24 用户口径：大卡改列表）──────────────────────────────
+   行内三列：缩略图 132px / 正文 1fr / 动作 auto。
+   行高不固定（摘要、复合区间会多行），所以动作列垂直居中、正文列自己撑高 ——
+   「已剪」与「未剪」两种行混排时，左缘与按钮列仍然对齐。 */
+.clip-list { display:flex; flex-direction:column; gap:8px; }
+.clip-row {
+  display:flex; align-items:center; gap:14px;
+  padding:10px 14px; min-height:84px;
+  cursor:default; /* 行本身不响应点击（只有缩略图会打开视频窗口） */
+}
+.row-thumb { flex:none; width:132px; height:74px; position:relative;
+  border:1px solid var(--line); border-radius:var(--r-sm); overflow:hidden; background:var(--bg-soft); }
+.row-thumb img { width:100%; height:100%; display:block; object-fit:cover; cursor:pointer; transition:filter .15s; }
+.row-thumb img:hover { filter:brightness(1.06); }
+.row-thumb-empty { display:flex; flex-direction:column; align-items:center; justify-content:center;
+  gap:4px; border-style:dashed; color:var(--ink-faint); font-size:10.5px; }
+.row-main { flex:1; min-width:0; display:flex; flex-direction:column; gap:3px; }
+.row-title { display:flex; align-items:baseline; gap:8px; min-width:0; }
+.row-type { flex:none; font-size:10.5px; line-height:1.6; color:var(--main-deep);
+  border:1px solid var(--line); border-radius:var(--r-full); padding:0 7px; }
+.row-title h2 { min-width:0; margin:0; font-size:13.5px; font-weight:600; line-height:1.45;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.row-sub { display:flex; align-items:center; gap:10px; min-width:0; }
+.row-summary { min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.row-actions { flex:none; display:flex; align-items:center; gap:6px; }
+/* 未剪切事件：虚线边 + 缩略图位的「未剪出」占位，一眼与已剪行区分 */
+.clip-row-uncut { border-style:dashed; }
+.cut-btn { min-width:72px; justify-content:center; white-space:nowrap; }
+/* 加载骨架 = 一个行高 */
+.row-skeleton { height:84px; }
+/* ── 紧凑档（第二形态，**保留**）：同一张列表压到一行 —— 去缩略图、去摘要，只留标题/标签/动作。
+   与列表共用同一份模板与同一套动作，只改密度（用户口径：两档都要在）。 */
+.clip-list.is-compact { gap:4px; }
+.clip-list.is-compact .clip-row { padding:5px 12px; min-height:0; gap:10px; }
+.clip-list.is-compact .row-thumb { display:none; }
+.clip-list.is-compact .row-main { gap:1px; }
+.clip-list.is-compact .row-title h2 { font-size:12.5px; }
+.clip-list.is-compact .row-sub .row-summary { display:none; }
+.clip-list.is-compact .range-line { max-height:18px; }
 
-.clip-card .clip-del { margin-left:auto; }
-/* ⚠️ 卡片脚现在最多**四颗**按钮（编辑 / 发布 / 精修 / 删除），而卡片内宽只有 ~230px：
-   实测「删除」被卡片右缘硬裁掉半个字（发布按钮是 2026-10-30 新加的）。
-   收窄水平 padding + 允许换行（「重试发布」这类长文案换行而不是溢出）。 */
-.clip-card .foot { gap:6px; flex-wrap:wrap; row-gap:6px; }
-.clip-card .foot .mini-btn { padding-left:8px; padding-right:8px; }
 .v-sep { width:1px; height:14px; background:var(--line); margin:0 4px; flex:none; }
 /* 二级筛选（精修中 / 已导出）：做成挂在「已剪切」旁边的一个**内嵌分组**——
    虚线边 + 略浅的底 + 更小的字号，一眼看出它从属于左边那颗一级按钮，不是并列的第五档。
@@ -1741,24 +1765,6 @@ onUnmounted(() => {
 .subfilters .sub-btn:hover { color:var(--pink-text); }
 .subfilters .sub-btn.selected { background:var(--card); color:var(--main-deep); font-weight:600;
   box-shadow:0 1px 3px rgba(232,104,56,.18); }
-/* ---- 卡片固定分区：标题 / 媒体 / 标签 / 时间热度 / 摘要 / 工具栏 ----
-   卡片撑满 grid 行高，工具栏用 margin-top:auto 钉底；各分区给固定高度，
-   这样混排时「编辑 / 预览 / 剪切」与「编辑 / 精修 / 删除」始终落在同一条底线上。 */
-.pcard.clip-card {
-  display:flex; flex-direction:column;
-  height:100%; min-height:390px;
-  cursor:default; /* 卡片本身不响应点击（只有预览图会打开视频窗口） */
-}
-/* 标题固定三行：超长省略，不把下面区域顶下去 */
-.clip-card .card-title { height:66px; min-height:66px; overflow:hidden; }
-.clip-card .card-title h2 { display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
-/* 媒体区缩小并固定高度：已剪是缩略图，缺图才是虚线占位（未剪切事件整块不渲染） */
-.media-slot { position:relative; height:112px; flex:none; margin-top:10px;
-  border:1px solid var(--line); border-radius:var(--r-sm); overflow:hidden; background:var(--bg-soft); }
-.media-slot.media-empty { display:flex; flex-direction:column; align-items:center; justify-content:center;
-  gap:6px; border-style:dashed; color:var(--ink-faint); font-size:11px; }
-.thumb { width:100%; height:100%; display:block; object-fit:cover; cursor:pointer; transition:filter .15s; }
-.thumb:hover { filter:brightness(1.06); }
 /* tag 统一成紧凑文字行，不再用多个彩色药丸；状态只改文字色，不再各自占一块背景 */
 .tag-row { display:flex; flex-wrap:wrap; align-items:center; gap:3px 10px; min-height:22px; }
 .tag { font-size:11px; line-height:1.5; white-space:nowrap; color:var(--ink-dim); }
@@ -1782,21 +1788,6 @@ onUnmounted(() => {
 .range-item { display:inline-flex; align-items:center; gap:3px; white-space:nowrap; }
 .range-item b { font-size:11px; font-weight:700; }
 .range-gap { color:var(--ink-faint); white-space:nowrap; }
-/* 时间/热度固定一行 */
-.meta-slot { height:22px; overflow:hidden; white-space:nowrap; }
-/* 摘要：已剪固定两行；未剪切事件没有媒体区，摘要吃掉剩余高度（最多 8 行） */
-.summary-slot { height:40px; overflow:hidden; }
-.summary-slot > div { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
-.uncut-card .summary-slot { height:auto; flex:1; min-height:40px; }
-.uncut-card .summary-slot > div { -webkit-line-clamp:8; }
-/* 工具栏钉底：吃掉上面剩余空间；最小高度按最高的按钮算 */
-.clip-card .foot { margin-top:auto; flex:none; min-height:50px; }
-/* 未剪切事件卡：没有缩略图，用虚线顶边和「剪切」主按钮区分「还没剪」这件事 */
-.uncut-card { border-style:dashed; }
-/* 排队时按钮文案改成「排队中」；宽度用 min-width 固定住，文案切换不再把 foot 撑换行、
-   也不会把卡片撑高。`nowrap` + 6px 间距保证最窄的 250px 卡片也放得下三个按钮。 */
-.uncut-card .cut-btn { margin-left:auto; flex:none; min-width:72px; justify-content:center; white-space:nowrap; }
-.uncut-card .foot { flex-wrap:nowrap; gap:6px; }
 /* 「独立」= 重新检测后已经没有对应事件的片段（按 clip.json 冻结的信息显示） */
 .orphan-chip { cursor:help; }
 

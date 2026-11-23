@@ -633,11 +633,42 @@ pub(super) async fn recorder_recordings(
 }
 
 /// `POST /api/admin/recorder/test`：对接自检（版本 + 房间数），admin 用来看配置对不对。
-pub(super) async fn admin_recorder_test(
-    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
-) -> ApiResult {
-    let _ = q;
-    let client = recorder_client();
+///
+/// ⚠️ **body 里可以带未保存的当前输入**（2026-11-24）：前端「测试连接」原先只测**已存**配置，
+/// 于是「刚改完密钥 → 点测试 → 报 401」实际验的是旧值，锅被甩给"网络/对方服务"（实测踩过：
+/// biliLive-tools 的 passKey 被 `BILILIVE_TOOLS_PASSKEY` 环境变量覆盖，界面显示的是文件里那份）。
+/// 现在 body 里给了 `kind`/`api_base`/`api_key`/`api_user`/`api_pass` 就**临时覆盖**（不落盘），
+/// 没给的沿用已存值。⚠️ 密钥只走 **body**，别塞 query —— `access_log` 会把 URL 原样记进日志。
+pub(super) async fn admin_recorder_test(body: axum::body::Bytes) -> ApiResult {
+    let mut cfg = yekitrim_core::config::load_global_config();
+    let over = if body.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap_or(serde_json::Value::Null)
+    };
+    let pick = |k: &str| -> Option<String> {
+        over.get(k)
+            .and_then(|x| x.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    if let Some(kind) = pick("kind") {
+        cfg.ingest.recorder.kind = kind;
+    }
+    if let Some(base) = pick("api_base") {
+        cfg.ingest.recorder.api_base = base;
+    }
+    if let Some(key) = pick("api_key") {
+        cfg.ingest.recorder.api_key = key;
+    }
+    if let Some(user) = pick("api_user") {
+        cfg.ingest.recorder.api_user = user;
+    }
+    if let Some(pass) = pick("api_pass") {
+        cfg.ingest.recorder.api_pass = pass;
+    }
+    let client = yekitrim_service::recorder::RecorderBackend::from_config(&cfg.ingest);
     let Some(client) = client else {
         return ok(serde_json::json!({
             "ok": false,

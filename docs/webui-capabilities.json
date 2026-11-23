@@ -438,6 +438,18 @@
       "anchor": "data-cap=\"settings.account\"",
       "advancedOnly": false,
       "firstScreen": true
+    },
+    {
+      "id": "settings.password",
+      "phase": "P3",
+      "surface": "settings",
+      "label": "修改密码",
+      "files": [
+        "webui/src/views/SettingsView.vue"
+      ],
+      "anchor": "data-cap=\"settings.password\"",
+      "advancedOnly": false,
+      "firstScreen": false
     }
   ],
   "retired": [
