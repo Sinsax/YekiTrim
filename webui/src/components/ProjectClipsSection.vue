@@ -1741,15 +1741,17 @@ onUnmounted(() => {
 .cut-btn { min-width:72px; justify-content:center; white-space:nowrap; }
 /* 加载骨架 = 一个行高 */
 .row-skeleton { height:84px; }
-/* ── 紧凑档（第二形态，**保留**）：同一张列表压到一行 —— 去缩略图、去摘要，只留标题/标签/动作。
-   与列表共用同一份模板与同一套动作，只改密度（用户口径：两档都要在）。 */
-.clip-list.is-compact { gap:4px; }
-.clip-list.is-compact .clip-row { padding:5px 12px; min-height:0; gap:10px; }
+/* ── 紧凑档（第二形态，**保留**）：与列表**同一份内容**，只去掉缩略图、把行压紧。
+   摘要、时间热度、复合区间**照常在** —— 旧紧凑（.wall-compact）当年也只是 display:none 掉媒体区，
+   内容一条没少。⚠️ 2026-11-24 一度连摘要和区间一起砍掉，用户当场发现「和以前不一样」：
+   **别再砍内容，只压密度**。 */
+.clip-list.is-compact { gap:6px; }
+.clip-list.is-compact .clip-row { padding:8px 14px; min-height:0; gap:12px; }
 .clip-list.is-compact .row-thumb { display:none; }
-.clip-list.is-compact .row-main { gap:1px; }
-.clip-list.is-compact .row-title h2 { font-size:12.5px; }
-.clip-list.is-compact .row-sub .row-summary { display:none; }
-.clip-list.is-compact .range-line { max-height:18px; }
+/* 紧凑档把摘要折到第二行（旧紧凑是「时间热度一行、摘要最多两行」的上下结构） */
+.clip-list.is-compact .row-sub { flex-wrap:wrap; row-gap:2px; }
+.clip-list.is-compact .row-summary { flex:1 1 100%; white-space:normal;
+  display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
 
 .v-sep { width:1px; height:14px; background:var(--line); margin:0 4px; flex:none; }
 /* 二级筛选（精修中 / 已导出）：做成挂在「已剪切」旁边的一个**内嵌分组**——
