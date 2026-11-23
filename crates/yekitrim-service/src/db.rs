@@ -651,6 +651,27 @@ pub struct Db {
         })
     }
 
+    /// 删掉**超过保留期**的审计行（`at < now - days*86400`），返回删了几条。
+    ///
+    /// ⚠️ 这是**删数据**的改动，所以两条硬边界：
+    /// * 判据只有"更早于保留窗口"，**永远不删窗口内的行**（`purge_old_audit(90)` 保留
+    ///   最近 90 天整）；`days == 0` = **关闭清理**、一条都不删 —— 不能让它退化成
+    ///   `at < now` 把整张审计表扫空（`with` 那条 `<` 是严格的，写 0 就是"删光"）。
+    /// * 表上没有 `at` 的索引（审计只在登录/改密/邀请码时写，量很小），所以这是一次全表扫描：
+    ///   一天一次、维护任务里跑，可接受；真到百万行再谈加索引（那要走 `SCHEMA_VERSION` 迁移）。
+    ///
+    /// 调用方（server 的每日维护）负责打"删了多少"的 info。
+    pub fn purge_old_audit(&self, days: u32) -> Result<usize> {
+        if days == 0 {
+            return Ok(0);
+        }
+        let cutoff = now_secs() - days as i64 * 86_400;
+        self.with(|conn| {
+            let n = conn.execute("DELETE FROM audit WHERE at < ?1", params![cutoff])?;
+            Ok(n)
+        })
+    }
+
     /// 统计未过期会话数。
     pub fn count_sessions(&self, now: i64) -> Result<i64> {
         self.with(|conn| {
@@ -1666,6 +1687,23 @@ pub struct Db {
         })
     }
 
+    /// 删掉**超过保留期**的用量行（`ts < now - days*86400`），返回删了几条。
+    ///
+    /// 与 [`Self::purge_old_audit`] 同一条纪律：只删窗口外的行，`days == 0` = 关闭清理。
+    /// 走 `idx_llm_usage_ts`（v7 建的那个索引），所以这次清理不是全表扫描。
+    /// ⚠️ 删掉的是"每次都记一行"的流水，**不影响任何统计口径** —— 设置页按天/链路聚合都带
+    /// `since`（`/api/admin/usage?days=N`），窗口外本来就不计入。
+    pub fn purge_old_llm_usage(&self, days: u32) -> Result<usize> {
+        if days == 0 {
+            return Ok(0);
+        }
+        let cutoff = now_secs() - days as i64 * 86_400;
+        self.with(|conn| {
+            let n = conn.execute("DELETE FROM llm_usage WHERE ts < ?1", params![cutoff])?;
+            Ok(n)
+        })
+    }
+
     /// 跑一条分组聚合 SQL（`key` + 计数/求和列），供 `service::usage::summarize` 用。
     pub fn query_llm_usage_groups(&self, sql: &str, since: i64) -> Result<Vec<super::usage::UsageGroup>> {
         self.with(|conn| {
@@ -1871,6 +1909,76 @@ mod tests {
         assert!(db.session("a2").unwrap().unwrap().disabled);
         assert!(db.set_password_by_id(a, "h2", false).unwrap());
         assert!(!db.session("a2").unwrap().unwrap().must_change_password);
+    }
+
+    /// 审计明细（按时间升序）：单测用它断言"留下的是哪几条"，比只数条数更能说明问题。
+    fn audit_details(db: &Db) -> Vec<String> {
+        db.with(|c| {
+            let mut stmt = c.prepare("SELECT detail FROM audit ORDER BY at")?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+            Ok(rows.collect::<rusqlite::Result<Vec<String>>>()?)
+        })
+        .unwrap()
+    }
+
+    /// 审计表的保留期清理：**只删窗口外的**。这是删数据的改动，两个方向都要钉住。
+    #[test]
+    fn purge_old_audit_keeps_rows_inside_the_window() {
+        let (_d, db) = tmp_db();
+        let uid = db.create_user("admin", "h", "admin", false, 0).unwrap();
+        let now = now_secs();
+        // 两条在 90 天外（200 天 / 91 天），两条在窗口内（89 天 / 今天）
+        for (detail, age_days) in [("old", 200i64), ("old2", 91), ("new", 89), ("new2", 0)] {
+            db.audit(Some(uid), "login", detail).unwrap();
+            db.with(|c| {
+                c.execute(
+                    "UPDATE audit SET at = ?1 WHERE detail = ?2",
+                    rusqlite::params![now - age_days * 86_400, detail],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        }
+        assert_eq!(db.purge_old_audit(90).unwrap(), 2, "只该删 90 天外那两条");
+        assert_eq!(audit_details(&db), vec!["new", "new2"], "窗口内的一条都不许动");
+        // 幂等：第二次已经没东西可删
+        assert_eq!(db.purge_old_audit(90).unwrap(), 0);
+        // 0 = 关闭清理。⚠️ 绝不能让 0 退化成 `at < now` 把整张审计表扫空
+        assert_eq!(db.purge_old_audit(0).unwrap(), 0);
+        assert_eq!(audit_details(&db).len(), 2, "0 的含义是「不删」");
+    }
+
+    /// 用量表还剩几行。
+    fn usage_rows(db: &Db) -> i64 {
+        db.with(|c| Ok(c.query_row("SELECT COUNT(*) FROM llm_usage", [], |r| r.get::<_, i64>(0))?))
+            .unwrap()
+    }
+
+    /// 用量表的保留期清理：与审计同一条纪律（旧行删、窗口内不动、0 = 关闭）。
+    #[test]
+    fn purge_old_llm_usage_keeps_rows_inside_the_window() {
+        use yekitrim_llm::usage::UsageRecord;
+
+        let (_d, db) = tmp_db();
+        let now = now_secs();
+        let mk = |ts: i64| UsageRecord {
+            ts,
+            label: "事件检测".into(),
+            model: "m1".into(),
+            host: "example.com".into(),
+            latency_ms: 1,
+            attempts: 1,
+            ok: true,
+            ..Default::default()
+        };
+        db.insert_llm_usage(&mk(now - 400 * 86_400)).unwrap(); // 旧：365 天外
+        db.insert_llm_usage(&mk(now - 364 * 86_400)).unwrap(); // 新：窗口内
+
+        assert_eq!(db.purge_old_llm_usage(365).unwrap(), 1, "只该删 365 天外那条");
+        assert_eq!(usage_rows(&db), 1, "窗口内的那条不许动");
+        assert_eq!(db.purge_old_llm_usage(365).unwrap(), 0, "幂等");
+        assert_eq!(db.purge_old_llm_usage(0).unwrap(), 0, "0 = 关闭清理");
+        assert_eq!(usage_rows(&db), 1);
     }
 
     #[test]

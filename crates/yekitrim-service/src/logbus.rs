@@ -19,7 +19,7 @@
 
 use std::collections::VecDeque;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -135,9 +135,63 @@ fn file_log_dir() -> Option<PathBuf> {
     FILE_DIR.get().cloned()
 }
 
+/// 按天日志的文件名形状：`yekitrim-YYYYMMDD.log`（写、读、清理三处共用这一份定义 ——
+/// 以前 [`prune_old_logs`] 不存在，写侧是手拼的字面量，改一处就会让另一处静默失配）。
+const LOG_FILE_PREFIX: &str = "yekitrim-";
+const LOG_FILE_SUFFIX: &str = ".log";
+
 /// 当前（或最近的）日志文件路径：`<dir>/yekitrim-YYYYMMDD.log`。
-pub fn file_log_path(dir: &std::path::Path) -> PathBuf {
-    dir.join(format!("yekitrim-{}.log", chrono::Local::now().format("%Y%m%d")))
+pub fn file_log_path(dir: &Path) -> PathBuf {
+    dir.join(format!(
+        "{LOG_FILE_PREFIX}{}{LOG_FILE_SUFFIX}",
+        chrono::Local::now().format("%Y%m%d")
+    ))
+}
+
+/// 保留期清理：删掉 `<dir>/yekitrim-YYYYMMDD.log` 里**日期早于保留窗口**的那些，返回删了几个。
+///
+/// 判据是**文件名里的日期**（不是 mtime）：这个文件本来就是"一天一份"、名字就是那一天，
+/// 而 mtime 会被备份/拷贝/时区搬动改掉 —— 按 mtime 判会删掉昨天刚补进目录的老日志。
+/// 名字不是 `yekitrim-8位数字.log` 的一律**不碰**（`render-*.log` 归
+/// `render_proc::prune_logs` 按份数管，用户自己丢进去的东西更不该删）。
+///
+/// `days` = 保留最近多少天（**含今天**）：`days = 30` 时恰好留下最近 30 份按天日志。
+/// `days == 0` = **关闭清理**（一个都不删）。IO 失败静默跳过 —— 与整个日志层的纪律一致
+/// （Windows 上今天的文件正被本进程打开，真去删它会返回共享冲突，那时也只该跳过）。
+pub fn prune_old_logs(dir: &Path, days: u32) -> usize {
+    if days == 0 {
+        return 0;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let today = chrono::Local::now().date_naive();
+    // 窗口 = [today - (days-1), today]；比下界更早的才删
+    let Some(cutoff) = today.checked_sub_days(chrono::Days::new(days.saturating_sub(1) as u64))
+    else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(date) = log_date_of(&name) else { continue };
+        if date >= cutoff {
+            continue;
+        }
+        if std::fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
+/// 从 `yekitrim-YYYYMMDD.log` 里取出那一天；不是这个形状 = `None`。
+fn log_date_of(name: &str) -> Option<chrono::NaiveDate> {
+    let date = name.strip_prefix(LOG_FILE_PREFIX)?.strip_suffix(LOG_FILE_SUFFIX)?;
+    if date.len() != 8 || !date.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    chrono::NaiveDate::parse_from_str(date, "%Y%m%d").ok()
 }
 
 #[derive(Default)]
@@ -186,7 +240,7 @@ impl LogBusLayer {
             match std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open(dir.join(format!("yekitrim-{date}.log")))
+                .open(dir.join(format!("{LOG_FILE_PREFIX}{date}{LOG_FILE_SUFFIX}")))
             {
                 Ok(f) => {
                     st.file = Some(f);
@@ -391,6 +445,74 @@ mod tests {
         let rec = rx.try_recv().expect("实时接收端应拿到订阅后的一条");
         assert_eq!(rec.text, "after");
         assert_eq!(rec.seq, 2);
+    }
+
+    /// 保留期清理：40 份按天日志（今天往前一天一份）跑一次，**恰好剩 30 份**。
+    ///
+    /// 这是删文件的改动，所以顺带钉住三条边界：
+    /// ① 留下的必须是最新的 30 天（不是"随机删 10 个"）；
+    /// ② 今天那份必须在（它是正在写的那份）；
+    /// ③ 名字不匹配的（`render-*.log` / 用户自己丢的文件）**一个都不许动**。
+    #[test]
+    fn prune_old_logs_keeps_the_newest_days_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let today = chrono::Local::now().date_naive();
+        for i in 0..40i64 {
+            let day = today.checked_sub_days(chrono::Days::new(i as u64)).unwrap();
+            let name = format!("yekitrim-{}.log", day.format("%Y%m%d"));
+            std::fs::write(dir.path().join(name), "x").unwrap();
+        }
+        // 邻居：渲染日志（render_proc 按份数管，不归这里）与一个名字不合规的文件
+        std::fs::write(dir.path().join("render-j1.log"), "x").unwrap();
+        std::fs::write(dir.path().join("yekitrim-latest.log"), "x").unwrap();
+
+        assert_eq!(prune_old_logs(dir.path(), 30), 10, "40 天里只该删最老的 10 份");
+
+        let mut left: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("yekitrim-") && n != "yekitrim-latest.log")
+            .collect();
+        left.sort();
+        assert_eq!(left.len(), 30, "剩 30 份按天日志");
+        let name_of = |i: u64| {
+            format!(
+                "yekitrim-{}.log",
+                today.checked_sub_days(chrono::Days::new(i)).unwrap().format("%Y%m%d")
+            )
+        };
+        assert!(left.contains(&name_of(0)), "今天那份必须在（还在写）");
+        assert!(left.contains(&name_of(29)), "窗口下界那一天保留");
+        assert!(!left.contains(&name_of(30)), "第 31 天该删");
+        // 名字不匹配的两个都还在
+        assert!(dir.path().join("render-j1.log").exists(), "渲染日志不归这里管");
+        assert!(dir.path().join("yekitrim-latest.log").exists(), "名字不合规的一律不碰");
+
+        // 幂等 + 0 = 关闭（绝不"删光"）
+        assert_eq!(prune_old_logs(dir.path(), 30), 0, "第二次没东西可删");
+        assert_eq!(prune_old_logs(dir.path(), 0), 0, "0 = 关闭清理");
+        assert!(dir.path().join(&name_of(29)).exists(), "0 不许删任何文件");
+    }
+
+    #[test]
+    fn log_date_of_only_accepts_the_daily_shape() {
+        assert_eq!(
+            log_date_of("yekitrim-20260101.log"),
+            chrono::NaiveDate::from_ymd_opt(2026, 1, 1)
+        );
+        for bad in [
+            "render-j1.log",
+            "yekitrim-.log",
+            "yekitrim-2026.log",
+            "yekitrim-202601011.log",
+            "yekitrim-2026010a.log",
+            "yekitrim-20261332.log",
+            "yekitrim-20260101.log.gz",
+            "notes.txt",
+        ] {
+            assert!(log_date_of(bad).is_none(), "{bad} 不该被当成按天日志");
+        }
     }
 
     #[test]

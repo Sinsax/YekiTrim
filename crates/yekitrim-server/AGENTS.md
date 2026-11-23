@@ -25,6 +25,13 @@
   `ensure_global_config` **之间**调 `yekitrim_core::config::migrate_top_level_config_to`（顶层两份
   合并后改名 `*.migrated-<日期>.bak`）。幂等、fail-soft；规则见 core 的 config 卡。
 - `AppState`（`src/model.rs`）：共享句柄（`AuthService`/`JobManager`/日志总线）。⚠️ **里面没有"当前工程"**。
+- `spawn_daily_maintenance(state, first_delay, period)` 是**保留期 + 每日维护**（生产传
+  `(10min, 24h)`，`run_with` 里紧跟 `jobs::spawn_housekeeping` 起）：过期会话 +
+  `audit` / `llm_usage` / 按天日志三处保留期清理（天数来自 `[storage]` 的三个 `*_keep_days`，
+  `0` = 该项关闭），跑完打一条 `daily maintenance: sessions=… audit=… usage=… logs=…`。
+  ⚠️ **别挂到 `spawn_housekeeping` 上**：那个是 5s 粒度的调度自愈（见「任务队列」），
+  两者差三个数量级。定时骨架是 `run_periodic(first_delay, period, task)`（单测用
+  `tokio::time::pause()` 验跳数，不真等 10 分钟）。
 - `jobs.rs`：`JobManager`（`create`/`wait_start`/`cancel`/`complete`/`fail`/`busy_with`/`spawn_housekeeping`）与
   `JobSpec`/`JobHandle`/`JobSummary`/`JobEvent`/`JobClass`/`JobPriority`。
 - 其余模块见「边界」。`docs/job-queue.md` = 任务队列说明书，**改档位或上限要一起改**。

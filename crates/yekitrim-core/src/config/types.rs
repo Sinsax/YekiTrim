@@ -673,10 +673,43 @@ pub struct StorageConfig {
     /// 浏览并选目录建项目。任何情况下都**不接受上传**、不接受白名单之外的路径。
     #[serde(default)]
     pub local_roots: Vec<String>,
+
+    // ---- 保留期（服务端每日维护 `spawn_daily_maintenance` 用）----
+    //
+    // ⚠️ 三个都**不是** `#[serde(default)]`（那会给 u32 落 0 = "关闭清理"）：老配置文件里
+    // 没有这几个键时，必须落到下面那几个 `default_*` 的**默认天数**，否则升级上来的机器
+    // 会静默变成"永不清理"（问题原样保留，还没人看得出来）。
+    /// `audit` 表保留多少天（更早的行由每日维护删掉）。`0` = **关闭清理**。
+    ///
+    /// 审计是安全用途：默认给 90 天。要长期留档请自己导出，别把这里设成 0 ——
+    /// 那张表只会一直长（每次登录/改密/邀请码动作都写一行）。
+    #[serde(default = "default_audit_keep_days")]
+    pub audit_keep_days: u32,
+    /// `llm_usage` 表保留多少天（`0` = 关闭清理）。默认 365 —— 用量是**按年**看的。
+    #[serde(default = "default_usage_keep_days")]
+    pub usage_keep_days: u32,
+    /// `<数据目录>/logs/yekitrim-YYYYMMDD.log` 保留多少天（`0` = 关闭清理）。默认 30。
+    ///
+    /// 一天一份，判据是**文件名里的日期**（见 `yekitrim_service::logbus::prune_old_logs`）。
+    /// ⚠️ 只管 `yekitrim-*.log`：`render-*.log` 由 `render_proc::prune_logs` 按份数管。
+    #[serde(default = "default_log_keep_days")]
+    pub log_keep_days: u32,
 }
 
 fn default_watermark_pct() -> u32 {
     10
+}
+
+fn default_audit_keep_days() -> u32 {
+    90
+}
+
+fn default_usage_keep_days() -> u32 {
+    365
+}
+
+fn default_log_keep_days() -> u32 {
+    30
 }
 
 impl Default for StorageConfig {
@@ -687,6 +720,9 @@ impl Default for StorageConfig {
             disk_watermark_pct: default_watermark_pct(),
             default_quota_bytes: 0,
             local_roots: Vec::new(),
+            audit_keep_days: default_audit_keep_days(),
+            usage_keep_days: default_usage_keep_days(),
+            log_keep_days: default_log_keep_days(),
         }
     }
 }

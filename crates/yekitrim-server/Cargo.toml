@@ -46,3 +46,6 @@ reqwest = { version = "0.12", features = ["json"] }
 tempfile = "3"
 # 路由单测（oneshot 调用 Router）
 tower = { version = "0.5", features = ["util"] }
+# `tokio::time::pause()` / `#[tokio::test(start_paused = true)]`（每日维护的跳数单测）。
+# ⚠️ `full` **不**包含 `test-util`，它只给测试用，别加到上面普通依赖那一行。
+tokio = { version = "1", features = ["full", "test-util"] }

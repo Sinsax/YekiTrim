@@ -30,12 +30,16 @@ LLM 用量账本（`usage`）、运行日志总线（`logbus`）、单实例锁�
   读侧 `assets::{AssetKind, asset_status, list_items, scan_candidates, set_asset, bind_material, remove_material,
   slot_bound, preload_policy}`。
 - **账本**：`db::{Db, SCHEMA_VERSION, data_dir, db_path, now_secs}`；`user::cmd_*`；`invite::cmd_*`；
+  保留期清理：`Db::purge_old_audit(days)` / `Db::purge_old_llm_usage(days)`（只删**超过保留期**的行，
+  `0` = 关闭清理 = 一条都不删；由 `yekitrim-server` 的每日维护调用，本 crate 不自己起定时器）；
   `auth::{hash_password, verify_password, validate_password, generate_initial_password, new_token,
   new_invite_code, MIN_PASSWORD_LEN, SESSION_TTL_SECS, COOKIE_SID, COOKIE_CSRF, CSRF_HEADER}`。
 - **用量**：`usage::{DbSink, install, try_install_cli_sink, summarize, cmd_usage}`。
 - **诊断**：`doctor::{DEFAULT_PORT, DEFAULT_URL, cmd_doctor, probe_health}`；`disk::{space_bytes, writable, human_bytes}`；
   `instancelock::{InstanceLock, lock_path, read_lock, process_alive, LockInfo}`。
-- **日志**：`logbus::{bus, LogBus, LogBusLayer, enable_file_log, file_log_path, snapshot, subscribe}`。
+- **日志**：`logbus::{bus, LogBus, LogBusLayer, enable_file_log, file_log_path, prune_old_logs, snapshot, subscribe}`。
+  `prune_old_logs(dir, days)` 是**按天日志的保留期清理**（判据 = **文件名里的日期**，保留最近
+  `days` 天含今天，`0` = 关闭）；`render-*.log` **不归它管**（`render_proc::prune_logs` 按份数留 20 份）。
 - **采集**：`ingest::{cmd_token, cmd_status, generate_token}`；`recorder::{RecorderBackend, RecorderClient,
   BiliLiveToolsClient, RecorderRoom, room_id_from_dir_name, room_id_from_rel_path}`（`RecorderBackend` 按
   `[ingest.recorder].kind` 选后端：录播姬 `/api/room` + Basic；biliLive-tools `/recorder/list` +

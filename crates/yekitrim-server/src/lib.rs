@@ -581,6 +581,15 @@ where
     // 这个 tick 保证其它任务不会因此永远卡在队列里（并把"谁挡住谁"写进日志）。
     jobs::spawn_housekeeping(state.jobs.clone());
 
+    // 保留期与每日维护（T6）：过期会话 + audit / llm_usage / 按天日志，启动 10 分钟后首跳。
+    // ⚠️ **别挂到上面那个 `spawn_housekeeping`**：它是 5s 粒度的调度自愈，
+    // 拿它当"每日"用等于每 5 秒考虑一次删数据。
+    let first_maintenance = maintenance_first_delay();
+    info!(
+        "每日维护：启动后 {first_maintenance:?} 首跳、之后每 {MAINTENANCE_PERIOD:?} 一次（保留期见 [storage]）"
+    );
+    spawn_daily_maintenance(state.clone(), first_maintenance, MAINTENANCE_PERIOD);
+
     let router = api::router(state.clone());
     let app = Router::new()
         .nest("/api", router)
@@ -703,6 +712,160 @@ where
 
 /// 收到关停信号后，最多再等这么久让在飞的请求收尾（见 `run_with` 里的说明）。
 const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
+
+// ============================================================================
+// 保留期与每日维护（remediation P0 T6）
+// ============================================================================
+//
+// 三处数据曾经**都没有保留期**：`purge_expired_sessions` 只在启动时跑一次（它自己的
+// 注释却写着"启动 + 每日一次的后台任务用"，那个任务不存在），`audit` / `llm_usage`
+// 两张表无清理，`<data_dir>/logs/yekitrim-YYYYMMDD.log` 一天一份、永不删除。这里补上那台"每日"。
+
+/// 每日维护的**生产**首次延迟：启动后 10 分钟。
+///
+/// 为什么不立刻跑：启动期本来就有一串一次性工作（建表、旧配置迁移、项目占用刷新、孤儿清扫）。
+/// 维护要**删数据**，晚 10 分钟既不耽误"今天生效"，也不会和启动抢磁盘。
+const MAINTENANCE_FIRST_DELAY: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+/// 每日维护周期：24 小时。
+const MAINTENANCE_PERIOD: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+/// 环境变量 `YEKITRIM_MAINTENANCE_FIRST_DELAY_SECS` = **只给人肉验收用**的缩短开关（秒）。
+///
+/// 判据是"启动后日志里出现 `daily maintenance: …`"，而生产值要等 10 分钟 —— 于是这条
+/// 定时器最容易被"看着像实现了"糊过去。给一个显式开关：设成 15 起服务，15 秒后就能看到那行；
+/// **不设时永远是生产值**，改不到用户的日常行为。
+fn maintenance_first_delay() -> std::time::Duration {
+    std::env::var("YEKITRIM_MAINTENANCE_FIRST_DELAY_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map(std::time::Duration::from_secs)
+        .unwrap_or(MAINTENANCE_FIRST_DELAY)
+}
+
+/// 三处数据各自的保留天数（来自 `[storage]` 的
+/// `audit_keep_days` / `usage_keep_days` / `log_keep_days`）。
+///
+/// 抽成显式参数而不是让清理函数自己读配置：这样"读配置"与"删数据"分开，单测能给定值跑，
+/// 不必依赖本机真实 config.toml。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RetentionDays {
+    audit: u32,
+    usage: u32,
+    logs: u32,
+}
+
+impl RetentionDays {
+    /// 读**当前管理员**的 `config.toml`（与设置页 / `/api/config` 的 `[storage]` 同一份）。
+    ///
+    /// 服务端进程里 `Owner::Local` 就是启动时 `install_local_admin` 定的那个管理员
+    /// （`owner::set_local_admin`），所以这里读到的是"这台机器的配置"。
+    fn from_config() -> Self {
+        let s = yekitrim_core::config::load_global_config().storage;
+        Self { audit: s.audit_keep_days, usage: s.usage_keep_days, logs: s.log_keep_days }
+    }
+}
+
+/// 一次维护删了什么（正好是那条 info 的四个数）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Purged {
+    sessions: usize,
+    audit: usize,
+    usage: usize,
+    logs: usize,
+}
+
+/// 四项清理本体（**同步**：SQLite 与目录删除都是阻塞 IO，必须由调用方放到 blocking 线程）。
+///
+/// ⚠️ 每个 purge 自己保证"只删超过保留期的"、`0` = 关闭（见 `yekitrim_service::db`）。
+/// 单项失败只 warn 并算 0 —— 维护任务不该因为一项坏掉就整轮不跑。
+fn purge_now(auth: &auth::AuthService, log_dir: &Path, keep: RetentionDays) -> Purged {
+    let count = |what: &str, r: anyhow::Result<usize>| match r {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::warn!("每日维护：清理{what}失败（其余项照跑）: {e:#}");
+            0
+        }
+    };
+    Purged {
+        sessions: auth.purge_expired(),
+        audit: count("过期审计", auth.db().purge_old_audit(keep.audit)),
+        usage: count("过期用量", auth.db().purge_old_llm_usage(keep.usage)),
+        logs: logbus::prune_old_logs(log_dir, keep.logs),
+    }
+}
+
+/// 那条 info 的正文（纯函数：格式是**验收判据**，单测直接钉它）。
+///
+/// 审计表是安全用途 —— "删了多少"必须写进日志，不许静默删。
+fn maintenance_line(p: Purged, keep: RetentionDays) -> String {
+    format!(
+        "daily maintenance: sessions={} audit={} usage={} logs={}（保留 audit/usage/log = {}/{}/{} 天，0=该项关闭）",
+        p.sessions, p.audit, p.usage, p.logs, keep.audit, keep.usage, keep.logs
+    )
+}
+
+/// 跑一次每日维护：读保留期 → 四项清理（blocking 线程）→ 一条 info 说明删了多少。
+async fn run_daily_maintenance(state: &Arc<model::AppState>) -> Purged {
+    let auth = Arc::clone(&state.auth);
+    // 日志目录与 `logbus::enable_file_log()` 是同一个：两者都从数据目录派生
+    // （server 启动时 `--data-dir` 已经写进环境变量，`db::data_dir()` == 这里这个）。
+    // 走 `auth.data_dir()` 而不是再调一次 `enable_file_log()`，是为了让单测能指到临时目录。
+    let log_dir = state.auth.data_dir().join("logs");
+    let done = tokio::task::spawn_blocking(move || {
+        let keep = RetentionDays::from_config();
+        (purge_now(&auth, &log_dir, keep), keep)
+    })
+    .await;
+    let Ok((purged, keep)) = done else {
+        tracing::warn!("每日维护未能执行（blocking 线程异常），本轮跳过");
+        return Purged::default();
+    };
+    tracing::info!("{}", maintenance_line(purged, keep));
+    purged
+}
+
+/// 定时骨架：**首跳在 `first_delay` 之后**，此后每 `period` 一跳，每跳跑一次 `task`。
+///
+/// 单独抽出来是为了能测：间隔是参数 ⇒ 单测传 `(10ms, 20ms)` + `tokio::time::pause()`
+/// 就能证明**跳数与顺序**（首跳 ≠ 立刻、也 ≠ 一个 period）。别写"真等 10 分钟"的用例 ——
+/// 那种要么被人删掉，要么被人偷偷调成 1ms 之后失去意义。
+async fn run_periodic<F, Fut>(
+    first_delay: std::time::Duration,
+    period: std::time::Duration,
+    mut task: F,
+) where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    // `interval_at` = "第一次在 start 时刻触发，之后每 period"。比"先 sleep 再 interval"
+    // 少一个状态（那两段之间的时间基准不同，很容易差出半个 period）。
+    // `period` 为 0 时 `interval` 会 panic —— 给 1ms 兜底（生产是常量 24h）。
+    let mut ticker = tokio::time::interval_at(
+        tokio::time::Instant::now() + first_delay,
+        period.max(std::time::Duration::from_millis(1)),
+    );
+    loop {
+        ticker.tick().await;
+        task().await;
+    }
+}
+
+/// 起每日维护后台任务。生产传 `(MAINTENANCE_FIRST_DELAY, MAINTENANCE_PERIOD)` = (10min, 24h)。
+///
+/// ⚠️ **不要挂到 `jobs::spawn_housekeeping`**：那是 5s 粒度的调度自愈，两者差三个数量级，
+/// 混在一起会让"删数据"以 5s 的频率被考虑一次。
+pub fn spawn_daily_maintenance(
+    state: Arc<model::AppState>,
+    first_delay: std::time::Duration,
+    period: std::time::Duration,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(run_periodic(first_delay, period, move || {
+        let state = Arc::clone(&state);
+        async move {
+            run_daily_maintenance(&state).await;
+        }
+    }))
+}
 
 pub(crate) fn open_browser(url: &str) {
     let opened = if cfg!(target_os = "windows") {
@@ -841,6 +1004,134 @@ fn bind_conflict_hint(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- T6：保留期与每日维护 ----------------------------------------------
+
+    /// 每日维护的**跳数与顺序**：间隔是参数，测试传 `(10ms, 20ms)` 配虚拟时钟证明
+    /// —— 首跳在 `first_delay`（不是立刻、也不是一个 period），之后每 `period` 一跳。
+    ///
+    /// ⚠️ 断言的是**记录下来的虚拟时刻**，不是"真等 10 分钟"：
+    /// `start_paused` 让时钟只在 `advance` 时走，所以这条用例是确定性的。
+    #[tokio::test(start_paused = true)]
+    async fn daily_maintenance_ticks_after_first_delay_then_every_period() {
+        let ticks: Arc<std::sync::Mutex<Vec<u128>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let start = tokio::time::Instant::now();
+        let recorder = Arc::clone(&ticks);
+        let handle = tokio::spawn(run_periodic(
+            std::time::Duration::from_millis(10),
+            std::time::Duration::from_millis(20),
+            move || {
+                let recorder = Arc::clone(&recorder);
+                async move {
+                    recorder
+                        .lock()
+                        .unwrap()
+                        .push((tokio::time::Instant::now() - start).as_millis());
+                }
+            },
+        ));
+
+        // 先让它跑起来、把定时器**注册上**（否则下面第一次 advance 时它还没被 poll 过，
+        // `interval_at` 的基准就成了"第一次被 poll 的时刻"，首跳会整体后移）
+        settle().await;
+
+        // 首跳之前：一跳都不许有（这条把"首跳 = first_delay"钉死，而不是"立刻"）
+        tokio::time::advance(std::time::Duration::from_millis(9)).await;
+        settle().await;
+        assert!(ticks.lock().unwrap().is_empty(), "首跳必须等满 first_delay(10ms)");
+
+        tokio::time::advance(std::time::Duration::from_millis(1)).await; // t=10ms
+        settle().await;
+        assert_eq!(*ticks.lock().unwrap(), vec![10], "首跳在 10ms");
+
+        // 也不许"半个 period 就再来一次"（推进到差 1ms 那一刻，仍然只有首跳）
+        tokio::time::advance(std::time::Duration::from_millis(19)).await; // t=29ms
+        settle().await;
+        assert_eq!(ticks.lock().unwrap().len(), 1, "period 没到，不许再来一跳");
+
+        // 之后每 20ms 一跳（30 → 50 → 70），顺序单调。
+        // ⚠️ 每次 advance 都要**正好落在截止时刻**上：虚拟时钟是"一次跳到目标时刻"，
+        // 跳过头时任务看到的是跳过后的时刻（实测 10 → 35 那种），那就不是在验间隔了。
+        for _ in 0..3 {
+            tokio::time::advance(std::time::Duration::from_millis(1)).await;
+            settle().await;
+            tokio::time::advance(std::time::Duration::from_millis(19)).await;
+            settle().await;
+        }
+        assert_eq!(*ticks.lock().unwrap(), vec![10, 30, 50, 70], "跳数 4、间隔 20ms、顺序单调");
+
+        handle.abort();
+    }
+
+    /// 让刚被时钟叫醒的后台任务真的跑完一轮（虚拟时钟下 "advance 完就断言" 会抢跑）。
+    async fn settle() {
+        for _ in 0..3 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    /// 四项清理的**编排**（含"日志目录在哪"）：过期会话删、窗口外的用量删、
+    /// 40 份按天日志删成 30 份，而窗口内的一条都不许动。
+    #[tokio::test]
+    async fn purge_now_deletes_only_expired_rows_and_old_logs() {
+        let dir = tempfile::tempdir().unwrap();
+        let auth = auth::AuthService::open(dir.path().to_path_buf(), Listening::Loopback).unwrap();
+        let db = auth.db();
+        let uid = db.create_user("admin", "h", "admin", false, 0).unwrap();
+        let now = db::now_secs();
+        db.create_session("sid-old", uid, "c", 1, None).unwrap();
+        db.create_session("sid-new", uid, "c", now + 3600, None).unwrap();
+        let mk = |ts: i64| yekitrim_llm::usage::UsageRecord {
+            ts,
+            label: "事件检测".into(),
+            model: "m1".into(),
+            host: "example.com".into(),
+            attempts: 1,
+            ok: true,
+            ..Default::default()
+        };
+        db.insert_llm_usage(&mk(now - 400 * 86_400)).unwrap(); // 365 天外
+        db.insert_llm_usage(&mk(now - 10 * 86_400)).unwrap(); // 窗口内
+
+        // 40 份按天日志（今天往前一天一份）
+        let log_dir = dir.path().join("logs");
+        std::fs::create_dir_all(&log_dir).unwrap();
+        let today = chrono::Local::now().date_naive();
+        for i in 0..40 {
+            let day = today.checked_sub_days(chrono::Days::new(i)).unwrap();
+            std::fs::write(
+                log_dir.join(format!("yekitrim-{}.log", day.format("%Y%m%d"))),
+                "x",
+            )
+            .unwrap();
+        }
+
+        // 直接同步跑（生产由 `run_daily_maintenance` 放进 spawn_blocking）
+        let purged = purge_now(&auth, &log_dir, RetentionDays { audit: 90, usage: 365, logs: 30 });
+        assert_eq!(
+            purged,
+            Purged { sessions: 1, audit: 0, usage: 1, logs: 10 },
+            "过期会话 1 / 过期用量 1 / 日志 40→30"
+        );
+        // 窗口内的都还在（这是删数据的改动，反向也要钉住）
+        assert!(db.session("sid-new").unwrap().is_some(), "没过期的会话不许删");
+        assert_eq!(
+            std::fs::read_dir(&log_dir).unwrap().flatten().count(),
+            30,
+            "日志目录只剩 30 份"
+        );
+    }
+
+    /// 那条 info 的**格式**是验收判据（"第一次上线要说明删了多少"）。
+    #[test]
+    fn maintenance_line_names_all_four_counts() {
+        let line = maintenance_line(
+            Purged { sessions: 1, audit: 2, usage: 3, logs: 4 },
+            RetentionDays { audit: 90, usage: 365, logs: 30 },
+        );
+        assert!(line.starts_with("daily maintenance: sessions=1 audit=2 usage=3 logs=4"), "{line}");
+        assert!(line.contains("90/365/30"), "保留天数也要露出来，排障才知道删的是哪一档: {line}");
+    }
 
     /// 初始密码护栏的判据：**是否对外暴露**，不是"是否非 loopback"。
     #[test]

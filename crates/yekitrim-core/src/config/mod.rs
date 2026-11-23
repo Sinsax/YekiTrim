@@ -215,6 +215,12 @@ default_quota_bytes = 0
 # 例: local_roots = ["F:/media", "D:/BililiveRecorder"]
 # 该功能只读取服务器上已存在的文件，永不接受上传；普通用户仍只能用 <projects_root>/users/<uid>
 local_roots = []
+# ---- 保留期（服务端每日维护：启动后 10 分钟跑一次，之后每 24 小时一次）----
+# 只删**超过保留期**的行/文件，并打一条 info 说明删了多少；0 = 关闭该项清理（一个都不删）。
+# audit 是安全审计用途，默认留 90 天（要长期留档请自己导出，别设 0 —— 那张表会一直长）。
+audit_keep_days = 90        # audit 表保留天数（登录/改密/邀请码等动作）
+usage_keep_days = 365       # llm_usage 表保留天数（设置页「LLM 用量」按年看）
+log_keep_days = 30          # logs/yekitrim-YYYYMMDD.log 保留天数（render-*.log 另有一套，按份数）
 
 [stickers]
 # 贴纸包（zip）的体积上限，单位 MiB。默认 1 GiB 上传 / 2 GiB 解压总量。
@@ -910,6 +916,18 @@ fn merge(base: &mut Config, overlay: Config) {
         if !base.storage.local_roots.contains(root) {
             base.storage.local_roots.push(root.clone());
         }
+    }
+    // 保留期：与上面同一条口径（非默认值才覆盖）。默认值必须从 `Default` 现取 ——
+    // 写成字面量 90/365/30 的话，以后改默认天数就只在"没有项目覆盖"那条路上生效。
+    let storage_d = crate::config::types::StorageConfig::default();
+    if overlay.storage.audit_keep_days != storage_d.audit_keep_days {
+        base.storage.audit_keep_days = overlay.storage.audit_keep_days;
+    }
+    if overlay.storage.usage_keep_days != storage_d.usage_keep_days {
+        base.storage.usage_keep_days = overlay.storage.usage_keep_days;
+    }
+    if overlay.storage.log_keep_days != storage_d.log_keep_days {
+        base.storage.log_keep_days = overlay.storage.log_keep_days;
     }
 
     // [ingest]：同样只在项目配置显式写了非默认值时才覆盖
@@ -2566,6 +2584,50 @@ mod cutting_min_free_gb_merge_tests {
         let mut maxed = CuttingConfig::default();
         maxed.min_free_gb = u64::MAX;
         assert_eq!(maxed.min_free_bytes(), u64::MAX, "饱和乘法不许回绕");
+    }
+}
+
+#[cfg(test)]
+mod storage_retention_tests {
+    use super::*;
+
+    /// 保留期三键的**读入**：老配置文件里没有它们 ⇒ 必须落到 90/365/30 的默认天数。
+    ///
+    /// ⚠️ 这三个字段刻意用 `#[serde(default = "default_*")]` 而不是裸 `#[serde(default)]`：
+    /// 裸的那个给 u32 落 **0 = 关闭清理** —— 于是"升级上来的老配置"会静默变成"永不清理"，
+    /// 问题原样保留、日志里还一个错都不报。
+    #[test]
+    fn legacy_file_without_keys_gets_the_default_days() {
+        let legacy: Config = toml::from_str("[storage]\nprojects_root = \"/data/projects\"\n").unwrap();
+        assert_eq!(legacy.storage.audit_keep_days, 90);
+        assert_eq!(legacy.storage.usage_keep_days, 365);
+        assert_eq!(legacy.storage.log_keep_days, 30);
+        // 模板里的值必须与代码默认一致（改默认只改一处，别只改模板）
+        let tpl: Config = toml::from_str(GLOBAL_CONFIG_TOML).unwrap();
+        assert_eq!(
+            (tpl.storage.audit_keep_days, tpl.storage.usage_keep_days, tpl.storage.log_keep_days),
+            (90, 365, 30)
+        );
+    }
+
+    /// 三个保留期都按 `merge()` 的既有口径：**非默认才覆盖**。
+    /// 显式写 `0`（关闭清理）是合法意图，要能盖过全局的 90/365/30。
+    #[test]
+    fn merge_follows_the_non_default_rule() {
+        let mut base = Config::default();
+        let mut overlay = Config::default();
+        overlay.storage.audit_keep_days = 7;
+        overlay.storage.log_keep_days = 3;
+        merge(&mut base, overlay);
+        assert_eq!((base.storage.audit_keep_days, base.storage.usage_keep_days, base.storage.log_keep_days), (7, 365, 3));
+        assert_eq!(base.storage.usage_keep_days, 365, "没写的那项不许被动");
+
+        let mut base = Config::default();
+        base.storage.audit_keep_days = 7;
+        let mut overlay = Config::default();
+        overlay.storage.audit_keep_days = 0;
+        merge(&mut base, overlay);
+        assert_eq!(base.storage.audit_keep_days, 0, "显式 0 = 关闭清理，必须盖过 7");
     }
 }
 
