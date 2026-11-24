@@ -48,13 +48,13 @@
         {{ shownTotal }}<template v-if="filterKey !== 'all'">/{{ poolTotal }}</template> 个片段<template v-if="uncutEvents.length"> · 未剪切 {{ uncutEvents.length }}</template>
       </span>
       <span class="v-sep"></span>
-      <!-- 视图密度：大卡（默认，带缩略图）/ 紧凑（一行一条，扫条目快）。
-           偏好持久化；卡片内部结构不变，只改网格列宽与媒体区高度。 -->
-      <button class="mini-btn" :class="{ selected: density === 'compact' }"
-              :title="density === 'compact' ? '切回大卡（带缩略图）' : '切到紧凑视图（一行一条）'"
+      <!-- 视图密度（用户 2026-11-24 定稿）：卡片 = 带缩略图的卡片墙（默认）/ 列表 = 一行一个片段。
+           偏好持久化；两档共用同一份卡片标记，列表靠重排栅格实现。 -->
+      <button class="mini-btn" :class="{ selected: density === 'list' }"
+              :title="density === 'list' ? '切回卡片视图（带缩略图）' : '切到列表视图（一行一个片段）'"
               @click="toggleDensity">
-        <Icon :name="density === 'compact' ? 'list' : 'grid'" :size="12" />
-        {{ density === 'compact' ? '紧凑' : '大卡' }}
+        <Icon :name="density === 'list' ? 'list' : 'grid'" :size="12" />
+        {{ density === 'list' ? '列表' : '卡片' }}
       </button>
       <span class="v-sep"></span>
       <button v-if="publishConfigured && isAdmin()" class="mini-btn" :disabled="!publishableClips.length || publishAllBusy"
@@ -726,13 +726,20 @@ const savedSub = (() => {
     return LEGACY_SUB_FILTERS[v] || ''
   } catch { return '' }
 })()
-/** 视图密度：`big`（大卡，带缩略图）/ `compact`（紧凑，一行一条）。持久化到 localStorage。 */
+/** 视图密度：`card`（卡片，带缩略图，默认）/ `list`（列表，一行一个片段）。持久化到 localStorage。
+ *  ⚠️ 旧值迁移：`big`（原「大卡」）→ `card`，`compact`（原「紧凑」）→ `list` ——
+ *  2026-11-24 两档改名，读旧值时**不再写回旧值**（下一次点切换就自动写新值）。 */
 const DENSITY_KEY = 'yekitrim.slices.density'
+const LEGACY_DENSITY = { big: 'card', compact: 'list' }
 const density = ref((() => {
-  try { return localStorage.getItem(DENSITY_KEY) === 'compact' ? 'compact' : 'big' } catch { return 'big' }
+  try {
+    const v = localStorage.getItem(DENSITY_KEY) || ''
+    if (v === 'list' || v === 'card') return v
+    return LEGACY_DENSITY[v] || 'card'
+  } catch { return 'card' }
 })())
 function toggleDensity() {
-  density.value = density.value === 'compact' ? 'big' : 'compact'
+  density.value = density.value === 'list' ? 'card' : 'list'
   try { localStorage.setItem(DENSITY_KEY, density.value) } catch { /* 隐私模式忽略 */ }
 }
 
@@ -1712,14 +1719,41 @@ onUnmounted(() => {
 .sort-bar { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-bottom:10px; }
 .sort-bar .sort-count { margin-left:auto; }
 /* 删除（破坏性）推到卡片右下角，离「精修」远一点，别误点 */
-/* ── 紧凑视图：一行一条。只压媒体区与内边距，卡片内部结构与动作一个不动 ── */
-.wall-compact { grid-template-columns:1fr; gap:var(--s-2); }
-.wall-compact .pcard { padding:10px 14px; }
-.wall-compact .media-slot { display:none; }
-.wall-compact .clip-card .card-title { height:auto; min-height:0; }
-.wall-compact .clip-card .card-title h2 { -webkit-line-clamp:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.wall-compact .summary-slot { max-height:40px; overflow:hidden; }
-.wall-compact .clip-card .foot { min-height:0; margin-top:6px; }
+/* ── 列表档（用户 2026-11-24 定稿：卡片 = 带缩略图的卡片墙，列表 = 一行一个片段）────────────────
+   一行一个片段：左缩略图 / 中标题+标签+区间+时间热度+摘要 / 右动作。
+   实现方式 = **在卡片 DOM 上重排栅格**（不复制模板）：.pcard 从 flex 列变成 grid 行，
+   两档共用同一份标记与同一套动作/门控，只有密度不同。
+   ⚠️ 未剪切事件没有缩略图 ⇒ 左列留空，标题起点与已剪行对齐。 */
+.wall-list { grid-template-columns:1fr; gap:6px; }
+.wall-list .pcard.clip-card {
+  display:grid;
+  grid-template-columns:132px minmax(0,1fr) auto;
+  grid-auto-rows:min-content;
+  column-gap:14px; row-gap:2px;
+  align-content:center;
+  min-height:0; height:auto;
+  padding:10px 16px 10px 14px;
+}
+/* 角标：卡片上的 ✦ 与斜角类型带在列表里会压住标题 ⇒ 换成右上角一行小字 */
+.wall-list .pcard::before { display:none; }
+.wall-list .pcard .ribbon { top:6px; right:10px; transform:none; padding:0;
+  background:transparent; font-size:10.5px; letter-spacing:0; }
+/* 左列缩略图：固定 132x74、垂直居中（未剪事件没有该节点 ⇒ 这一列自然留空） */
+.wall-list .media-slot { grid-column:1; grid-row:1 / span 5; align-self:center;
+  width:132px; height:74px; margin:0; }
+/* 中列：标题 / 标签 / 区间 / 时间热度 / 摘要各占一行 */
+.wall-list .clip-card .card-title { grid-column:2; grid-row:1; height:auto; min-height:0; }
+.wall-list .clip-card .card-title h2 { font-size:14px; display:-webkit-box;
+  -webkit-line-clamp:1; -webkit-box-orient:vertical; overflow:hidden; }
+.wall-list .tag-row { grid-column:2; grid-row:2; min-height:0; }
+.wall-list .range-line { grid-column:2; grid-row:3; margin-top:0; max-height:22px; }
+.wall-list .meta-slot { grid-column:2; grid-row:4; height:auto; }
+.wall-list .summary-slot { grid-column:2; grid-row:5; height:auto; }
+.wall-list .summary-slot > div { -webkit-line-clamp:1; }
+.wall-list .uncut-card .summary-slot { height:auto; min-height:0; flex:none; }
+/* 右列动作：整列垂直居中、不换行（行高由内容撑，卡片不再有固定 390px） */
+.wall-list .clip-card .foot { grid-column:3; grid-row:1 / span 5; align-self:center;
+  margin:0; min-height:0; flex-wrap:nowrap; }
 
 .clip-card .clip-del { margin-left:auto; }
 /* ⚠️ 卡片脚现在最多**四颗**按钮（编辑 / 发布 / 精修 / 删除），而卡片内宽只有 ~230px：
