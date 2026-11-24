@@ -117,7 +117,9 @@
   `cli.config` 当**读**的配置路径。
 - `polish preview` 是**两条路**：先在输入目录向上找 `yekitrim.toml` —— 找到就起 `yekitrim_server::run()`
   打开同一 WebUI 精修页（`ServerArgs { host: "127.0.0.1", port: DEFAULT_PORT, open: true, config: Some(cfg), … }`）；
-  找不到才回退旧的独立 `yekitrim_polish::commands::cmd_preview`，保证命令仍然可用。
+  ⚠️ **找不到工程时不再回退旧独立预览**（整改 T14 第 2 步）：改为**打印指引并非零退出**
+  （「在 WebUI 里导入该工程，或先 `yekitrim init <视频>`」）。旧回退会把 `?dir=` 拼进一条前端已经不认的路由 ——
+  退出码 0、页面却停在工作台首页，比报错更糟。`cmd_preview` 现在**只剩 `polish test` 自检**一个调用方。
   ⚠️ **打开的是哪一页（代价：一条曾经静默失效的路由）**：WebUI v5 起只认数字项目 id ——
   `webui/src/router.js` 对 `/project/:cfg/:rest` 里**非数字**的 `:cfg` 一律 redirect 到 `/workbench`，
   而且**没有任何视图再读 `?dir=`**。所以旧实现拼的 `/#/project/<配置路径>/polish?dir=<片段目录>`

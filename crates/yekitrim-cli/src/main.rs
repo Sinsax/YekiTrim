@@ -148,7 +148,12 @@ fn project_id_for_config(db_file: &Path, cfg_file: &Path) -> Option<i64> {
 
 /// 尝试把 polish clip 目录定位到所属 yekitrim 工程，并启动/打开同一 WebUI 精修页。
 /// 找不到工程时回退旧的独立 preview，保证命令仍然可用。
-async fn run_polish_preview(input: &std::path::Path, mode: Option<&str>) -> anyhow::Result<()> {
+async fn run_polish_preview(
+    input: &std::path::Path,
+    // `--mode` 只对**已退役**的旧独立预览腿有意义（整改 T14 第 2 步删掉了那条回退路）。
+    // 保留形参只为 CLI 表面不变；将来若要重新给预览加模式，从这里接。
+    _mode: Option<&str>,
+) -> anyhow::Result<()> {
     use yekitrim_server::ServerArgs;
 
     let clip_dir = abs(input);
@@ -163,9 +168,14 @@ async fn run_polish_preview(input: &std::path::Path, mode: Option<&str>) -> anyh
         cursor = dir.parent();
     }
     let Some(cfg) = cfg_file else {
-        tracing::info!("未找到 clip 所属的 yekitrim.toml，回退到旧版独立 polish preview");
-        yekitrim_polish::commands::cmd_preview(input, mode.unwrap_or("")).await?;
-        return Ok(());
+        // 整改 T14 第 2 步：**不再回退旧版独立预览**（那条腿现在只剩 `polish test` 自检还在用）。
+        // 指引比"起一个不是你要的页面"诚实：旧实现会把 `?dir=` 拼进一条前端已经不认的路由，
+        // 退出码 0、页面却停在工作台首页。
+        anyhow::bail!(
+            "没找到 {} —— `polish preview` 现在要求片段在**已初始化的工程**里。\n  \
+             请在 WebUI 里导入该工程，或先跑 `yekitrim init <视频>`（它会写 yekitrim.toml）。",
+            yekitrim_core::path::PROJECT_CONFIG_FILE
+        );
     };
 
     // 项目 id 只有账本里有（WebUI 的 `/p/:pid` 路由认的是它）。查不到就如实退回首页 ——

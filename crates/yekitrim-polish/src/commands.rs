@@ -638,6 +638,10 @@ pub async fn cmd_llm_segment_for(
 // render
 // ============================================================
 
+/// 旧版**独立**预览（双端口起一个只读页面）。
+///
+/// ⚠️ 整改 T14 之后它**只剩 `polish test` 自检**一个调用方：`polish preview` 找不到工程时
+/// 已经改成"打印指引并非零退出"，不再回退到这条路。别再把 CLI 主路径接回来。
 pub async fn cmd_preview(project_path: &Path, mode: &str) -> anyhow::Result<()> {
     tracing::info!("👁️  Preview mode");
 

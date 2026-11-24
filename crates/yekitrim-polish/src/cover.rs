@@ -1,6 +1,6 @@
 //! polish::cover：封面生成（图层栈 文字/关键帧/背景 → HTML 构建 + Takumi 静态渲染）。
 //!
-//! 入口：`cmd_cover`、`cmd_cover_template`、`cmd_preview_cover`、`build_cover_html`、`cover_bg_vars`、`cover_frame_vars`、`cover_blur_css`、`sanitize_hex_color`、`cover_bg_mode`。
+//! 入口：`cmd_cover`、`cmd_cover_template`、`build_cover_html`、`cover_bg_vars`、`cover_frame_vars`、`cover_blur_css`、`sanitize_hex_color`、`cover_bg_mode`。
 //! 边界：`cover.image` 在消费侧要再做一次 `tenant::ensure_within`（纵深防御第③道，别删）；颜色进 HTML/CSS 前必须 `sanitize_hex_color`，公式只此一份（前端是镜像） —— 见 `crates/yekitrim-polish/AGENTS.md`
 
 use std::path::Path;
@@ -940,39 +940,6 @@ pub async fn cmd_cover_template(project_path: &Path, template: &str) -> anyhow::
     .await?;
     tracing::info!("  ✓ [cover] preset: {}", template);
     Ok(())
-}
-
-pub async fn cmd_preview_cover(project_path: &Path) -> anyhow::Result<()> {
-    let config = project::load_project(project_path)?;
-    let resolved = resolve_paths(project_path, &config);
-    let cover_image = project_path.join(COVER_FRAME_IMG);
-    if !cover_image.exists() {
-        // 没有封面帧则截一张
-        let video_path = &resolved.video;
-        // ⚠️ 时长走 `project_duration`（clip-meta.json 优先）：只 init 没跑 LLM 时 segments 是空的，
-        //    以前 `frame_pos × 0` 让预览封面恒取 0.1s 那一帧（review polish.md P3；
-        //    `cmd_cover` / `cmd_preview` 两处已同改，这里是最后一处）。
-        let duration = crate::render::project_duration(project_path, &config);
-        let frame_time = (duration * config.cover.frame_pos).max(0.1);
-        let mut cmd = yekitrim_core::process::cmd("ffmpeg");
-        cmd.args(["-ss", &frame_time.to_string(), "-i", video_path,
-                  "-vframes", "1", "-f", "image2pipe", "-vcodec", "mjpeg", "-q:v", "3", "-"]);
-        // 截帧也走带超时的那个出口（E2；与 `cmd_cover` 的封面截帧同款），
-        // 裸 `.output()` 在坏素材上会永久挂住。
-        let out = crate::render::ffmpeg::Ffmpeg::run_with_timeout(
-            cmd, "预览封面截帧", crate::render::ffmpeg::Ffmpeg::PROBE_TIMEOUT,
-        )
-        .map_err(|e| anyhow::anyhow!("预览封面截帧失败: {e:#}"))?;
-        let data = out.stdout;
-        if !data.is_empty() { std::fs::write(&cover_image, &data)?; }
-    }
-
-    let html = build_cover_html(project_path, &config, &resolved);
-    let port = server::start_file_server(project_path.to_path_buf(), Some(html)).await?;
-    let url = format!("http://127.0.0.1:{}", port);
-    tracing::info!("  Cover URL: {}", url);
-    yekitrim_core::process::cmd("cmd").args(["/c", "start", "", &url]).spawn().ok();
-    loop { tokio::time::sleep(std::time::Duration::from_secs(3600)).await; }
 }
 
 /// 封面画布：**恒 1920×1080 横版**（不跟随 `[canvas] orientation` —— 平台封面就是横的）。
