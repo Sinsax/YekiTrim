@@ -197,6 +197,21 @@ pub(super) async fn projects_create(
 ///
 /// 管理员可以给**任意绝对目录**（与单用户时代一致），非管理员只能是租户根内的相对路径；
 /// 目录里已经存在 `yekitrim.toml` 时**只登记/打开，不覆盖**（避免把已有工程的设置冲掉）。
+///
+/// ## ⚠️ 整个落盘段都在 blocking 池上（T4b）
+///
+/// 项目目录常常在**网络盘**上：`is_dir` / `is_file` / `read_dir` / `write_project_config` /
+/// `Workspace::load` / `refresh_bytes`（递归计量）/ `server.toml` 回写 —— 每一个都可能几百毫秒，
+/// 十几个并发就把 tokio worker 全占住（"建项目时整个服务器连不上"）。T4 只把
+/// `create_dir_all` 与 `find_first_video` 两处搬下去，剩下的照样能把 worker 按住，
+/// 所以这里改成**异步侧只算归属 + 抄参数，剩下整段一个闭包**：
+///
+/// * async 侧：`owner_of` → `owner_root`（纯路径运算）、把入参抄成 `'static` 的 String、
+///   拿一份 `Arc<Db>`（`AuthService::db_arc`，不能借 `&Db`）；
+/// * blocking 侧：选目录 → 判定 → 写配置 → 登记 → 计量 → 记 `server.toml` → 拼摘要。
+///
+/// ⚠️ **别在这里留裸 `std::fs` / `Db` 调用**：这条不变式只有一条判据，
+/// `create_project_runs_sync_io_off_the_worker`（单 worker + 心跳，回退成同步写法它必红）。
 pub(super) async fn create_local_project(
     state: &Arc<AppState>,
     user: &crate::auth::CurrentUser,
@@ -207,152 +222,155 @@ pub(super) async fn create_local_project(
     output_dir: Option<&str>,
     overwrite: bool,
 ) -> ApiResult {
-    let tenant = yekitrim_core::owner::owner_root(owner_of(&user));
-    // `create_dir_all` 是同步 IO（租户根在 `[storage] projects_root` 里，可能是网络盘），下 blocking 池。
-    let mkdir = tenant.clone();
+    // ---- async 侧：只有"归属"与"抄参数"（全是内存操作）----
+    let tenant = yekitrim_core::owner::owner_root(owner_of(user));
+    let uid = user.id;
+    let is_admin = user.is_admin();
+    // `username` 要进返回的摘要；`Arc<Db>` 是因为闭包必须 `'static`（不能借 `&state`）。
+    let username = user.username.clone();
+    let db = state.auth.db_arc();
+    let root_hint = root_hint.to_string();
+    let rel_dir = rel_dir.to_string();
+    let input_hint = input_hint.to_string();
+    let danmaku_hint = danmaku_hint.map(str::to_string);
+    let output_dir = output_dir.map(str::to_string);
+
+    // ---- blocking 侧：整段落盘（判目录 / 写配置 / 登记 / 计量 / 记忆 / 摘要）----
     blocking(move || {
-        std::fs::create_dir_all(&mkdir)
-            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("创建租户目录失败: {e}")))
-    })
-    .await?;
+        // `create_dir_all` 是同步 IO（租户根在 `[storage] projects_root` 里，可能是网络盘）。
+        std::fs::create_dir_all(&tenant)
+            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("创建租户目录失败: {e}")))?;
 
-    // ---- 这里**曾经**放过一道容量预检，已删除（2026-10-10）----
-    //
-    // 当时的写法是 `if !user.is_admin() { check_capacity(...) }`，理由是"手工建项目这条路
-    // 没查过配额"。**实测它一次都不会触发**：`source.kind = "local"` 在 `projects_create`
-    // 与 `/project/init` 两处入口都先挡了 `if !user.is_admin() → 403`，所以能走到这里的
-    // **只有管理员**，而闸门又豁免管理员 ⇒ 条件恒假。
-    //
-    // 起过的验证（隔离数据目录、上限设 1 字节、已登记占用 11 字节）：
-    // 管理员仍能建项目、返回 200 —— 确认是死代码，不是"没测到"。
-    //
-    // 结论：**手工建项目这条路上没有需要补的配额闸门** ——
-    // 非管理员建项目的三条路（B站链接 / 录播姬 / 下载）**本来就各自调了**
-    // `capacity::check_capacity`（`ingest.rs` / `ingest_worker.rs` / `download_worker.rs`），
-    // 而管理员**按设计**不受配额约束（他要能收拾一个已经超额的账号）。
-    // 别再把这段加回来 —— 要么真让它对某些人生效，要么就别写。
+        // ---- 这里**曾经**放过一道容量预检，已删除（2026-10-10）----
+        //
+        // 当时的写法是 `if !user.is_admin() { check_capacity(...) }`，理由是"手工建项目这条路
+        // 没查过配额"。**实测它一次都不会触发**：`source.kind = "local"` 在 `projects_create`
+        // 与 `/project/init` 两处入口都先挡了 `if !user.is_admin() → 403`，所以能走到这里的
+        // **只有管理员**，而闸门又豁免管理员 ⇒ 条件恒假。
+        //
+        // 起过的验证（隔离数据目录、上限设 1 字节、已登记占用 11 字节）：
+        // 管理员仍能建项目、返回 200 —— 确认是死代码，不是"没测到"。
+        //
+        // 结论：**手工建项目这条路上没有需要补的配额闸门** ——
+        // 非管理员建项目的三条路（B站链接 / 录播姬 / 下载）**本来就各自调了**
+        // `capacity::check_capacity`（`ingest.rs` / `ingest_worker.rs` / `download_worker.rs`），
+        // 而管理员**按设计**不受配额约束（他要能收拾一个已经超额的账号）。
+        // 别再把这段加回来 —— 要么真让它对某些人生效，要么就别写。
 
-    let dir = yekitrim_service::projects::resolve_target_dir(
-        user.id,
-        root_hint,
-        rel_dir,
-        user.is_admin(),
-    )
-    .map_err(|e| err(StatusCode::BAD_REQUEST, format!("目录不可用: {e:#}")))?;
-    if !dir.is_dir() {
-        return Err(err(StatusCode::BAD_REQUEST, "只能选择目录"));
-    }
-    let config_path = dir.join(yekitrim_core::path::PROJECT_CONFIG_FILE);
-    let is_existing_project = config_path.is_file();
-
-    // 已有 yekitrim.toml：**默认只登记/打开、不重写**（否则会覆盖用户手改过的工程设置）。
-    // ⚠️ 只有调用方**显式**给了 `overwrite`（前端"目录已有工程 + 用户又手动挑了视频"那条路，
-    // 弹窗二次确认后才带）才重写。别把它改成默认 true —— 那等于把用户手改的配置随手冲掉。
-    if !is_existing_project || overwrite {
-        if overwrite && is_existing_project {
-            tracing::warn!(
-                "按调用方显式要求重建工程配置: {}（原内容将被覆盖）",
-                config_path.display()
-            );
+        let dir = yekitrim_service::projects::resolve_target_dir(uid, &root_hint, &rel_dir, is_admin)
+            .map_err(|e| err(StatusCode::BAD_REQUEST, format!("目录不可用: {e:#}")))?;
+        if !dir.is_dir() {
+            return Err(err(StatusCode::BAD_REQUEST, "只能选择目录"));
         }
-        let hint = input_hint.trim();
-        let input = if hint.is_empty() {
-            // 未指定文件时自动挑目录里第一个视频。`find_first_video` 里是 `read_dir` +
-            // 逐项 `is_file` + 逐项 `extension`，全是同步 IO —— 网络盘上一样卡 worker，下 blocking 池。
-            let scan_dir = dir.clone();
-            blocking(move || {
-                find_first_video(&scan_dir).ok_or_else(|| {
+        let config_path = dir.join(yekitrim_core::path::PROJECT_CONFIG_FILE);
+        let is_existing_project = config_path.is_file();
+
+        // 已有 yekitrim.toml：**默认只登记/打开、不重写**（否则会覆盖用户手改过的工程设置）。
+        // ⚠️ 只有调用方**显式**给了 `overwrite`（前端"目录已有工程 + 用户又手动挑了视频"那条路，
+        // 弹窗二次确认后才带）才重写。别把它改成默认 true —— 那等于把用户手改的配置随手冲掉。
+        if !is_existing_project || overwrite {
+            if overwrite && is_existing_project {
+                tracing::warn!(
+                    "按调用方显式要求重建工程配置: {}（原内容将被覆盖）",
+                    config_path.display()
+                );
+            }
+            let hint = input_hint.trim();
+            let input = if hint.is_empty() {
+                // 未指定文件时自动挑目录里第一个视频。`find_first_video` 里是 `read_dir` +
+                // 逐项 `is_file` + 逐项 `extension` —— **这里已经在 blocking 池上**，直接调即可
+                // （T4 时期它还得单独下一次 blocking，因为那会儿函数体还在 async 侧）。
+                find_first_video(&dir).ok_or_else(|| {
                     err(StatusCode::BAD_REQUEST, "目录里没有可用的视频文件（mp4/flv/mkv/ts）")
+                })?
+            } else {
+                yekitrim_core::tenant::jail_existing(&dir, hint)
+                    .map_err(|e| err(StatusCode::BAD_REQUEST, format!("视频不可用: {e:#}")))?
+            };
+            let danmaku = danmaku_hint
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .map(|rel| {
+                    yekitrim_core::tenant::jail_existing(&dir, &rel)
+                        .map_err(|e| err(StatusCode::BAD_REQUEST, format!("弹幕不可用: {e:#}")))
                 })
-            })
-            .await?
-        } else {
-            yekitrim_core::tenant::jail_existing(&dir, hint)
-                .map_err(|e| err(StatusCode::BAD_REQUEST, format!("视频不可用: {e:#}")))?
-        };
-        let danmaku = danmaku_hint
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .map(|rel| {
-                yekitrim_core::tenant::jail_existing(&dir, &rel)
-                    .map_err(|e| err(StatusCode::BAD_REQUEST, format!("弹幕不可用: {e:#}")))
-            })
-            .transpose()?;
-        let output_rel = output_dir.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-        if let Some(rel) = &output_rel {
-            yekitrim_core::tenant::jail_join(&dir, rel)
-                .map_err(|e| err(StatusCode::BAD_REQUEST, format!("输出目录不可用: {e:#}")))?;
+                .transpose()?;
+            let output_rel = output_dir.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+            if let Some(rel) = &output_rel {
+                yekitrim_core::tenant::jail_join(&dir, rel)
+                    .map_err(|e| err(StatusCode::BAD_REQUEST, format!("输出目录不可用: {e:#}")))?;
+            }
+            // `local` 来源按策略**不预载弹幕**（用户要求"自由选择"）：没显式给弹幕就留空，
+            // 由预处理页列候选让用户自己挑（`yekitrim_service::assets::preload_policy`）。
+            // 所以这里用 `_exact`，不做"同目录同名 .ass"自动发现 —— 那条是 `yekitrim init` 的语义。
+            let auto_danmaku = matches!(
+                yekitrim_service::assets::preload_policy("local"),
+                yekitrim_service::assets::Preload::Danmaku
+            );
+            let write_cfg: fn(&Path, &Path, Option<&Path>, Option<&str>) -> anyhow::Result<()> = if auto_danmaku {
+                yekitrim_core::config::write_project_config
+            } else {
+                yekitrim_core::config::write_project_config_exact
+            };
+            write_cfg(&config_path, &input, danmaku.as_deref(), output_rel.as_deref())
+                .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("初始化失败: {e:#}")))?;
         }
-        // `local` 来源按策略**不预载弹幕**（用户要求"自由选择"）：没显式给弹幕就留空，
-        // 由预处理页列候选让用户自己挑（`yekitrim_service::assets::preload_policy`）。
-        // 所以这里用 `_exact`，不做"同目录同名 .ass"自动发现 —— 那条是 `yekitrim init` 的语义。
-        let auto_danmaku = matches!(
-            yekitrim_service::assets::preload_policy("local"),
-            yekitrim_service::assets::Preload::Danmaku
-        );
-        let write_cfg: fn(&Path, &Path, Option<&Path>, Option<&str>) -> anyhow::Result<()> = if auto_danmaku {
-            yekitrim_core::config::write_project_config
-        } else {
-            yekitrim_core::config::write_project_config_exact
-        };
-        write_cfg(&config_path, &input, danmaku.as_deref(), output_rel.as_deref())
-            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("初始化失败: {e:#}")))?;
-    }
-    let ws = Workspace::load(Some(&config_path))
-        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("加载失败: {e:#}")))?;
+        let ws = Workspace::load(Some(&config_path))
+            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("加载失败: {e:#}")))?;
 
-    let db = state.auth.db();
-    let name = dir
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "project".to_string());
-    let in_tenant = dir.starts_with(&tenant);
-    let label = if in_tenant {
-        dir.strip_prefix(&tenant)
-            .ok()
-            .map(|rel| format!("本机文件 · {}", rel.display()))
-            .unwrap_or_else(|| "本机文件".to_string())
-    } else {
-        // 任意位置（管理员）：用父目录名 + 目录名拼一个能认出来的标签
-        let parent_name = dir
-            .parent()
-            .and_then(|p| p.file_name())
+        let name = dir
+            .file_name()
             .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        format!("本机 · {parent_name}/{}", name)
-    };
-    let id = match db.project_by_config(&config_path) {
-        Ok(Some(existing)) => existing.id,
-        _ => db
-            .create_project(
-                user.id,
-                &name,
-                None,
-                "local",
-                Some(&label),
-                &dir,
-                &config_path,
-                None,
-            )
-            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("登记项目失败: {e:#}")))?,
-    };
-    if let Ok(Some(p)) = db.project_by_id(id) {
-        let _ = yekitrim_service::projects::refresh_bytes(db, &p);
-    }
-    let _ = db.audit(
-        Some(user.id),
-        "project_create",
-        &format!("id={id} kind=local overwrite={overwrite}"),
-    );
-    remember_last_project(&ws);
-    match db.project_by_id(id) {
-        Ok(Some(p)) => ok(serde_json::json!({
-            "ok": true,
-            "id": id,
-            "project": yekitrim_service::projects::summary_json(&p, Some(&user.username)),
-        })),
-        _ => Err(err(StatusCode::INTERNAL_SERVER_ERROR, "项目登记后读取失败")),
-    }
+            .unwrap_or_else(|| "project".to_string());
+        let in_tenant = dir.starts_with(&tenant);
+        let label = if in_tenant {
+            dir.strip_prefix(&tenant)
+                .ok()
+                .map(|rel| format!("本机文件 · {}", rel.display()))
+                .unwrap_or_else(|| "本机文件".to_string())
+        } else {
+            // 任意位置（管理员）：用父目录名 + 目录名拼一个能认出来的标签
+            let parent_name = dir
+                .parent()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            format!("本机 · {parent_name}/{}", name)
+        };
+        let id = match db.project_by_config(&config_path) {
+            Ok(Some(existing)) => existing.id,
+            _ => db
+                .create_project(
+                    uid,
+                    &name,
+                    None,
+                    "local",
+                    Some(&label),
+                    &dir,
+                    &config_path,
+                    None,
+                )
+                .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("登记项目失败: {e:#}")))?,
+        };
+        if let Ok(Some(p)) = db.project_by_id(id) {
+            let _ = yekitrim_service::projects::refresh_bytes(&db, &p);
+        }
+        let _ = db.audit(
+            Some(uid),
+            "project_create",
+            &format!("id={id} kind=local overwrite={overwrite}"),
+        );
+        remember_last_project(&ws);
+        match db.project_by_id(id) {
+            Ok(Some(p)) => ok(serde_json::json!({
+                "ok": true,
+                "id": id,
+                "project": yekitrim_service::projects::summary_json(&p, Some(&username)),
+            })),
+            _ => Err(err(StatusCode::INTERNAL_SERVER_ERROR, "项目登记后读取失败")),
+        }
+    })
+    .await
 }
 
 /// 目录里第一个可用视频（mp4/flv/mkv/ts，按文件名排序，确定性）。
@@ -915,4 +933,93 @@ async fn create_project_body_is_typed_and_names_the_field() {
     assert!(text.contains("未知来源"), "多余字段被忽略，于是走原有校验：{text}");
 }
 
+/// 整改 T4b：`create_local_project` 的**整段落盘**（选目录 / 写配置 / 登记账本 / 递归计量 / 记 server.toml / 拼摘要）
+/// 都在 blocking 池上 —— 单 worker runtime 下，建项目期间心跳必须照跳。
+///
+/// fixture = 临时目录 + 3,000 个几字节文件（`refresh_bytes` 要递归 `read_dir` 统计），**不依赖网络盘**。
+/// 把那个闭包整段搬回 async 侧，这条用例立刻红（`during == 0`）。
+/// ⚠️ 必须 `tokio::spawn` 到 worker 再 await：`#[tokio::test]` 的测试体跑在 block_on 的 main 线程上，
+/// 直接 await 的话被卡住的是 main 线程、心跳在 worker 上照跳，测不出任何东西。
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn create_project_runs_sync_io_off_the_worker() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::time::{sleep, Duration};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let auth = crate::auth::AuthService::open(
+        tmp.path().join("auth"),
+        crate::auth::Listening::Loopback,
+    )
+    .unwrap();
+    let hash = yekitrim_service::auth::hash_password("initial-pass-1234").unwrap();
+    let uid = auth
+        .db()
+        .create_user("admin", &hash, "admin", false, 0)
+        .unwrap();
+    let state = Arc::new(AppState::with_auth(auth));
+    let user = crate::auth::CurrentUser {
+        id: uid,
+        username: "admin".to_string(),
+        role: "admin".to_string(),
+        must_change_password: false,
+        session_id: "test-session".to_string(),
+    };
+
+    // 待登记的目录：一个视频 + 3,000 个几字节文件（让 read_dir 扫描与递归计量都有真实耗时）
+    let dir = tmp.path().join("proj");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("v.mp4"), vec![0u8; 1024]).unwrap();
+    for i in 0..3000 {
+        std::fs::write(dir.join(format!("f{i:05}.bin")), b"x").unwrap();
+    }
+    let cfg = dir.join(yekitrim_core::path::PROJECT_CONFIG_FILE);
+
+    // ---- 心跳：只有 1 个 worker，同步 IO 若留在 worker 上它就再也跳不动 ----
+    let ticks = Arc::new(AtomicUsize::new(0));
+    let beats = ticks.clone();
+    let beat = tokio::spawn(async move {
+        loop {
+            sleep(Duration::from_millis(1)).await;
+            beats.fetch_add(1, Ordering::SeqCst);
+        }
+    });
+    sleep(Duration::from_millis(5)).await;
+    assert!(ticks.load(Ordering::SeqCst) > 0, "心跳应当已经跳起来");
+
+    let before = ticks.load(Ordering::SeqCst);
+    let t0 = std::time::Instant::now();
+    let st = state.clone();
+    let d = yekitrim_core::path::display(&dir);
+    let call = tokio::spawn(async move {
+        create_local_project(&st, &user, "", &d, "", None, None, false).await
+    });
+    let res = call.await.expect("建项目任务不该 panic");
+    let elapsed = t0.elapsed();
+    let during = ticks.load(Ordering::SeqCst) - before;
+    beat.abort();
+
+    // 功能面：项目登记进账本 + 落出 yekitrim.toml
+    assert!(res.is_ok(), "建项目应当成功: {:?}", res.as_ref().err());
+    assert!(cfg.is_file(), "应当写出 yekitrim.toml");
+    assert!(
+        state
+            .auth
+            .db()
+            .project_by_config(&cfg)
+            .unwrap()
+            .is_some(),
+        "项目必须登记进账本"
+    );
+
+    // 时序判据：建项目期间 worker 一直被让出来
+    assert!(
+        elapsed.as_millis() >= 5,
+        "fixture 太小（建项目只用了 {elapsed:?}）：测不出 worker 是否被占，请加大文件数"
+    );
+    assert!(
+        during >= 3,
+        "建项目期间 worker 必须还能跑别的任务（心跳只跳了 {during} 次 / 用时 {elapsed:?}）\
+         —— 同步 IO 又回到 worker 上了？"
+    );
+}
 }
