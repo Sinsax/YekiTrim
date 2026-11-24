@@ -100,6 +100,7 @@ yekitrim-render-core ←── yekitrim-polish ──┐
 | `service-net` | `crates/yekitrim-service/src/net` | `crates/yekitrim-service/src/net/AGENTS.md` | 动 HTTP 小工具之前 |
 | `server` | `crates/yekitrim-server` | `crates/yekitrim-server/AGENTS.md` | 动 HTTP/任务队列/宿主之前 |
 | `server-api` | `crates/yekitrim-server/src/api` | `crates/yekitrim-server/src/api/AGENTS.md` | 加接口/改路由之前 |
+| `server-api-polish` | `crates/yekitrim-server/src/api/polish` | `crates/yekitrim-server/src/api/polish/AGENTS.md` | 改精修后端（`/polish/*`）之前 |
 | `server-ingest` | `crates/yekitrim-server/src/ingest` | `crates/yekitrim-server/src/ingest/AGENTS.md` | 动采集入库（录播姬 / B站）之前 |
 | `cli` | `crates/yekitrim-cli` | `crates/yekitrim-cli/AGENTS.md` | 加命令/改入口之前 |
 | `xtask` | `crates/xtask` | `crates/xtask/AGENTS.md` | 动构建/打包/产物门禁之前 |

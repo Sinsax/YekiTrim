@@ -253,6 +253,14 @@
       "verify": ["cargo test -p yekitrim-server"]
     },
     {
+      "id": "server-api-polish",
+      "title": "精修编辑器后端（起任务 / 工程 / 封面 / 字体 / 素材 / 预览 / 底座）",
+      "dir": "crates/yekitrim-server/src/api/polish",
+      "card": "crates/yekitrim-server/src/api/polish/AGENTS.md",
+      "kind": "module",
+      "verify": ["cargo test -p yekitrim-server"]
+    },
+    {
       "id": "server-ingest",
       "title": "采集接入：录播姬 webhook / B站链接 / 采集配置",
       "dir": "crates/yekitrim-server/src/ingest",
