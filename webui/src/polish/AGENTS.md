@@ -4,6 +4,11 @@
 
 ## 职责
 
+> **定位（决策 D-1，整改 T15）**：`engine.js` 是**近似预览腿**（无 WebGPU 时的降级），**不是出片路径**；
+> 真值方向 = 转译器（`tools/polish-to-dhampir.mjs`）+ `yekitrim-render-core/src/timeline.rs` 的时间线数学。
+> 它**允许**视觉细节差（噪点图案 / 部分特效强度 / 合成细节），但**时刻·时长·落点·描边宽度·档位倍率**
+> 这类语义仍逐值对拍（13 条 parity 判据 11 条保留、2 条降级 —— 归类见 `crates/yekitrim-polish/AGENTS.md`）。
+> 想验像素就走底座那条（`scripts/check-render-visible.mjs` / `.workbuddy` 探针），别在这里加像素判据。
 本目录**已有一份 `README.md`**（`api.js` / `engine.js` / `audio.js` 的三行说明 + 那条移植纪律）
 —— **动手前先读它**。与 Rust 侧的对应关系：`engine.js` 是出片模板
 `crates/yekitrim-polish/templates/index.html` 的 Canvas 渲染器**移植**（纯函数特效状态机 + 各 `*At(idx, t)`

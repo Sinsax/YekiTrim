@@ -1,7 +1,16 @@
-// engine.js — 从 crates/yekitrim-polish/templates/index.html 的 Canvas 渲染器
-// （真实出片路径 renderFrame）忠实移植的纯函数特效状态机。
+// engine.js — 精修预览的 **DOM/Canvas 近似腿**：纯函数特效状态机。
+//
+// ## 定位（决策 D-1，2026-11-24 用户拍板；整改 T15 把口径写在这里）
+//
+// **它不是出片路径**。真实出片 = `tools/polish-to-dhampir.mjs` 把 `polish.toml` 转译成底座工程 → 底座渲染；
+// 真值方向 = **转译器 + `yekitrim-render-core/src/timeline.rs` 的时间线数学**。
+// 这条腿存在的唯一理由是「没有 WebGPU 的机器上还能看个大概」，所以：
+//   · **允许视觉细节差异**：噪点图案、部分特效强度、合成/滤镜细节可能与成片不同；
+//   · **数值必须对得上**：时刻 / 时长 / 落点 / 描边宽度 / 档位倍率这类**语义**仍逐值对拍
+//     （13 条 parity 判据里 11 条保留、只有 2 条降级 —— 归类见 crates/yekitrim-polish/AGENTS.md）；
+//   · **不要在这里追像素**：要验像素走底座那条（`scripts/check-render-visible.mjs` / `.workbuddy` 探针）。
+//
 // buildIndex() 一次性预处理 → 各 *At(idx, t) 逐帧查询覆盖层状态。不读 DOM、不持有组件状态。
-// 修改特效表现时先改 templates/index.html，再同步移植到这里，保持预览与出片一致。
 // 画布尺寸/缩放一律取自 ./canvas.js（`_canvas` 契约），不再写死 1920×1080。
 import { canvasOf, stickerSize, stickerMargin, stickerFloatUp } from './canvas.js'
 
