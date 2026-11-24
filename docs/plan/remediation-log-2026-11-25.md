@@ -80,3 +80,16 @@ npm --prefix webui run build                 # 只有改前端时
 ## 仅剩的阻塞
 
 T14 / T15 仍等 `webui/src/components/ProjectClipsSection.vue` 那份**未提交**改动放行（见上节）。
+## 第六轮补记：拆分后的**门禁漂移**（这一节值得单独读）
+
+拆文件之后 `cargo check` / `cargo test` 全绿，但有一类门禁是**按文件路径读源码**的，编译期完全看不见：
+`check-dhampir-wiring` / `check-emotion-track` / `check-element-color` / `check-camera-zoom-parity` /
+`check-layout-invariants` 都写死了 `crates/yekitrim-server/src/api/polish.rs` 这类路径。
+拆成目录后它们读不到，症状是「判据静默恒假」或「整条脚本报错」，而编译器一个字都不会说。
+
+处置：5 个脚本改成**目录感知读取**（目录就按文件名顺序拼接全部 `.rs`），另有两条判据跟着代码走：
+`polish_emotion_get` 的可见性 `pub(super)`→`pub(crate)`、⑳ 的 `body.get("ranges")`→强类型字段 `ranges: Vec<EventRangeBody>`。
+顺带把 docs 里 23 个 `.md` 的旧路径指向新目录。
+验证：`node scripts/gate.mjs --all` → 通过 194 / 0 条非基线失败 · EXIT=0。
+
+**教训**：拆文件的验收不能只看 cargo —— 必须跑一次 `gate --all`。
