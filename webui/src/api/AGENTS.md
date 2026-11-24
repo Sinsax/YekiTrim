@@ -19,7 +19,7 @@
   saveConfig）。
 - `polish.js`：内部 `startJob(url, pid, dir, extra)`（=`polishPost`）+ `initPolish` / `runLlm` /
   `runLlmSegment` / `runProcess` / `runSilence` / `runRender` / `runCover` / `coverTitle` / `coverFrame` /
-  `coverConfig` / `coverBackground` / `coverPreview` / `fetchProject` / `fetchSubtitles` / `saveSubtitles` /
+  `coverConfig` / `coverBackground` / `fetchProject` / `fetchSubtitles` / `saveSubtitles` /
   `saveProjectPatch` / `fetchStickerSources` / `fetchStickerLibrary` / `stickerFileUrl` / `fetchSfxCatalog` /
   `fontUrl` / `fetchFonts`；`watchJob` 从 `jobs.js` 再导出。
 - `jobs.js`：`jobsApi.{list,detail,cancel}`、`watchJob(id, {onEvent,onSummary,onDone})`（SSE 优先、

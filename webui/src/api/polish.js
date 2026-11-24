@@ -202,7 +202,6 @@ export const coverFrame = (pid, dir, time) => startJob('/api/polish/cover-frame'
 export const coverConfig = (pid, dir, cover) => startJob('/api/polish/cover-config', pid, dir, { cover })
 export const coverBackground = (pid, dir, imageData) =>
   startJob('/api/polish/cover-background', pid, dir, { image_data: imageData })
-export const coverPreview = (pid, dir) => startJob('/api/polish/cover-preview', pid, dir)
 
 // ⚠️ 这里曾经有 `renderFrame`（`POST /api/polish/render-frame`，wgpu 单帧真渲染预览）——
 // 那条 GPU 链路已删除（GPU 那侧交给独立的 Dhampir 底座），预览只走 `polish/engine.js` 自绘。

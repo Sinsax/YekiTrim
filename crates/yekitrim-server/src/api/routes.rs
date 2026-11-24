@@ -288,6 +288,8 @@ pub(crate) fn router_inner(state: Arc<AppState>, extra: Router<Arc<AppState>>) -
         .route("/polish/process", post(polish_process))
         .route("/polish/render", post(polish_render))
         .route("/polish/cover", post(polish_cover))
+        // ⚠️ **仅 CLI `polish preview` 兜底**：前端已不再调用（整改 T14 第 1 步清掉了那两个死调用）。
+        // 别把前端接回来 —— 新前端走 Dhampir 预览（wasm），这条是给"没有工程文件、只有片段目录"的旧路径留的。
         .route("/polish/preview", post(polish_preview))
     // Dhampir **浏览器端**预览：渲染跑在页面（wasm + WebGPU），后端只发资源与工程 JSON。
     // 与上面那条 DOM 预览**并列**（按钮切换保留）：一个看 CSS/DOM 复刻、一个看真底座。

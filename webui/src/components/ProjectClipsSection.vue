@@ -1450,15 +1450,6 @@ async function run(kind, c) {
 //    是 `c.dir + '/export.mp4'` 绝对路径 —— 一旦被接回去，`output_file` 就会被 scope 中间件判 400。
 //    出片入口只有卡片上的「出片」（goPolish）；渲染输出名在精修页改。
 
-async function preview(c) {
-  try {
-    const r = await polishPost('/api/polish/preview', props.project.id, c.dir)
-    const url = r.video_url || r.cover_url
-    if (url) window.open(url, '_blank')
-    else toast('预览返回空')
-  } catch (e) { toast(e.message, 'err') }
-}
-
 async function redetect() {
   // 已经有检测结果时先问一遍（文案与预处理页共用，见 utils.js 的 redetectWarning）：
   // 重跑会整份覆盖 events.json，但不动 output/clips/ —— 已剪片段不会被删，
