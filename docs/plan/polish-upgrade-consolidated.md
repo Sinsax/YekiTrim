@@ -169,7 +169,7 @@ pub struct SubtitleStyle {
 | 层 | 位置 |
 |---|---|
 | 类型 | `types.rs:622`，默认 `-3.0` |
-| 服务端白名单 | `crates/yekitrim-server/src/api/polish.rs:1805–1812`，**clamp −10.0..10.0** |
+| 服务端白名单 | `crates/yekitrim-server/src/api/polish/:1805–1812`，**clamp −10.0..10.0** |
 | UI | `webui/src/views/PolishView.vue:809 / 1823`（滑杆） |
 | 预览 | `webui/src/polish/engine.js:377` |
 
@@ -348,5 +348,5 @@ grep -rn "rotation" crates/yekitrim-polish/src/ | head
 sed -n '503,522p' crates/yekitrim-render-core/src/types.rs   # stroke/highlight_color 存在
 sed -n '19,38p'   crates/yekitrim-polish/src/project/legacy.rs # entrance 有意下线
 # 特写阻塞项：zoom_* 是否暴露
-grep -rn "zoom_close\|zoom_mid\|zoom_wide" webui/src/ crates/yekitrim-server/src/api/polish.rs
+grep -rn "zoom_close\|zoom_mid\|zoom_wide" webui/src/ crates/yekitrim-server/src/api/polish/
 ```

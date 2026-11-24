@@ -1066,7 +1066,7 @@ out/drive-real-page.mjs 新增（都在 gitignore 的 scratch 里 ✓，产品�
 ### 12.2 根因（代码行级）
 
 ```
-crates/yekitrim-server/src/api/polish.rs  polish_dhampir_wasm（我加的那条转发路由）
+crates/yekitrim-server/src/api/polish/  polish_dhampir_wasm（我加的那条转发路由）
   wasm_dirs()                    ← 内部是一串同步 `is_file()`
   file.canonicalize()            ← **同步 FS**
   root.canonicalize()            ← **同步 FS**

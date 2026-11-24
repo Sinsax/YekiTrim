@@ -81,10 +81,10 @@ cargo run -- polish render <片段目录> --renderer dhampir
 
 | 文件 | 改动 |
 |---|---|
-| `crates/yekitrim-server/src/api/polish.rs` | `polish_render` 读 `body.renderer`（白名单 `chrome`/`dhampir`，缺省 `chrome`；非法 → **400**），透传给 `run_polish_child` |
+| `crates/yekitrim-server/src/api/polish/` | `polish_render` 读 `body.renderer`（白名单 `chrome`/`dhampir`，缺省 `chrome`；非法 → **400**），透传给 `run_polish_child` |
 | `crates/yekitrim-server/src/api/render.rs` | `run_polish_child(..., sub, dir, extra: &[String])`：拼 `["--renderer", r]`；`RENDER_MILESTONES` 加底座那几行（2.2） |
 | `crates/yekitrim-server/src/api/mod.rs` | `/api/health` 加 `"dhampir": {"available", "exe", "version", "schema_ok"}` —— **这是"就绪位"，不是构建能力位**（与已删除的 `wgpu_render` 不同：那个是编译开关，这个是"装没装/版本对不对"） |
-| `crates/yekitrim-server/src/api/polish.rs`（只读端点） | `GET /api/polish/dhampir` → 同一块（精修页打开时拉一次，不必每次 health） |
+| `crates/yekitrim-server/src/api/polish/`（只读端点） | `GET /api/polish/dhampir` → 同一块（精修页打开时拉一次，不必每次 health） |
 | `webui/src/api/polish.js` | `runRender(pid, dir, renderer)`；`fetchDhampirStatus()` |
 | `webui/src/views/PolishView.vue` | 渲染入口加通道选择（**含"实验"标注**），按就绪位置灰 |
 | 产物卡 | 显示"这条产物是哪条通道出的"（D2 要求；否则用户分不清 `xxx.mp4` 与 `_1`） |

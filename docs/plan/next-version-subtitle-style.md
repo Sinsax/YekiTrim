@@ -238,12 +238,12 @@ CSS 宽度**折半**后塞进 ffmpeg 的 `borderw`（注释记着"直接填 12 �
 | 3 | `crates/yekitrim-polish/templates/index.html` | 出片落点分流（**循环内**按行数修正，见下 §三） |
 | 4 | `webui/src/components/PolishPreview.vue` | 预览 `--cap-bottom` 分流 + 补偿（见下 §三） |
 | 5 | `webui/src/views/PolishView.vue` | 「字幕 / 弹幕」泳道组内 5 项控件 + 落盘（`ui-subtitle` 完成） |
-| 6 | `crates/yekitrim-server/src/api/polish.rs` | **服务端白名单四键** + 回归测试（见下 §二） |
+| 6 | `crates/yekitrim-server/src/api/polish/` | **服务端白名单四键** + 回归测试（见下 §二） |
 
 ## 二、⚠️ 施工前漏掉的一环：**HTTP 白名单**（本节是原文档最大的缺口）
 
 原 §4「触点数」只列了 UI / 转译器 / 预览 / 模板 / 门禁 **五处**，**漏了服务端**。
-而 `polish_project_put_locked`（`crates/yekitrim-server/src/api/polish.rs`）是**逐字段白名单**——
+而 `polish_project_put_locked`（`crates/yekitrim-server/src/api/polish/`）是**逐字段白名单**——
 **没列进去的键，PUT 照样回 `{"ok":true}`，但磁盘一个字都不动**（该函数自己的注释就写着这句）。
 
 ⇒ **这是本版本最危险的一处**：四项控件的后端口子曾经**整条缺失**，症状是
@@ -251,7 +251,7 @@ CSS 宽度**折半**后塞进 ffmpeg 的 `borderw`（注释记着"直接填 12 �
 `subtitle_color` / `subtitle_stroke` / `subtitle_size` / `subtitle_position_pct`（含 `null` → `None`）。
 
 > 📌 **下一个小版本开工时先把这条抄进施工单**：**任何新配置字段，先查"HTTP 层有没有口子"**。
-> 判据 = 在 `api/polish.rs` 里 grep 字段名，**命中 0 次就是要补白名单**。
+> 判据 = 在 `api/polish/` 里 grep 字段名，**命中 0 次就是要补白名单**。
 
 ## 三、⚠️ 落点公式：原 §7.1 的推导**只对单行成立**
 

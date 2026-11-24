@@ -931,7 +931,7 @@ return seg.frameStart + Math.round(localSec * seqFps)
   （**颜色直接进 HTML/CSS，必须净化**，非法值退 `#000000`）、`cover_bg_mode`（只有 `blur` 走模糊，其余一律 `color`）。
 - **写入门闸**：`CoverDesigner` 的 `configLoaded`（读失败时拿默认值写回会把磁盘配置清成默认），
   读失败必须出错误条 + 「重试」，保存失败用面板头那一行常驻的 `.save-line.err`（**不再用 toast**：600ms 防抖会刷屏）。
-- **服务端钉子**：`crates/yekitrim-server/src/api/polish.rs` 的
+- **服务端钉子**：`crates/yekitrim-server/src/api/polish/` 的
   `cover_config_persists_layer_stack_and_effect_ids`（空 id 丢掉、`visible` 落盘、未知 id 只在解析侧忽略）。
 
 ### 3.10 右栏内部：左「设置」/ 右「列表」左右排布 + 宽度减半（2026-10）

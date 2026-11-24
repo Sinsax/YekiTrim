@@ -235,7 +235,7 @@
 `Path::new(r"C:\proj").join("/etc/passwd")` → `C:/etc/passwd`，**已经出了工程目录**。
 所以判"工程内相对路径"必须**逐字符**来：空 / 绝对 / **以 `/` 或 `\` 开头** / 含 `:` / 含 `..` / 含 `\` 全挡。
 现成的**唯一一份**在 `scope.rs::is_safe_project_relative`（`pub(crate)`）：scope 中间件（第一道，
-`bad_sticker_path_in` 收口 `asset`/`assets`）与 `api/polish.rs` 两个 handler（第二道兜底）共用，
+`bad_sticker_path_in` 收口 `asset`/`assets`）与 `api/polish/` 两个 handler（第二道兜底）共用，
 **不许各写一遍**。无论用什么办法，**都要有一条单测**钉住
 `/etc/passwd` 与 `\windows\x` —— 这两条正是当年漏掉、而我这次是靠写测试才发现的原因。
 

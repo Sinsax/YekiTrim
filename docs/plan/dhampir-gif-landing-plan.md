@@ -248,7 +248,7 @@ wasm 接线只编译过、没喂过真 GIF。这一步的风险最高。
 | T1 版本对齐 | `PolishPreview.vue` | `DHAMPIR_HOST_API` 5 → **6** |
 | T2 宿主接线 | `PolishPreview.vue` | 新增 `dhampirLoadAnimations()`；删掉动图的逐帧取帧/位图提交 |
 | T3 时间真值 | 同上 | 把 `info.frame_delays_ms` 存进 `st.delays` |
-| T4 服务端标注 | `api/polish.rs` | `sticker-frame` 注释标明"只剩出片腿 + 静态图用" |
+| T4 服务端标注 | `api/polish/` | `sticker-frame` 注释标明"只剩出片腿 + 静态图用" |
 | T5 门禁 | `check-dhampir-wiring.mjs` | 动图探针 + **顺序探针** |
 | — 预热收窄 | `PolishPreview.vue` | `callPrewarmStickers` 不再把动图交上去（白烧 CPU） |
 | — 读数分栏 | `PolishPreview.vue` | 工具条把"引擎解码 / 取帧"分开念 |

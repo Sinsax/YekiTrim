@@ -25,14 +25,25 @@
 //   node scripts/check-camera-zoom-parity.mjs            # 校验
 //   node scripts/check-camera-zoom-parity.mjs --mutate   # 变异自证（每条判据都要能翻面）
 
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..')
 
-const read = (rel) => readFileSync(join(root, rel), 'utf8')
+// ⚠️ **路径可能是一个目录**（2026-11-25 整改：api/polish.rs / api/project_data.rs / ingest.rs 都拆成了目录）。
+// 目录就按文件名顺序拼接全部 .rs —— 判据是「在这些源码里能 grep 到」，不是「在某个具体文件里」。
+function readAny(abs) {
+  const st = statSync(abs);
+  if (!st.isDirectory()) return readFileSync(abs, 'utf8');
+  return readdirSync(abs)
+    .filter((n) => n.endsWith('.rs'))
+    .sort()
+    .map((n) => readFileSync(join(abs, n), 'utf8'))
+    .join('\n');
+}
+const read = (rel) => readAny(join(root, rel))
 
 /** 五处默认值必须同时等于这三个数 —— 改档位就是改这里 + 五处（有变异钉着）。 */
 const EXPECTED = { 特写: 2.0, 近: 1.5, 微: 1.06, 远: 0.55, 全: 1.0, 中: 1.3 }
@@ -352,7 +363,7 @@ function loadVariant() {
     html: read('crates/yekitrim-polish/templates/index.html'),
     engine: read('webui/src/polish/engine.js'),
     dhampir: read('tools/polish-to-dhampir.mjs'),
-    server: read('crates/yekitrim-server/src/api/polish.rs'),
+    server: read('crates/yekitrim-server/src/api/polish'),
     polishView: read('webui/src/views/PolishView.vue'),
     // ⑤ 运镜过渡时长（§16 speed）的第四处：贴纸避让侧的 `transition_secs`
     placement: read('crates/yekitrim-polish/src/process/placement.rs'),

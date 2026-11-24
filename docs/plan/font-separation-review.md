@@ -185,7 +185,7 @@ S1  输入层收敛（目标①的核心）—— 在 yekitrim-core::fonts 造"�
     ├─ A3 /api/polish/fonts 暴露它；A4 is_default 双向拦截 emoji
     └─ 现有 4 份写死兜底（SYSTEM_FONT_STACK / EMOJI_FONT / 预览字面量 / ensure_emoji_fallback）
        全部改为问这个入口
-    写范围：crates/yekitrim-core/src/fonts.rs, crates/yekitrim-server/src/api/polish.rs,
+    写范围：crates/yekitrim-core/src/fonts.rs, crates/yekitrim-server/src/api/polish/,
             crates/yekitrim-polish/src/render/server.rs
 
 S2  前端职责分离（目标②的核心）—— C9 + C10

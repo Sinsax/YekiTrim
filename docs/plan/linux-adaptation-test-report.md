@@ -263,7 +263,7 @@ webui/src/components/RecorderConfig.vue:37
 >   （验证盘符路径不会绕过作用域，见 `api/AGENTS.md` 的「路径面三防线」）；
 > - `webui/src/components/ServerFileBrowser.vue` 的「盘符」是**读服务端 `volumes` 的通用渲染**
 >   （Linux 上返回空数组，自然不显示）；
-> - `crates/yekitrim-server/src/api/polish.rs:1888` 同为守卫用例。
+> - `crates/yekitrim-server/src/api/polish/:1888` 同为守卫用例。
 
 ### 3.5 ✅ 字体栈：**Linux 上实测正常，不是缺陷**
 
@@ -426,7 +426,7 @@ Arch / Ubuntu 24.04+ / Debian 13+ 可以。
 > 1–7 都是**小改动、无行为风险**（含 3 处测试断言、2 处门禁/工具、1 处文案），可以一轮做完；
 > ~~8 需要用户就「ASR 基线」拍板。~~ ✅ 已按「换上游另一变体」落地，无需再拍板。
 
-> ✅ **明确不要动的**：`crates/yekitrim-server/src/api/polish.rs:1578-1581` 的 `C:/Windows/Fonts` 兜底
+> ✅ **明确不要动的**：`crates/yekitrim-server/src/api/polish/:1578-1581` 的 `C:/Windows/Fonts` 兜底
 > —— Linux 上实测走不到内置字体之前就命中了（§3.5），留着对 Windows 用户有用。
 
 ---

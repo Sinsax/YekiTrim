@@ -35,7 +35,7 @@ const PREVIEW_VUE = join(WEBUI_SRC, 'components/PolishPreview.vue');
 const TIMELINE_EDITOR = join(WEBUI_SRC, 'components/TimelineEditor.vue');
 const POLISH_VIEW = join(WEBUI_SRC, 'views/PolishView.vue');
 /// 精修编辑器的服务端 handler —— **读旁写字幕**那条链住在这里（见 4e-bis）。
-const POLISH_RS = join(repo, 'crates/yekitrim-server/src/api/polish.rs');
+const POLISH_RS = join(repo, 'crates/yekitrim-server/src/api/polish');
 
 function walk(dir, out = []) {
   for (const name of readdirSync(dir)) {
@@ -342,9 +342,18 @@ if (artifactCli) {
 // 而且音轨是从整条源视频抽的、没跟着压缩 —— 第一刀之后全错位。
 // 两边都不剪的后果更安静：屏蔽区间**照常播出来**、报告里一句都不说。
 const DHAMPIR_RS = join(repo, 'crates/yekitrim-polish/src/render/dhampir.rs');
-const POLISH_API = join(repo, 'crates/yekitrim-server/src/api/polish.rs');
+const POLISH_API = join(repo, 'crates/yekitrim-server/src/api/polish');
 const dhampirSrc = readFileSync(DHAMPIR_RS, 'utf8');
-const polishApiSrc = readFileSync(POLISH_API, 'utf8');
+// 2026-11-25 整改后这两个常量指向**目录**（api/polish/*.rs）：目录就拼接全部 .rs。
+const readAny = (abs) => {
+  if (!statSync(abs).isDirectory()) return readFileSync(abs, 'utf8');
+  return readdirSync(abs)
+    .filter((n) => n.endsWith('.rs'))
+    .sort()
+    .map((n) => readFileSync(join(abs, n), 'utf8'))
+    .join('\n');
+};
+const polishApiSrc = readAny(POLISH_API);
 
 // 出片腿：`render_video_only` 里那次 `prepare_project[_reporting](clip_dir, project_path, true)`
 // （`_reporting` 那个变体额外把转译报告带回来给 `--strict` 用 —— 参数口径**必须一样**）
@@ -363,7 +372,7 @@ check(
   // 判据一边认一边不认的话，改了预览腿这条就报"找不到"，而 keep_muted 语义其实没动过。
   /prepare_project(?:_reporting)?\(\s*&clip\s*,\s*&scratch\s*,\s*false\s*(?:,\s*preview_video\.as_deref\(\),?\s*)?\)/.test(polishApiSrc),
   '预览腿必须传 `keep_muted = false`（压缩时间线，客户端要跳屏蔽区间）',
-  'api/polish.rs 里找不到 `prepare_project[_reporting](&clip, &scratch, false[, preview_video.as_deref()])` —— ' +
+  'api/polish/（拆分后的目录）里找不到 `prepare_project[_reporting](&clip, &scratch, false[, preview_video.as_deref()])` —— ' +
     '传 true 的话客户端拿不到"断点"，会一路播过屏蔽区间',
 );
 
@@ -624,7 +633,7 @@ function fnBodyOf(src, name) {
   //      上面那条"消费了 res.subtitles 字段"**照样通过**（键确实在，只是少了一类）。
   //
   // ⇒ 判据压在**形状**上：读旁写字幕要**遍历 doc 的 assets**，不是"在固定名字上循环"。
-  const polishRs = readFileSync(POLISH_RS, 'utf8');
+  const polishRs = readAny(POLISH_RS);
   check(
     /fn read_side_subtitles/.test(polishRs),
     '服务端有一个专门的「读旁写字幕」函数（read_side_subtitles）',

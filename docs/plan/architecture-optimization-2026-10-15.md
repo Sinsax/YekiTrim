@@ -43,7 +43,7 @@ server 的 scope/api/worker，以及构建与门禁体系本身。并按你的�
 | **S3** | **`cover-takumi` feature 只在 CLI 侧传播** | 构建图缺口 | server 语境下封面整条不参与编译（详见 §3） |
 | **C1~C6** | **core 的检测/剪切/配置结构问题** | 模块级 | 见「核心业务模块」小节，**C1+C2 与 C4 最值得先动** |
 | **W1** | 🔴 **`ingest.rs` 是两条 worker 边界的合法绕过通道，门禁抓不到** | **门禁盲区** | 禁令想防的事**已经发生了**，见「service/server」小节 |
-| **W2~W5** | `api/polish.rs` 混装 8 领域 / `ingest_worker` 混装 / 路径判据三份 / 锁键不可互推 | 模块级 | 见同节 |
+| **W2~W5** | `api/polish/` 混装 8 领域 / `ingest_worker` 混装 / 路径判据三份 / 锁键不可互推 | 模块级 | 见同节 |
 
 > ⚠️ **我的判断在本轮被推翻过两次**：第一次说"架构没问题"（当时没读过 core 的检测/剪切）；
 > 补审 core 冒出 6 项；再补审 service/server 又冒出 5 项，**其中 W1 是本次复盘最重要的发现**。
@@ -90,7 +90,7 @@ server 的 scope/api/worker，以及构建与门禁体系本身。并按你的�
 | # | 问题 | 证据 | 性质 |
 |---|---|---|---|
 | **W1** | 🔴 **`ingest.rs` 是两条 worker 边界的合法绕过通道，门禁抓不到** | `ingest.rs` 引 `crate::ingest_worker::` **9 次** + `crate::download_worker::` **4 次** | **门禁盲区** |
-| **W2** | `api/polish.rs` 2471 行混装 ≥8 个领域 | 生产段 font 提及 85、cover 106；文件头自述只有 5 件事 | 职责混乱 |
+| **W2** | `api/polish/` 2471 行混装 ≥8 个领域 | 生产段 font 提及 85、cover 106；文件头自述只有 5 件事 | 职责混乱 |
 | **W3** | `ingest_worker.rs` 把「HTTP 用的扫描缓存」「入库状态机」「文件搬运」压在一起 | `RECORDINGS_CACHE`(`:326-353`) 的消费者是 **HTTP 接口** `api/rooms.rs:68` | 职责混乱 |
 | **W4** | server 重复实现 service 的目录解析；**同类路径判据存在 3 份** | `scope.rs:252` / `sticker_index.rs:294` / `clip_index.rs:358` | 抽象错位 |
 | **W5** | 同一资源两种不可互推的锁键 | `scope_key` 的 `dir:{规范化}` vs `filelock` 的 `<dir>/polish.toml` | 状态表达 |

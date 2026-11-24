@@ -378,8 +378,8 @@ position = "50% 50%"
   `ProjectFile::resolve_stage()` / `canvas_contract()`；`example()` 与 `to_toml_commented()`（含段头注释）同步；
   `vertical_position` 的兼容读取就位（显式 `[stage] position` 优先于老字段）。
 - `render/server.rs::build_html`：注入 `cfg._canvas`（画布尺寸 / 摆放 / 字幕安全宽 / 贴纸落点）。
-  **第二份竖屏检测已删除** —— `api/polish.rs` 的预览注入改读同一个 `canvas_contract()`。
-- `api/polish.rs`：PUT 白名单加 `canvas` / `stage` / `sticker` 三个分支（漏了就是"保存不报错但值没了"）。
+  **第二份竖屏检测已删除** —— `api/polish/` 的预览注入改读同一个 `canvas_contract()`。
+- `api/polish/`：PUT 白名单加 `canvas` / `stage` / `sticker` 三个分支（漏了就是"保存不报错但值没了"）。
 - 14 条新单测，全绿。含四类钉子：老工程（无新表）解析 = 改造前行为；
   横画布字幕安全宽 = `1680 / 120`；竖素材 + 全 auto = `axis=x / position=left / bg=blur`；
   **模板消费面与契约字段、class、CSS 变量逐一对齐**（这类错不编译报错，只会"改了没反应"）。
@@ -642,7 +642,7 @@ position = "50% 50%"
 | `crates/yekitrim-polish/templates/index.html` | **Chrome 出片唯一真相**。`:26-35` 竖屏背景/位置 CSS、`:45-54` 图层绝对尺寸、`:352-353` `pctX/pctY`、`:447-463` `shake()/flash()`、`:583-593` 竖屏接线、`:707-734` `curZoom`+运镜、`:714,718` 竖屏禁运镜、**`:759-781` 贴纸 handler（`:773` clamp，`:776-780` 动画）**、`:793-896` 各特效 handler（作用对象见 §1.3）、**`:911-921` `VIS` 一刀切 + 贴纸强制覆盖（待删）**、`:1518-1531` canvas 尺寸、`:1541-1717` 逐帧绘制、**`:1635-1676` 字幕绘制（单行连排、无任何折行，A5 待改）**、`:1668-1676` `cap.yOffset`、`:618-629` 字幕样式注入、`:46-48` `#captions`/`.cap` CSS |
 | `crates/yekitrim-polish/src/project/config.rs` | `ProjectFile`（`:5-64`）、`[cover] bg_mode/bg_color/blur_scale` 先例（`:303-321`）、`to_toml_commented`（`:413`）、`example`（`:630`） |
 | `crates/yekitrim-polish/src/render/server.rs` | `build_html` 注入 cfg（`:235-300`）、竖屏检测（`:243-254`）、`save_config_handler` |
-| `crates/yekitrim-server/src/api/polish.rs` | PUT 白名单（`:1260-1289`）、cover 背景白名单先例（`:616-627`）、落盘测试先例（`:1662-1713`）、竖屏注入（`:1007-1024`）、`render-frame`（`:1034`） |
+| `crates/yekitrim-server/src/api/polish/` | PUT 白名单（`:1260-1289`）、cover 背景白名单先例（`:616-627`）、落盘测试先例（`:1662-1713`）、竖屏注入（`:1007-1024`）、`render-frame`（`:1034`） |
 | `crates/yekitrim-polish/src/render/context.rs` / `pipeline.rs` | `RenderContext`（`:9-43`）、ctx 构造（`:394-401`）、fps（`:88`）、ffmpeg 编码（`:415-432`） |
 | `crates/yekitrim-polish/src/process/placement.rs` | 贴纸落点算法 + `FRAME_W/H`（`:28-29`）、`STICKER_SIZE`/`MARGIN`/`FLOAT_UP`/`GRID_STEP`（`:31-38`） |
 | `crates/yekitrim-render-core/src/timeline.rs` | 竖屏贴纸覆盖/左右交替（`:488-565`，待删） |

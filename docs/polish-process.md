@@ -254,7 +254,7 @@ process 只做资源热加载与应用（账本仅供迁移期清理）。
 ### 11.3 `download` 与 `rhythm`
 
 - `download`：`sanitize_sticker_name(keyword)`、`cmd_download(project_path)`、`download_keyword_assets(...)`、
-  `ensure_assets(project_path)`（`api/polish.rs` 的预览/出片前都会调）；`try_resolve_sticker` 是 `pub(super)` 实现。
+  `ensure_assets(project_path)`（`api/polish/` 的预览/出片前都会调）；`try_resolve_sticker` 是 `pub(super)` 实现。
 - `rhythm`（§26，**已冻结**）：`params` / `plan` / `apply` / `clear` / `metrics` / `report_json`；默认档 `calm`。
 
 ### 11.4 `placement`（`mod placement;` 私有，外部一律走 `cmd_process`）

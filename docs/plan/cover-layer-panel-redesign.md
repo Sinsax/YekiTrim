@@ -1,7 +1,7 @@
 # 封面设计器：图层栈重设计（PS 口径）
 
 > 状态：**已实现（P0 + P1，2026-09）** ｜ 范围：`crates/yekitrim-polish`（`cover.rs` / `project/config.rs` /
-> `templates/cover.html`）、`crates/yekitrim-server/src/api/polish.rs`、`webui/src/components/CoverDesigner.vue`
+> `templates/cover.html`）、`crates/yekitrim-server/src/api/polish/`、`webui/src/components/CoverDesigner.vue`
 >
 > **实现结果与本文档的三处偏差**（以代码与模块卡为准，本文档保留决策过程）：
 > 1. **`CoverEffect` 只加了 `id`，没加 `visible`** —— 可见性**只住 `[[cover.layers]]` 一项**，
@@ -334,7 +334,7 @@ fn cover_layer_css(stack: &[ResolvedLayer]) -> String
 | 同上 / `cover.rs` | `default_cover_stack()` / `resolve_cover_stack()`（纯函数 + 表驱动单测） |
 | `crates/yekitrim-polish/templates/cover.html` | `#fx-extra` 去掉内联 `z-index:1`；加 `__LAYER_CSS__` 占位 |
 | `crates/yekitrim-polish/src/cover.rs` | `cover_layer_css()`；`cover_fx_html()` 加 `z-index/display`；抽 `apply_cover_vars()` 并让两个构建器都走它 |
-| `crates/yekitrim-server/src/api/polish.rs` | `cover-config` 白名单：`layers`（整数组替换）、`effects[].id/visible` |
+| `crates/yekitrim-server/src/api/polish/` | `cover-config` 白名单：`layers`（整数组替换）、`effects[].id/visible` |
 | `crates/yekitrim-polish/AGENTS.md`、`src/project/AGENTS.md` | "封面三层"那段改写成"图层栈" |
 
 验证：`cargo test -p yekitrim-polish`（新单测）、`cargo test -p yekitrim-server`（patch 用例）、

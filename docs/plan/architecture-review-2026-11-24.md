@@ -243,7 +243,7 @@ static LOCAL_ADMIN_UID: AtomicI64 = AtomicI64::new(1);
 | S2 | 前端零测试 + 无契约 | ❌ 仍开放（§3.2） |
 | S3 | `cover-takumi` feature 只在 CLI 侧传播 | ❌ 仍开放（`server` 无 feature 转发，单 crate 测试看不到 `takumi.rs`） |
 | W1 | `ingest.rs` 汇合两条 worker 语义 | ❌ 仍开放（`ingest.rs` 3,235 行，引 `ingest_worker` 11 次 / `download_worker` 4 次） |
-| W2 | `api/polish.rs` 混装 | ❌ 仍开放且更大（§3.1） |
+| W2 | `api/polish/` 混装 | ❌ 仍开放且更大（§3.1） |
 | W4 | 路径判据 3 份 | ❌ 仍在（`scope.rs` / `polish.rs` / `core/tenant.rs`） |
 | C1+C2 | `detection → cutting` 横边 | ❌ 仍在（`detection/mod.rs:294,300`） |
 | C4 | 两个隐藏全局 | ❌ 仍在（§3.3） |
@@ -265,7 +265,7 @@ static LOCAL_ADMIN_UID: AtomicI64 = AtomicI64::new(1);
 | 1 | `scripts/gate.mjs` + `route_manifest` 接上 | 保护已有 1598 测试 + 82 脚本的投入 | 低 |
 | 2 | 路由 401 枚举测试 + 请求体改 `Deserialize` 结构 | 一次性消掉最大缺陷类别的一部分 | 低 |
 | 3 | 拍板"DOM 近似预览是否追究像素" | 决定这 3 套渲染是继续并行还是收敛 | 需要产品口径 |
-| 4 | 拆 `api/polish.rs` + 禁 glob 重导出 | 让"该放哪"重新有答案 | 中（纯搬运，**且要先做 §4.3 卡瘦身**，见 §3.1 的预算约束） |
+| 4 | 拆 `api/polish/` + 禁 glob 重导出 | 让"该放哪"重新有答案 | 中（纯搬运，**且要先做 §4.3 卡瘦身**，见 §3.1 的预算约束） |
 | 5 | 拆 `ingest.rs`（录播姬 / B站分家）+ 补成对判据 | 门禁盲区，语义已在汇合 | 中 |
 | 6 | 保留期 + 每日清理任务 | 24/7 部署的慢性病 | 低 |
 | 7 | `cover-takumi` 归属 / 统一 edition / 锁文件 | 卫生 | 低 |

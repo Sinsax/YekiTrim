@@ -212,7 +212,7 @@ zoom = "远"/"中"/"近"（远=画面缩小成画中画）
 |---|---|
 | 配置字段 | `crates/yekitrim-render-core/src/types.rs:557-558`（`zoom_closeup`，另三条同段） |
 | 倍率解析 | `types.rs:574` `"特写" => self.zoom_closeup` |
-| API 夹取 | `crates/yekitrim-server/src/api/polish.rs:1869-1875`（四条：`zoom_mid/zoom_closeup/zoom_close/zoom_wide`） |
+| API 夹取 | `crates/yekitrim-server/src/api/polish/:1869-1875`（四条：`zoom_mid/zoom_closeup/zoom_close/zoom_wide`） |
 | **前端滑杆** | `webui/src/views/PolishView.vue:1816-1821`（`ZOOM_FIELDS`，4 条）+ `:1825` `ZOOM_DEFAULTS` |
 
 `grep -rn "zoom_closeup" webui/src/` → **3 命中**（滑杆定义 + 预览）。

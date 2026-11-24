@@ -33,12 +33,23 @@ const FILES = {
   engine: 'webui/src/polish/engine.js',
   editor: 'webui/src/components/TimelineEditor.vue',
   preview: 'webui/src/components/PolishPreview.vue',
-  polishRs: 'crates/yekitrim-server/src/api/polish.rs',
+  polishRs: 'crates/yekitrim-server/src/api/polish',
 }
 
+// 2026-11-25 整改后 `polishRs` 是**目录**（api/polish/*.rs）：目录就拼接全部 .rs。
+const readAny = (abs) => {
+  const st = fs.statSync(abs)
+  if (!st.isDirectory()) return fs.readFileSync(abs, 'utf8')
+  return fs
+    .readdirSync(abs)
+    .filter((n) => n.endsWith('.rs'))
+    .sort()
+    .map((n) => fs.readFileSync(`${abs}/${n}`, 'utf8'))
+    .join('\n')
+}
 const load = () => {
   const out = {}
-  for (const [k, rel] of Object.entries(FILES)) out[k] = fs.readFileSync(rel, 'utf8')
+  for (const [k, rel] of Object.entries(FILES)) out[k] = readAny(rel)
   return out
 }
 

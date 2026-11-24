@@ -43,7 +43,7 @@ chrome 3142ms / 263185B    takumi 4038ms / 323655B
 | `crates/yekitrim-polish/templates/cover.html` | 两个静态占位：`:root{…}` 变量块、`__EXPORT_CSS__`（对 Chrome 逐字节中性） |
 | `crates/yekitrim-polish/Cargo.toml` | `cover-takumi = ["dep:takumi"]`，**默认关**；`takumi 2.14`（`features = ["from-html"]`） |
 | `crates/yekitrim-cli` | `polish cover --renderer chrome\|takumi` |
-| `crates/yekitrim-server/src/api/polish.rs` | `POST /api/polish/cover { renderer }`（只透传）；`/api/health.cover_static = {compiled, fonts, fonts_dir, ready}` |
+| `crates/yekitrim-server/src/api/polish/` | `POST /api/polish/cover { renderer }`（只透传）；`/api/health.cover_static = {compiled, fonts, fonts_dir, ready}` |
 | `webui/src/components/CoverDesigner.vue` | 「生成封面」弹窗选通道；不 ready 时置灰 + 写明原因 |
 | `.cargo/config.toml` | `cargo cover` 别名（见 §6） |
 | `scripts/check-cover-takumi.mjs` | 双通道门禁；`textRows()` 从 `polish.toml` 算标题矩形（口径修正） |

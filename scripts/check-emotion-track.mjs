@@ -20,12 +20,23 @@
 //
 //     node scripts/check-emotion-track.mjs
 //     node scripts/check-emotion-track.mjs --self-test
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const read = (rel) => readFileSync(join(repo, rel), 'utf8');
+// ⚠️ **路径可能是一个目录**（2026-11-25 整改：api/polish.rs / api/project_data.rs / ingest.rs 都拆成了目录）。
+// 目录就按文件名顺序拼接全部 .rs —— 判据是「在这些源码里能 grep 到」，不是「在某个具体文件里」。
+function readAny(abs) {
+  const st = statSync(abs);
+  if (!st.isDirectory()) return readFileSync(abs, 'utf8');
+  return readdirSync(abs)
+    .filter((n) => n.endsWith('.rs'))
+    .sort()
+    .map((n) => readFileSync(join(abs, n), 'utf8'))
+    .join('\n');
+}
+const read = (rel) => readAny(join(repo, rel));
 
 let checks = 0;
 const failures = [];
@@ -46,11 +57,13 @@ const has = (text, re) => re.test(text);
 
 // ── ② 端点：服务端把它读出来 ──────────────────────────────────────────────
 {
-  const api = read('crates/yekitrim-server/src/api/polish.rs');
-  check('handler polish_emotion_get 存在', has(api, /pub\(super\) async fn polish_emotion_get\b/));
+  const api = read('crates/yekitrim-server/src/api/polish');
+  // ⚠️ 2026-11-25（T16 拆分）：polish 的 handler 现在由 `api/polish/mod.rs` 转发给路由，
+// 所以可见性是 `pub(crate)` 而不是 `pub(super)` —— 判据认两者。
+check('handler polish_emotion_get 存在', has(api, /pub\((?:super|crate)\) async fn polish_emotion_get\b/));
   check('它读 emotion.json', has(api, /join\("emotion\.json"\)/));
   // ⚠️ 同步 IO 必须 `blocking`（本仓纪律；漏了会在慢盘上占死 worker）
-  const fn = api.match(/pub\(super\) async fn polish_emotion_get\b[\s\S]{0,600}?\n\}/);
+  const fn = api.match(/pub\((?:super|crate)\) async fn polish_emotion_get\b[\s\S]{0,600}?\n\}/);
   check('端点走 blocking（同步 IO 不许留在 async worker 上）', !!(fn && /blocking\s*\(/.test(fn[0])));
   // ⚠️ 空态必须是 404，不是 `{windows:[]}`
   check('空态回 404（不是空数组）', has(api, /暂无情绪轨道/));

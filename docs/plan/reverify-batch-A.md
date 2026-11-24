@@ -66,7 +66,7 @@
 - **写回**：`process/mod.rs:870` `config.decisions = decisions;` ⇒ 随 `update_polish_toml` 落盘；
 - **顺延规则**：`process/mod.rs:118-125` 的 `CARRY_OVER`（只接边界类 + 片头类；
   次数型如画中画降级**不顺延**，因为"上趟降了几条"已过时）；
-- **消费者**：`crates/yekitrim-server/src/api/polish.rs:3112` 的测试
+- **消费者**：`crates/yekitrim-server/src/api/polish/:3112` 的测试
   `polish_project_http_returns_decisions` —— **这条是 HTTP 级判据**，注释写明了理由：
   「`serde_json::to_value(&cfg)` 里**自动**带着 `decisions`」⇒ 必须钉 HTTP 回包，
   否则"理由面板会永远空"而 Rust 侧测试全绿。
@@ -152,7 +152,7 @@ grep -rni "句末|sentence" webui/src/   -> 1 命中
 
 ### ② 后端接线 ✅
 - **生产者**：`quality::evaluate`（纯函数，被 API 直接调）；
-- **消费者**：`crates/yekitrim-server/src/api/project_data.rs:696` `fn clip_quality(dir, duration_secs)`
+- **消费者**：`crates/yekitrim-server/src/api/project_data/:696` `fn clip_quality(dir, duration_secs)`
   → `:708` `quality::evaluate(&cfg.segments, &subtitles, duration)`
   → `:1024` 挂进片段视图 → `:1040` `"quality": quality` 出 HTTP；
 - ⚠️ **关键设计（防"假的高分"）**：`:1755` 那条测试
@@ -204,7 +204,7 @@ grep -rn "quality" webui/src/polish/   -> 0 命中
 |---|---|
 | 出片腿日志 | `crates/yekitrim-polish/src/render/pipeline.rs:680` `for (level,msg) in report_lines(...)` |
 | **落盘** | `pipeline.rs:690` `<工程>/data/translate_report.json`（日志会被滚动清掉，报告要事后可查） |
-| 预览腿 HTTP | `crates/yekitrim-server/src/api/polish.rs:3983`（转译时拿报告）→ `:4009` 播报 → `:4016` 回包 |
+| 预览腿 HTTP | `crates/yekitrim-server/src/api/polish/:3983`（转译时拿报告）→ `:4009` 播报 → `:4016` 回包 |
 | CLI 侧 | `pipeline.rs:690` 写文件（CLI 与 server 共用） |
 
 - **HTTP 级判据**：`polish.rs:2687` 断言 `v.get("translate_report").is_some()`

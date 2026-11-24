@@ -78,7 +78,7 @@
 // 运行：node webui/scripts/check-layout-invariants.mjs
 // 退出码非 0 = 有不变式被破坏。**每条都带"变异自证"**：改坏源码后判据必须翻面（否则它只是空转）。
 
-import { readFile } from 'node:fs/promises'
+import { readFile, readdir, stat } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -96,7 +96,15 @@ function check(label, actual, expected) {
   }
 }
 
-const read = (p) => readFile(join(root, p), 'utf8')
+// 2026-11-25 整改后 server 侧那两个巨型文件都拆成了目录（api/project_data/*.rs 等）：
+// 目录就按文件名顺序拼接全部 .rs —— 判据是「在这些源码里能 grep 到」。
+const read = async (p) => {
+  const abs = join(root, p)
+  if (!(await stat(abs)).isDirectory()) return readFile(abs, 'utf8')
+  const names = (await readdir(abs)).filter((n) => n.endsWith('.rs')).sort()
+  const parts = await Promise.all(names.map((n) => readFile(join(abs, n), 'utf8')))
+  return parts.join('\n')
+}
 const settings = await read('webui/src/views/SettingsView.vue')
 const overview = await read('webui/src/components/HomeClipsOverview.vue')
 const workbench = await read('webui/src/views/WorkbenchView.vue')
@@ -1270,7 +1278,7 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
 console.log('\n⑳ 多段切片一条链（列表 → 载荷 → 服务端 → Cutter）')
 {
   const prepareView = await read('webui/src/views/PrepareView.vue')
-  const projectDataApi = await read('crates/yekitrim-server/src/api/project_data.rs')
+  const projectDataApi = await read('crates/yekitrim-server/src/api/project_data')
   const cutter = await read('crates/yekitrim-core/src/cutting/mod.rs')
   const typesRs = await read('crates/yekitrim-core/src/types/mod.rs')
 
@@ -1278,8 +1286,10 @@ console.log('\n⑳ 多段切片一条链（列表 → 载荷 → 服务端 → C
     s.includes('const sliceRows = ref(') && s.includes('function addSliceRow(')
       && /function removeSliceRow\(i\) \{[\s\S]{0,200}?length <= 1[\s\S]{0,80}?return/.test(s)
   const payloadCompat = (s) => /\.\.\.\(ranges && ranges\.length > 1 \? \{ ranges \} : \{\}\)/.test(s)
+  // ⚠️ 2026-11-25（T9 结构体化 + T18 拆分）：请求体不再走 `body.get("ranges")` —— 现在是强类型字段
+  // `ranges: Vec<EventRangeBody>`，服务端仍按「多段才写」处理（`ranges.len() > 1`）。
   const serverTakesRanges = (s) =>
-    /body\.get\("ranges"\)/.test(s) && /ranges\.len\(\) > 1/.test(s)
+    /ranges:\s*Vec<EventRangeBody>/.test(s) && /ranges\.len\(\) > 1/.test(s) && /ranges\.push\(/.test(s)
   // 多段分支必须**真的可达**（只查"有这几个函数"的话，把 `if ranges.len() <= 1` 改成恒真
   // 也照样通过 —— 实测踩过）
   const cutterMulti = (s) =>
@@ -1306,7 +1316,7 @@ console.log('\n⑳ 多段切片一条链（列表 → 载荷 → 服务端 → C
   const MUT20 = [
     ['载荷一律带 ranges（单段线格式被改）', prepareView, (s) => s.replace('...(ranges && ranges.length > 1 ? { ranges } : {})', '...(ranges ? { ranges } : {})'), payloadCompat],
     ['删段不再挡"只剩一段"', prepareView, (s) => s.replace('  if (sliceRows.value.length <= 1) return\n', ''), hasList],
-    ['服务端不再解析 ranges', projectDataApi, (s) => s.replace('body.get("ranges")', 'body.get("ranges_noop")'), serverTakesRanges],
+    ['服务端不再按多段处理 ranges', projectDataApi, (s) => s.replace('ranges.len() > 1', 'ranges.len() > 0'), serverTakesRanges],
     ['Cutter 不再逐段剪（多段退化成单段）', cutter, (s) => s.replace('    if ranges.len() <= 1 {', '    if true {'), cutterMulti],
     ['`cut_ranges()` 不再回退单段（空 ranges ⇒ 什么都不切）', typesRs, (s) => s.replace('        } else {\n            self.ranges.clone()\n        }', '        }'), emptyMeansSingle],
   ]
@@ -1768,7 +1778,7 @@ console.log('\n㉘ 复合片段的「各段源区间」（可见 + 单一出口�
 console.log('\n㉙ 重叠的段并成一段（核心 + 写侧 + 预处理页提示）')
 {
   const coreTypes = await read('crates/yekitrim-core/src/types/mod.rs')
-  const projectData = await read('crates/yekitrim-server/src/api/project_data.rs')
+  const projectData = await read('crates/yekitrim-server/src/api/project_data')
   const prepareView = await read('webui/src/views/PrepareView.vue')
 
   // ⚠️ 判据只认 `next.start <= last.end`：放宽成"有内容的空隙也并"会把

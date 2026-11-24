@@ -70,7 +70,7 @@
 `subtitle_size` / `subtitle_position_pct`）整条漏过 ⇒ 症状是
 **"toast 说已保存 → 控件回弹到原值 → 全程无报错"**。
 
-**判据**：在 `api/polish.rs` 里 grep 那个字段名；**命中 0 次就是要补分支**（照 `subtitle_font` 那段写），
+**判据**：在 `api/polish/` 里 grep 那个字段名；**命中 0 次就是要补分支**（照 `subtitle_font` 那段写），
 并配一条回归测试（`polish_project_put_writes_subtitle_style`）。
 
 ### ② "断言某个键被删掉/没写出"的测试会假绿

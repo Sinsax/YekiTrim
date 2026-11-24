@@ -114,7 +114,7 @@ license(spdx) / source_url / sha256 / builtin(bool) / is_default(bool) / added_a
 - 兼容老库：`scan()` 现在按**平铺文件名**扫；迁移时对"没有 `FONT.toml` 的散文件"按
   "文件名去扩展名 = id / display_name" 兜底（老工程 `font = "SimHeiTest"` 这类必须继续能解析）。
 
-### 5.2 API（都加在 `crates/yekitrim-server/src/api/polish.rs` + `routes.rs`）
+### 5.2 API（都加在 `crates/yekitrim-server/src/api/polish/` + `routes.rs`）
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
@@ -341,7 +341,7 @@ python3 scripts/route_manifest.py           # exit 0
 ### 10.3 分层纪律（别越界）
 
 - **core 只做文件层**（读/写 `FONT.toml`、扫描、解析、导入落盘、删除、设默认），**不碰 HTTP**；
-  四个端点全在 `yekitrim-server`（`api/polish.rs` + `routes.rs`），同步 IO 走 `api::blocking`。
+  四个端点全在 `yekitrim-server`（`api/polish/` + `routes.rs`），同步 IO 走 `api::blocking`。
 - `yekitrim-core` **不得出现** `yekitrim_polish`/`yekitrim_service`/`yekitrim_server`/`yekitrim_cli`（门禁会红）。
 - 老行为必须保住：老工程 `font = "LXGW WenKai"`（系统族名）**解析不到就不注入 `@font-face`**（有意为之）；
   `font = "SimHeiTest"`（库内 id）继续解析得到文件。
@@ -363,7 +363,7 @@ python3 scripts/route_manifest.py           # exit 0
 | `webui/src/router.js` | `#/fonts`（`meta:{admin:true, title:'字体库'}`） |
 | `webui/src/views/WorkbenchView.vue` | 首页 admin 区块（与 `StickerPacks v-if="isAdmin"` 同款位置）挂入口 |
 | `webui/src/api/polish.js` | 新 `importFont` / `setDefaultFont` / `deleteFont` |
-| `crates/yekitrim-server/src/api/polish.rs` | 导入**同时接受 `{dir,name}`**（服务端拼路径） |
+| `crates/yekitrim-server/src/api/polish/` | 导入**同时接受 `{dir,name}`**（服务端拼路径） |
 
 ### 12.2 三条要点
 
@@ -488,7 +488,7 @@ python3 scripts/check_module_map.py && python3 scripts/check_module_boundaries.p
 ### 14.1 三条字体**写**路由的 handler 从未存在过
 
 `routes.rs` 里挂了 `POST /polish/fonts/import`、`POST /polish/fonts/default`、
-`DELETE /polish/fonts`，但 `api/polish.rs` 里**没有**对应的
+`DELETE /polish/fonts`，但 `api/polish/` 里**没有**对应的
 `polish_fonts_import` / `polish_fonts_default` / `polish_fonts_delete` ——
 `cargo check` 直接 `E0425: cannot find value … in this scope`。
 
@@ -496,7 +496,7 @@ python3 scripts/check_module_map.py && python3 scripts/check_module_boundaries.p
 必须配一次 `cargo check --workspace --all-targets`。光看 diff / 看文件里 grep 到路由字样，
 会得出"已经做完了"的错误结论。
 
-现在三个 handler 都补齐了（`api/polish.rs`），各自的规矩：
+现在三个 handler 都补齐了（`api/polish/`），各自的规矩：
 
 | 端点 | body | 错误码 |
 |---|---|---|
@@ -936,7 +936,7 @@ Takumi 的 fallback 桶 = **已注册字体按注册序的全集**
 | `webui/src/router.js` | 删 `#/fonts` 路由 |
 | `webui/src/views/WorkbenchView.vue` | 字体卡换成 `<FontLibrary v-if="isAdmin" />`；`homeFonts*` 状态、route watch 里的字体重查、`.wb-fonts` 样式一并删除 |
 | `webui/src/api/polish.js` | §21.1 的三处 `JSON.stringify` |
-| `crates/yekitrim-server/src/api/polish.rs` | 仅注释：`FontsView.vue` 指针改指 `FontLibrary.vue`（跨模块纯注释改动，理由在此） |
+| `crates/yekitrim-server/src/api/polish/` | 仅注释：`FontsView.vue` 指针改指 `FontLibrary.vue`（跨模块纯注释改动，理由在此） |
 
 - 保留口径：写操作仅 admin（整块 `v-if="isAdmin"`）、读失败可见可重试、下载失败原话显示、
   预览注册出片同源字节、认不出的格式挂「预览不可用」—— 全部原样随组件迁移。

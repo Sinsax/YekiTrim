@@ -29,9 +29,9 @@
 | T13 parity 判据边界（D-1） | ✅ | `8f95f736` | 11 保留 / 2 降级；校正「index.html 是出片路径」的旧口径 |
 | T14 删模板腿（三步） | 🟡 第 2 步已落；1/3 阻塞 | `0d5da2f8` | `polish preview` 找不到工程改指引退出；删零调用方的 `cmd_preview_cover`；第 1、3 步要重建 `webui/dist`，等那份未提交前端改动放行 |
 | T15 `engine.js` 定位写明近似 | ⛔ 阻塞 | — | 见「阻塞」 |
-| T16 拆 `api/polish.rs` | ✅ | `570ff8ff` + `037f819c` | 6,235 行 → `api/polish/` 8 个文件（产线最大 775）；glob 归零；`///` 707 / `#[test]` 48 守恒 |
+| T16 拆 `api/polish/` | ✅ | `570ff8ff` + `037f819c` | 6,235 行 → `api/polish/` 8 个文件（产线最大 775）；glob 归零；`///` 707 / `#[test]` 48 守恒 |
 | T17 拆 `ingest.rs` + 领域词判据 | ✅ | `2c25df7d` | 10 个文件；21 条规则；三处变异自证 |
-| T18 拆 `api/project_data.rs` | ✅ | `e02f9df4` | 3,570 行 → `api/project_data/` 7 个文件（产线最大 711）；`#[test]` 39 守恒 |
+| T18 拆 `api/project_data/` | ✅ | `e02f9df4` | 3,570 行 → `api/project_data/` 7 个文件（产线最大 711）；`#[test]` 39 守恒 |
 | T19 路径判据收敛 | ✅ | `fdc8b7b1` | 一份谓词 + 显式严格度；变异（摘 `:` 规则）⇒ 两条用例同时红 |
 | T20 edition 统一 + rust-version + 锁文件 | ✅ | `d060162a` | 8 crate → 2024；`cargo test --workspace` 全绿 |
 | T21 `VTEDIT_*` 环境变量 → 参数 | ✅ | `12e8aa2f` | `RenderOpts`；新用例证明两份参数互不污染 |
@@ -68,8 +68,8 @@ npm --prefix webui run build                 # 只有改前端时
 ```
 ## 阶段小结（2026-11-25，第三~五轮）
 
-- **P4 结构拆分已完成**：`ingest.rs` 3,235 行 → 10 个文件；`api/polish.rs` 6,235 行 → 8 个文件；
-  `api/project_data.rs` 3,570 行 → 7 个文件。`api/` 下现有三张卡（api / api-polish / api-project-data），
+- **P4 结构拆分已完成**：`ingest.rs` 3,235 行 → 10 个文件；`api/polish/` 6,235 行 → 8 个文件；
+  `api/project_data/` 3,570 行 → 7 个文件。`api/` 下现有三张卡（api / api-polish / api-project-data），
   模块 36 → 38，最坏链 54,998 / 57,344 B，`glob 重导出` 0 命中，`route_manifest` 全程 142 条逐行不变。
 - **T16 拆成三阶段**（与计划不同，理由成立）：先 `T16a` 断开 glob 环（`validated_project_dir` 下沉到
   `api/mod.rs`），再分别拆两个文件 —— 计划要求同批次是因为当时两者互相 glob 引用、只拆一半会留环；

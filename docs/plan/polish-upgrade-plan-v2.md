@@ -1236,7 +1236,7 @@ computed style `rgba(0,0,0,0.627)` = **160/255** ✓。
 | 段 | 落点 |
 |---|---|
 | ① 写盘 | `process/mod.rs::write_emotion_track` |
-| ② 端点 | `GET /api/polish/emotion`（`api/polish.rs`）—— 空态 **404** 不是 `{windows:[]}` |
+| ② 端点 | `GET /api/polish/emotion`（`api/polish/`）—— 空态 **404** 不是 `{windows:[]}` |
 | ③ 路由 | `routes.rs` 挂一条（清单实测 **128 → 129**，零条移动） |
 | ④ 界面 | `TimelineEditor.vue` 的「情绪」**只读观察轨** |
 

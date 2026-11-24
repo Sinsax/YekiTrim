@@ -92,7 +92,7 @@ P0 完成后追加 `node scripts/gate.mjs`（T5 建成后）。
 ### T4 同步 IO 三处补 `blocking`
 
 - **改哪里**（三处都已定位到行）：
-  1. `crates/yekitrim-server/src/api/project_data.rs:1206` `clip_delete_impl` ——
+  1. `crates/yekitrim-server/src/api/project_data/:1206` `clip_delete_impl` ——
      `std::fs::remove_dir_all(&clip_dir)`（1228）+ `prune_clip_from_index`（1230，内部读两个索引文件）。
      把这两步整体包进 `blocking(move || …)`；注意 `busy_with` 的检查必须**留在外面**（它是 async）。
   2. `crates/yekitrim-server/src/api/projects.rs:372` `projects_source_delete` ——
@@ -368,7 +368,7 @@ P0 完成后追加 `node scripts/gate.mjs`（T5 建成后）。
 
 ## P4 结构拆分
 
-### T16 拆 `api/polish.rs`（2,787 产线行 / 39 个 handler）
+### T16 拆 `api/polish/`（2,787 产线行 / 39 个 handler）
 
 **必须 T3 先做完**（否则新目录要开卡，指令链超预算）。
 
@@ -397,8 +397,8 @@ P0 完成后追加 `node scripts/gate.mjs`（T5 建成后）。
   然后把 Dhampir 那一段（`polish_dhampir_*` + 转译缓存，~700 L）单独成 `dhampir.rs`。
 - **同时做**：`api/polish.rs:21` 与 `api/project_data.rs:21` 的 `use super::{…::*}` **全部改显式**。
   （现在两个文件互相 glob 引用，Rust 允许模块环、门禁抓不到 —— 这是"按领域一文件"失效的根因。）
-- **怎么算做完**：`wc -l src/api/polish/*.rs` 每个文件 ≤ 900 产线行；`api/polish.rs` 与
-  `api/project_data.rs` 之间**没有** `use …::*`；`routes.rs` 只改 `use super::polish::*` 这一行。
+- **怎么算做完**：`wc -l src/api/polish/*.rs` 每个文件 ≤ 900 产线行；`api/polish/` 与
+  `api/project_data/` 之间**没有** `use …::*`；`routes.rs` 只改 `use super::polish::*` 这一行。
 - **怎么验证**：① `cargo check --workspace --all-targets`；② `cargo test -p yekitrim-server` 全绿
   （api 有 159 个测试，这就是回归网）；③ `python3 scripts/check_module_map.py` 通过 ——
   **前提是 T3 已经把预算腾出来了**，且 `docs/module-map.json` 里新增 7 个 `kind=module` 条目、
@@ -443,7 +443,7 @@ P0 完成后追加 `node scripts/gate.mjs`（T5 建成后）。
   的**唯一生产调用方**是 `put_config`（`:1941`），其余 20 多处全在 `#[cfg(test)]` 里 ——
   搬进 `ingest/config.rs` 时把它的测试一起搬即可，不用跨文件引用。
 
-### T18 拆 `api/project_data.rs`（1,922 产线行 / 31 handler）
+### T18 拆 `api/project_data/`（1,922 产线行 / 31 handler）
 
 - **切法**：`project_data/{status,events,clips,assets,fs,media}.rs`，
   `fs_list`（153 行）与 `media_get`（47 行）单独成 `fs.rs` / `media.rs`。
@@ -458,7 +458,7 @@ P0 完成后追加 `node scripts/gate.mjs`（T5 建成后）。
 
 - **现状三份**：`crates/yekitrim-core/src/tenant.rs::ensure_within`、
   `crates/yekitrim-server/src/scope.rs::is_safe_project_relative`、
-  `crates/yekitrim-server/src/api/polish.rs` 的 handler 侧兜底（注释写明"两层缺一不可"）。
+  `crates/yekitrim-server/src/api/polish/` 的 handler 侧兜底（注释写明"两层缺一不可"）。
 - ⚠️ **本条我建议不做，或只做"登记"**。理由：根卡明确写了"路径面三防线，三处缺一不可"，
   而且 `/etc/passwd` 那条洞就是"只有一份实现、藏在 handler 里没有第二道"留下的。
   **这些是纵深防御，不是重复。**
