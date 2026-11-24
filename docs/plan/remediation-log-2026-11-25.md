@@ -27,7 +27,7 @@
 | T11 `projects_list` N+1 | ✅ | `a7e97c24` | owner 名一次查表；变异→整列 null 即红 |
 | T12 `cover-takumi` 归属 | ✅ | `781c07f4` | `--features cover-takumi` 绿；`xtask package` 缺 feature 拒绝打包 |
 | T13 parity 判据边界（D-1） | ✅ | `8f95f736` | 11 保留 / 2 降级；校正「index.html 是出片路径」的旧口径 |
-| T14 删模板腿（三步） | ⛔ 阻塞 | — | 见「阻塞」 |
+| T14 删模板腿（三步） | 🟡 第 2 步已落；1/3 阻塞 | `0d5da2f8` | `polish preview` 找不到工程改指引退出；删零调用方的 `cmd_preview_cover`；第 1、3 步要重建 `webui/dist`，等那份未提交前端改动放行 |
 | T15 `engine.js` 定位写明近似 | ⛔ 阻塞 | — | 见「阻塞」 |
 | T16 拆 `api/polish.rs` | ✅ | `570ff8ff` + `037f819c` | 6,235 行 → `api/polish/` 8 个文件（产线最大 775）；glob 归零；`///` 707 / `#[test]` 48 守恒 |
 | T17 拆 `ingest.rs` + 领域词判据 | ✅ | `2c25df7d` | 10 个文件；21 条规则；三处变异自证 |
