@@ -261,6 +261,14 @@
       "verify": ["cargo test -p yekitrim-server"]
     },
     {
+      "id": "server-api-project-data",
+      "title": "项目数据面（状态 / 事件 / 片段 / 素材 / 文件列表 / 媒体流）",
+      "dir": "crates/yekitrim-server/src/api/project_data",
+      "card": "crates/yekitrim-server/src/api/project_data/AGENTS.md",
+      "kind": "module",
+      "verify": ["cargo test -p yekitrim-server"]
+    },
+    {
       "id": "server-ingest",
       "title": "采集接入：录播姬 webhook / B站链接 / 采集配置",
       "dir": "crates/yekitrim-server/src/ingest",

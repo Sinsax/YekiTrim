@@ -17,7 +17,7 @@ use yekitrim_service::Workspace;
 
 use super::*;
 // 显式 use（不许 glob，整改 P4 T16/T18）：这个夹具只用两个名字 —— 路由表入口与一个写侧实现。
-use super::project_data::data_transcript_put_impl;
+use super::project_data::assets::data_transcript_put_impl;
 use super::routes::router;
 
 pub(crate) fn tmp_workspace(tag: &str) -> (Workspace, PathBuf) {
