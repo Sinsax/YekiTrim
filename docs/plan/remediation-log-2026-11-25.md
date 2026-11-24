@@ -29,15 +29,15 @@
 | T13 parity 判据边界（D-1） | ✅ | `8f95f736` | 11 保留 / 2 降级；校正「index.html 是出片路径」的旧口径 |
 | T14 删模板腿（三步） | ⛔ 阻塞 | — | 见「阻塞」 |
 | T15 `engine.js` 定位写明近似 | ⛔ 阻塞 | — | 见「阻塞」 |
-| T16 拆 `api/polish.rs` | 🚧 进行中 | — | — |
+| T16 拆 `api/polish.rs` | ✅ | `570ff8ff` + `037f819c` | 6,235 行 → `api/polish/` 8 个文件（产线最大 775）；glob 归零；`///` 707 / `#[test]` 48 守恒 |
 | T17 拆 `ingest.rs` + 领域词判据 | ✅ | `2c25df7d` | 10 个文件；21 条规则；三处变异自证 |
-| T18 拆 `api/project_data.rs` | 🚧 与 T16 同批次 | — | — |
+| T18 拆 `api/project_data.rs` | ✅ | `e02f9df4` | 3,570 行 → `api/project_data/` 7 个文件（产线最大 711）；`#[test]` 39 守恒 |
 | T19 路径判据收敛 | ✅ | `fdc8b7b1` | 一份谓词 + 显式严格度；变异（摘 `:` 规则）⇒ 两条用例同时红 |
 | T20 edition 统一 + rust-version + 锁文件 | ✅ | `d060162a` | 8 crate → 2024；`cargo test --workspace` 全绿 |
 | T21 `VTEDIT_*` 环境变量 → 参数 | ✅ | `12e8aa2f` | `RenderOpts`；新用例证明两份参数互不污染 |
 | T22 进程级全局可见化 | ✅ | `730d0278` | 真跑 server 日志出现 `usage sink: installed` / `local admin uid = 1` |
 | T23 决策登记 D-1..D-5 | ✅ | `b87cb9e3` | ROADMAP 一节 |
-| T4b `create_local_project` 异步化 | 🚧 进行中 | — | — |
+| T4b `create_local_project` 异步化 | ✅ | `d4a2c29a` | 整段落盘一个闭包；新用例 `create_project_runs_sync_io_off_the_worker`；把 `api::blocking` 改成同步跑 ⇒ 该用例与 clip_delete 那条**同时红** |
 
 ## 阻塞
 
@@ -66,3 +66,17 @@ cargo test --workspace --no-fail-fast
 cargo check -p yekitrim-server --features cover-takumi
 npm --prefix webui run build                 # 只有改前端时
 ```
+## 阶段小结（2026-11-25，第三~五轮）
+
+- **P4 结构拆分已完成**：`ingest.rs` 3,235 行 → 10 个文件；`api/polish.rs` 6,235 行 → 8 个文件；
+  `api/project_data.rs` 3,570 行 → 7 个文件。`api/` 下现有三张卡（api / api-polish / api-project-data），
+  模块 36 → 38，最坏链 54,998 / 57,344 B，`glob 重导出` 0 命中，`route_manifest` 全程 142 条逐行不变。
+- **T16 拆成三阶段**（与计划不同，理由成立）：先 `T16a` 断开 glob 环（`validated_project_dir` 下沉到
+  `api/mod.rs`），再分别拆两个文件 —— 计划要求同批次是因为当时两者互相 glob 引用、只拆一半会留环；
+  环先断掉之后，两次拆分可各自独立编译与验证。
+- **两个执行者中途失败**（一次在 T16/T18 开工前、一次在 T4b 中途留下 `E0425`），由 Lead 接手：
+  T4b 的收尾 = 修编译错 + 补 `create_project_runs_sync_io_off_the_worker` 用例 + 机制级变异自证。
+
+## 仅剩的阻塞
+
+T14 / T15 仍等 `webui/src/components/ProjectClipsSection.vue` 那份**未提交**改动放行（见上节）。
