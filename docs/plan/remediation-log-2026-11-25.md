@@ -27,8 +27,8 @@
 | T11 `projects_list` N+1 | ✅ | `a7e97c24` | owner 名一次查表；变异→整列 null 即红 |
 | T12 `cover-takumi` 归属 | ✅ | `781c07f4` | `--features cover-takumi` 绿；`xtask package` 缺 feature 拒绝打包 |
 | T13 parity 判据边界（D-1） | ✅ | `8f95f736` | 11 保留 / 2 降级；校正「index.html 是出片路径」的旧口径 |
-| T14 删模板腿（三步） | 🟡 第 2 步已落；1/3 阻塞 | `0d5da2f8` | `polish preview` 找不到工程改指引退出；删零调用方的 `cmd_preview_cover`；第 1、3 步要重建 `webui/dist`，等那份未提交前端改动放行 |
-| T15 `engine.js` 定位写明近似 | ⛔ 阻塞 | — | 见「阻塞」 |
+| T14 删模板腿（三步） | 🟡 第 1、2 步已落；第 3 步待跨版本 | `0d5da2f8` + `de0c3db3` | 第 1 步清死代码（`preview()` / `coverPreview`，前端 0 调用）、第 2 步 `polish preview` 改指引退出 + 删 `cmd_preview_cover`；第 3 步要删 `templates/index.html` 整条腿，按计划等一个发行版本 |
+| T15 `engine.js` 定位写明近似 | ✅ | `6df30f37` | 文件头改成「近似预览腿，不是出片路径」+ 允许/不允许的边界；polish 卡顶部同步 D-1 定位 |
 | T16 拆 `api/polish/` | ✅ | `570ff8ff` + `037f819c` | 6,235 行 → `api/polish/` 8 个文件（产线最大 775）；glob 归零；`///` 707 / `#[test]` 48 守恒 |
 | T17 拆 `ingest.rs` + 领域词判据 | ✅ | `2c25df7d` | 10 个文件；21 条规则；三处变异自证 |
 | T18 拆 `api/project_data/` | ✅ | `e02f9df4` | 3,570 行 → `api/project_data/` 7 个文件（产线最大 711）；`#[test]` 39 守恒 |
