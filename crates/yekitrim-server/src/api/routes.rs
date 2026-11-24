@@ -17,8 +17,47 @@ use axum::{
 
 use crate::model::AppState;
 use super::*;
-use super::{auth::*, config::*, invite::*, logs::*, pipeline::*, polish::*,
-            project_data::*, projects::*, rooms::*};
+// ⚠️ **显式 use，不许 `…::*`**（整改 T16/T18 第一阶段）：路由表本身一条都没变，只把
+// 「从哪个领域模块拿哪个 handler」写清楚。之前这 9 条 glob 让 `api` 内部到处都能互相看见，
+// `polish` / `project_data` 之间甚至成了**模块环**（Rust 允许、编译不报错、门禁抓不到）。
+// 现在每个 handler 的名字都指名道姓地出现在这里 —— 哪个领域新增了 handler 忘了挂路由，
+// 一眼能看出来。
+use super::auth::{
+    admin_set_user_quota, admin_users, auth_login, auth_logout, auth_password, auth_register, doctor,
+    me,
+};
+use super::config::{
+    config_get, config_global_put, config_llm_put, llm_catalog, llm_dialects, llm_models,
+    llm_protocols, llm_test, models_download, models_get,
+};
+use super::invite::{admin_invite_create, admin_invite_revoke, admin_invites};
+use super::logs::{admin_logs, admin_logs_stream, admin_usage};
+use super::pipeline::{global_stream, job_cancel, job_events, job_get, jobs_list};
+use super::polish::{
+    polish_asset_file, polish_cover, polish_cover_background, polish_cover_config, polish_cover_frame,
+    polish_cover_preview, polish_cover_title, polish_dhampir_project, polish_dhampir_status,
+    polish_dhampir_wasm, polish_emoji_catalog, polish_emotion_get, polish_font, polish_fonts,
+    polish_fonts_builtin, polish_fonts_default, polish_fonts_delete, polish_fonts_import,
+    polish_fonts_upload, polish_init, polish_llm, polish_llm_segment, polish_preview, polish_process,
+    polish_project_get, polish_project_put, polish_render, polish_select_version, polish_sfx_catalog,
+    polish_silence, polish_sticker_file, polish_sticker_frame, polish_sticker_library,
+    polish_sticker_prewarm, polish_sticker_sources, polish_subtitles_get, polish_subtitles_put,
+    polish_video_library, polish_video_thumb, FONT_UPLOAD_MAX_BYTES,
+};
+use super::project_data::{
+    fs_list, media_get, project_data_assets, project_data_assets_put, project_data_clip_delete,
+    project_data_clip_silence, project_data_clip_thumb, project_data_clip_title_put, project_data_clips,
+    project_data_config, project_data_config_put, project_data_correct, project_data_danmaku,
+    project_data_event_cut, project_data_event_cut_all, project_data_events, project_data_events_create,
+    project_data_events_merge_splits, project_data_events_put, project_data_pipeline,
+    project_data_polish, project_data_search_text, project_data_status, project_data_transcript,
+    project_data_transcript_put,
+};
+use super::projects::{
+    project_delete, project_init, project_list, project_open, projects_create, projects_delete,
+    projects_list, projects_source_delete,
+};
+use super::rooms::{admin_recorder_test, admin_registration_put, rooms_add, rooms_delete, rooms_list};
 
 // ---- 公开路由白名单（P2 T10）----
 //

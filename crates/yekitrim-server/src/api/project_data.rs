@@ -18,7 +18,13 @@ use crate::{
     media,
 };
 use super::*;
-use super::{config::*, pipeline::*, polish::*, projects::*};
+// ⚠️ **显式 use，不许 `…::*`**（整改 T16/T18 第一阶段，缘由见 `polish.rs` 顶部那段）。
+// 现在 api 内部**没有模块环**：本文件是唯一的方向性依赖方（`project_data → polish` 只为
+// `polish_projects_impl` 这一个快照函数），`polish` 侧已经不认识 `project_data`。
+use super::config::{config_yekitrim_get_impl, config_yekitrim_put_impl};
+use super::pipeline::{correct_run_impl, run_pipeline_job};
+use super::polish::polish_projects_impl;
+use super::projects::project_status_impl;
 
 // ---- 项目数据（P2：作用域 = 本人项目 id，`?config=` 仅作过渡期反查） ----
 //
@@ -1488,20 +1494,6 @@ pub(super) async fn project_data_clip_title_put(
     let path = ws.output_dir().join("publish_config.json");
     let _guard = yekitrim_core::filelock::lock_path(&path).await;
     blocking(move || clip_title_put_impl(&ws, &rank, &title, &patch)).await
-}
-/// polish 系列接口的 `dir` 参数校验：非空 + 必须已存在且是目录。
-///
-/// 前端永远传绝对路径；这里挡的是空串（会在 server 进程 CWD 下写入 polish.toml /
-/// data / sfx）和不存在的路径（错误信息也更明确）。接受 `&str`/`String`/`&String`。
-pub(super) fn validated_project_dir(dir: impl AsRef<Path>) -> Result<PathBuf, AppError> {
-    let path = dir.as_ref();
-    if path.as_os_str().is_empty() {
-        return Err(err(StatusCode::BAD_REQUEST, "缺少 dir"));
-    }
-    if !path.is_dir() {
-        return Err(err(StatusCode::BAD_REQUEST, format!("目录不存在: {}", path.display())));
-    }
-    Ok(path.to_path_buf())
 }
 
 /// 精修工程不存在时自动初始化（与前端进入精修时的行为一致）。

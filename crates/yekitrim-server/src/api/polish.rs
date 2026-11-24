@@ -18,7 +18,15 @@ use crate::jobs::{JobClass, JobSpec};
 // 贴纸两接口的路径判据：**唯一一份**在 `crate::scope`（中间件与 handler 两层共用）
 use crate::scope::is_safe_project_relative;
 use super::*;
-use super::{pipeline::*, project_data::*, render::*};
+// ⚠️ **显式 use，不许 `…::*`**（整改 T16/T18 第一阶段）。原来这三条 glob 正是 api 内部**模块环**的
+// 来源：`polish → project_data`（`validated_project_dir`）与 `project_data → polish`
+// （`polish_projects_impl`）互指 —— Rust 允许模块环，编译不报错、门禁也抓不到，于是
+// 「按领域一文件一模块」失效。断环的两刀：
+//   · `validated_project_dir` **下沉到 `api/mod.rs`**（两个领域都用 ⇒ 归底座，见那里的注释）；
+//   · `latest_numbered_file` / `run_polish_child` 留在各自领域，这里**只点名要谁**。
+// 结果：本文件不再认识 `project_data`；剩下唯一的一条边是 `project_data → polish`（单向）。
+use super::pipeline::latest_numbered_file;
+use super::render::run_polish_child;
 
 // ===================== Polish =====================
 

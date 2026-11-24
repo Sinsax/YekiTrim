@@ -61,6 +61,33 @@ where
     }
 }
 
+/// `polish` 系列接口（以及任何"传一个工程目录"的写接口）的 `dir` 参数校验：
+/// **非空 + 必须已存在且是目录**。接受 `&str` / `String` / `&String` / `&Path`。
+///
+/// 为什么挡空串：`dir: ""` 会让 `cmd_init` 在 **server 进程的 CWD** 下写出 `polish.toml` /
+/// `data` / `sfx`；不存在的路径也要当场 400（错误信息比"任务跑失败"明确得多）。
+///
+/// ⚠️ **它住在底座而不是 `polish` 里**（整改 T16/T18 第一阶段）：这个函数原本定义在
+/// `api/project_data.rs`，而调用方全在 `api/polish.rs` —— 那两份文件当时用
+/// `use super::` 后面挂一串「模块::星号」互相 glob 引用，**api 内部因此成了一个模块环**（Rust 允许、
+/// 编译不报错、门禁也抓不到），于是「按领域一文件一模块」失效：新 handler 该放哪没有答案，
+/// 也没人拦得住。判据：这是"两条领域都用"的 helper —— api 卡的规矩是**被两个以上模块用到
+/// 的东西放 `api/mod.rs`**。搬上来之后 `polish` 不再认识 `project_data`，环只剩一条**单向**边
+/// （`project_data → polish` 的 `polish_projects_impl`）。
+pub(crate) fn validated_project_dir(dir: impl AsRef<std::path::Path>) -> Result<std::path::PathBuf, AppError> {
+    let path = dir.as_ref();
+    if path.as_os_str().is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "缺少 dir"));
+    }
+    if !path.is_dir() {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            format!("目录不存在: {}", path.display()),
+        ));
+    }
+    Ok(path.to_path_buf())
+}
+
 /// 把已经解析成 `serde_json::Value` 的请求体收成**强类型结构**（T9：46 处 `Json<Value>` 分批改造）。
 ///
 /// 为什么不在 handler 签名上直接写 `Json<T>`：axum 对 `Json<T>` 的反序列化失败回 **422 + 纯文本**，
