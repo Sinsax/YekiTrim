@@ -159,3 +159,17 @@ GET  /api/health                 = cover_static {compiled:true, ready:true}   �
 
 验证：`cargo test --workspace --no-fail-fast` 全绿（26 个结果块 ok）；`cargo check` **0 warning**；两条结构门禁绿。
 剩余 129 条按 T20a 的分批计划继续（文档格式 / 结构类需要人判断，别一次性机械改）。
+## 第十一轮：clippy 预算门禁（只降不升）
+
+计划 T20 说「clippy 进 gate」，但清零之前塞 `-D warnings` 只有两种结局：立刻红一片，或逼人拿 baseline 盖红
+（而 baseline 只准登记环境性失败 —— 正是前几轮刚清掉的那种）。所以先立**只降不升**：
+
+- `scripts/check-clippy-budget.mjs`：跑 `cargo clippy --workspace --all-targets --message-format=json`，
+  只数 `clippy::*`，按 `code|file:line` 去重（cargo 会对 lib/lib-test/bin 各报一遍，实测 20+ 条重复：
+  原始 129 → 去重 **113**）；超预算 exit 1、低于预算提示下调、`--update` 写回、无 cargo ⇒ exit 3（SKIP）。
+- `scripts/check-clippy-budget.json`：预算 **113**，note 写明「清到 0 之后改用 `-D warnings` 并删掉这两个文件」。
+- 它文件名是 `check-*.mjs` ⇒ **gate 的自动发现会带它进 `--all`**（不需要改映射表）。
+
+数字链条：196（初始）→ 129（第一批机器可修项）→ **113（去重口径，也是预算）**。剩余按类别：
+23 field-reassign-with-default / 15 文档列表缩进 / 11 部分序比较取反 / 10 type-complexity /
+7 文档注释后空行 / 9 too-many-arguments（三类合计）/ 其余零星。
