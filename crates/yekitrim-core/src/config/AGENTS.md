@@ -113,6 +113,18 @@ overwrite = false
 
 ⚠️ **`null` = 删键**（`merge_into_table` 的第一条分支）：patch 是合并语义，这是唯一能表达"取消该键 / 回到跟随全局"的写法 —— 设置页把「按链路覆盖」那条的勾**取消**走的就是它。**别再退回"null → 空串"**：`max_tokens = ""` 是合法 TOML 但读不出 u32，`load_llm_config` 解析失败会把**整份 LLM 配置（含 api_key）打回默认值**。回归钉子：`null_patch_removes_key_and_keeps_siblings` 与 `empty_subtable_patch_changes_nothing`（`{}` 不删表、不吞注释）。
 
+### LLM 配置 v4（整改「LLM 配置重构」L1，进行中）
+
+- config/llm_v4.rs：**v4 的唯一形状**（LlmV4 / LlmProviderV4 / LlmModelEntry / LlmLinkSetting）
+  + **纯迁移函数** from_v3(&LlmConfig) -> Migrated（不碰磁盘；dropped 里装「表达不了」的东西，调用方必须打 warn）。
+- 形状：[llm] active/max_concurrent/extra_params + [llm.defaults]（唯一参数基准）+ [[llm.providers]]（只描述怎么连）
+  + [[llm.models]]（唯一模型清单，(provider, id) 唯一）+ [llm.links.<link>]（接口/模型/参数覆盖）。
+- ⚠️ **决策 A**：provider.params 已废弃 —— v3 的 effective_params() 是「整体遮蔽」（接口写了一个键就整份顶掉顶层），
+  那是「改一个字段悄悄丢 max_tokens」的根源；v4 只有 defaults + 链路覆盖两层。迁移照搬 v3 的生效值（整体取用），
+  非生效接口的 params 无法表达 ⇒ 进 dropped。
+- ⚠️ 迁移两条硬要求（有用例）：**api_key 逐字节不变**、**round-trip 幂等**。
+- 当前状态：模块已就位并有 6 条用例，**尚未接线**（LlmConfig 还是 v3 形状）；接线见 docs/plan/llm-config-refactor.md §8.6 L1。
+
 ### LLM 按链路覆盖（2026-09）
 
 - **一个入口**：`LlmConfig::for_link(LlmLink)`（`config/types.rs`）—— 链路覆盖 / `[llm.params]` / 链路代码默认 三层优先级的**唯一实现**（逐字段见 `LlmParamsToml::merged_over`）。这里只记配置形态：`[llm.overrides.{detect,polish,title,correct,utility}]` 与 `[llm.params]` 是**同一套字段**（`temperature` / `max_tokens` / `reasoning` / `top_p` / `json_mode`），未知键忽略（拼错不该让整份配置打回默认）。

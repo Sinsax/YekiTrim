@@ -4,6 +4,7 @@
 //! 边界：改字段必须走四步（字段 + `merge()` 条件 + 手动 `Default` impl + 模板/注释）；`patch_config_file` 是递归深合并，别退回"一层 section" —— 见 `crates/yekitrim-core/src/config/AGENTS.md`
 
 mod types;
+pub mod llm_v4;
 pub mod version;
 pub use types::*;
 pub use version::{clean_retired_keys_in, ConfigKind, CONFIG_VERSION, VERSION_KEY};

@@ -1232,7 +1232,7 @@ impl LlmParamsToml {
     ///
     /// 三个 v1 就有的兜底原样搬过来（**别删**，都是手改坏文件的现场）：
     /// `max_tokens = 0` 视为没配、非有限 temperature 忽略、超范围夹回 [0,2]。
-    fn merged_over(&self, ov: &Self, link: LlmLink) -> Self {
+    pub(crate) fn merged_over(&self, ov: &Self, link: LlmLink) -> Self {
         let max_tokens = match ov.max_tokens {
             // 0 = 没配（设置页清空会写成 null，但不排除手改出 0）：别把 0 发给 provider
             Some(0) => {
