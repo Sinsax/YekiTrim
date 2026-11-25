@@ -93,7 +93,7 @@ overwrite = false
 
 ⚠️ **工程级那份"只在内存里升"的代价**：磁盘上那几行**永远在** ⇒ 每次读都会重新发现它。所以：① 报要**去重**（`report_retired`：每文件每进程只报一次，实测 100ms 曾刷 10 条）；② 真清走 **`clean_retired_keys_in`**（CLI `yekitrim config migrate <工程目录|toml>`，清前留 `.bak-v<旧>`；**返回空 = 不动磁盘**）。`migrate_text` 是**纯函数、不打日志**（日志在调用方 —— 只有调用方知道路径与"写没写回"）。
 
-判据：`config::version::tests`（13 条，含**文件版本更高时不动**、幂等、注释不丢、程序级写回+备份 / 工程级不碰磁盘 / `clean_retired_keys_in` 真写回且幂等 / **同一文件只报一次**）。**变异自证**跑过：`CONFIG_VERSION` 改回 0、或把 4 个死键从 `retired_in` 里去掉，都会让判据翻面（不是空转）。
+判据：`config::version::tests`（21 条，含 v3→v4 迁移，含**文件版本更高时不动**、幂等、注释不丢、程序级写回+备份 / 工程级不碰磁盘 / `clean_retired_keys_in` 真写回且幂等 / **同一文件只报一次**）。**变异自证**跑过：`CONFIG_VERSION` 改回 0、或把 4 个死键从 `retired_in` 里去掉，都会让判据翻面（不是空转）。
 
 ### 写入纪律
 
@@ -123,7 +123,10 @@ overwrite = false
   那是「改一个字段悄悄丢 max_tokens」的根源；v4 只有 defaults + 链路覆盖两层。迁移照搬 v3 的生效值（整体取用），
   非生效接口的 params 无法表达 ⇒ 进 dropped。
 - ⚠️ 迁移两条硬要求（有用例）：**api_key 逐字节不变**、**round-trip 幂等**。
-- 当前状态：模块已就位并有 6 条用例，**尚未接线**（LlmConfig 还是 v3 形状）；接线见 docs/plan/llm-config-refactor.md §8.6 L1。
+- 当前状态：**L1 接线完成** —— `Config.llm` 就是 `LlmV4`，顶层 `api_key/base_url/model/params/overrides/models` 已全部退场；
+  `llm.toml` 的 v3→v4 迁移在 `version.rs::migrate_llm_v4`（toml_edit、保注释、幂等、api_key 逐字节不变）；
+  `[[llm.models]]` 的能力键是**嵌套内联表**（`catalog = {...}` / `overrides = {...}`）—— 两套来源形状不同，平铺会撞名。
+  ⚠️ 过渡态：`/api/config` 的 LLM JSON 已是 v4 形状，**WebUI 仍是旧键 ⇒ L3 之前「保存 LLM」会 400**。
 
 ### LLM 按链路覆盖（2026-09）
 
