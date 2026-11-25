@@ -539,9 +539,7 @@ pub fn resolve_client_ip(
             .and_then(|v| v.to_str().ok())
             .and_then(|raw| {
                 raw.split(',')
-                    .map(|s| s.trim())
-                    .filter(|s| !s.is_empty())
-                    .next_back()
+                    .map(|s| s.trim()).rfind(|s| !s.is_empty())
             })
         {
             return Some(last.to_string());
@@ -599,7 +597,7 @@ pub fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
 /// 只挡明显有问题的：空白/控制字符、过长。
 pub fn validate_username(username: &str) -> Result<()> {
     let n = username.chars().count();
-    if n < 2 || n > 32 {
+    if !(2..=32).contains(&n) {
         anyhow::bail!("用户名长度需在 2~32 个字符之间");
     }
     if username.chars().any(|c| c.is_whitespace() || c.is_control()) {

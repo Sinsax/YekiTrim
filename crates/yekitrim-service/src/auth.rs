@@ -162,7 +162,7 @@ mod tests {
         let code = new_invite_code();
         assert!(code.starts_with("yekitrim_inv_"), "{code}");
         assert_eq!(code.len(), "yekitrim_inv_".len() + 43, "{code}");
-        assert!(code.chars().all(|c| c.is_ascii()), "可安全放进 URL/表单: {code}");
+        assert!(code.is_ascii(), "可安全放进 URL/表单: {code}");
         assert_ne!(code, new_invite_code());
     }
 }

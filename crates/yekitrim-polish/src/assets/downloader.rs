@@ -361,27 +361,24 @@ impl AssetDownloader {
         }
         let url = super::sfx_catalog::variant_url(entry, &variant);
         // 404 容错: 小森平站部分文件在备用目录 sound_os2/ 下 (页面引用 sound/ 但文件缺失)
-        match self.download_file(&url, &path).await {
-            Err(_) => {
-                let alt = url.replace("/sound/", "/sound_os2/");
-                if alt != url {
-                    match self.download_file(&alt, &path).await {
-                        Ok(_) => {
-                            report.sfx_downloaded += 1;
-                            return 1;
-                        }
-                        Err(_) => {
-                            // 双目录都失败 → 尝试同组其他变体
-                            report.errors.push(format!("sfx {}: 下载失败 ({})", id, url));
-                            println!("  ⚠ sfx {}: 下载失败, 尝试其他变体", id);
-                            return 0;
-                        }
+        if let Err(_) = self.download_file(&url, &path).await {
+            let alt = url.replace("/sound/", "/sound_os2/");
+            if alt != url {
+                match self.download_file(&alt, &path).await {
+                    Ok(_) => {
+                        report.sfx_downloaded += 1;
+                        return 1;
+                    }
+                    Err(_) => {
+                        // 双目录都失败 → 尝试同组其他变体
+                        report.errors.push(format!("sfx {}: 下载失败 ({})", id, url));
+                        println!("  ⚠ sfx {}: 下载失败, 尝试其他变体", id);
+                        return 0;
                     }
                 }
-                report.errors.push(format!("sfx {}: 下载失败 ({})", id, url));
-                return 0;
             }
-            Ok(_) => {}
+            report.errors.push(format!("sfx {}: 下载失败 ({})", id, url));
+            return 0;
         }
         // 下载成功路径
         println!("  ✓ sfx {} → {}", id, path.display());

@@ -730,7 +730,7 @@ fn fade_overlays_do_not_get_color_stops_invented() {
         assert_eq!(o.get("overlay_type").and_then(|v| v.as_str()), Some(kind), "{o:?}");
         // ⚠️ `Overlay` 的 color/colors **没有** `skip_serializing_if` ⇒ 缺省写成 `null`，
         //    所以判据是"空"（缺键或 null），不是"键不存在"。
-        let blank = |o: &Map<String, Value>, k: &str| o.get(k).map_or(true, |v| v.is_null());
+        let blank = |o: &Map<String, Value>, k: &str| o.get(k).is_none_or(|v| v.is_null());
         assert!(blank(&o, "colors"), "{kind} 不该被补出 colors：{o:?}");
         assert!(blank(&o, "color"), "{kind} 不该被补出 color：{o:?}");
     }

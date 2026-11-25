@@ -2150,7 +2150,7 @@ mod tests {
             let p = dir.join(name);
             let mut c = yekitrim_core::process::cmd("ffmpeg");
             c.args(["-v", "error", "-y", "-f", "lavfi", "-i"])
-                .arg(format!("color=c=black:s=64x64:d=2"))
+                .arg("color=c=black:s=64x64:d=2")
                 .args(["-f", "lavfi", "-i"])
                 .arg(format!("sine=frequency={hz}:duration=2"))
                 .args(["-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p"]);

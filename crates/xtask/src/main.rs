@@ -684,7 +684,7 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
             &package_dir.join("dhampir").join("preview"),
         )?;
         fs::copy(
-            &artifact.join("VERSION"),
+            artifact.join("VERSION"),
             package_dir.join("dhampir").join("VERSION"),
         )?;
         fs::create_dir_all(package_dir.join("dhampir").join("bin"))?;
@@ -1074,7 +1074,7 @@ fn run_package_linux(
                 &package_dir.join("dhampir").join("preview"),
             )?;
             fs::copy(
-                &artifact.join("VERSION"),
+                artifact.join("VERSION"),
                 package_dir.join("dhampir").join("VERSION"),
             )?;
             println!("    dhampir artifact: {}", artifact.display());

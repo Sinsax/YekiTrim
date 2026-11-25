@@ -38,7 +38,7 @@ pub(super) async fn try_resolve_sticker(
                 // 取第一个未被使用的 codepoint, 避免同一 emoji 重复出现
                 cat.search_best(kw, 8).into_iter()
                     .find(|cp| !used_emojis.contains(cp))
-                    .map(|cp| { used_emojis.insert(cp.clone()); cp })
+                    .inspect(|cp| { used_emojis.insert(cp.clone()); })
             } else {
                 None
             }

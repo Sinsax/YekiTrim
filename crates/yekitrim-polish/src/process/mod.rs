@@ -399,7 +399,7 @@ pub async fn cmd_process_with(
         // ⚠️ **只读缓存，不现算**：测量要解码整条音轨（秒级~分钟级），而 `process`
         //    是**每次预览/出片都被隐式触发**的热路径。缓存不在就当作"没有这一路信号"。
         let loudness = crate::render::read_loudness_curve_checked(
-            &project_path,
+            project_path,
             &project_path.join("clip.mp4"),
         );
 

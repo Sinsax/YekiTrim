@@ -1005,7 +1005,7 @@ pub async fn race_routes(
                 speed.ms,
                 speed.throughput() / 1024
             );
-            if best.as_ref().map_or(true, |b| speed.throughput() > b.throughput()) {
+            if best.as_ref().is_none_or(|b| speed.throughput() > b.throughput()) {
                 best = Some(speed);
             }
         }

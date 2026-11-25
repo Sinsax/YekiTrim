@@ -213,9 +213,7 @@ pub fn cmd_doctor(url: &str) -> Result<()> {
         ));
     }
     if !writable {
-        advice.push(format!(
-            "数据目录不可写 → 用 `--data-dir <可写路径>` 或环境变量 YEKITRIM_DATA_DIR 指定别处"
-        ));
+        advice.push("数据目录不可写 → 用 `--data-dir <可写路径>` 或环境变量 YEKITRIM_DATA_DIR 指定别处".to_string());
     }
     if remote_without_tls {
         advice.push("对外监听但未见 TLS 终止 → 用 Caddy/nginx 反代 + HTTPS，别明文暴露口令".into());

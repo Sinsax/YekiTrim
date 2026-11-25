@@ -115,7 +115,7 @@ pub(crate) async fn polish_render(State(state): State<Arc<AppState>>, Extension(
         Some(other) => {
             return Err(err(
                 StatusCode::BAD_REQUEST,
-                &format!(
+                format!(
                     "认不出的出片通道 `{other}`（现在只有 dhampir —— \
                      本仓 headless Chrome 那条兜底腿已于 2026-10-01 整条删除）"
                 ),

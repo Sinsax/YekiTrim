@@ -262,7 +262,7 @@ pub(super) async fn polish_project_get_impl(
                     serde_json::to_value(st).unwrap_or(serde_json::Value::Null),
                 );
             }
-            if { let __p = video_path.clone(); tokio::task::spawn_blocking(move || __p.exists()).await.unwrap_or(false) } {
+            let res = { let __p = video_path.clone(); tokio::task::spawn_blocking(move || __p.exists()).await.unwrap_or(false) }; if res {
                 obj.insert("loudness_curve".into(), loudness_curve_cached(&path, &video_path));
             }
         }

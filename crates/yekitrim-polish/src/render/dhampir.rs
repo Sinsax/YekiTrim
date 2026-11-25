@@ -440,7 +440,7 @@ fn pick_font_from_listing(listing: &[(String, PathBuf)], family: &str) -> Option
     }
     let exact = matches
         .iter()
-        .find(|(stem, _)| want.is_empty() == false && stem.starts_with(&want) && stem.len() == want.len());
+        .find(|(stem, _)| !want.is_empty() && stem.starts_with(&want) && stem.len() == want.len());
     if let Some((_, p)) = exact {
         return Some(p.clone());
     }
@@ -1944,7 +1944,7 @@ fn 平铺后的字体目录必须是平的且内容逐字节相同() {
         .any(|e| e.path().is_dir());
     assert!(nested_in_lib, "假库必须带一层子目录，否则这条判据测不到东西");
 
-    let staged = stage_font_dir(&[lib.clone()], &dest).expect("平铺失败");
+    let staged = stage_font_dir(std::slice::from_ref(&lib), &dest).expect("平铺失败");
     assert_eq!(staged, 2, "库里两支字体都该被平铺出来（少一支就是又走回 libass 看不见的布局）");
 
     let mut files: Vec<PathBuf> = Vec::new();

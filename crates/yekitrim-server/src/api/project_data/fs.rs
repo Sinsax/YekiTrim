@@ -130,7 +130,7 @@ pub(crate) async fn fs_list(
     // 绝对父目录：让前端"上一级"能一路走到盘符根（管理员随意浏览）
     let parent = cur
         .parent()
-        .map(|p| yekitrim_core::path::display(p))
+        .map(yekitrim_core::path::display)
         .unwrap_or_default();
     // 目录列举是阻塞 IO（网络盘/大目录会明显卡顿），放 spawn_blocking
     let scan_dir = target.clone();

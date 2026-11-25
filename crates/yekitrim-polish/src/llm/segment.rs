@@ -635,7 +635,7 @@ pub fn build_segmentation_user_prompt(
 }
 
 /// 预算感知采样：首尾保留，中部均匀采样到 max 条。
-fn sample_subtitles<'a>(subtitles: &'a [Subtitle], max: usize) -> Vec<&'a Subtitle> {
+fn sample_subtitles(subtitles: &[Subtitle], max: usize) -> Vec<&Subtitle> {
     let n = subtitles.len();
     if n <= max {
         return subtitles.iter().collect();
@@ -650,7 +650,7 @@ fn sample_subtitles<'a>(subtitles: &'a [Subtitle], max: usize) -> Vec<&'a Subtit
     if middle_max > 0 {
         let middle_total = n - head - tail;
         for i in 0..middle_max {
-            let idx = head + i * (middle_total - 1).max(0) / (middle_max - 1).max(1);
+            let idx = head + i * (middle_total - 1) / (middle_max - 1).max(1);
             out.push(&subtitles[idx]);
         }
     }

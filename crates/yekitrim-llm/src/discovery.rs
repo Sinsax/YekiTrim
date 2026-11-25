@@ -487,7 +487,7 @@ mod tests {
                 let reason = if code == 200 { "OK" } else { "ERR" };
                 let resp = format!(
                     "HTTP/1.1 {code} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.as_bytes().len()
+                    body.len()
                 );
                 let _ = sock.write_all(resp.as_bytes()).await;
                 let _ = sock.shutdown().await;
@@ -538,7 +538,7 @@ mod tests {
         assert_eq!(api_root(""), "");
 
         let (_s, base, seen) = fake(vec![(200, r#"{"data":[{"id":"m"}]}"#.to_string())]).await;
-        discover("k", &format!("{base}/chat/completions")).await.unwrap().models;
+        discover("k", &format!("{base}/chat/completions")).await.unwrap();
         let line = seen.lock().unwrap().clone();
         assert!(line.starts_with("GET /v1/models "), "请求行应为 GET /v1/models，实际：{line}");
     }

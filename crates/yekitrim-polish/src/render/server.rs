@@ -751,8 +751,7 @@ mod tests {
         // 所以"逐字相等"是合法的强断言；不同时至少尾段必须完全一致。
         if rebuilt != expect {
             let tail_of = |s: &str| {
-                s.splitn(2, ',')
-                    .nth(1)
+                s.split_once(',').map(|x| x.1)
                     .map(|t| t.to_string())
                     .unwrap_or_default()
             };

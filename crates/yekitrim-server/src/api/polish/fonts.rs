@@ -477,16 +477,16 @@ pub(crate) async fn polish_font(Query(q): Query<std::collections::HashMap<String
     // `C:/Windows/Fonts/<名字>` 那条**按名字**的候选（装了就命中、没装就 404），
     // 而不是"随便给一支中文"。
     for c in &candidates {
-        if { let __p = c.clone(); tokio::task::spawn_blocking(move || __p.exists()).await.unwrap_or(false) } {
-            match {
-        let v2 = c.clone();
-        // ⚠️ 整文件同步读不能留在 async worker 上（api/mod.rs:44-51 纪律 ✓）：
-        // 字体几十 MB，且字幕渲染首次用到字体就会打这条路由 ⇒ 占住 worker 时
-        // 同一时刻的其他请求（含 engine.js）都产不出响应 ✗
-        tokio::task::spawn_blocking(move || std::fs::read(v2))
-            .await
-            .unwrap_or_else(|_| Err(std::io::Error::other("读取字体任务崩了")))
-    } {
+        let res = { let __p = c.clone(); tokio::task::spawn_blocking(move || __p.exists()).await.unwrap_or(false) }; if res {
+            let res = {
+                let v2 = c.clone();
+                // ⚠️ 整文件同步读不能留在 async worker 上（api/mod.rs:44-51 纪律 ✓）：
+                // 字体几十 MB，且字幕渲染首次用到字体就会打这条路由 ⇒ 占住 worker 时
+                // 同一时刻的其他请求（含 engine.js）都产不出响应 ✗
+                tokio::task::spawn_blocking(move || std::fs::read(v2))
+                    .await
+                    .unwrap_or_else(|_| Err(std::io::Error::other("读取字体任务崩了")))
+            }; match res {
                 Ok(bytes) => {
                     return ([(axum::http::header::CONTENT_TYPE, font_content_type(c))], bytes)
                         .into_response();

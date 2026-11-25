@@ -432,50 +432,6 @@ fn emoji_candidate_label(cp: &str) -> String {
     format!("{cp}.gif {}", crate::assets::emoji_search::codepoint_to_chars(cp))
 }
 
-#[cfg(test)]
-mod refine_tests {
-    use super::*;
-
-    /// 候选标签必须**双向对得上**：模型读得懂、取回来就是码点。
-    ///
-    /// 变异自证：把标签改成不带字符的 `{cp}.gif` ⇒ 第一条断言红；
-    /// 改成 `{cp} 😂`（没有扩展名）⇒ 第二条断言红（`file_stem` 会带上空格与字符）。
-    #[test]
-    fn emoji_candidate_labels_round_trip_to_the_codepoint() {
-        for cp in ["1f602", "203c_fe0f", "2764_fe0f"] {
-            let label = emoji_candidate_label(cp);
-            assert!(
-                label.starts_with(&format!("{cp}.gif ")) && label.len() > cp.len() + 5,
-                "标签要带可读字符: {label:?}"
-            );
-            assert_eq!(
-                std::path::Path::new(&label).file_stem().and_then(|s| s.to_str()),
-                Some(cp),
-                "标签 {label:?} 取回的不是码点 —— 写盘就会变成一个不存在的文件名"
-            );
-        }
-    }
-
-    /// **只有维度查询才进 emoji 精挑**：老工程的自由词不打乱存量行为。
-    ///
-    /// （判据本体在 `emoji_taxonomy::parse_query`，这里钉的是"调用点用的是它"。）
-    #[test]
-    fn only_dimension_queries_are_treated_as_emoji_events() {
-        for q in ["emotion:joy", "emotion:joy,usage:punchline", "usage:meme|reaction"] {
-            assert!(
-                !crate::assets::emoji_taxonomy::parse_query(q).is_empty(),
-                "{q} 应当被当成 emoji 查询"
-            );
-        }
-        for w in ["laugh", "angry", "ysyk", "emotion:ecstatic"] {
-            assert!(
-                crate::assets::emoji_taxonomy::parse_query(w).is_empty(),
-                "{w} 不该进 emoji 精挑（老工程的自由词 / 词表外的词）"
-            );
-        }
-    }
-}
-
 /// emoji 精挑喂给 LLM 的候选数：太多会把 prompt 撑长、太少挑不出想要的。
 const EMOJI_REFINE_CANDIDATES: usize = 16;
 
@@ -549,7 +505,7 @@ async fn run_sticker_choice_step(
                         && let Some(ev) = seg.events.get_mut(ei)
                         && ev.is_sticker()
                     {
-                        ev.set_sticker_resolved(&package_name, &stem);
+                        ev.set_sticker_resolved(package_name, &stem);
                     }
                 }
             }
@@ -698,5 +654,49 @@ fn sfx_tags_for_event_type(event_type: &str) -> Vec<String> {
             "爆笑搞笑".into(), "惊吓事件".into(), "胜负强调".into(),
             "人声效果".into(), "开合物品".into(),
         ],
+    }
+}
+
+#[cfg(test)]
+mod refine_tests {
+    use super::*;
+
+    /// 候选标签必须**双向对得上**：模型读得懂、取回来就是码点。
+    ///
+    /// 变异自证：把标签改成不带字符的 `{cp}.gif` ⇒ 第一条断言红；
+    /// 改成 `{cp} 😂`（没有扩展名）⇒ 第二条断言红（`file_stem` 会带上空格与字符）。
+    #[test]
+    fn emoji_candidate_labels_round_trip_to_the_codepoint() {
+        for cp in ["1f602", "203c_fe0f", "2764_fe0f"] {
+            let label = emoji_candidate_label(cp);
+            assert!(
+                label.starts_with(&format!("{cp}.gif ")) && label.len() > cp.len() + 5,
+                "标签要带可读字符: {label:?}"
+            );
+            assert_eq!(
+                std::path::Path::new(&label).file_stem().and_then(|s| s.to_str()),
+                Some(cp),
+                "标签 {label:?} 取回的不是码点 —— 写盘就会变成一个不存在的文件名"
+            );
+        }
+    }
+
+    /// **只有维度查询才进 emoji 精挑**：老工程的自由词不打乱存量行为。
+    ///
+    /// （判据本体在 `emoji_taxonomy::parse_query`，这里钉的是"调用点用的是它"。）
+    #[test]
+    fn only_dimension_queries_are_treated_as_emoji_events() {
+        for q in ["emotion:joy", "emotion:joy,usage:punchline", "usage:meme|reaction"] {
+            assert!(
+                !crate::assets::emoji_taxonomy::parse_query(q).is_empty(),
+                "{q} 应当被当成 emoji 查询"
+            );
+        }
+        for w in ["laugh", "angry", "ysyk", "emotion:ecstatic"] {
+            assert!(
+                crate::assets::emoji_taxonomy::parse_query(w).is_empty(),
+                "{w} 不该进 emoji 精挑（老工程的自由词 / 词表外的词）"
+            );
+        }
     }
 }

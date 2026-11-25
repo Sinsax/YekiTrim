@@ -1075,10 +1075,10 @@ pub fn load_events(path: &std::path::Path) -> Result<Vec<Event>> {
         .with_context(|| format!("无法读取事件文件: {}", path.display()))?;
     // 支持旧格式 (Vec<Event>) 和新格式 (EventStore)
     match serde_json::from_str::<EventStore>(&content) {
-        Ok(store) => return Ok(store.events.into_iter().filter(|e| e.enabled).collect()),
+        Ok(store) => Ok(store.events.into_iter().filter(|e| e.enabled).collect()),
         Err(store_err) => {
             match serde_json::from_str::<Vec<Event>>(&content) {
-                Ok(events) => return Ok(events),
+                Ok(events) => Ok(events),
                 // 两种形状都失败：**把两条原因都带上**。只报「解析失败」等于让用户自己猜
                 // （实测最冤的一种是 `{"events":[…]}` 缺 `titles`，以前报的就是这句话）。
                 Err(vec_err) => anyhow::bail!(
@@ -1226,7 +1226,7 @@ mod tests {
         for w in out.windows(2) {
             assert!(w[0].end.to_seconds() <= w[1].start.to_seconds());
         }
-        assert!(out.len() >= 1);
+        assert!(!out.is_empty());
     }
 
     #[test]

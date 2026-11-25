@@ -289,7 +289,7 @@ pub(super) async fn run_polish_child(
     }
     let file = std::fs::OpenOptions::new()
         .create(true)
-        .write(true)
+        
         .append(true)
         .open(&log_path)
         .map_err(|e| anyhow::anyhow!("创建渲染日志失败 {}: {e}", log_path.display()))?;

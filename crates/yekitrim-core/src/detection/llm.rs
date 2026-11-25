@@ -1416,7 +1416,7 @@ pub async fn test_llm(llm: &LlmConfig, prompt: &str) -> Result<String> {
         {"role": "system", "content": "你是一个 AI 助手。"},
         {"role": "user", "content": prompt}
     ]);
-    let client = yekitrim_llm::LlmClient::new(&llm.for_link(crate::config::LlmLink::Utility))?
+    let client = yekitrim_llm::LlmClient::new(llm.for_link(crate::config::LlmLink::Utility))?
         .with_timeout(180)
         .with_usage_context(yekitrim_llm::usage::UsageContext::new("LLM 测试"));
     client.send(messages).await.map(|v| v.to_string())
@@ -1916,7 +1916,7 @@ mod tests {
                 }
                 let resp = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.as_bytes().len()
+                    body.len()
                 );
                 let _ = sock.write_all(resp.as_bytes()).await;
                 let _ = sock.shutdown().await;

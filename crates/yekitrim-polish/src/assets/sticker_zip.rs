@@ -232,7 +232,7 @@ mod tests {
     /// PNG 魔数 + 填充（内容不重要，我们只按扩展名认图片）
     fn png(fill: u8, len: usize) -> Vec<u8> {
         let mut v = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
-        v.extend(std::iter::repeat(fill).take(len));
+        v.extend(std::iter::repeat_n(fill, len));
         v
     }
 

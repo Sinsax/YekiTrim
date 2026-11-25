@@ -208,7 +208,7 @@ fn artifact_files_of(dir: &Path, configured_output: Option<&str>) -> Vec<serde_j
             (mtime, if kind == "video" { 0 } else { 1 }, seq, name, kind, bytes)
         })
         .collect();
-    rows.sort_by(|a, b| (a.0, a.1, a.2).cmp(&(b.0, b.1, b.2)));
+    rows.sort_by_key(|a| (a.0, a.1, a.2));
     rows.into_iter()
         .map(|(mtime, _, _, name, kind, bytes)| {
             serde_json::json!({ "name": name, "kind": kind, "bytes": bytes, "mtime": mtime })

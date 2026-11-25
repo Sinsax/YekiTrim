@@ -103,7 +103,7 @@ pub fn primary_dim() -> Option<&'static DimSpec> {
 pub fn is_valid_value(dim: &str, value: &str) -> bool {
     let Some(d) = find_dim(dim) else { return false };
     let v = value.trim().to_ascii_lowercase();
-    d.values.iter().any(|x| *x == v)
+    d.values.contains(&v)
 }
 
 /// 拼给 LLM 的词表文本（**唯一一份**，别在 prompt 里另抄）。

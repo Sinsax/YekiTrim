@@ -973,6 +973,21 @@ fn parse_percent(s: &str) -> Option<f64> {
     Some(v)
 }
 
+/// 贴纸 GIF 帧序号：按事件相对时间循环（供 sprite 层调用）。
+pub fn sticker_frame_index_for(event_start: f64, t: f64, delays: &[u16]) -> usize {
+    if delays.is_empty() { return 0; }
+    let total: u32 = delays.iter().map(|d| *d as u32).sum();
+    if total == 0 { return 0; }
+    let elapsed_ms = ((t - event_start).max(0.0) * 1000.0) as u32;
+    let loop_pos = elapsed_ms % total;
+    let mut acc = 0u32;
+    for (i, d) in delays.iter().enumerate() {
+        acc += *d as u32;
+        if loop_pos < acc { return i; }
+    }
+    0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1141,7 +1156,7 @@ mod tests {
             (0.0, [2.974_994_431_357_405_5, 5.537_746_181_460_179, 0.162_893_762_213_005_36, 1.006_238_451_520_430_2]),
             (1.5, [-6.534_804_875_504_133, 1.998_507_667_634_624_3, -0.358_933_426_843_904_06, 0.998_691_374_050_889_2]),
             (4.25, [-2.966_335_968_174_989, -1.859_259_740_722_605_2, -0.100_907_167_151_848_72, 1.003_076_791_799_218_5]),
-            (9.9, [-5.095_502_881_135_531, -1.502_144_180_998_791_4, -0.287_127_406_065_839_97, 1.003_292_193_865_482]),
+            (9.9, [-5.095_502_881_135_531, -1.502_144_180_998_791_4, -0.287_127_406_065_84, 1.003_292_193_865_482]),
         ] {
             let got = v(t, 1.0);
             for i in 0..4 {
@@ -1646,19 +1661,4 @@ mod tests {
         assert!((s.x - 172.0).abs() < 1e-6, "x 应被钳到 172: {}", s.x);
         assert!((s.y - 154.0).abs() < 1e-6, "y 应「先钳到 172 再减 18」: {}", s.y);
     }
-}
-
-/// 贴纸 GIF 帧序号：按事件相对时间循环（供 sprite 层调用）。
-pub fn sticker_frame_index_for(event_start: f64, t: f64, delays: &[u16]) -> usize {
-    if delays.is_empty() { return 0; }
-    let total: u32 = delays.iter().map(|d| *d as u32).sum();
-    if total == 0 { return 0; }
-    let elapsed_ms = ((t - event_start).max(0.0) * 1000.0) as u32;
-    let loop_pos = elapsed_ms % total;
-    let mut acc = 0u32;
-    for (i, d) in delays.iter().enumerate() {
-        acc += *d as u32;
-        if loop_pos < acc { return i; }
-    }
-    0
 }

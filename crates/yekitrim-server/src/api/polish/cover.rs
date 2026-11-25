@@ -41,7 +41,7 @@ pub(super) fn cover_title_event_context(
         if !seg.fx.trim().is_empty() {
             let _ = write!(out, " 情绪: {}", seg.fx.trim());
         }
-        let _ = writeln!(out, "");
+        let _ = writeln!(out);
         if !seg.events.is_empty() {
             let evs: Vec<String> = seg
                 .events
@@ -77,14 +77,14 @@ pub(super) fn sanitize_cover_title_line(line: &str) -> String {
         matches!(c, '"' | '“' | '”' | '`' | '【' | '】' | '[' | ']')
     });
     s = s.trim();
-    s = s.trim_start_matches(|c: char| matches!(c, '▶' | '▸' | '•' | '·')).trim();
+    s = s.trim_start_matches(['▶', '▸', '•', '·']).trim();
     for prefix in ["- ", "* ", "• ", "· "] {
         if let Some(rest) = s.strip_prefix(prefix) {
             s = rest.trim();
             break;
         }
     }
-    if let Some(pos) = s.find(|c: char| c == '.' || c == '、' || c == ')' || c == '）') {
+    if let Some(pos) = s.find(['.', '、', ')', '）']) {
         let head = s[..pos].trim();
         if !head.is_empty() && head.chars().all(|c| c.is_ascii_digit()) {
             let step = s[pos..].chars().next().map(|c| c.len_utf8()).unwrap_or(0);

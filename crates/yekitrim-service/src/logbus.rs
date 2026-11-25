@@ -492,7 +492,7 @@ mod tests {
         // 幂等 + 0 = 关闭（绝不"删光"）
         assert_eq!(prune_old_logs(dir.path(), 30), 0, "第二次没东西可删");
         assert_eq!(prune_old_logs(dir.path(), 0), 0, "0 = 关闭清理");
-        assert!(dir.path().join(&name_of(29)).exists(), "0 不许删任何文件");
+        assert!(dir.path().join(name_of(29)).exists(), "0 不许删任何文件");
     }
 
     #[test]

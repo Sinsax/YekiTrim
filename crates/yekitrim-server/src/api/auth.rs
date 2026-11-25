@@ -58,7 +58,7 @@ pub(super) async fn auth_login(
         }
         Ok(Err(crate::auth::LoginError::RateLimited(secs))) => err(
             StatusCode::TOO_MANY_REQUESTS,
-            format!("尝试次数过多，请在 {} 分钟后再试", (secs + 59) / 60),
+            format!("尝试次数过多，请在 {} 分钟后再试", secs.div_ceil(60)),
         )
         .into_response(),
         Ok(Err(crate::auth::LoginError::Denied(msg))) => {
@@ -130,7 +130,7 @@ pub(super) async fn auth_register(
         }
         Ok(Err(crate::auth::LoginError::RateLimited(secs))) => err(
             StatusCode::TOO_MANY_REQUESTS,
-            format!("尝试次数过多，请在 {} 分钟后再试", (secs + 59) / 60),
+            format!("尝试次数过多，请在 {} 分钟后再试", secs.div_ceil(60)),
         )
         .into_response(),
         // 注册失败一律 403：不区分"码不对"和"码已用过"，避免被拿来枚举

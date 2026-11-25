@@ -525,7 +525,7 @@ pub fn resolve_cover_stack(cc: &crate::project::CoverConfig) -> Vec<ResolvedCove
         }
         let anchor = defaults[..di].iter().rev().find(|p| seen.iter().any(|s| s == &p.id));
         let pos = match anchor {
-            Some(p) => out.iter().position(|l| &l.id == &p.id).map(|i| i + 1).unwrap_or(out.len()),
+            Some(p) => out.iter().position(|l| l.id == p.id).map(|i| i + 1).unwrap_or(out.len()),
             None => 0,
         };
         seen.push(d.id.clone());

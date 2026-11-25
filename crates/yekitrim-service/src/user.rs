@@ -210,7 +210,7 @@ pub fn cmd_list() -> Result<()> {
         println!("暂无账号。首次部署请运行: yekitrim user init-admin");
         return Ok(());
     }
-    println!("{:<16} {:<6} {:<8} {:<10} {:<18} {}", "用户名", "角色", "状态", "配额", "创建时间", "最后登录");
+    println!("{:<16} {:<6} {:<8} {:<10} {:<18} 最后登录", "用户名", "角色", "状态", "配额", "创建时间");
     for u in users {
         let state = if u.disabled { "已禁用" } else { "启用" };
         let flag = if u.must_change_password { " (初始密码)" } else { "" };

@@ -206,7 +206,7 @@ impl LlmClient {
                     let text = r.text().await.unwrap_or_default();
                     let retryable = status.as_u16() == 429 || status.as_u16() >= 500;
                     if retryable && attempt < 2 {
-                        let delay = Duration::from_secs(2u64.pow(attempt as u32 + 1));
+                        let delay = Duration::from_secs(2u64.pow(attempt + 1));
                         tracing::warn!("LLM API 返回 {}，{}s 后重试 ({}/3)", status, delay.as_secs(), attempt + 2);
                         tokio::time::sleep(delay).await;
                         last_err = Some(anyhow::anyhow!("LLM API 返回 {}: {}", status, text));
@@ -225,7 +225,7 @@ impl LlmClient {
                 Err(e) => {
                     let retryable = e.is_timeout() || e.is_connect();
                     if retryable && attempt < 2 {
-                        let delay = Duration::from_secs(2u64.pow(attempt as u32 + 1));
+                        let delay = Duration::from_secs(2u64.pow(attempt + 1));
                         tracing::warn!("LLM API 请求失败: {}，{}s 后重试 ({}/3)", e, delay.as_secs(), attempt + 2);
                         tokio::time::sleep(delay).await;
                         last_err = Some(anyhow::anyhow!("LLM API 请求失败: {}", e));
@@ -350,7 +350,7 @@ mod tests {
                 let reason = if code == 200 { "OK" } else { "ERR" };
                 let resp = format!(
                     "HTTP/1.1 {code} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.as_bytes().len()
+                    body.len()
                 );
                 let _ = sock.write_all(resp.as_bytes()).await;
                 let _ = sock.shutdown().await;

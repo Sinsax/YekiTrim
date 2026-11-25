@@ -507,7 +507,7 @@ fn move_file(src: &Path, dst: &Path) -> Result<()> {
     }
     let size = file_size(src);
     match std::fs::rename(src, dst) {
-        Ok(()) => return Ok(()),
+        Ok(()) => Ok(()),
         Err(_) => {
             // 跨盘（或目标已存在）：拷贝后校验再删源
             std::fs::copy(src, dst)

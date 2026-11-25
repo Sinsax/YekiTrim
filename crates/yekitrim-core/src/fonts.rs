@@ -435,7 +435,7 @@ pub fn scan_at(root: &Path) -> Vec<FontEntry> {
         // `flat: true` 同理：能走到这里就是老平铺布局（散文件直接在库根目录）。
         out.push(FontEntry { id, file, family, bytes, installed: true, flat: true, ..Default::default() });
     }
-    out.sort_by(|a, b| a.id.to_lowercase().cmp(&b.id.to_lowercase()));
+    out.sort_by_key(|a| a.id.to_lowercase());
     out
 }
 
@@ -1216,7 +1216,7 @@ pub fn scan_all(root: &Path) -> Vec<FontEntry> {
             color_format: color_format_tag(color_glyph_support(b.bytes)).to_string(),
         });
     }
-    out.sort_by(|a, b| a.id.to_lowercase().cmp(&b.id.to_lowercase()));
+    out.sort_by_key(|a| a.id.to_lowercase());
     // ⚠️ **收尾必须应用"默认选择"**（见 `apply_default_selection`）：默认位记在**库根部**
     // 一条记录里（因为自带字体在全局库、而默认位只能写用户库），不在这里应用的话，
     // `set_default` 会回 `{"ok": true}`、盘上也写着 `is_default = true`，

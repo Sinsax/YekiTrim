@@ -203,13 +203,11 @@ impl Alignment {
         }
         let at = self.pairs.partition_point(|(tj, _)| *tj < tl_idx);
         let mut best: Option<(usize, usize)> = None; // (距离, 文本下标)
-        for cand in [at.checked_sub(1), Some(at)] {
-            if let Some(c) = cand {
-                if let Some(&(tj, ti)) = self.pairs.get(c) {
-                    let d = tj.abs_diff(tl_idx);
-                    if best.is_none_or(|(bd, _)| d < bd) {
-                        best = Some((d, ti));
-                    }
+        for c in [at.checked_sub(1), Some(at)].into_iter().flatten() {
+            if let Some(&(tj, ti)) = self.pairs.get(c) {
+                let d = tj.abs_diff(tl_idx);
+                if best.is_none_or(|(bd, _)| d < bd) {
+                    best = Some((d, ti));
                 }
             }
         }
@@ -418,9 +416,7 @@ pub fn split_text_on_timeline(
         let (a, _) = pieces[pos];
         let cap = a + policy.max_chars;
         // 优先在软标点后切（读起来像一句话就断）；没有标点才按字数硬切
-        let soft = (a + 1..cap)
-            .filter(|&i| SOFT_ENDERS.contains(&chars[i - 1]))
-            .next_back();
+        let soft = (a + 1..cap).rfind(|&i| SOFT_ENDERS.contains(&chars[i - 1]));
         let at = soft.unwrap_or(cap);
         if at <= a || at >= chars.len() {
             break;

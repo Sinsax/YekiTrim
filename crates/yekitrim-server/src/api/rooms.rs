@@ -394,7 +394,7 @@ pub(super) async fn recorder_objects(
                         let Ok(abs) = crate::ingest::map_webhook_path(&root, &container_root, &it.video_file)
                         else { continue };
                         if dir.is_empty() {
-                            dir = abs.parent().map(|p| yekitrim_core::path::display(p)).unwrap_or_default();
+                            dir = abs.parent().map(yekitrim_core::path::display).unwrap_or_default();
                         }
                         if let Ok(md) = std::fs::metadata(&abs) {
                             files += 1;
@@ -413,7 +413,7 @@ pub(super) async fn recorder_objects(
         } else if let Some(files_ref) = scan.as_ref() {
             for f in files_ref.iter().filter(|f| f.room.as_deref() == Some(rid.as_str())) {
                 if dir.is_empty() {
-                    dir = root.join(&f.rel).parent().map(|p| yekitrim_core::path::display(p)).unwrap_or_default();
+                    dir = root.join(&f.rel).parent().map(yekitrim_core::path::display).unwrap_or_default();
                 }
                 files += 1;
                 bytes += f.size;

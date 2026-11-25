@@ -460,12 +460,10 @@ fn find_outside_comments(hay: &str, name: &str) -> Option<usize> {
     while i + 1 < bytes.len() {
         if bytes[i] == b'/' && bytes[i + 1] == b'*' {
             // 跳过整段注释（没闭合就到底 —— 与 `extract_style_blocks` 同一条口径）
-            match hay[i + 2..].find("*/") {
-                Some(k) => {
-                    i += 2 + k + 2;
-                    continue;
-                }
-                None => return None,
+            {
+                let k = hay[i + 2..].find("*/")?;
+                i += 2 + k + 2;
+                continue;
             }
         }
         if bytes[i..].starts_with(needle) {
@@ -491,7 +489,7 @@ fn strip_declaration(css: &str, name: &str) -> String {
         return css.to_string();
     }
     let mut out = String::with_capacity(css.len());
-    for piece in css.split_inclusive(|c| c == ';' || c == '}' || c == '{') {
+    for piece in css.split_inclusive([';', '}', '{']) {
         if piece.trim_start().starts_with(name) {
             continue;
         }
@@ -674,7 +672,7 @@ pub fn render_cover_png(
         let dir = PathBuf::from(dir);
         let _ = fs::create_dir_all(&dir);
         let _ = fs::write(dir.join("takumi-input.html"), &html);
-        let _ = fs::write(dir.join("takumi-input.css"), &css);
+        let _ = fs::write(dir.join("takumi-input.css"), css);
     }
     let node = from_html(&html, FromHtmlOptions::default())
         .map_err(|e| anyhow::anyhow!("封面 HTML 解析失败: {e:?}"))?;

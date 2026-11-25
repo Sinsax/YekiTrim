@@ -1150,10 +1150,8 @@ mod tests {
             }
         }
 
-        let items = vec![
-            AgentItem { index: 1, start: 0.0, end: 1.0, text: "a".into() },
-            AgentItem { index: 2, start: 1.0, end: 2.0, text: "b".into() },
-        ];
+        let items = [AgentItem { index: 1, start: 0.0, end: 1.0, text: "a".into() },
+            AgentItem { index: 2, start: 1.0, end: 2.0, text: "b".into() }];
         // 一个已完成窗口 + 一个未完成窗口
         let windows = vec![
             AgentWindow {

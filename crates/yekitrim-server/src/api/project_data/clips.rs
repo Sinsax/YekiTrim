@@ -71,7 +71,7 @@ pub(super) fn generate_clip_thumb(video: &Path, thumb: &Path) -> std::io::Result
         .stderr(std::process::Stdio::null())
         .status()?;
     if !status.success() {
-        return Err(std::io::Error::new(std::io::ErrorKind::Other, "ffmpeg 退出码非 0"));
+        return Err(std::io::Error::other("ffmpeg 退出码非 0"));
     }
     Ok(())
 }
@@ -521,8 +521,10 @@ const MAX_TITLE_CHARS: usize = 200;
 /// 片段不会动它 —— 后者由 publish_index_merges_incremental_cuts_* 钉着。
 /// 片段的**主播名覆盖**改动意图（三态，别拍平成 `Option<String>` —— 那就分不出
 /// "不动" 与 "清除覆盖"）。
+#[derive(Default)]
 pub(super) enum StreamerPatch {
     /// 这次只改标题，主播名保持原样。
+    #[default]
     Keep,
     /// 清除覆盖 ⇒ 恢复跟随项目级（键直接删掉）。
     Follow,
@@ -643,11 +645,6 @@ pub(super) struct ClipTitleBody {
 }
 
 
-impl Default for StreamerPatch {
-    fn default() -> Self {
-        StreamerPatch::Keep
-    }
-}
 
 /// **三态反序列化**（`#[serde(default)]` 落到 `Keep`）：键缺席 = 不动；`null` = 跟随项目级；
 /// 字符串 = 锁定（空串 = 这段不用）；其它类型 ⇒ 400 且文案点名 `streamer_name`。

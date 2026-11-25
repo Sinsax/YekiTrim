@@ -212,10 +212,10 @@ pub fn fuzzy_search_excluding(query: &str, blacklist: &[String]) -> Option<&'sta
                 score += 2;
             }
         }
-        if id_lower == q || tags_lower.iter().any(|tag| *tag == q) {
+        if id_lower == q || tags_lower.contains(&q) {
             score += 5;
         }
-        if score > 0 && best.map_or(true, |(_, s)| score > s) {
+        if score > 0 && best.is_none_or(|(_, s)| score > s) {
             best = Some((entry, score));
         }
     }
