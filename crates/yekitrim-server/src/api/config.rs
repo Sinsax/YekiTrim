@@ -376,6 +376,45 @@ pub(super) fn config_global_put_locked(path: &Path, body: &serde_json::Value) ->
 }
 
 /// 保存 LLM 配置：`raw` 整份覆盖写，`patch` 合并写（保留注释与其他键）。
+/// `GET /api/config/llm/effective?link=<detect|polish|correct|title|utility>`（L2）：该链路**合并后的生效值**。
+///
+/// 薄壳：读该账号自己的 `llm.toml`，再转 `LlmV4::link_snapshot(link)` —— 前端不再自己算规则
+/// （L1 之前「界面显示的与真发的不一致」就是这么来的）。**明文 key 不出现**，只报 `api_key_set`。
+pub(super) async fn config_llm_effective(
+    Extension(user): Extension<crate::auth::CurrentUser>,
+    Query(q): Query<LinkQuery>,
+) -> ApiResult {
+    let wanted = q.link.unwrap_or_else(|| "detect".to_string());
+    let link = yekitrim_core::config::LlmLink::ALL
+        .iter()
+        .copied()
+        .find(|l| l.key() == wanted.trim())
+        .ok_or_else(|| {
+            err(
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "link 认不出：{}（可选：{}）",
+                    wanted,
+                    yekitrim_core::config::LlmLink::ALL
+                        .iter()
+                        .map(|l| l.key())
+                        .collect::<Vec<_>>()
+                        .join(" / ")
+                ),
+            )
+        })?;
+    let owner = crate::auth::owner_of(&user);
+    let llm = blocking(move || Ok(yekitrim_core::config::load_llm_config_for(owner))).await?;
+    ok(llm.link_snapshot(link))
+}
+
+/// `?link=` 的查询串（缺省 = detect）。
+#[derive(serde::Deserialize)]
+pub(super) struct LinkQuery {
+    #[serde(default)]
+    pub link: Option<String>,
+}
+
 pub(super) async fn config_llm_put(
     Extension(user): Extension<crate::auth::CurrentUser>,
     State(_state): State<Arc<AppState>>,

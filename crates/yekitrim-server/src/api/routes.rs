@@ -27,7 +27,7 @@ use super::auth::{
     me,
 };
 use super::config::{
-    config_get, config_global_put, config_llm_put, llm_catalog, llm_dialects, llm_models,
+    config_get, config_global_put, config_llm_effective, config_llm_put, llm_catalog, llm_dialects, llm_models,
     llm_protocols, llm_test, models_download, models_get,
 };
 use super::invite::{admin_invite_create, admin_invite_revoke, admin_invites};
@@ -404,6 +404,8 @@ pub(crate) fn router_inner(state: Arc<AppState>, extra: Router<Arc<AppState>>) -
         .route("/config/llm/dialects", get(llm_dialects))
         // **协议**清单（前端「API 协议」下拉）：同样从注册表现算、纯静态 ⇒ 用户层
         .route("/config/llm/protocols", get(llm_protocols))
+        // 该链路**合并后的生效值**（L2）：前端不再自己算「跟随默认 / 覆盖」。用户层（按 owner 读自己的 llm.toml）。
+        .route("/config/llm/effective", get(config_llm_effective))
         .route("/config/llm", put(config_llm_put))
         .route("/llm/test", post(llm_test));
 
