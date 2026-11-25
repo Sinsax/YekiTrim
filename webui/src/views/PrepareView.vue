@@ -21,7 +21,7 @@
       </div>
 
       <!-- LLM 未配置：**不拦路**（检测照跑，退化按弹幕/字幕热度 + 一个整段），只是提前说清结果。 -->
-      <div v-if="llmMissing" class="llm-banner" title="在「设置 → AI 模型」里配好接口与密钥后，检测会按话题切成多个亮点">
+      <div v-if="llmMissing" class="llm-banner" title="在「设置 → LLM 配置」里配好接口与密钥后，检测会按话题切成多个亮点">
         <Icon name="alert" :size="14" />
         <span class="flex-1" title="没配 AI 时只按弹幕/字幕热度查找事件，可能只得到一个整段；配置后可提高分段质量">未配置 AI：只按弹幕/字幕热度查找事件</span>
         <router-link class="mini-btn flex-none" to="/settings/llm">去配置 AI</router-link>

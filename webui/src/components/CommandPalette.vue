@@ -97,8 +97,8 @@ const PAGES = computed(() => {
     // 一级文案按术语表用「采集」，旧词「入库」进提示（docs/plan/webui-simplification-2026-11.md）
     { key: 'page-ingest', label: '采集', icon: 'download', to: '/ingest', hint: '入库 · 录制导入' }
   ]
-  // 普通账号也能进「处理 / AI 模型」两个子页（系统 / 接入仍 admin），设置入口因此对所有人可见
-  list.push({ key: 'page-settings', label: '设置', icon: 'settings', to: '/settings', hint: '处理 / AI 模型 / 接入 / 系统' })
+  // 普通账号也能进「处理 / LLM 配置」两个子页（系统 / 接入仍 admin），设置入口因此对所有人可见
+  list.push({ key: 'page-settings', label: '设置', icon: 'settings', to: '/settings', hint: '处理 / LLM 配置 / 接入 / 系统' })
   return list
 })
 

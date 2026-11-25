@@ -147,7 +147,7 @@ overwrite = false
 - **一个旋钮**：`.yekitrim/llm.toml` 的 `[llm] max_concurrent`（默认 3），**事件检测 / 精修事件生成 / 字幕订正共用**；
   某条链路要单独压就写 `[llm.links.<link>.run] max_concurrent`。读法只有两个入口：`concurrency(None)`（全局）与
   `concurrency_for(link)` / `run_for(link).max_concurrent`（链路）。**别再在代码里写死 `3`，也别让某条链路偷偷用自己的。**
-  设置页「AI 模型」页的「默认参数」块是全局旋钮的输入框。
+  设置页「LLM 配置 → 链路配置」的「默认参数」块是全局旋钮的输入框。
 
 ### ⚠️ 设置页数值项（配置字段的前端出口）
 

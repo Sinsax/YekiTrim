@@ -113,7 +113,7 @@
                 <label for="llmCorrect">LLM 订正转录</label>
               </div>
               <!-- ⚠️ S4：「LLM 评分权重」已搬进 llm.toml 的 [llm.links.detect.run].llm_score_weight，
-                   入口在「AI 模型」页的高级配置里（这一页只放 config.toml 的项）。 -->
+                   入口在「设置 → LLM 配置 → 链路配置」页里（这一页只放 config.toml 的项）。 -->
             </div>
           </div>
 
@@ -207,12 +207,22 @@
       </span>
     </div>
 
-    <!-- ═══ L3 五块 IA（用户口径 2026-11-25，配置重构 §3.3 + §8.2）══════════════════════
-         ① 当前接口 / ② 默认参数 / ③ 按链路覆盖 / ④ 模型列表 / ⑤ 提示词（+ 高级配置）。
-         从上到下 = 从常用到罕见。⚠️ ⑤ 有自己的保存按钮（写的是 config.toml 的 [detection]），
-         绝不与上面的「保存 LLM」共用一个 —— "一个按钮写两个文件"是这一轮要消灭的病根（§2-⑤）。 -->
+    <!-- ═══ LLM 配置：两个子页（2026-11-26 用户口径：模型配置 / 链路配置 分开）═══
+         模型配置 = 当前接口 + 模型清单（+ 接口管理 / extra_params）；
+         链路配置 = 默认参数 + 检测评分权重 + 按链路覆盖 + 提示词。
+         ⚠️ 「保存 LLM」只写 llm.toml；⑤ 提示词有**自己的**保存按钮（它写 [llm.links.detect.prompt]）。 -->
+    <div class="llm-tabs" role="tablist" aria-label="LLM 配置子页">
+      <button v-for="t in LLM_TABS" :key="t.key" type="button" role="tab" class="llm-tab"
+              :class="{ on: llmTab === t.key }" :aria-selected="llmTab === t.key ? 'true' : 'false'"
+              @click="setLlmTab(t.key)">
+        <b>{{ t.label }}</b><span>{{ t.sub }}</span>
+      </button>
+    </div>
 
-    <!-- ① 当前接口：常显、占首屏（下拉 + 名称 + 地址 + 密钥 + 模型 + 能力 chip + 测试） -->
+    <!-- ── 子页一：模型配置 ─────────────────────────────────────────── -->
+    <template v-if="llmTab === 'models'">
+
+    <!-- ① 当前接口：常显（下拉 + 名称 + 地址 + 密钥 + 模型 + 能力 chip + 测试） -->
     <div class="card" data-cap="settings.llm-quick">
       <div class="form-section-title">当前接口<span class="t-sub">连哪一家 · 用哪支模型 · 先测再存</span></div>
       <LlmEndpointCard
@@ -227,31 +237,6 @@
       />
     </div>
 
-    <!-- ② 默认参数：常显。并发数从「高级 → 运行时」提上来（它是批处理速度的第一杠杆） -->
-    <div class="card">
-      <div class="form-section-title">默认参数<span class="t-sub">所有链路的基准；每条链路可在下面单独覆盖</span></div>
-      <div class="form-grid">
-        <LlmParamFields class="span-all" :caps="caps" :target="form.llm.defaults" id-prefix="llm-def"
-                        :fields="['temperature', 'max_tokens', 'reasoning', 'json_mode']"
-                        :json-mode="jsonModeOn" @update:jsonMode="setJsonMode" />
-        <SliderField v-model="form.llm.max_concurrent" class="span-2" label="并发请求数"
-                     :min="1" :max="32" :step="1" hint="对所有 LLM 调用生效（进程级旋钮）" />
-      </div>
-    </div>
-
-    <!-- ③ 按链路覆盖：行 = 链路，列 = 接口/模型/温度/输出上限/推理/状态。
-         未覆盖的格子显示**后端算的**生效值（/api/config/llm/effective），点开才可编辑。 -->
-    <div class="card" >
-      <div class="form-section-title">按链路覆盖
-        <span class="t-sub">行 = 链路；未覆盖的格子是灰字实值</span></div>
-      <LlmLinkTable :links="llmLinks" :rows="form.llm.links" :effective="effective"
-                    :providers="form.llm.providers" :model-options="allModelOptions"
-                    :levels="linkLevels" />
-      <div v-if="effectiveError" class="muted small mt-4 caps-err" :title="effectiveError">
-        生效值读取失败（灰字留空）—— 覆盖功能仍然可用
-      </div>
-    </div>
-
     <!-- ④ 模型列表：**独立折叠、与「高级配置」平级**（D1 的清单是常用面，不是高级项） -->
     <details class="form-adv">
       <summary data-cap="settings.llm-models">模型列表（{{ form.llm.models.length }} 支）</summary>
@@ -259,53 +244,6 @@
         <LlmModelList :models="form.llm.models" :providers="form.llm.providers"
                       :active-id="form.llm.active" :base-url="effBaseUrl" :api-key="curApiKeyDraft"
                       :dialects="dialects" @probe="onProbeCaps" />
-      </div>
-    </details>
-
-    <!-- ⑤ 提示词：折叠 + **自己的保存按钮**。⚠️ 写的是 config.toml 的 [detection]（不是 llm.toml） -->
-    <details class="form-adv">
-      <summary data-cap="settings.llm-prompts">提示词（写入 config.toml 的 [detection]）</summary>
-      <div class="card">
-        <div class="form-section-title">提示词
-          <span class="t-sub">写 config.toml 的 [detection] · 与「保存 LLM」互不影响</span></div>
-        <div class="prompt-pair">
-          <div>
-            <label title="每行一条，可含 emoji；清空保存则运行时用内建示例">参考标题</label>
-            <textarea v-model="referenceTitlesText" rows="8" placeholder="每行一条参考标题"
-                      @input="referenceTitlesFromDefault = false"></textarea>
-            <!-- 「参考标题」的两条口径（2026-10-18 用户拍板，**推翻了上一版**）：
-                 ① **留空就把内建默认值填进输入框**（与其他设置项一致：表单里显示的就是
-                    "实际会用的那一份"）—— 用户要改就在默认值基础上改，保存即写进 config.toml；
-                 ② **清空再保存 = 回到预设**（patch_config_file 是深合并，空数组会真的清掉 ⇒
-                    resolve_reference_titles 回落到内建示例）。此时下面那条灰字预览把
-                    "实际会用哪几条"列出来 —— 清空**不等于没有参考标题**。 -->
-            <div v-if="referenceTitlesFromDefault && referenceTitlesText.trim()" class="muted small mt-4">
-              以上是内建默认值（本配置原先留空）。改了保存即生效；<b>清空再保存</b> = 回到内建示例。
-            </div>
-            <div v-if="!referenceTitlesText.trim() && referenceTitlesDefault.length" class="rt-preview">
-              <div class="muted small">
-                留空时使用内建示例（{{ referenceTitlesDefault.length }} 条）：
-              </div>
-              <ul class="rt-list">
-                <li v-for="(t, i) in referenceTitlesDefault" :key="i">{{ t }}</li>
-              </ul>
-            </div>
-          </div>
-          <div>
-            <label>检测 system_prompt<span class="muted small">（写 llm.toml 的 [llm.links.detect.prompt]）</span></label>
-            <textarea v-model="form.llm.detectPrompt.system_prompt" rows="8" placeholder="留空使用内建默认"></textarea>
-          </div>
-        </div>
-        <div class="mt-8">
-          <label>检测 prompt_template<span class="muted small">（{segments} 会被替换）</span></label>
-          <textarea v-model="form.llm.detectPrompt.prompt_template" rows="12" placeholder="留空使用内建默认"></textarea>
-        </div>
-        <div class="row mt-12">
-          <button class="btn btn-primary" :disabled="!loaded || promptSaving" @click="savePrompts()">
-            <Icon name="save" :size="13" /> {{ promptSaving ? '保存中…' : '保存提示词' }}
-          </button>
-          <span class="muted small">只写这三项（config.toml 的 [detection]）</span>
-        </div>
       </div>
     </details>
 
@@ -323,15 +261,6 @@
                         @add="addProvider" @remove="removeProvider" />
         </div>
         <div class="form-section">
-          <div class="form-section-title">检测评分权重
-            <span class="t-sub">[llm.links.detect.run] llm_score_weight</span></div>
-          <div class="form-grid">
-            <SliderField v-model="form.llm.detectRun.llm_score_weight" class="span-2"
-                         label="LLM 评分权重" :min="0" :max="1" :step="0.05"
-                         hint="0 = 只用弹幕/字幕热度（也不再发那次评分请求）" />
-          </div>
-        </div>
-        <div class="form-section">
           <div class="form-section-title">额外请求参数
             <span class="t-sub">原样进请求体 · 优先级最低 · 已知键一律拒绝</span></div>
           <textarea v-model="form.llm.extra_params" class="mono llm-extra" spellcheck="false"
@@ -343,6 +272,90 @@
         </div>
       </div>
     </details>
+
+    </template>
+
+    <!-- ── 子页二：链路配置 ─────────────────────────────────────────── -->
+    <template v-else>
+
+    <!-- ② 默认参数：所有链路的基准（并发数在第一屏，它是批处理速度的第一杠杆） -->
+    <div class="card">
+      <div class="form-section-title">默认参数<span class="t-sub">所有链路的基准；每条链路可在下面单独覆盖</span></div>
+      <div class="form-grid">
+        <LlmParamFields class="span-all" :caps="caps" :target="form.llm.defaults" id-prefix="llm-def"
+                        :fields="['temperature', 'max_tokens', 'reasoning', 'json_mode']"
+                        :json-mode="jsonModeOn" @update:jsonMode="setJsonMode" />
+        <SliderField v-model="form.llm.max_concurrent" class="span-2" label="并发请求数"
+                     :min="1" :max="32" :step="1" hint="对所有 LLM 调用生效（进程级旋钮）" />
+      </div>
+    </div>
+
+    <!-- 检测链路的行为参数（不进请求体）：评分权重原来在程序配置页，S4 起住这里 -->
+    <div class="card">
+      <div class="form-section-title">检测评分权重
+        <span class="t-sub">[llm.links.detect.run] · 不进请求体</span></div>
+      <div class="form-grid">
+        <SliderField v-model="form.llm.detectRun.llm_score_weight" class="span-2"
+                     label="LLM 评分权重" :min="0" :max="1" :step="0.05"
+                     hint="0 = 只用弹幕/字幕热度（也不再发那次评分请求）" />
+      </div>
+    </div>
+
+    <!-- ③ 按链路覆盖：行 = 链路，列 = 接口/模型/温度/输出上限/推理/状态。
+         未覆盖的格子显示**后端算的**生效值（/api/config/llm/effective），点开才可编辑。 -->
+    <div class="card">
+      <div class="form-section-title">按链路覆盖
+        <span class="t-sub">行 = 链路；未覆盖的格子是灰字实值</span></div>
+      <LlmLinkTable :links="llmLinks" :rows="form.llm.links" :effective="effective"
+                    :providers="form.llm.providers" :model-options="allModelOptions"
+                    :levels="linkLevels" />
+      <div v-if="effectiveError" class="muted small mt-4 caps-err" :title="effectiveError">
+        生效值读取失败（灰字留空）—— 覆盖功能仍然可用
+      </div>
+    </div>
+
+    <!-- ⑤ 提示词：折叠 + **自己的保存按钮**（写 llm.toml 的 [llm.links.detect.prompt]） -->
+    <details class="form-adv">
+      <summary data-cap="settings.llm-prompts">提示词（写入 llm.toml 的 [llm.links.detect.prompt]）</summary>
+      <div class="card">
+        <div class="form-section-title">提示词
+          <span class="t-sub">写 llm.toml 的 [llm.links.detect.prompt] · 与「保存 LLM」互不影响</span></div>
+        <div class="prompt-pair">
+          <div>
+            <label title="每行一条，可含 emoji；清空保存则运行时用内建示例">参考标题</label>
+            <textarea v-model="referenceTitlesText" rows="8" placeholder="每行一条参考标题"
+                      @input="referenceTitlesFromDefault = false"></textarea>
+            <div v-if="referenceTitlesFromDefault && referenceTitlesText.trim()" class="muted small mt-4">
+              以上是内建默认值（本配置原先留空）。改了保存即生效；<b>清空再保存</b> = 回到内建示例。
+            </div>
+            <div v-if="!referenceTitlesText.trim() && referenceTitlesDefault.length" class="rt-preview">
+              <div class="muted small">
+                留空时使用内建示例（{{ referenceTitlesDefault.length }} 条）：
+              </div>
+              <ul class="rt-list">
+                <li v-for="(t, i) in referenceTitlesDefault" :key="i">{{ t }}</li>
+              </ul>
+            </div>
+          </div>
+          <div>
+            <label>检测 system_prompt</label>
+            <textarea v-model="form.llm.detectPrompt.system_prompt" rows="8" placeholder="留空使用内建默认"></textarea>
+          </div>
+        </div>
+        <div class="mt-8">
+          <label>检测 prompt_template<span class="muted small">（{segments} 会被替换）</span></label>
+          <textarea v-model="form.llm.detectPrompt.prompt_template" rows="12" placeholder="留空使用内建默认"></textarea>
+        </div>
+        <div class="row mt-12">
+          <button class="btn btn-primary" :disabled="!loaded || promptSaving" @click="savePrompts()">
+            <Icon name="save" :size="13" /> {{ promptSaving ? '保存中…' : '保存提示词' }}
+          </button>
+          <span class="muted small">只写这三项（llm.toml 的 [llm.links.detect.prompt]）</span>
+        </div>
+      </div>
+    </details>
+
+    </template>
     </div>
     </template>
 
@@ -606,6 +619,31 @@ const LLM_LINK_ZH = {
 }
 /** 行内补一句"这条链路具体管什么"（只在需要时） */
 const LLM_LINK_HINT = { title: '封面文案', utility: '贴纸包·扫描标签·测试连接' }
+
+/**
+ * LLM 配置的两个**子页**（2026-11-26 用户口径：模型配置与链路配置分开）。
+ *
+ * 「怎么连 / 有哪些模型」与「每条链路怎么跑」是两个心智完全不同的任务：混在一页时，
+ * 改一条链路的温度要先滚过接口与模型清单。子页只影响**渲染**，表单状态与保存按钮仍然共用
+ * （「保存 LLM」一次写整份 llm.toml，「保存提示词」是 ⑤ 自己的）。
+ * ⚠️ 新增块时先想清楚它属于哪一页：**请求参数/提示词 → 链路**，**接口/密钥/模型清单 → 模型**。
+ */
+const LLM_TABS = [
+  { key: 'models', label: '模型配置', sub: '接口 · 密钥 · 模型清单' },
+  { key: 'links', label: '链路配置', sub: '默认参数 · 按链路覆盖 · 提示词' }
+]
+const LLM_TAB_KEY = 'yekitrim.settings.llmTab'
+/** 读回上次停在哪个子页（读不到/认不出 ⇒ 模型配置） */
+function readLlmTab() {
+  try {
+    return localStorage.getItem(LLM_TAB_KEY) === 'links' ? 'links' : 'models'
+  } catch (e) { return 'models' }
+}
+const llmTab = ref(readLlmTab())
+function setLlmTab(key) {
+  llmTab.value = key === 'links' ? 'links' : 'models'
+  try { localStorage.setItem(LLM_TAB_KEY, llmTab.value) } catch (e) { /* 隐私模式：记住与否不影响功能 */ }
+}
 /* ⚠️ 原来这里有一张"链路默认 thinking"表（default_thinking 的镜像）——
    v4 之后它没有读者了：链路不写 reasoning 就是**不表态**，由 [llm.defaults] 与方言决定。
    别再按链路写死一档（那是 F7 双轨的另一半）。 */
@@ -1424,6 +1462,15 @@ textarea.llm-extra { min-height:230px; resize:vertical; font-size:12px; line-hei
 .span-4 { grid-column:span 4; }
 /* 「高级参数」：默认收起。里面是"默认值就是最佳实践"的调参与提示词 ——
    摊开会把常用项淹掉（用户口径："死配置或者最佳配置就隐藏吧"）。 */
+.llm-tabs { display:flex; gap:6px; margin:2px 0 10px; flex-wrap:wrap; }
+.llm-tab { display:flex; flex-direction:column; gap:1px; padding:6px 12px; text-align:left;
+  border:1px solid var(--line); border-radius:var(--r-sm); background:var(--card); color:var(--ink-dim);
+  cursor:pointer; transition:background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease); }
+.llm-tab b { font-size:var(--fs-base); font-weight:var(--fw-medium); }
+.llm-tab span { font-size:var(--fs-xs); color:var(--ink-faint); line-height:1.4; }
+.llm-tab:hover { background:var(--surface-2); color:var(--ink); }
+.llm-tab.on { background:var(--main-soft); border-color:var(--main-glow); color:var(--ink); }
+.llm-tab.on b { color:var(--pink-text); font-weight:var(--fw-semi); }
 .form-adv { margin-top:10px; border-top:1px dashed var(--line-soft); padding-top:6px; }
 .form-adv > summary { cursor:pointer; font-weight:700; font-size:13px; color:var(--ink-dim);
   display:flex; align-items:center; gap:8px; padding:4px 0; list-style:none; }

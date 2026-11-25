@@ -102,9 +102,10 @@ Vue3 工作台的全部前端：壳 + 面包屑、hash 路由、首页 `#/workbe
   `account`/`monitor` 已并入 `system`（redirect）。
 - ⚠ `/settings` redirect 到 `config`；`meta.admin` 与高亮挂在每条子路由上，别写回 `route.name === 'settings'`。
   四块内容同一个 `SettingsView.vue`（`v-if` 切），`LogConsole` 只在 `system` 挂。
-- ⚠️ `AI 模型`页是**五块 IA**（① 当前接口 / ② 默认参数 / ③ 按链路覆盖表 / ④ 模型列表 / ⑤ 提示词 + 高级）：
-  模型选择只有 ① 一处，③ 的未覆盖格子显示 `/api/config/llm/effective` 的灰字实值、点开才编辑，
-  ⑤ 有**自己的保存按钮**（写 llm.toml，不再写 config.toml）。
+- ⚠️ `LLM 配置`页（2026-11-26 起）分成**两个子页**（页内 tab，localStorage `yekitrim.settings.llmTab`）：
+  **模型配置** = ① 当前接口（模型选择只此一处）/ ④ 模型列表 / 高级（接口管理 · extra_params）；
+  **链路配置** = ② 默认参数 / 检测评分权重 / ③ 按链路覆盖表（灰字实值、点开才编辑，来自 `/api/config/llm/effective`）/ ⑤ 提示词（**自己的保存按钮**，写 llm.toml）。
+  子页只影响渲染：表单状态与「保存 LLM」共用，别把两块状态拆成两套。
 - 设置页数值项走 `components/SliderField.vue`：手填的值只夹 `[min, max]`、**不吸附 step**，**清空/非数字
   不写模型**；数字框在**标签行右端**（`.lbl-row`/`.rv`）；滑块宽度 = 所在格子的 **1/3**（`.slf-range`
   `flex:0 0 33.333%`）；窄格由 **`@container`** 处理，**别改成媒体查询**。

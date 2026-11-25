@@ -640,7 +640,7 @@ async function recheck() {
 function goLlm() {
   // 设置页是 admin-only；普通用户点过来只给一句解释，别让路由守卫把它弹回首页。
   if (isAdmin.value) router.push('/settings/llm')
-  else toast('AI 模型由管理员配置')
+  else toast('LLM 配置由管理员配置')
 }
 
 // 来源选择：不同来源 → 不同导入方式（本地浏览 / 录播姬待处理 / B站链接）。

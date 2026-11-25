@@ -383,7 +383,7 @@
       "id": "settings.llm-quick",
       "phase": "P3",
       "surface": "settings",
-      "label": "AI 模型（当前接口）",
+      "label": "LLM 配置 · 当前接口",
       "files": [
         "webui/src/views/SettingsView.vue"
       ],
@@ -395,7 +395,7 @@
       "id": "settings.llm-advanced",
       "phase": "P3",
       "surface": "settings",
-      "label": "AI 模型高级配置",
+      "label": "LLM 配置 · 高级（接口管理 / extra_params）",
       "files": [
         "webui/src/views/SettingsView.vue"
       ],

@@ -67,11 +67,11 @@
         </div>
       </div>
 
-      <!-- ③ AI 模型（可选）：不配置也能用，只是可能只切出一整段 -->
+      <!-- ③ LLM 配置（可选）：不配置也能用，只是可能只切出一整段 -->
       <div class="sc-row" :class="{ ok: llmReady }">
         <span class="sc-dot" :class="llmReady ? 'g' : 'n'"></span>
         <div class="sc-main">
-          <b class="sc-name">AI 模型 <span class="muted small">（可选）</span></b>
+          <b class="sc-name">LLM 配置 <span class="muted small">（可选）</span></b>
           <div v-if="!health" class="sc-sub">
             没读出来 ·
             <button class="linklike" type="button" @click="emit('refresh')">重新检查</button>

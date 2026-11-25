@@ -80,6 +80,7 @@
 - 项目设置 `#/p/:pid/settings`：**「删除源录播」**（真删媒体，唯一的手动释放空间手段）与 **「移除项目」**（只注销登记、零文件改动）。两个入口（设置页按钮 + 侧栏项目行的 `×`）文案与行为必须一致：**都不是 `danger` 红色**，但仍二次确认。移除后要调 `forgetProject(pid)` 清本地痕迹（per-pid 缓存 / `yekitrim.wb.*` / `yekitrim.polish.last.<pid>`）。
 - ⚠️ **「移除项目」不碰任何文件**（用户拍板）：`yekitrim.toml`、媒体、`output/` 全留着，重新导入即可再绑（`create_local_project` 见到已有 `yekitrim.toml` **只登记、不覆盖**）。两个入口共用 `api::unregister_project` —— 以前是两份拷贝各删一次，别再写回两份。
 - 设置页 `SettingsView.vue` 五块内容仍在**同一个文件**（`defineProps({section})` + `v-if` 切），不拆子组件。
+- ⚠️ **「LLM 配置」页自己还有两个子页**（`llmTab` = `models` / `links`，页内 tab + localStorage）：模型配置（接口/模型清单/高级）与链路配置（默认参数/评分权重/链路表/提示词）。新块先判定归属：接口与模型清单 → 模型；请求参数与提示词 → 链路。
 - ⚠️ 「未保存的改动」的基线要在 `await nextTick()` 之后拍：加载期 `flush:"pre"` 的 watcher 会补数据，同步拍 = 刚进页面什么都没点就 dirty。
 - ⚠️ **LLM 配置块的「按链路覆盖」是表格**（L3 起）：行 = 链路（后端 `override_links` 给），列 = 接口/模型/温度/输出上限/推理/状态；
   未覆盖的格子显示 `/api/config/llm/effective` 的**灰字实值**，**点一下才可编辑**，「跟随」按钮发 `null` ⇒ 删键。

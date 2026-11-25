@@ -289,7 +289,7 @@ export const STEPS = [
 // 「处理」与「AI 模型」按 Owner 分文件存储（`users/<uid>/.yekitrim/`），本来就账号隔离 ⇒ 放开。
 export const SETTINGS_SECTIONS = [
   { key: 'config', label: '处理', sub: '转写 / 检测 / 剪切' },
-  { key: 'llm', label: 'AI 模型', sub: '接口 / 密钥 / 模型 / 提示词' },
+  { key: 'llm', label: 'LLM 配置', sub: '模型配置 / 链路配置' },
   { key: 'integrations', label: '接入', sub: 'biliLive-tools / 录播姬 / B站下载 / 存储', adminOnly: true },
   // 账号与诊断合并：它们都是"这台机器/这个部署"的事，不是日常处理参数。
   // 单人（默认）时「账号与邀请」「账号配额」两块隐藏，多人（`[auth] multi_user = true`）原样回来。
