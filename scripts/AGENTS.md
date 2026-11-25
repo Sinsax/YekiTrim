@@ -20,6 +20,14 @@
   - ⚠️ **任何"没跑"都要显式打印 SKIP**（唯一不可妥协的判据）：SKIP 只来自脚本自己打的 SKIP 行 / **退出码 3**（缺样本 = exit 3）/ 超时；**永不算通过**，也不受 baseline 影响。**静默跳过比不跑更糟**（`yekitrim-compare.mjs` 曾漏 `--golden` 而静默换参照，"数字还在阈值内"）。
   - ⚠️ **退出码 = 是否存在非基线失败**（0/1/2）；`gate-baseline.json` **每条必须带非空理由**，**只准登记环境性失败**（判据真红就改代码）。它不写仓库（日志只写 `/tmp`）。
   - **缺样本**：SKIP（见上）；`--all` 每项独立超时。
+- **`check-clippy-budget.mjs`** —— **clippy 预算（只降不升）**（2026-11-25，整改 T20a 配套）。
+  **守什么**：`cargo clippy --workspace --all-targets` 的 `clippy::*` 告警**去重后**的数量不许超过 `check-clippy-budget.json` 的预算。
+  为什么不是直接 `-D warnings`：清零之前塞进去只有两种结局 —— 立刻红一片，或逼人拿 baseline 把红盖住（而 baseline 只准登记环境性失败）。
+  所以先立「只降不升」，清到 0 再换成 `-D warnings` 并删掉这两个文件。
+  **怎么跑**：`node scripts/check-clippy-budget.mjs`（超预算 exit 1，并打印按类别的增量与前 10 条位置）；
+  `--update` 把当前数量写回预算文件（人工确认过再跑）。**去重口径**：按 `code|file:line` 去重 ——
+  同一份代码会被 lib / lib-test / bin 各编一遍，cargo 会重复报同一条（实测 20+ 条重复，不去重会把预算算虚高）。
+  **缺样本/缺前置**：没有 cargo 或编译失败 ⇒ exit 3（SKIP，永不算通过）。**当前预算 113 条**（从 196 清到 129，去重后 113）。
 - **`check-api-contract.mjs`** —— **前后端路由契约差集**（`webui/src/api/*.js` 的 `/api` 调用 ←→ `routes.rs` 注册的 `(method, path)`）。
   - **守什么**：**前向（红）** = 前端调了、后端没注册 ⇒ exit 1（给 `文件:行` / 字面量 / 最接近的已注册路由）；**后向（只提示）** = 后端注册、前端从不调 ⇒ **不红**（CLI / 运维 / SSE / 视图直连都会用到）。
   - **怎么跑**：`node scripts/check-api-contract.mjs` · `--self-test` · `--mutate` · `-v`。它调 `route_manifest.py` 拿路由表（那个 dump 仍 exit 恒 0，本脚本是"调用方"）。
