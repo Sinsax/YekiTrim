@@ -717,19 +717,20 @@ impl LlmV4 {
     }
 }
 
-impl From<&LlmV4> for yekitrim_llm::LlmParams {
-    fn from(c: &LlmV4) -> Self {
+impl LlmV4 {
+    /// 配置 -> 传输层参数（内部实现；业务侧只经 LinkedLlm 拿到它）。
+    pub(crate) fn to_params(&self) -> yekitrim_llm::LlmParams {
         use yekitrim_llm::params::Support;
-        let provider = c.active_provider();
+        let provider = self.active_provider();
         let (api_key, base_url, model) = match provider {
             Some(p) => (p.key(), p.base_url.clone(), p.model.clone()),
             None => (String::new(), String::new(), String::new()),
         };
-        let mut caps = c.effective_caps(
+        let mut caps = self.effective_caps(
             provider.map(|p| p.id.as_str()).unwrap_or_default(),
             &model,
         );
-        let p = &c.defaults;
+        let p = &self.defaults;
         let reasoning = p
             .reasoning
             .as_deref()
@@ -739,7 +740,7 @@ impl From<&LlmV4> for yekitrim_llm::LlmParams {
         if p.temperature.is_none() {
             caps.temperature = Support::Unsupported;
         }
-        Self {
+        yekitrim_llm::LlmParams {
             api_key,
             base_url,
             model,
@@ -750,8 +751,8 @@ impl From<&LlmV4> for yekitrim_llm::LlmParams {
             reasoning_explicit: reasoning.is_some(),
             top_p: p.top_p.filter(|v| v.is_finite()),
             json_mode: p.json_mode.unwrap_or(false),
-            extra_params: c.extra_params.as_ref().and_then(|t| serde_json::to_value(t).ok()),
-            max_concurrent: c.concurrency(None),
+            extra_params: self.extra_params.as_ref().and_then(|t| serde_json::to_value(t).ok()),
+            max_concurrent: self.concurrency(None),
             caps,
         }
     }
@@ -781,13 +782,13 @@ impl std::ops::Deref for LinkedLlm {
 
 impl From<LinkedLlm> for yekitrim_llm::LlmParams {
     fn from(c: LinkedLlm) -> Self {
-        (&c.0).into()
+        c.0.to_params()
     }
 }
 
 impl From<&LinkedLlm> for yekitrim_llm::LlmParams {
     fn from(c: &LinkedLlm) -> Self {
-        (&c.0).into()
+        c.0.to_params()
     }
 }
 
@@ -894,7 +895,7 @@ mod runtime_tests {
         c.defaults.max_tokens = Some(2048);
         c.defaults.json_mode = Some(true);
         // 能力：表里认识 deepseek ⇒ thinking_type；清单里再把它换成 openai_effort
-        let before: yekitrim_llm::LlmParams = (&c).into();
+        let before: yekitrim_llm::LlmParams = c.to_params();
         assert_eq!(before.api_key, "sk-from-provider");
         assert_eq!(before.model, "deepseek-v4-pro");
         assert!((before.temperature - 0.2).abs() < 1e-9);
@@ -911,7 +912,7 @@ mod runtime_tests {
                 ..Default::default()
             }),
         });
-        let after: yekitrim_llm::LlmParams = (&c).into();
+        let after: yekitrim_llm::LlmParams = c.to_params();
         assert_eq!(after.caps.dialect.id, "openai_effort", "清单里的覆盖必须真的进 caps");
     }
 
@@ -920,7 +921,7 @@ mod runtime_tests {
     fn missing_temperature_still_means_do_not_send() {
         let mut c = two_providers();
         c.defaults.temperature = None;
-        let p: yekitrim_llm::LlmParams = (&c).into();
+        let p: yekitrim_llm::LlmParams = c.to_params();
         assert_eq!(p.caps.temperature, yekitrim_llm::params::Support::Unsupported);
     }
 
