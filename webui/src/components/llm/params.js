@@ -1,7 +1,7 @@
-// components/llm/params.js — 请求参数面（`[llm.params]` / `[llm.providers.params]` / `overrides`）的
+// components/llm/params.js — 请求参数面（`[llm.defaults]` / `[llm.links.<link>]`）的
 // **类型归一**：出 patch 前的唯一出口。
 //
-// 事故背景（2026-10-19，P0）：`llm.toml` 被写成了 `params = { json_mode = "", reasoning = "", … }`
+// 事故背景（2026-10-19，P0）：`llm.toml` 被写成了 `json_mode = ""` / `reasoning = ""` 这类空串
 // ⇒ 后端解析失败 ⇒ **整份 LLM 配置回退默认**（含 api_key）。空串/错类型一个字都不许进 patch。
 //
 // 纪律：**类型不对 / 空串 ⇒ 整条键不发**。

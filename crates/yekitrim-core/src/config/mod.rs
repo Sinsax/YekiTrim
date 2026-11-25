@@ -2017,27 +2017,28 @@ vtuber_name = \"主播\"
     /// `max_tokens = ""` 是合法 TOML 但读不出 u32，`load_llm_config` 直接整份打回默认值。
     #[test]
     fn null_patch_removes_key_and_keeps_siblings() {
+        // S4 起链路覆盖住 [llm.links.<link>]（与 [llm.defaults] 两级）
         let body = "\
 # 顶部注释
 [llm]
-api_key = \"k\"
+active = \"main\"
 
-[llm.params]
+[llm.defaults]
 max_tokens = 16384
 
 # 链路覆盖
-[llm.overrides.detect]
+[llm.links.detect]
 max_tokens = 8192
 reasoning = \"off\"
 
-[llm.overrides.polish]
+[llm.links.polish]
 max_tokens = 32768
 ";
         let p = write_tmp("null-del", body);
         patch_config_file(
             &p,
-            &serde_json::json!({"llm": {"overrides": {"detect": {"max_tokens": null,
-                                                                 "reasoning": "high"}}}}),
+            &serde_json::json!({"llm": {"links": {"detect": {"max_tokens": null,
+                                                              "reasoning": "high"}}}}),
         )
         .unwrap();
         let out = std::fs::read_to_string(&p).unwrap();
@@ -2051,50 +2052,59 @@ max_tokens = 32768
             "# 顶部注释",
             "# 链路覆盖",
             "max_tokens = 16384",
-            "[llm.overrides.polish]",
+            "[llm.links.polish]",
             "max_tokens = 32768",
         ] {
             assert!(out.contains(keep), "丢了 {keep}：\n{out}");
         }
-        // 删掉之后必须还能被解析（空串那版就是在这一步炸的），且该链路回到跟随 [llm]
+        // 删掉之后必须还能被解析（空串那版就是在这一步炸的），且该链路回到跟随 [llm.defaults]
         #[derive(serde::Deserialize)]
         struct File {
-            llm: types::LlmConfig,
+            llm: types::LlmConfigV4,
         }
         let text = std::fs::read_to_string(&p).unwrap();
         let f: File = toml::from_str(&text).expect("删键后的 llm.toml 仍须可解析");
         assert_eq!(
-            f.llm.for_link(types::LlmLink::Detect).params.max_tokens,
+            f.llm.params_for(types::LlmLink::Detect).max_tokens,
             Some(16384),
-            "删掉覆盖 = 跟随 [llm.params].max_tokens"
+            "删掉覆盖 = 跟随 [llm.defaults].max_tokens"
         );
-        assert_eq!(f.llm.for_link(types::LlmLink::Polish).params.max_tokens, Some(32768));
+        assert_eq!(f.llm.params_for(types::LlmLink::Polish).max_tokens, Some(32768));
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
     }
 
-    /// **模型 id 里有点号/冒号时，patch 出来的子表键必须原样**（llm.models."cn:deepseek-v4.1-flash"）。
+    /// **模型清单里带点号/冒号的 id 必须原样 round-trip**（v4 是 `[[llm.models]]` 的数组元素）。
     ///
-    /// ⚠️ 这条不是洁癖：toml_edit 对"带点号的键"有**两种解释**（一个键 vs 点号嵌套），
-    /// 解释错了 LlmConfig.models 就解析不出来 —— 而失败方式是**整份 llm.toml 被打回默认值**
-    /// （用户只会看到"我的配置没了"）。真实模型 id 就长这样：`cn:deepseek-v4.1-flash`。
+    /// ⚠️ 为什么还留着这条：v3 时代模型 id 是**表键**（`[llm.models."cn:…"]`），toml_edit 对
+    /// "带点号的键"有两种解释，解释错了就是**整份 llm.toml 被打回默认值**。v4 把它变成数组元素之后
+    /// 这个坑理论上消失，但 id 仍是字符串常量、仍要逐字 round-trip（真实 id 就长这样）。
     #[test]
-    fn patch_keeps_model_ids_with_dots_as_single_keys() {
-        let p = write_tmp("llm-models-key", "[llm]\napi_key = \"k\"\n");
+    fn patch_keeps_model_ids_with_dots_and_colons() {
+        let p = write_tmp("llm-models-key", "config_version = 4\n[llm]\nactive = \"main\"\n\n[[llm.providers]]\nid = \"main\"\n");
         patch_config_file(
             &p,
-            &serde_json::json!({"llm": {"models": {"cn:deepseek-v4.1-flash": {"thinking_wire": "thinking_type"}}}}),
+            &serde_json::json!({"llm": {"models": [{
+                "id": "cn:deepseek-v4.1-flash",
+                "provider": "main",
+                "overrides": {"thinking_wire": "thinking_type"}
+            }]}}),
         )
         .unwrap();
         let out = std::fs::read_to_string(&p).unwrap();
         #[derive(serde::Deserialize)]
         struct File {
-            llm: types::LlmConfig,
+            llm: types::LlmConfigV4,
         }
-        let f: File = toml::from_str(&out).expect("模型级覆盖写进去之后，llm.toml 仍须可解析");
+        let f: File = toml::from_str(&out).expect("模型清单写进去之后，llm.toml 仍须可解析");
+        let entry = f
+            .llm
+            .models
+            .iter()
+            .find(|m| m.id == "cn:deepseek-v4.1-flash")
+            .expect("带点号/冒号的模型 id 必须原样 round-trip");
         assert_eq!(
-            f.llm.models.get("cn:deepseek-v4.1-flash").and_then(|m| m.thinking_wire.as_deref()),
-            Some("thinking_type"),
-            "带点号的模型 id 必须落成一个键，不能变成点号嵌套：\n{out}"
+            entry.overrides.as_ref().and_then(|o| o.thinking_wire.as_deref()),
+            Some("thinking_type")
         );
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
     }
@@ -2102,12 +2112,12 @@ max_tokens = 32768
     /// 空子表 patch（`{}`）什么都不动 —— 别把整张表（含注释）当成"没提到的键"删掉。
     #[test]
     fn empty_subtable_patch_changes_nothing() {
-        let body = "[llm]\nmax_tokens = 16384\n\n[llm.overrides.detect]\nmax_tokens = 8192\n";
+        let body = "[llm]\n[llm.defaults]\nmax_tokens = 16384\n\n[llm.links.detect]\nmax_tokens = 8192\n";
         let p = write_tmp("empty-sub", body);
-        patch_config_file(&p, &serde_json::json!({"llm": {"overrides": {"detect": {}}}})).unwrap();
+        patch_config_file(&p, &serde_json::json!({"llm": {"links": {"detect": {}}}})).unwrap();
         let out = std::fs::read_to_string(&p).unwrap();
         assert!(out.contains("max_tokens = 8192"), "{out}");
-        assert!(out.contains("[llm.overrides.detect]"), "{out}");
+        assert!(out.contains("[llm.links.detect]"), "{out}");
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
     }
 

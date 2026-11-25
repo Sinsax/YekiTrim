@@ -20,7 +20,9 @@
 - 页面级空态/下一步/首启检查：`AppEmptyState.vue` / `NextStepBar.vue` / `SetupChecklist.vue`。
 - `SetupChecklist` = 首页环境与模型的**唯一**状态卡（v8 并入原「运行状况」卡）：「运行环境」行 = ffmpeg/ffprobe/**出片底座** chips（`/api/health`，缺项指路 → `dhampir/bin/`）+「字幕模型」行内嵌 `ModelList`（下载仅 admin）；三源齐刷，`doctorError` 照实报（读失败 ≠ 缺失）。详见 §⑧.2。
   ⚠️ **待处理项必须行里逐项可见** —— 旧运行状况卡"报 1 项待处理、展开却全绿"的病根就是底座缺失没有展示位（用户实测）；页头汇总 chip 随之删除（同一件事不说三遍）。口径见 `docs/web-ui-design.md` 附录 E。
-- LLM 快配：`components/llm/LlmQuickSetup.vue` + `presets.js`（不是能力表）；多接口编辑在 `LlmProviders.vue` 的「高级配置」。
+- LLM 五块（L3）：`LlmEndpointCard`（① 当前接口 + 测试草稿）· `LlmLinkTable`（③ 链路表，灰字点开才编辑）·
+  `LlmModelList`（④ 模型清单，加入才落盘）· `LlmProviders`（高级：接口增删/改名/换协议）· `LlmParamFields`（参数控件）。
+  ⚠️ **模型选择只有一处**（① 的下拉/datalist）—— 别再往 `LlmProviders` 塞行内模型弹层（L3 删掉的那三个入口）。
 - 新控件带 `data-cap`；高级项用 `useDisclosure`/`<details>` 默认折叠，隐藏 ≠ 删除。
 
 ### 共享原语（`components/ui/`，v6）

@@ -15,8 +15,8 @@
 - `config::load_config()` / `load_config_at(project_file)` / `load_global_config()` / `load_llm_config()`。
 - `config::patch_config_file(path, &serde_json::Value)` —— 设置页表单保存的唯一通道。
 - `config::write_project_config` / `write_project_config_exact` / `normalize_project_paths_in`；`save_events_path[_in]` / `save_audio_path[_in]` / `save_transcript_path[_in]`。
-- `config::resolve_reference_titles(&DetectionConfig) -> Vec<String>`。
-- `types::{Config, ProjectConfig, Materials, MaterialEntry, AuthConfig, IngestConfig, RecorderConfig, StorageConfig, AudioConfig, AsrConfig, DetectionConfig, LlmConfig, CuttingConfig, SfxConfig, ChromeConfig, CorrectConfig}`；`ProjectConfig::current_stage(&output_dir)`；`MaterialEntry::{asr, user, is_asr, slot}` / `Materials::{of, of_mut}`；`LlmConfig::concurrency(section_override)`（并发）、`LlmConfig::for_link(LlmLink)`（按链路的调用参数，`LlmOverride` / `LlmOverrides` 是它的配置形态）。
+- `config::resolve_reference_titles(Option<&LlmPromptCfg>) -> Vec<String>`（S4 起提示词住 llm.toml）。
+- `types::{Config, ProjectConfig, Materials, MaterialEntry, AuthConfig, IngestConfig, RecorderConfig, StorageConfig, AudioConfig, AsrConfig, DetectionConfig, LlmConfigV4, CuttingConfig, SfxConfig, ChromeConfig, CorrectConfig}`（⚠️ v3 的 `LlmConfig` / `LlmProvider` / `LlmOverrides` 已在 L4 删除，只剩迁移用的 `llm_v4::LlmV3`）；`ProjectConfig::current_stage(&output_dir)`；`MaterialEntry::{asr, user, is_asr, slot}` / `Materials::{of, of_mut}`；`LlmConfigV4::{for_link, concurrency, concurrency_for, prompt_for, run_for}`（按链路的四件套，`LinkedLlm::run()` 带本地行为参数）。
 
 ## 边界
 
@@ -53,7 +53,7 @@ overwrite = false
 
 ⚠️ `llm.toml` 里 `extra_params` 那行样例 2026-11-14 已与 `LLM_CONFIG_TOML` 模板对齐（旧文档写 `disabled` 且没有 `response_format`）—— 文档与模板不一致时**以模板为准**。
 
-**`.yekitrim/config.toml` / `.yekitrim/llm.toml`** — 程序配置与 LLM 配置：**字段与注释的权威是 `config/mod.rs` 的两个模板常量**，逐字样例见 §1.2 / §1.3（`[asr]` 的 14 个键、`[correct]`、`[detection]`、`[cutting]`、`[sfx]`；llm 的 `[llm]` / `[llm.params]` / `[llm.overrides.*]` / `[[llm.providers]]` / `[llm.models."<id>"]`）。
+**`.yekitrim/config.toml` / `.yekitrim/llm.toml`** — 程序配置与 LLM 配置：**字段与注释的权威是 `config/mod.rs` 的两个模板常量**，逐字样例见 §1.2 / §1.3（`[asr]` 的 14 个键、`[correct]`、`[detection]`、`[cutting]`、`[sfx]`；llm 的 `[llm]` / `[llm.defaults]` / `[[llm.providers]]` / `[[llm.models]]` / `[llm.links.<link>]` + 它的 `.prompt` / `.run` 子表）。⚠️ S4 起 **config.toml 里没有任何 LLM 行为键**（提示词 / 窗口 / 并发 / 评分权重都在 llm.toml）。
 
 ### 死字段（2026-10：**已删除**，别再捡回来）
 
@@ -82,18 +82,19 @@ overwrite = false
 
 读的时候三种情况：**版本相同 ⇒ 原样用** · **版本更低 ⇒ 先迁移再解析** · **版本更高 ⇒ 一个字节都不动**（那是更新的程序写的；没有这一条，用旧版 exe 打开新配置会把文件"升"回去 —— 直接损坏用户数据）。缺键 = **0**。
 
-迁移是**纯函数 + 保注释**：用 `toml_edit`（`toml::to_string` 重序列化会**把注释全丢掉**，而模板里大段说明都写在注释里）。已发生的迁移（`v0 → v1` 清死键 / `v1 → v2` 把 `temperature`/`max_tokens`/`thinking` 搬进 `[llm.params]` / `v2 → v3` 搬成 `[[llm.providers]]`）逐条见 §3，**改迁移前先看那里的判据**。
+迁移是**纯函数 + 保注释**：用 `toml_edit`（`toml::to_string` 重序列化会**把注释全丢掉**，而模板里大段说明都写在注释里）。已发生的迁移（`v0 → v1` 清死键 / `v1 → v2` 把 `temperature`/`max_tokens`/`thinking` 搬进 `[llm.params]` / `v2 → v3` 搬成 `[[llm.providers]]` / `v3 → v4` 收成"一份真相" / **`v4 → v5` 把 LLM 行为键从 config.toml 搬进 llm.toml**）逐条见 §3，**改迁移前先看那里的判据**。
 ⚠️ `v2 → v3` 时 `[llm.models."<id>"]` **留在原地**（能力覆盖与 provider 无关，换 provider 也照用；搬走会把一份拆成 N 份），`overrides` / `max_concurrent` / `extra_params` 也都不搬。
 
 ⚠️ **改配置键的规矩（第 5 步，比代码重要）** —— 删键 / 改名 / 改语义时必须做三件事：
 ① `config/version.rs` 的 `CONFIG_VERSION` **+1**；② 在 `ConfigKind::retired_in` 里把那个键按 `["section", "key"]` 登记成"新版本该清掉的"；③ 到 `config/mod.rs` 的 `GLOBAL_CONFIG_TOML` / `LLM_CONFIG_TOML` 模板里同步注释。**漏 ①** ⇒ 迁移永远不跑；**漏 ②** ⇒ 老文件里那个键**永远留着**（`patch_config_file` 只合并不删）。
 ⚠️ **"搬家/改名"再加一件**：`retired_in` 只会**删**，表达不了"搬到别处" —— 那种要在 `migrate_step()` 里写一段一步一段的迁移（`migrate_llm_v2` 是样板：**连键的 decor 一起搬**，上方注释不丢；搬完再让 `retired_in` 兜底清掉搬不动的残留）。
+⚠️ **跨文件搬家**（`v4 → v5` 是唯一一例）：`migrate_config_to_llm` + `migrate_global_pair` —— **先写 llm.toml（备份 + `validate_llm_toml` + 原子写）成功，才让 config.toml 丢源键**；失败就两个文件都原样留着、下次再试。三条读路径（`prepare` / `edit_toml_at` / `clean_retired_keys_in`）都要接，**漏 `edit_toml_at` 就是"只删不搬"**（用户的提示词正文直接没了）。
 
 ⚠️ **`polish.toml` 的版本键在文本层**（不在 `ProjectFile` 里）：那个结构体是 `deny_unknown_fields`，而且还会出口给前端与出片底座 —— 把版本塞进 schema 会波及它们。所以写侧 `to_toml_commented()` 在文本里补一行、读侧 `validate.rs` 用 `version::strip_version_key()` 摘掉再看结构体。
 
 ⚠️ **工程级那份"只在内存里升"的代价**：磁盘上那几行**永远在** ⇒ 每次读都会重新发现它。所以：① 报要**去重**（`report_retired`：每文件每进程只报一次，实测 100ms 曾刷 10 条）；② 真清走 **`clean_retired_keys_in`**（CLI `yekitrim config migrate <工程目录|toml>`，清前留 `.bak-v<旧>`；**返回空 = 不动磁盘**）。`migrate_text` 是**纯函数、不打日志**（日志在调用方 —— 只有调用方知道路径与"写没写回"）。
 
-判据：`config::version::tests`（21 条，含 v3→v4 迁移，含**文件版本更高时不动**、幂等、注释不丢、程序级写回+备份 / 工程级不碰磁盘 / `clean_retired_keys_in` 真写回且幂等 / **同一文件只报一次**）。**变异自证**跑过：`CONFIG_VERSION` 改回 0、或把 4 个死键从 `retired_in` 里去掉，都会让判据翻面（不是空转）。
+判据：`config::version::tests`（29 条，含 v3→v4 / **v4→v5 跨文件搬家**；含**文件版本更高时不动**、幂等、注释不丢、程序级写回+备份 / 工程级不碰磁盘 / `clean_retired_keys_in` 真写回且幂等 / **同一文件只报一次**）。**变异自证**跑过：`CONFIG_VERSION` 改回 0、或把 4 个死键从 `retired_in` 里去掉，都会让判据翻面（不是空转）。
 
 ### 写入纪律
 
@@ -113,7 +114,7 @@ overwrite = false
 
 ⚠️ **`null` = 删键**（`merge_into_table` 的第一条分支）：patch 是合并语义，这是唯一能表达"取消该键 / 回到跟随全局"的写法 —— 设置页把「按链路覆盖」那条的勾**取消**走的就是它。**别再退回"null → 空串"**：`max_tokens = ""` 是合法 TOML 但读不出 u32，`load_llm_config` 解析失败会把**整份 LLM 配置（含 api_key）打回默认值**。回归钉子：`null_patch_removes_key_and_keeps_siblings` 与 `empty_subtable_patch_changes_nothing`（`{}` 不删表、不吞注释）。
 
-### LLM 配置 v4（整改「LLM 配置重构」L1，进行中）
+### LLM 配置 v5（整改「LLM 配置重构」L1–L3 / S4 已收口）
 
 - config/llm_v4.rs：**v4 的唯一形状**（LlmV4 / LlmProviderV4 / LlmModelEntry / LlmLinkSetting）
   + **纯迁移函数** from_v3(&LlmConfig) -> Migrated（不碰磁盘；dropped 里装「表达不了」的东西，调用方必须打 warn）。
@@ -123,29 +124,38 @@ overwrite = false
   那是「改一个字段悄悄丢 max_tokens」的根源；v4 只有 defaults + 链路覆盖两层。迁移照搬 v3 的生效值（整体取用），
   非生效接口的 params 无法表达 ⇒ 进 dropped。
 - ⚠️ 迁移两条硬要求（有用例）：**api_key 逐字节不变**、**round-trip 幂等**。
-- 当前状态：**L1 接线完成** —— `Config.llm` 就是 `LlmV4`，顶层 `api_key/base_url/model/params/overrides/models` 已全部退场；
-  `llm.toml` 的 v3→v4 迁移在 `version.rs::migrate_llm_v4`（toml_edit、保注释、幂等、api_key 逐字节不变）；
-  `[[llm.models]]` 的能力键是**嵌套内联表**（`catalog = {...}` / `overrides = {...}`）—— 两套来源形状不同，平铺会撞名。
-  ⚠️ 过渡态：`/api/config` 的 LLM JSON 已是 v4 形状，**WebUI 仍是旧键 ⇒ L3 之前「保存 LLM」会 400**。
+- **v5 增量（S4）**：`[llm.links.<link>.prompt]`（检测的 system_prompt / prompt_template / reference_titles）
+  与 `[llm.links.<link>.run]`（window_size / max_concurrent / llm_score_weight）—— 两者都**不进请求体**；
+  解析入口只有 `prompt_for()` / `run_for()`（`LinkedLlm::run()` 把 run 一起带出来：`materialize()` 会清空 links）。
+- 当前状态：**接线完成（L1→L3 + S4）** —— `Config.llm` 就是 `LlmV4`；v3 的顶层三件 / `[llm.params]` / `[llm.overrides]` /
+  `[llm.models."<id>"]` 与 v3 的类型（`LlmConfig` / `LlmProvider` / `LlmOverrides`）**已删除**，只剩迁移用的
+  `llm_v4::LlmV3`；`[[llm.models]]` 的能力键是**嵌套内联表**（`catalog` / `overrides`）—— 两套来源形状不同，平铺会撞名。
 
-### LLM 按链路覆盖（2026-09）
+### LLM 按链路覆盖（2026-09 / v4 起是 `[llm.links.<link>]`）
 
-- **一个入口**：`LlmConfig::for_link(LlmLink)`（`config/types.rs`）—— 链路覆盖 / `[llm.params]` / 链路代码默认 三层优先级的**唯一实现**（逐字段见 `LlmParamsToml::merged_over`）。这里只记配置形态：`[llm.overrides.{detect,polish,title,correct,utility}]` 与 `[llm.params]` 是**同一套字段**（`temperature` / `max_tokens` / `reasoning` / `top_p` / `json_mode`），未知键忽略（拼错不该让整份配置打回默认）。
-  ⚠️ **参数面（params/overrides）与能力面（`[llm.models."<id>"]`）分开**：前者是"这一趟发什么"，后者是"这个模型能怎样"（`ModelOverrideToml` → `caps`，模型 id 匹配大小写不敏感）。
-- 新增链路 = `LlmLink` 加一个变体 + `ALL`/`key`/`label_zh`/`default_thinking` 四处 + `LlmOverrides` 加字段（设置页那张表按后端给的 `override_links` 出行，前端不用改）。
-  ⚠️ **界面行 ≠ 全部链路**：`LlmLink::ui_visible()` 是界面那几行（2026-10-19 起 = `detect/polish/title/utility`，**不含 `correct`** —— 用户口径"字幕订正删除"，但代码与 `[llm.overrides.correct]` 照旧生效，`asr/correct.rs` 还在用）；`LlmLink::LEGACY_V1` 是 v1 那四条，**金标准请求体按它遍历**（用 `ALL` 会去找第 5 条，而那份数据一个字都不许动）。
-- ⚠️ **`max_concurrent` 不在这张表里**：它仍是 `[llm] max_concurrent` + `[detection]`/`[correct]` 的 `Option` 段覆盖，两套语义并存、各管各的，别混。
+- **一个入口**：`LlmV4::for_link(LlmLink)` —— 两级参数（`[llm.defaults]` 打底 + `[llm.links.<link>]` 逐键覆盖）的**唯一实现**（逐字段见 `LlmParamsToml::merged_over`），产物是 `LinkedLlm`（编译期拦住"忘记套链路参数"）。
+  这里只记配置形态：链路那一层平铺的是**请求参数**（`temperature` / `max_tokens` / `reasoning` / `top_p` / `json_mode`，未知键忽略），
+  另有 `provider` / `model`（引用接口与模型清单）与两张**不进请求体**的子表 `.prompt` / `.run`。
+  ⚠️ **参数面与能力面分开**：能力面在 `[[llm.models]].overrides`（`ModelOverrideToml` → `caps`，模型 id 匹配大小写不敏感）。
+- 新增链路 = `LlmLink` 加一个变体 + `ALL`/`key`/`label_zh`/`ui_visible` 四处（设置页那张表按后端给的 `override_links` 出行，前端不用改）。
+  ⚠️ **界面行 ≠ 全部链路**：`LlmLink::ui_visible()` 是界面那几行（2026-10-19 起 = `detect/polish/title/utility`，**不含 `correct`** —— 用户口径"字幕订正删除"，但代码与 `[llm.links.correct]` 照旧生效，`asr/correct.rs` 还在用）；`LlmLink::LEGACY_V1` 是 v1 那四条，**金标准请求体按它遍历**（用 `ALL` 会去找第 5 条，而那份数据一个字都不许动）。
+- ⚠️ **`max_concurrent` 现在也在链路表里**（`[llm.links.<link>.run].max_concurrent`，留空 = 跟随 `[llm]`）——
+  S4 之前它是 `[detection]`/`[correct]` 的段级 `Option` 覆盖，那两处**已删除**。读法只有 `concurrency_for(link)`。
 
 ### LLM 并发与加速（2026-09）
 
-- **一个旋钮**：`.yekitrim/llm.toml` 的 `[llm] max_concurrent`（默认 3），**事件检测 / 精修事件生成 / 字幕订正共用**，解析统一走 `LlmConfig::concurrency(section_override)`。`[detection] max_concurrent` / `[correct] max_concurrent` 是**可选覆盖**（`Option<usize>`，留空即跟随全局）—— 别再在代码里写死 `3`，也别让某条链路偷偷用自己的。设置页「LLM 配置」块有输入框。
+- **一个旋钮**：`.yekitrim/llm.toml` 的 `[llm] max_concurrent`（默认 3），**事件检测 / 精修事件生成 / 字幕订正共用**；
+  某条链路要单独压就写 `[llm.links.<link>.run] max_concurrent`。读法只有两个入口：`concurrency(None)`（全局）与
+  `concurrency_for(link)` / `run_for(link).max_concurrent`（链路）。**别再在代码里写死 `3`，也别让某条链路偷偷用自己的。**
+  设置页「AI 模型」页的「默认参数」块是全局旋钮的输入框。
 
 ### ⚠️ 设置页数值项（配置字段的前端出口）
 
 ⚠️ **设置页的数值项走 `components/SliderField.vue`**（滑块 + 标签行右端可直填的数字框，16 处）：手填的值只夹 `[min, max]`、**不吸附 step**（step 是滑块的语义，不是配置的语义 —— 想设 `chunk_duration = 63` 不该只能眼看着它跳 60/65），且**清空/非数字不写模型**（否则退格清空那一瞬就把 60 写成 0）。
 ⚠️ **滑块宽度 = 所在格子的 1/3**（`.slf-range` 的 `flex:0 0 33.333%`，别改回 100% —— `width:100%` 会被 flex-basis 盖掉）—— 三样东西因此能在**一行**里读完。窄格（LLM 那几列，格子 ≤220px）由 `@container` 把标签挤到独占一行，**别改成媒体查询**（量的是格子宽而不是视口宽）。改完要重建 `webui/dist`（否则 server 端出的还是旧界面）。几何实测见 §5。
 ⚠️ **ASR 的 `Mode` 与它的说明挤成一行**（`.mode-field`，「标签 · 下拉（`width:auto`）· 说明」）：其他页（PolishView / CoverDesigner / DownloaderConfig）仍是旧写法，要用就自己换。
-⚠️ **LLM 配置的「按链路覆盖」同样是 SliderField**（一行一条链路：勾选框 + 两个滑块 + reasoning 下拉）。"这一项没有值"用**勾选框**表达、不是空输入框：不勾 = 整条链路发 `null`（= 删键、跟随全局）；勾上 = 把该条的 max_tokens/temperature 写实（reasoning 只有选具体值才写）。
+⚠️ **「按链路覆盖」在 L3 之后是表格**（行 = 链路，列 = 接口/模型/温度/输出上限/推理/状态），不再是 SliderField 网格：
+未覆盖的格子显示 `/api/config/llm/effective` 的灰字实值，**点一下才可编辑**，「跟随」按钮发 `null` = 删键。
 
 > 改动只允许落在本目录；跨模块改动先读对方卡，并跑两条门禁。
 
@@ -155,4 +165,4 @@ overwrite = false
 cargo test -p yekitrim-core --lib config
 ```
 
-覆盖 `patch_config_tests`（深合并/兄弟键与注释不丢/**null 删键**）、`types::llm_link_tests`（链路覆盖三级优先级 / 坏值兜底 / 模板可解析）、`vad_merge_tests`（`Option<bool>` 显式覆盖口径）、`reference_titles_tests` —— 动了 `merge()`、`Default` impl、`for_link` 或模板就必须看到它们全绿。
+覆盖 `patch_config_tests`（深合并/兄弟键与注释不丢/**null 删键**）、`llm_v4::*`（for_link 两级参数 / run_for / link_snapshot / 迁移幂等）、`version::s4_tests`（v4→v5 跨文件搬家）、`vad_merge_tests`（`Option<bool>` 显式覆盖口径）、`reference_titles_tests` —— 动了 `merge()`、`Default` impl、`for_link`、迁移或模板就必须看到它们全绿。

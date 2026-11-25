@@ -31,7 +31,7 @@ debug 读盘、`--webui-dir`/`YEKITRIM_WEBUI_DIR` 可覆盖（规则与判据在
   - `check-grid-parity.mjs` — **九宫格四方对拍**：`GRID_RECTS` 与 Rust `grid_rect` **逐值**一致、
     **格子中心**四份实现互差 ≤0.02%（Rust / engine / 模板**手抄表** / 转译器 `1/6`）。改一处不改其余
     三处的症状是「预览选中的区域与出片差一点点」且**不报错**。带两条变异自证。
-  - `check-layout-invariants.mjs` — **布局不变式**：`.llm-cols` 两栏等宽 · 半宽列滑块跨满整行 ·
+  - `check-layout-invariants.mjs` — **布局不变式**：链路表 7 列 + 窄屏横滚 · 灰字点开才编辑 ·
     `extra_params` `rows ≥ 10` · `ModelList` 下载按 admin 门控 · 模板标识符必须有定义（Vue 对未定义
     变量**不报错**）。⚠️ 每条带**变异自证**。㉛ **控件契约**：面板字段由 `fields[]` 派生。
   - `check-build-equivalent.mjs` — **无子进程的构建等效校验**：编译每个 `.vue` + 校验 import

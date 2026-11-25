@@ -11,7 +11,7 @@
 ## 入口
 
 - `client::LlmClient`（`client.rs`）：`new(LlmParams)`（泛型：接受任何 `Into<LlmParams>`）/ `raw(api_key, base_url, model)` / `send(messages)` / `chat(system, user)`
-  / `with_temperature` / `with_max_tokens` / `with_timeout` / `with_thinking` / `with_usage_context(ctx)`。
+  / `with_temperature` / `with_max_tokens` / `with_timeout` / `with_usage_context(ctx)`。
 - `agent`：`AgentTask`（`name()`、`usage_context()`、`prompt_fingerprint()`、窗口/提示词构造）、
   `Agent`（`new(LlmParams)` / `with_window_size` / `with_max_concurrent` / `with_cancel(probe)` /
   `build_windows` / `run` / `run_with_checkpoint` / `run_windows`）、`CancelProbe`、
@@ -39,9 +39,9 @@
 ### 并发与加速（2026-09）
 
 - **一个旋钮**：`.yekitrim/llm.toml` 的 `[llm] max_concurrent`（默认 3），**事件检测 / 精修事件生成 /
-  字幕订正共用**，解析统一走 `LlmConfig::concurrency(section_override)`（`config/types.rs`）。
-  `[detection] max_concurrent` / `[correct] max_concurrent` 是**可选覆盖**（`Option<usize>`，
-  留空即跟随全局）——别再在代码里写死 `3`，也别让某条链路偷偷用自己的。设置页「LLM 配置」块有输入框。
+  字幕订正共用**，解析只有两个入口：`LlmConfigV4::concurrency(None)`（全局）与
+  `concurrency_for(link)` / `run_for(link).max_concurrent`（`[llm.links.<link>.run]`，留空即跟随全局）。
+  **别再在代码里写死 `3`，也别让某条链路偷偷用自己的。** 设置页「AI 模型」页的「默认参数」块是全局旋钮的入口。
   **实测中转站允许并发且接近线性**（3 路并发墙钟 ≈ 单发 1.3 倍），所以它是批处理速度的第一杠杆。
 - **前缀缓存**：`DEFAULT_PROMPT` 里 `{segments}` 必须留在**最后**，每场固定的弹幕爆发块走
   `{hot_windows}` 排在它之前（公共前缀 86% → 98%）。provider 按最长公共前缀命中上下文缓存，
@@ -66,16 +66,18 @@
 
 ### 按链路参数（2026-09）
 
-- ⚠️ **所有构造 `LlmClient` / `Agent` 的地方都必须走 `LlmConfig::for_link(LlmLink)`**：它解出该链路那一套**请求参数**（`temperature` / `max_tokens` / `reasoning` / `top_p` / `json_mode`），优先级 = `[llm.overrides.<link>]` > `[llm]` > 链路代码默认；
+- ⚠️ **所有构造 `LlmClient` / `Agent` 的地方都必须走 `LlmV4::for_link(LlmLink)`**：它解出该链路那一套**请求参数**
+  （`temperature` / `max_tokens` / `reasoning` / `top_p` / `json_mode`），优先级 = `[llm.links.<link>]` > `[llm.defaults]`；
+  产物是 `LinkedLlm`（**忘记套链路参数 = 编译不过**，S1 的全部意义）。
   配置形态的正文在 `crates/yekitrim-core/src/config/AGENTS.md`。**在 `for_link` 之外再写
-  `with_max_tokens` / `with_temperature` / `with_thinking`，就是把同一个旋钮掰成两半** ——
-  从前精修那两处写死的 `with_thinking(Some("disabled"))` 就是这么来的（已收进 `default_thinking`）。
+  `with_max_tokens` / `with_temperature`，就是把同一个旋钮掰成两半**（`with_thinking` 已随 F7 删除）。
 - 四条链路：`Detect`（检测窗口 + 热度评分）、`Polish`（分段 / 逐段事件 / 贴纸精挑 / 关键词）、
   `Correct`（订正）、`Utility`（贴纸包与扫描标签、封面文案、连通测试）。
   检测窗口请求体真带上覆盖值的回归钉子：`detection::llm::tests::detect_window_request_carries_link_max_tokens`。
-- ⚠️ **`[correct] thinking`（`AgentTask::thinking`，订正那条老开关）只在 LLM 层没表态时生效**
-  （`agent.rs` 默认 `process_window` 里判 `!params.reasoning_explicit`）—— 不这么写，
-  它会把 `for_link` 解出来的 thinking 顶掉。
+- ⚠️ **档位只有一个来源**：`LlmParams.reasoning: Option<ReasoningLevel>`（`None` = 没表态）。
+  以前的双轨（`[correct] thinking` 老开关 + `reasoning_explicit` 布尔 + `AgentTask::thinking` +
+  `LlmClient::with_thinking`）在 S4/F7 **整条删除**了 —— 那两处表达"这一趟要不要推理"的语义现在只由
+  `[llm.links.<link>].reasoning` 决定。**别再给链路加"代码级默认档位"**，那是同一个旋钮的第二个入口。
 
 ### 用量记账（token / 缓存命中 / 耗时）
 

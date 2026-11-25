@@ -81,7 +81,9 @@
 - ⚠️ **「移除项目」不碰任何文件**（用户拍板）：`yekitrim.toml`、媒体、`output/` 全留着，重新导入即可再绑（`create_local_project` 见到已有 `yekitrim.toml` **只登记、不覆盖**）。两个入口共用 `api::unregister_project` —— 以前是两份拷贝各删一次，别再写回两份。
 - 设置页 `SettingsView.vue` 五块内容仍在**同一个文件**（`defineProps({section})` + `v-if` 切），不拆子组件。
 - ⚠️ 「未保存的改动」的基线要在 `await nextTick()` 之后拍：加载期 `flush:"pre"` 的 watcher 会补数据，同步拍 = 刚进页面什么都没点就 dirty。
-- ⚠️ **LLM 配置块的「按链路覆盖」= 一行一条链路：勾选框 + 两个 `SliderField` + thinking 下拉**。"跟随全局"由**勾选框**表达（不勾 = 发 `null` ⇒ 删键），**别用空输入框**（发空串更糟：`max_tokens = ""` 会让整份 llm.toml 被打回默认）。行由 `overrides` 的键自动生成。
+- ⚠️ **LLM 配置块的「按链路覆盖」是表格**（L3 起）：行 = 链路（后端 `override_links` 给），列 = 接口/模型/温度/输出上限/推理/状态；
+  未覆盖的格子显示 `/api/config/llm/effective` 的**灰字实值**，**点一下才可编辑**，「跟随」按钮发 `null` ⇒ 删键。
+  **别退回"空输入框表达没有值"**（发空串更糟：`max_tokens = ""` 会让整份 llm.toml 被打回默认）。
 - **模型管理（别再各写一套）**：「已安装」与运行时**同源** —— `asr::local::resolve_model_dir` 是唯一真源，`download::model_install()` 在其上再校验注册表 marker（`tokens.txt` / `tokenizer/tokenizer_config.json`，**不是** `dir.exists()`）；界面显示实际路径与来源（细节 §5.4）。
 - ⚠️ `/api/models` 与运行时**必须同源**（曾经只查程序目录 `dir.exists()`，qwen3-asr 在**另一处** ⇒ 界面写着"未下载"却一直在用它）；列表仍由 `download::model_names()` 给出。⚠️ 资产收回程序目录前的"用户目录优先"档**已删除** —— 现在只有两档：配置覆盖、数据目录。
 - ⚠️ **`download::ensure_one_model`（转写前的自动守卫）也必须走 `model_install`**，不要再拼 `yekitrim_home()`：曾经写一处、运行时读另一处 ⇒ ①同一份模型下载两次；②**同音纠错的 `lexicon.txt` + `replace.fst` 与 `create_recognizer` 不同源 ⇒ 同音纠错从未生效**（日志一直是"未启用"）。

@@ -151,11 +151,11 @@ npm --prefix webui run build                   # UI 期必跑，dist 与 src 同
 | S3 caps 单源（后端判据） | ✅ | `0ace3189`（UI 那半并入 L3） |
 | L2 端点（`link_snapshot` + `/effective`） | ✅ 2/2 | `c33a66f2` `c298b227` |
 | S2 F2 温度第二入口 | ✅ 1/3 | `be222d4e` |
-| S2 F4/F5 `LlmTaskSpec` + 用量标签 | 待做 | — |
-| S2 F7 删 `reasoning_explicit` 双轨 | **并入 S4** | — |
-| L3 WebUI 五块 IA | 待做 | — |
-| S4 配置边界搬键 | 待做 | — |
-| L4 删旧分支 | 待做 | — |
+| S2 F4/F5 `LlmTaskSpec` + 用量标签 | ✅ | `20d7081a` `610e80c6` `0ad8a721` `5bee3537` |
+| S2 F7 删 `reasoning_explicit` 双轨 | ✅（并入 S4 做掉了） | `5b3e0bcd` |
+| L3 WebUI 五块 IA | ✅ | `e5a54766` |
+| S4 配置边界搬键 | ✅ | `5b3e0bcd` |
+| L4 删旧分支 | ✅ | 本次提交（`L4: 删掉 v3 遗留类型…`） |
 
 ### 为什么 F7 并入 S4
 

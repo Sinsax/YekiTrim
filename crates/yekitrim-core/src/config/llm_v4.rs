@@ -704,7 +704,37 @@ mod tests {
 // v3 形状（只给迁移用）：字段与 v3 的 LlmConfig 逐个相同，读的是老文件。
 // ---------------------------------------------------------------------------
 
-use super::types::{LlmOverrides, ModelOverrideToml as _MO};
+use super::types::ModelOverrideToml as _MO;
+
+/// v3 的链路覆盖表（**只给迁移用**：v4 里它是 `[llm.links.<link>]`）。
+///
+/// ⚠️ 这个类型是 S4/L4 之后 `types::LlmOverrides` 的唯一残影 —— 它只服务 `from_v3` 的读，
+/// 不参与任何运行时；别再让别处用它（那会把"两套真相"又捡回来）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct LlmOverridesV3 {
+    #[serde(default)]
+    pub detect: LlmParamsToml,
+    #[serde(default)]
+    pub polish: LlmParamsToml,
+    #[serde(default)]
+    pub correct: LlmParamsToml,
+    #[serde(default)]
+    pub title: LlmParamsToml,
+    #[serde(default)]
+    pub utility: LlmParamsToml,
+}
+
+impl LlmOverridesV3 {
+    pub fn of(&self, link: LlmLink) -> &LlmParamsToml {
+        match link {
+            LlmLink::Detect => &self.detect,
+            LlmLink::Polish => &self.polish,
+            LlmLink::Correct => &self.correct,
+            LlmLink::Title => &self.title,
+            LlmLink::Utility => &self.utility,
+        }
+    }
+}
 
 /// v3 的一份接口（[[llm.providers]]，带 params / models）。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -747,7 +777,7 @@ pub struct LlmV3 {
     #[serde(default)]
     pub extra_params: Option<toml::Table>,
     #[serde(default)]
-    pub overrides: LlmOverrides,
+    pub overrides: LlmOverridesV3,
     #[serde(default)]
     pub active: Option<String>,
     #[serde(default)]

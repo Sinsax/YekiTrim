@@ -33,7 +33,7 @@
   `贴纸包标签` / `贴纸扫描标签`（`commands.rs`）。Agent 系任务走 `AgentTask::usage_context()`。
   **不挂 context，统计里就是空 label —— 别让用量静默消失。**
 - **并发只有一个旋钮**：`.yekitrim/llm.toml` 的 `[llm] max_concurrent`（默认 3），事件检测 / 精修事件生成 /
-  字幕订正共用，解析统一走 `LlmConfig::concurrency(section_override)`。精修**没有自己的并发配置项**，
+  字幕订正共用，解析统一走 `concurrency_for(link)`（`[llm.links.<link>.run] max_concurrent`，留空跟随全局）。精修**没有自己的并发配置项**，
   `Agent::new(llm_cfg).with_max_concurrent(llm_cfg.concurrency(None))`。别再在代码里写死 `3`。
 - ⚠️ **精修的 `max_tokens` / `temperature` / `thinking` 走 `[llm.overrides.polish]`**：
   `run_llm_pipeline` / `regenerate_segment_events` / `run_event_agent` / `choose_sticker_files_batch`

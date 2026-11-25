@@ -21,7 +21,7 @@
 ## 边界
 
 - **分批窗口调用**：每窗口 30 条字幕段、窗口间重叠 5 条（`DETECT_WINDOW_SIZE`/`DETECT_WINDOW_OVERLAP`），
-  并发取 `.yekitrim/llm.toml` 的 `[llm] max_concurrent`（默认 3，见上「LLM 并发与加速」）；
+  并发取 `[llm.links.detect.run] max_concurrent`（留空跟随 `.yekitrim/llm.toml` 的 `[llm] max_concurrent`，默认 3）；
   每窗口完成即写 `events.checkpoint.json`（断点续传）、
   累计结果写 `events.partial.json`。单窗口失败重试 2 次；**被 max_tokens 截断（`finish_reason=length`）
   时不重试**（参数不变必然再截断，白烧一次调用），直接走拆半递归：`≥ 8 段`且层数 `< 2` 才拆，
@@ -51,7 +51,7 @@
   只读诊断：`VT_PROJECT_DIR=<项目目录> cargo test -p yekitrim-core --lib diagnose_danmaku_resolution -- --ignored --nocapture`
 - 综合评分: 基础热度有弹幕 `base = (0.6×弹幕峰值 + 0.4×弹幕均值 + 字幕密度) / 2`，无弹幕时只用字幕密度；
   再由 LLM 仅根据 `label + summary` 按预测点击率/有趣程度/爆点强度给 0~100 分，
-  `popularity = (1-w)×base + w×(LLM分/100)`，`w = detection.llm_score_weight`（默认 0.3，0=关闭）。
+  `popularity = (1-w)×base + w×(LLM分/100)`，`w = [llm.links.detect.run].llm_score_weight`（默认 0.3，0=关闭）。
   评分失败/漏评的条目保留 `base`，不阻断检测。弹幕与字幕密度都是**相对量**：弹幕按全片最热的窗口归一，
   字幕密度按全部事件的最大值归一。
   按 popularity 降序赋 `rank`，最终按时间排序输出 —— `rank` 就是热度名次，也决定 `clips/clip-NN` 目录名。
@@ -85,9 +85,10 @@
   `--lib diagnose_scattered_stage`（跑通整条 Stage 3，看最终落盘）/
   `--lib diagnose_scattered_funnel`（**漏斗**：一次调用拿候选块，再用同一批块重放多组阈值 +
   逐条打印"为什么没进主列表"—— 校准阈值看这条）。
-- ⚠️ **改内建 prompt 要同步用户配置**：`.yekitrim/config.toml` 的 `[detection] system_prompt` /
-  `prompt_template` 是**写死的副本**（`config init` 时把内建文本填进去了），代码里改默认值对它无效；
-  要么在设置页改，要么把两个字段留空（留空才走内建默认）。
+- ⚠️ **改内建 prompt 要同步用户配置**：S4 起检测提示词住 `.yekitrim/llm.toml` 的
+  `[llm.links.detect.prompt]`（`system_prompt` / `prompt_template` / `reference_titles`），
+  那是 `config init` 时把内建文本写进去的**副本**，代码里改默认值对它无效；要么在设置页改，
+  要么把三项清空（清空才走内建默认）。第二趟（`[detection.scattered]`）的两份 prompt 仍在 config.toml。
   **每个程序目录各有一份**（`target/debug/.yekitrim/`、`release/<包名>/.yekitrim/` 互不相干）——
   改 prompt 时别只改一个；`'''…'''` 是三引号**字面量**（免转义），正文里没有单引号时可用。
 - **前缀缓存**：`DEFAULT_PROMPT` 里 `{segments}` 必须留在**最后**（`{hot_windows}` 排在它之前），
