@@ -383,7 +383,7 @@
       "id": "settings.llm-quick",
       "phase": "P3",
       "surface": "settings",
-      "label": "AI 模型快速配置",
+      "label": "AI 模型（当前接口）",
       "files": [
         "webui/src/views/SettingsView.vue"
       ],
@@ -448,6 +448,30 @@
         "webui/src/views/SettingsView.vue"
       ],
       "anchor": "data-cap=\"settings.password\"",
+      "advancedOnly": false,
+      "firstScreen": false
+    },
+    {
+      "id": "settings.llm-models",
+      "phase": "P3",
+      "surface": "settings",
+      "label": "模型清单（加入清单才落盘）",
+      "files": [
+        "webui/src/views/SettingsView.vue"
+      ],
+      "anchor": "data-cap=\"settings.llm-models\"",
+      "advancedOnly": false,
+      "firstScreen": false
+    },
+    {
+      "id": "settings.llm-prompts",
+      "phase": "P3",
+      "surface": "settings",
+      "label": "提示词（写 config.toml 的 [detection]）",
+      "files": [
+        "webui/src/views/SettingsView.vue"
+      ],
+      "anchor": "data-cap=\"settings.llm-prompts\"",
       "advancedOnly": false,
       "firstScreen": false
     }

@@ -2,10 +2,14 @@
 //
 // 每一条都对应一次"构建通过、两条门禁全绿、而界面已经坏了"：
 //
-//  ① `.llm-cols` 两栏必须**等宽** —— 用户口径"各占 50%"。写成固定右栏宽度就不再是各半。
-//  ② `.llm-cols` 里的链路行：两个滑块必须**各占一整行**。并排的实测结果是滑条被压到 **59px**
-//     （1280px 视口下只剩 41px），刻度根本看不见；而 `SliderField` 的滑条是**固定占所在格 1/3**
-//     （`.slf-range { flex:0 0 33.333% }`，那是设置页宽格子的既定口径），格子一窄就直接腰斩。
+//  ①（L3 改写）**「按链路覆盖」是一张 7 列表格**（链路/接口/模型/温度/输出上限/推理/状态），
+//     且**窄屏横滚**（`min-width:640px`）而不是把格子压扁。
+//     历史：L3 之前它是 `.llm-cols` 两栏网格 —— 用户口径"各占 50%"，而两栏里并排的滑块会被压到
+//     **59px**（1280px 下只剩 41px，刻度根本看不见）。现在一列一义，滑条不再进表格格子，所以
+//     "两栏等宽 / 滑块跨满整行"这两条判据随结构一起退场，换成"表格列定义 + 横滚兜底"。
+//  ②（L3 改写）**未覆盖的格子先显示灰字、点开才可编辑**（"点一下才变成可编辑"是用户口径原文）。
+//     静态判据：LlmLinkTable 里必须真有 `isEditing(...)` 分支 + `@click="open(...)"` 入口。
+//     没有它 = 一开始就是满屏输入框，"一眼看出哪条链路被改过"就不成立了。
 //  ③ `.ov-cols` 必须有**单栏态**（"只看一边"）：点那个按钮要真的只剩一栏占满整行。
 //  ④ `extra_params` 的 textarea `rows ≥ 10` —— 用户口径"高度翻2倍，不然根本看不清有什么内容"。
 //  ⑤ 模板里用到的**关键标识符必须在 `<script setup>` 里定义过**。Vue 对未定义变量**不报错**
@@ -106,6 +110,8 @@ const read = async (p) => {
   return parts.join('\n')
 }
 const settings = await read('webui/src/views/SettingsView.vue')
+// L3 起的五块 IA：①② 两条判据钉在链路表格组件上（它才是"点开才编辑"的实现处）
+const llmLinkTable = await read('webui/src/components/llm/LlmLinkTable.vue')
 const overview = await read('webui/src/components/HomeClipsOverview.vue')
 const workbench = await read('webui/src/views/WorkbenchView.vue')
 const modelList = await read('webui/src/components/ModelList.vue')
@@ -126,22 +132,27 @@ const translator = await read('tools/polish-to-dhampir.mjs')
 /** 每条：label + 判据 + **怎么改坏它**（用于自证判据不是空转的）。 */
 const RULES = [
   {
-    label: '.llm-cols 两栏等宽（各占 50%）',
-    why: '用户口径"各占50%的宽度"；写成固定右栏宽度（曾用 minmax(300px,420px)）就不是各半了',
+    // L3：链路覆盖从"两栏网格"改成"7 列表格"（一列一义）。判据 = 表头七列都在 + 窄屏横滚兜底。
+    label: '「按链路覆盖」是 7 列表格且窄屏横滚（一列一义，不压扁）',
+    why: '两栏网格里并排的滑块会被压到 59px（1280px 下 41px）——改表格后必须给 min-width，让它横滚而不是压扁',
     hit: (s) =>
-      /\.llm-cols\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s+minmax\(0,\s*1fr\)\s*;/s.test(s),
-    break: (s) =>
-      s.replace(
-        'grid-template-columns:minmax(0,1fr) minmax(0,1fr)',
-        'grid-template-columns:minmax(0,1fr) minmax(300px,420px)'
-      )
+      /class="lt-tbl"/.test(s)
+      && /min-width:\s*640px/.test(s)
+      && /<th class="lt-c-link">链路<\/th>/.test(s)
+      && /<th class="lt-c-reason">推理<\/th>/.test(s)
+      && /<th class="lt-c-state">状态<\/th>/.test(s),
+    break: (s) => s.replace('min-width:640px', 'min-width:0')
   },
   {
-    label: '.llm-cols 的滑块与「跟随全局」跨满整行（否则滑条腰斩）',
-    why: '并排时滑条被压到 59px（1280px 下 41px）—— 滑条固定占所在格 1/3，格子一窄就废',
+    // L3：用户口径"点开才可编辑"—— 灰字态与编辑态必须是两条分支，且入口是 @click="open(...)"。
+    label: '链路表格的格子先灰字、点开才编辑',
+    why: '一开始就是满屏输入框 ⇒ "一眼看出哪条链路被改过"不成立（用户口径原文是"点开才可编辑"）',
     hit: (s) =>
-      /\.llm-cols\s+\.llm-link-row\s+:deep\(\.slf\)[\s\S]{0,120}?grid-column:\s*1\s*\/\s*-1\s*;/.test(s),
-    break: (s) => s.replace(/grid-column:\s*1\s*\/\s*-1\s*;/g, 'grid-column:auto;')
+      /function open\(/.test(s)
+      && /const isEditing = /.test(s)
+      && /@click="open\(/.test(s)
+      && /v-if="!isEditing\(/.test(s),
+    break: (s) => s.replace(/isEditing\(/g, 'editingX(')
   },
   {
     // 2026-10-06 用户口径变更：「未导出和已导出改成类似切片的那种筛选 tag，**所有切片都显示在一个区域内**」——
@@ -207,12 +218,12 @@ console.log('\n① 布局不变式（每条都做变异自证）')
 for (const r of RULES) {
   const sources = {
     label: r.label,
-    hit: r.hit(settings) || r.hit(overview) || r.hit(modelList)
+    hit: r.hit(settings) || r.hit(overview) || r.hit(modelList) || r.hit(llmLinkTable)
   }
   check(r.label, sources.hit, true)
 
   // 变异自证：改坏**命中的那份**源码，判据必须翻面
-  const all = [settings, overview, workbench, modelList]
+  const all = [settings, overview, workbench, modelList, llmLinkTable]
   const idx = all.findIndex((s) => r.hit(s))
   const broken = r.break(all[idx])
   const stillHits = broken !== all[idx] && (r.hit(broken) || (idx !== 0 && r.hit(settings)))

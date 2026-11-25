@@ -200,150 +200,140 @@
     <div class="section-title row spread">
       <span>LLM 配置 llm.toml</span>
       <span class="row">
-        <!-- 「测试连接」已经挪到**每一份配置的行尾**（只测那一份）；这里不再有全局按钮 -->
+        <!-- ⚠️ 「测试这个接口」在 ① 里（**不落盘也能测**：草稿进 POST /api/llm/test 的 body）；
+             这里只留「保存 LLM」，且它**只写 llm.toml** —— 提示词有自己的按钮（⑤）。 -->
         <button class="btn" @click="saveLlm()" :disabled="!loaded">
           <Icon name="save" :size="13" /> 保存 LLM
         </button>
       </span>
     </div>
 
-    <!-- 快速配置（P3）：四个字段 + [获取模型] + [保存并测试]。
-         ⚠️ 保存仍走本页既有的 saveLlm（buildLlmPatch + PUT + 回读 + 错误横幅）——
-         本卡只负责把「填好的那四个值」交给它，不在组件里另写一套落盘。 -->
+    <!-- ═══ L3 五块 IA（用户口径 2026-11-25，配置重构 §3.3 + §8.2）══════════════════════
+         ① 当前接口 / ② 默认参数 / ③ 按链路覆盖 / ④ 模型列表 / ⑤ 提示词（+ 高级配置）。
+         从上到下 = 从常用到罕见。⚠️ ⑤ 有自己的保存按钮（写的是 config.toml 的 [detection]），
+         绝不与上面的「保存 LLM」共用一个 —— "一个按钮写两个文件"是这一轮要消灭的病根（§2-⑤）。 -->
+
+    <!-- ① 当前接口：常显、占首屏（下拉 + 名称 + 地址 + 密钥 + 模型 + 能力 chip + 测试） -->
     <div class="card" data-cap="settings.llm-quick">
-      <LlmQuickSetup
+      <div class="form-section-title">当前接口<span class="t-sub">连哪一家 · 用哪支模型 · 先测再存</span></div>
+      <LlmEndpointCard
         :loaded="loaded"
-        :provider-mode="llmProviderMode"
-        :providers="form.llm.providers || []"
-        v-model:active-id="form.llm.active"
-        :base-url="form.llm.base_url"
-        :model="form.llm.model"
-        :key-set="quickKeySet"
-        :persist="quickPersist"
-        @update:base-url="form.llm.base_url = $event"
-        @update:model="form.llm.model = $event"
-        @update:api-key="form.llm.api_key = $event"
+        :providers="form.llm.providers"
+        :active-id="form.llm.active"
+        :model-options="endpointModelOptions"
+        :caps="caps"
+        :caps-text="capsText"
+        :caps-error="capsError"
+        @update:active-id="form.llm.active = $event"
       />
     </div>
 
-    <!-- 详细表单（多接口 / 能力 / 参数 / 提示词）：默认折叠 —— 隐藏 ≠ 删除，所有入口仍可达 -->
-    <details class="form-adv">
-      <summary data-cap="settings.llm-advanced">高级配置（{{ llmProviderMode ? '多接口 / ' : '' }}能力 / 参数 / 提示词）</summary>
+    <!-- ② 默认参数：常显。并发数从「高级 → 运行时」提上来（它是批处理速度的第一杠杆） -->
     <div class="card">
-        <!-- ① 多接口：**只在 provider 模式**出现（legacy 单配置由上面「快速配置」全权负责，
-             这里再摆一遍 base_url / api_key / model 就是同一件事说两遍 —— 2026-11 用户要求删掉）。
-             模型选择器见 components/llm/LlmModelPicker.vue。 -->
-        <div v-if="llmProviderMode" class="form-section">
-          <div class="form-section-title">接口<span class="t-sub">多份配置 · 同一时间只用一份</span></div>
-          <LlmProviders :providers="form.llm.providers"
-                        v-model:active-id="form.llm.active"
-                        :protocols="protocols" :protocols-source="protocolsSource" :caps="caps"
-                        @probe="onProbeCaps" />
-        </div>
+      <div class="form-section-title">默认参数<span class="t-sub">所有链路的基准；每条链路可在下面单独覆盖</span></div>
+      <div class="form-grid">
+        <LlmParamFields class="span-all" :caps="caps" :target="form.llm.defaults" id-prefix="llm-def"
+                        :fields="['temperature', 'max_tokens', 'reasoning', 'json_mode']"
+                        :json-mode="jsonModeOn" @update:jsonMode="setJsonMode" />
+        <SliderField v-model="form.llm.max_concurrent" class="span-2" label="并发请求数"
+                     :min="1" :max="32" :step="1" hint="对所有 LLM 调用生效（进程级旋钮）" />
+      </div>
+    </div>
 
-        <!-- ② 生成（**只有 R4 单配置模式**）：能力驱动的两个旋钮 —— 输入类型 + 推理档位。
-             ⚠️ 温度 / 输出上限 / JSON 都挪去「按链路覆盖」的**全局默认**那一行（2026-10-20 用户口径：
-                它们不属于接口配置，属于请求参数）；provider 模式下这里整块不渲染。
-             并发数见「高级」（进程级旋钮）。 -->
-        <div v-if="!llmProviderMode" class="form-section">
-          <div class="form-section-title">模型能力<span class="t-sub caps-src" :title="capsTitle">{{ capsText }}</span></div>
-          <LlmParamFields :caps="caps" :target="llmParamsTarget" id-prefix="llm-g"
-                          :fields="['input', 'reasoning']"
-                          :input-text="inputText" :input-image="inputImage" :input-declared="inputDeclared"
-                          @update:inputText="setInputKind('text', $event)"
-                          @update:inputImage="setInputKind('image', $event)" />
-          <div v-if="capsError" class="muted small mt-4 caps-err" :title="capsError">{{ capsError }}</div>
-        </div>
+    <!-- ③ 按链路覆盖：行 = 链路，列 = 接口/模型/温度/输出上限/推理/状态。
+         未覆盖的格子显示**后端算的**生效值（/api/config/llm/effective），点开才可编辑。 -->
+    <div class="card" >
+      <div class="form-section-title">按链路覆盖
+        <span class="t-sub">行 = 链路；未覆盖的格子是灰字实值</span></div>
+      <LlmLinkTable :links="llmLinks" :rows="form.llm.links" :effective="effective"
+                    :providers="form.llm.providers" :model-options="allModelOptions"
+                    :levels="linkLevels" />
+      <div v-if="effectiveError" class="muted small mt-4 caps-err" :title="effectiveError">
+        生效值读取失败（灰字留空）—— 覆盖功能仍然可用
+      </div>
+    </div>
 
+    <!-- ④ 模型列表：**独立折叠、与「高级配置」平级**（D1 的清单是常用面，不是高级项） -->
+    <details class="form-adv">
+      <summary data-cap="settings.llm-models">模型列表（{{ form.llm.models.length }} 支）</summary>
+      <div class="card">
+        <LlmModelList :models="form.llm.models" :providers="form.llm.providers"
+                      :active-id="form.llm.active" :base-url="effBaseUrl" :api-key="curApiKeyDraft"
+                      :dialects="dialects" @probe="onProbeCaps" />
+      </div>
+    </details>
 
-        <!-- ③ 按链路：行由 llm_config.overrides 的键**自动生成**（后端加链路，这里一行都不用改）。
-             「跟随全局」由**勾选框**表达：不勾 = 保存时发 null = 删键（别用空输入框 —— 那表达不出"没有值"）。 -->
-        <div class="form-section">
-          <div class="form-section-title">请求参数<span class="t-sub">全局默认；勾上的链路单独覆盖</span></div>
-          <div class="llm-cols">
-            <!-- 全局默认（写 [llm.params]；provider 模式下 = 当前接口自己的 params）——
-                 温度 / 输出上限 / JSON 从接口面板挪到这里：它们是**请求参数**，不是接口字段 -->
-            <div class="llm-default-row">
-              <span class="ln-name">全局默认<span class="ln-hint">（{{ llmProviderMode ? '当前接口的参数' : '[llm.params]' }}）</span></span>
-              <LlmParamFields :caps="caps" :target="llmParamsTarget" id-prefix="llm-def"
-                              :fields="['temperature', 'max_tokens', 'json_mode']"
-                              :json-mode="jsonModeOn" @update:jsonMode="setJsonMode" compact />
+    <!-- ⑤ 提示词：折叠 + **自己的保存按钮**。⚠️ 写的是 config.toml 的 [detection]（不是 llm.toml） -->
+    <details class="form-adv">
+      <summary data-cap="settings.llm-prompts">提示词（写入 config.toml 的 [detection]）</summary>
+      <div class="card">
+        <div class="form-section-title">提示词
+          <span class="t-sub">写 config.toml 的 [detection] · 与「保存 LLM」互不影响</span></div>
+        <div class="prompt-pair">
+          <div>
+            <label title="每行一条，可含 emoji；清空保存则运行时用内建示例">参考标题</label>
+            <textarea v-model="referenceTitlesText" rows="8" placeholder="每行一条参考标题"
+                      @input="referenceTitlesFromDefault = false"></textarea>
+            <!-- 「参考标题」的两条口径（2026-10-18 用户拍板，**推翻了上一版**）：
+                 ① **留空就把内建默认值填进输入框**（与其他设置项一致：表单里显示的就是
+                    "实际会用的那一份"）—— 用户要改就在默认值基础上改，保存即写进 config.toml；
+                 ② **清空再保存 = 回到预设**（patch_config_file 是深合并，空数组会真的清掉 ⇒
+                    resolve_reference_titles 回落到内建示例）。此时下面那条灰字预览把
+                    "实际会用哪几条"列出来 —— 清空**不等于没有参考标题**。 -->
+            <div v-if="referenceTitlesFromDefault && referenceTitlesText.trim()" class="muted small mt-4">
+              以上是内建默认值（本配置原先留空）。改了保存即生效；<b>清空再保存</b> = 回到内建示例。
             </div>
-            <div class="llm-link-row" v-for="l in llmLinks" :key="l.key">
-              <label class="ln-name">
-                <input type="checkbox" v-model="form.llm.overrides[l.key].on">
-                <span class="ln-text">{{ l.label }}<span v-if="l.hint" class="ln-hint">（{{ l.hint }}）</span></span>
-              </label>
-              <LlmParamFields v-if="form.llm.overrides[l.key].on" :caps="caps"
-                              :target="form.llm.overrides[l.key]"
-                              :fields="['reasoning', 'temperature', 'max_tokens']"
-                              :id-prefix="'llm-' + l.key" compact />
-              <span v-else class="muted small ln-inherit" :title="inheritTitle(l.key)">
-                跟随全局（{{ llmParamsTarget.temperature }} · {{ llmParamsTarget.max_tokens }}）
-              </span>
+            <div v-if="!referenceTitlesText.trim() && referenceTitlesDefault.length" class="rt-preview">
+              <div class="muted small">
+                留空时使用内建示例（{{ referenceTitlesDefault.length }} 条）：
+              </div>
+              <ul class="rt-list">
+                <li v-for="(t, i) in referenceTitlesDefault" :key="i">{{ t }}</li>
+              </ul>
             </div>
-          </div>
-        </div>
-
-        <!-- ④ 高级：并发（进程级旋钮）· extra_params 逃逸口。⚠️「源文件」那块已删（用户：没必要有） -->
-        <div class="form-section">
-          <div class="form-section-title">运行时<span class="t-sub">并发 · extra_params 逃逸口</span></div>
-          <div class="form-grid">
-            <SliderField v-model="form.llm.max_concurrent" class="span-2" label="并发请求数"
-                         :min="1" :max="32" :step="1" hint="对所有 LLM 调用生效（进程级旋钮）" />
           </div>
           <div>
-            <label title="原样进请求体，覆盖上面所有同名参数；留空 = 不带额外参数">extra_params（JSON）</label>
-            <textarea v-model="form.llm.extra_params" class="mono llm-extra" spellcheck="false"
-                      rows="10" placeholder="留空 = 不带额外参数"></textarea>
+            <label>检测 system_prompt</label>
+            <textarea v-model="form.detection.system_prompt" rows="8" placeholder="留空使用内建默认"></textarea>
           </div>
         </div>
+        <div class="mt-8">
+          <label>检测 prompt_template<span class="muted small">（{segments} 会被替换）</span></label>
+          <textarea v-model="form.detection.prompt_template" rows="12" placeholder="留空使用内建默认"></textarea>
+        </div>
+        <div class="row mt-12">
+          <button class="btn btn-primary" :disabled="!loaded || promptSaving" @click="savePrompts()">
+            <Icon name="save" :size="13" /> {{ promptSaving ? '保存中…' : '保存提示词' }}
+          </button>
+          <span class="muted small">只写这三项（config.toml 的 [detection]）</span>
+        </div>
+      </div>
+    </details>
 
-        <!-- ⚠️ 「提示词」从**程序配置页**搬来这里（2026-10，用户要求）：参考标题 + 两个检测
-             prompt 都是喂给 LLM 的文本。⚠️ 写的是 **config.toml 的 [detection]**（不是 llm.toml）
-             —— 搬的是**位置**，不是归属，保存仍走 buildGlobalPatch。 -->
+    <!-- 高级：接口管理（增删 / 改名 / 换协议）· extra_params 逃逸口。
+         详细表单默认折叠 —— 隐藏 ≠ 删除；「源文件」那块仍不在这页（用户：没必要有）。 -->
+    <details class="form-adv">
+      <summary data-cap="settings.llm-advanced">高级配置（接口管理 / extra_params）</summary>
+      <div class="card">
         <div class="form-section">
-          <div class="form-section-title">提示词<span class="t-sub">写入 config.toml 的 [detection]</span></div>
-          <!-- 默认折叠：三块 textarea 合计 ~600px，展开会把「按链路覆盖」顶到第二屏。
-               ⚠️ 只是**视觉折叠**（内容仍在 DOM、保存读的是 reactive 表单）—— 不改任何交互契约。 -->
-          <details class="form-adv">
-          <summary>参考标题 / 检测 system_prompt / prompt_template</summary>
-          <div class="prompt-pair">
-            <div>
-              <label title="每行一条，可含 emoji；清空保存则运行时用内建示例">参考标题</label>
-              <textarea v-model="referenceTitlesText" rows="8" placeholder="每行一条参考标题"
-                        @input="referenceTitlesFromDefault = false"></textarea>
-              <!-- 「参考标题」的两条口径（2026-10-18 用户拍板，**推翻了上一版**）：
-                   ① **留空就把内建默认值填进输入框**（与其他设置项一致：表单里显示的就是
-                      "实际会用的那一份"）—— 用户要改就在默认值基础上改，保存即写进 config.toml；
-                   ② **清空再保存 = 回到预设**（`patch_config_file` 是深合并，`[]` 会真的清掉数组 ⇒
-                      `resolve_reference_titles` 回落到内建示例）。此时下面那条灰字预览把
-                      "实际会用哪几条"列出来 —— 清空**不等于没有参考标题**。 -->
-              <div v-if="referenceTitlesFromDefault && referenceTitlesText.trim()" class="muted small mt-4">
-                以上是内建默认值（本配置原先留空）。改了保存即生效；<b>清空再保存</b> = 回到内建示例。
-              </div>
-              <div v-if="!referenceTitlesText.trim() && referenceTitlesDefault.length" class="rt-preview">
-                <div class="muted small">
-                  留空时使用内建示例（{{ referenceTitlesDefault.length }} 条）：
-                </div>
-                <ul class="rt-list">
-                  <li v-for="(t, i) in referenceTitlesDefault" :key="i">{{ t }}</li>
-                </ul>
-              </div>
-            </div>
-            <div>
-              <label>检测 system_prompt</label>
-              <textarea v-model="form.detection.system_prompt" rows="8" placeholder="留空使用内建默认"></textarea>
-            </div>
-          </div>
-          <div class="mt-8">
-            <label>检测 prompt_template<span class="muted small">（{segments} 会被替换）</span></label>
-            <textarea v-model="form.detection.prompt_template" rows="12" placeholder="留空使用内建默认"></textarea>
-          </div>
-          </details>
+          <div class="form-section-title">接口管理
+            <span class="t-sub">增删 / 改名 / 换协议；地址与密钥在「当前接口」里改</span></div>
+          <LlmProviders :providers="form.llm.providers" :active-id="form.llm.active"
+                        :protocols="protocols" :protocols-source="protocolsSource"
+                        @update:active-id="form.llm.active = $event"
+                        @add="addProvider" @remove="removeProvider" />
         </div>
-
-    </div>
+        <div class="form-section">
+          <div class="form-section-title">额外请求参数
+            <span class="t-sub">原样进请求体 · 优先级最低 · 已知键一律拒绝</span></div>
+          <textarea v-model="form.llm.extra_params" class="mono llm-extra" spellcheck="false"
+                    rows="10" placeholder="留空 = 不带额外参数"></textarea>
+          <div class="muted small mt-4">
+            只用于这里没有的、provider 私有的键（如 chat_template_kwargs）；temperature / max_tokens /
+            response_format 请用上面的结构化设置。
+          </div>
+        </div>
+      </div>
     </details>
     </div>
     </template>
@@ -425,16 +415,18 @@ import { ref, reactive, computed, onMounted, onBeforeUnmount, watch, nextTick } 
 import { onBeforeRouteLeave } from 'vue-router'
 import UiPageHeader from '../components/ui/UiPageHeader.vue'
 import { api } from '../api/client'
-import { fetchCatalog, fetchProtocols, saveLlm as putLlm } from '../api/llm'
+import { fetchCatalog, fetchEffective, fetchProtocols, saveLlm as putLlm } from '../api/llm'
 import { BUILTIN_PROTOCOLS } from '../components/llm/protocols.js'
 import { normalizeParams } from '../components/llm/params.js'
-import { CAPS_SOURCE_ZH, DEFAULT_INPUT, inputToArray, mergeCaps, normalizeCaps, normalizeLevel } from '../components/llm/caps.js'
+import { CAPS_SOURCE_ZH, mergeCaps, normalizeCaps, normalizeLevel } from '../components/llm/caps.js'
 import { toast } from '../stores/toast'
 import Icon from '../components/Icon.vue'
 import SliderField from '../components/SliderField.vue'
+import LlmEndpointCard from '../components/llm/LlmEndpointCard.vue'
+import LlmLinkTable from '../components/llm/LlmLinkTable.vue'
+import LlmModelList from '../components/llm/LlmModelList.vue'
 import LlmParamFields from '../components/llm/LlmParamFields.vue'
 import LlmProviders from '../components/llm/LlmProviders.vue'
-import LlmQuickSetup from '../components/llm/LlmQuickSetup.vue'
 import InviteManager from '../components/InviteManager.vue'
 import UserQuotaManager from '../components/UserQuotaManager.vue'
 import RecorderConfig from '../components/RecorderConfig.vue'
@@ -561,31 +553,34 @@ const form = reactive({
     output_dir: './output',
     overwrite: false,
   },
+  // **v4 形状**（L1 定案；L3 界面接的就是它）：active / max_concurrent / defaults / extra_params /
+  // providers[] / models[] / links{}。⚠️ 别把 v3 的顶层 api_key / base_url / model / params / overrides
+  // 写回来 —— 后端 v4 里那些键**已经没人读**（写了就是静默不生效）。
   llm: {
-    // api_key **只写不读**：服务端不再回明文（P3），表单里永远是空的；留空 = 不动这个键
-    api_key: '',
-    api_key_set: false,
-    base_url: '',
-    model: '',
-    max_concurrent: 3,
-    // **请求参数面**（v2 的 [llm.params]）：'' / 缺键 = 不写这个键（也就是**不发送**）。
-    // 档位清单不在这里写死 —— 由模型能力表给（components/llm/caps.js 归一化）
-    // ⚠️ 不要给 reasoning 一个 `''` 默认值（P0 事故：空串被写进 llm.toml ⇒ 整份配置回退默认）；
-    //    键缺席 = 不表态，由 normalizeParams 决定发不发
-    params: { temperature: 0, max_tokens: 65536, json_mode: false },
-    // 按链路覆盖：每行 = { on, max_tokens, temperature, reasoning }（**与 params 同一套字段**）；
-    // `on` 决定保存时写值还是发 null（服务端 patch 的 null = 删键 = 回到跟随全局，见 buildLlmPatch）
-    overrides: {},
-    /** **界面可见的链路**（后端 `override_links`，不含 correct）；null/空 = 退回老的四行（R4） */
-    overrideLinks: null,
-    /** 后端这次真的回了哪几个 overrides 键 —— 只在这些键上做"不勾 = 删键"，别给新键写空表 */
-    knownLinks: [],
-    // **能力面**（v2 的 [llm.models."<id>"]）：内置表没收录这个模型时，由「高级」那一小块编辑
-    models: {},
-    // **多 provider**（P3）：`active` = 当前在用的那份；`providers === null` = 后端还没回这个字段
-    // ⇒ 走老的单配置界面（R4：不许白屏、不许报错、行为逐字节不变）
+    /** 当前用哪一份接口（= [llm] active；空 = 第一份，与后端 active_provider() 同口径） */
     active: '',
-    providers: null
+    /** 并发数：**唯一旋钮**（[llm] max_concurrent）。从「高级 → 运行时」提上来的第一屏 */
+    max_concurrent: 3,
+    /** 参数基准（[llm.defaults]）：所有链路的第一级；链路覆盖是第二级 */
+    defaults: { temperature: 0, max_tokens: 65536, reasoning: '', json_mode: false },
+    /** 载入时那份 defaults —— 保存时**只发改过的键**（没改的不发 = 后端保留原值与注释） */
+    defaultsOrig: { temperature: 0, max_tokens: 65536, reasoning: '', json_mode: false },
+    /** extra_params 的文本形态（JSON）。空串 = 显式发 null = 删键（合并语义下"不发"删不掉） */
+    extra_params: '',
+    /** [[llm.providers]]：只描述"怎么连"；api_key **只写不读**（服务端只回 api_key_set） */
+    providers: [],
+    /** [[llm.models]]：唯一模型清单（(provider, id) 唯一）；链路与接口只引用它的 id */
+    models: [],
+    /** [llm.links.<link>]：{ provider, model, temperature, max_tokens, reasoning }（null / '' = 跟随） */
+    links: {},
+    /** 界面可见的链路键（后端 override_links；不含 correct —— 它只隐藏不删） */
+    overrideLinks: [],
+    /** 刚探测到、还没加入清单的模型（只做 ① 的候选，**不落盘**） */
+    probeModels: [],
+    /** providers / models 的**载入快照**（保存时"没改不发"：数组是整份替换，发一次就把
+     *  [[llm.providers]] / [[llm.models]] 的数组-of-表格式压成一行内联数组） */
+    providersOrig: '',
+    modelsOrig: ''
   }
 })
 
@@ -599,17 +594,15 @@ const LLM_LINK_ZH = {
 }
 /** 行内补一句"这条链路具体管什么"（只在需要时） */
 const LLM_LINK_HINT = { title: '封面文案', utility: '贴纸包·扫描标签·测试连接' }
-/** 该链路 reasoning 不写时的生效值（与 `LlmLink::default_thinking` 一致）—— 只用于"跟随全局"那句灰字的展示 */
-const LLM_LINK_THINKING = { polish: '关思考', utility: '关思考' }
-function defaultThinking(key) {
-  return LLM_LINK_THINKING[key] || '跟随 extra_params'
-}
+/* ⚠️ 原来这里有一张"链路默认 thinking"表（default_thinking 的镜像）——
+   v4 之后它没有读者了：链路不写 reasoning 就是**不表态**，由 [llm.defaults] 与方言决定。
+   别再按链路写死一档（那是 F7 双轨的另一半）。 */
 
 /** 「生成」组标题右边那行小字：**能力来源**（内置目录 / 联网探测 / 手填）+ 有没有读到（细节挂 title）。 */
 const capsText = computed(() => {
   const bits = []
   if (capsSource.value) bits.push(CAPS_SOURCE_ZH[capsSource.value] || capsSource.value)
-  if (manualCapsOn.value) bits.push(CAPS_SOURCE_ZH.manual)
+  // ⚠️ 手填能力现在住 [[llm.models]].overrides（④ 模型列表），不再是单独的"手填"档
   // ⚠️ 别带"能力："前缀：它接在标题「生成」后面会被读成"生成能力：…"（上一版就是这样）
   if (!bits.length && capsError.value) return '能力读取失败'
   if (!bits.length) return ''
@@ -618,41 +611,18 @@ const capsText = computed(() => {
   return base
 })
 const capsTitle = computed(() => capsError.value
-  || '生成能力 / 推理档位 / 温度 / 输出上限这些旋钮由能力表决定；探针真拿到的能力会覆盖内置目录，'
-  + '手填的 [llm.models] 覆盖两者')
+  || '生成能力 / 推理档位 / 温度 / 输出上限这些旋钮由能力面决定：内置目录打底，联网探测覆盖它，'
+  + '[[llm.models]].overrides（④ 模型列表里的「手填能力」）覆盖两者')
 
-/** 「跟随全局」那句灰字的细节（行内只留值，细节进 title —— 行内有 20 字预算）。 */
-function inheritTitle(key) {
-  return '不勾 = 这条链路不写任何覆盖键（保存时发 null，服务端删键）⇒ '
-    + '输出上限 / 温度跟随上面「生成」（[llm.params]）；推理档位用 ' + defaultThinking(key)
-}
-
-// ---- 多 provider（P3）：列表 + 同一时间只展开一份（照 DSH）----
-// ⚠️ **R4**：后端还没回 `providers` 字段 ⇒ `form.llm.providers` 保持 **null** ⇒ 模板走老的单配置。
-//    判据是 `Array.isArray` —— 一个空数组也算"后端回了"（那就是"一份配置都没有"的正常空列表）。
-const llmProviderMode = computed(() => Array.isArray(form.llm.providers))
-const activeProvider = computed(() => {
-  if (!llmProviderMode.value) return null
-  const list = form.llm.providers
-  return list.find((p) => p.id === form.llm.active) || list[0] || null
-})
-/** 快速配置里「API 密钥」的占位符：provider 模式看当前那份，legacy 模式看顶层。 */
-const quickKeySet = computed(() => (llmProviderMode.value
-  ? !!(activeProvider.value && activeProvider.value.api_key_set)
-  : !!form.llm.api_key_set))
-/** 快速配置的「保存并测试」：保存交给本页既有链路（quiet = 只留行内结果，不再弹 toast）。 */
-function quickPersist() {
-  return saveLlm({ quiet: true })
-}
-/** 「生成」组改的是**当前 provider 的参数面**；legacy 模式改 `[llm.params]` */
-const llmParamsTarget = computed(() => (llmProviderMode.value && activeProvider.value && activeProvider.value.params)
-  ? activeProvider.value.params
-  : form.llm.params)
-/** 能力（内置目录 / 探针）按**当前生效的** (base_url, model) 取 */
-const effBaseUrl = computed(() => String((llmProviderMode.value && activeProvider.value
-  ? activeProvider.value.base_url : form.llm.base_url) || ''))
-const effModel = computed(() => String((llmProviderMode.value && activeProvider.value
-  ? activeProvider.value.model : form.llm.model) || ''))
+// ---- v4：当前接口 / 参数基准 / 链路表 ----
+/** 当前生效的接口：active 命中就用它，空/认不出 ⇒ 第一份（与后端 `active_provider()` 同一条口径） */
+const activeProvider = computed(() => form.llm.providers.find((p) => p.id === form.llm.active)
+  || form.llm.providers[0] || null)
+/** 能力（内置目录 / 探针）按**当前接口的** (base_url, model) 取 */
+const effBaseUrl = computed(() => String((activeProvider.value && activeProvider.value.base_url) || ''))
+const effModel = computed(() => String((activeProvider.value && activeProvider.value.model) || ''))
+/** ① 的密钥草稿：只写不读 —— 表单里永远是空的，填了才发（保存后由回读清掉） */
+const curApiKeyDraft = computed(() => String((activeProvider.value && activeProvider.value.api_key) || ''))
 
 // API **协议**清单（请求怎么发）：后端 `/config/llm/protocols`；没有就内置只读清单并标注「内置」。
 const protocols = ref([])
@@ -722,67 +692,34 @@ watch(() => [effBaseUrl.value, effModel.value], () => {
 })
 onBeforeUnmount(() => { if (capsTimer) clearTimeout(capsTimer) })
 
-/** [llm.models.<id>] 的手填行仍然保留（生成能力勾选写它的 input，R4：老 TOML 照读照写） —— 界面上的方言下拉/温度下拉已随「模型能力覆盖」整块删掉（方言由能力读取器自动判定）。 */
+/* ⚠️ 原来这里有两块东西，v4 之后都搬走了（别再复活第二份）：
+   · 「当前模型那一行 [llm.models.<id>]」的整套逻辑（手填行 / 输入模态勾选 / 给能力控件喂值）
+     —— v4 的模型清单是**顶层数组**、手填能力住 [[llm.models]].overrides，整块住
+     components/llm/LlmModelList.vue；
+   · 链路行 computed（原来按 overrides 的键凑行 + 「跟随全局」的灰字文案）。 */
 
+/** 链路行：**可见列表由后端 override_links 给**（不含 correct；后端加链路前端不用改）。 */
+const llmLinks = computed(() => form.llm.overrideLinks.map((key) => ({
+  key,
+  label: LLM_LINK_ZH[key] || key,
+  hint: LLM_LINK_HINT[key] || ''
+})))
 
-
-/** 当前模型那一行（reactive 对象；由下面的 watch 保证存在） */
-const modelCapsRow = computed(() => {
-  const id = String(form.llm.model || '').trim()
-  return id ? (form.llm.models[id] || null) : null
-})
-/** 手填过没有（`input` 数组 或 三个 wire 任一）—— 来源小字与"这块留不留"都用它 */
-const manualCapsOn = computed(() => {
-  const row = modelCapsRow.value
-  if (!row) return false
-  return Array.isArray(row.input) || !!(row.thinking_wire || row.max_output_wire || row.temperature)
-})
-/** 勾选（生成能力）的**当前值**：手填优先 → 否则能力表/探针的值 */
-const modelInputRow = computed(() => {
-  const row = modelCapsRow.value
-  return row && Array.isArray(row.input) ? row.input : null
-})
-const capsInput = computed(() => (caps.value && caps.value.input) || DEFAULT_INPUT)
-const inputText = computed(() => (modelInputRow.value ? modelInputRow.value.includes('text') : capsInput.value.text))
-const inputImage = computed(() => (modelInputRow.value ? modelInputRow.value.includes('image') : capsInput.value.image))
-const inputDeclared = computed(() => !!(caps.value && caps.value.input && caps.value.input.declared))
-
-/** 勾 / 取消一个输入模态：**写进手填那一行**（`[llm.models."<id>"].input`）。
- *  ⚠️ 手填优先于能力表 —— 否则用户勾了、保存后又被能力表的值盖回去（"改了没反应"）。 */
-function setInputKind(kind, on) {
-  const id = String(form.llm.model || '').trim()
-  if (!id) return
-  if (!form.llm.models[id]) {
-    form.llm.models[id] = { thinking_wire: '', max_output_wire: '', temperature: '', input: null }
+/** ① 的模型候选：属于当前接口的清单行（一条都没有就全给）+ 刚探测到、还没加入清单的 */
+const endpointModelOptions = computed(() => {
+  const mine = form.llm.models.filter((m) => m.id && m.provider === form.llm.active)
+  const list = (mine.length ? mine : form.llm.models.filter((m) => m.id))
+    .map((m) => ({ id: m.id, label: m.label || m.id }))
+  for (const p of form.llm.probeModels) {
+    if (p.id && !list.some((x) => x.id === p.id)) list.push({ id: p.id, label: p.label || p.id })
   }
-  const row = form.llm.models[id]
-  // 第一次勾：从"当前显示的"那份起算（只改用户点的那一个）
-  const cur = new Set(Array.isArray(row.input) ? row.input : inputToArray(capsInput.value))
-  if (on) cur.add(kind)
-  else cur.delete(kind)
-  row.input = ['text', 'image'].filter((k) => cur.has(k))
-}
-// 模型一变就把那一行补出来（值按模型 id 存，切回来还在）；四项都留空 = 保存时把这条删掉
-watch(() => String(form.llm.model || '').trim(), (id) => {
-  if (!id) return
-  if (!form.llm.models[id]) {
-    form.llm.models[id] = { thinking_wire: '', max_output_wire: '', temperature: '', input: null }
-  }
-}, { immediate: true })
-
-/** 链路行：**可见列表由后端 `override_links` 给**（不含 correct / 以后加链路前端不用改）。
- *  ⚠️ **R4**：没有 `override_links`（老后端）⇒ 退回 `overrides` 的键 = 老四行（含字幕订正）。 */
-const llmLinks = computed(() => {
-  const ov = form.llm.overrides || {}
-  const listed = (Array.isArray(form.llm.overrideLinks) && form.llm.overrideLinks.length)
-    ? form.llm.overrideLinks.filter((k) => typeof k === 'string' && k)
-    : Object.keys(ov)
-  return listed.map((key) => ({
-    key,
-    label: LLM_LINK_ZH[key] || key,
-    hint: LLM_LINK_HINT[key] || ''
-  }))
+  return list
 })
+/** ③ 的模型候选：**全清单**（链路可以跨接口选模型 —— D1 的全部意义之一） */
+const allModelOptions = computed(() => form.llm.models.filter((m) => m.id)
+  .map((m) => ({ id: m.id, provider: m.provider, label: m.label || m.id })))
+/** ③ 推理下拉的档位候选：当前模型能力面的那份（空 = 只画「跟默认」） */
+const linkLevels = computed(() => (caps.value && Array.isArray(caps.value.levels) ? caps.value.levels : []))
 
 /** 只夹范围、不吸附 step（SliderField 的手填也是这个口径）；非数字回落 fallback。 */
 function clampNum(v, min, max, fallback) {
@@ -828,68 +765,21 @@ function buildGlobalPatch() {
   }
 }
 
-/** 「要求 JSON 输出」的真源 = `[llm.params] json_mode`（v2 的一等公民键）；
- *  老工程把同一件事写在 `extra_params.response_format` 里 —— 那边也算"开"（否则界面会显示没开、
- *  实际却在发）。 */
-const jsonModeOn = computed(() => {
-  // 多 provider 模式下看**当前生效那份**的参数面（legacy 就是 [llm.params]）
-  if (llmParamsTarget.value && llmParamsTarget.value.json_mode === true) return true
-  const t = String(form.llm.extra_params || '').trim()
-  if (!t) return false
-  try {
-    const o = JSON.parse(t)
-    return !!(o && typeof o === 'object' && o.response_format && o.response_format.type === 'json_object')
-  } catch (e) { return false }
-})
-
-/** 勾 / 取消「要求 JSON 输出」：**新位置（params.json_mode）与老位置（extra_params.response_format）
- *  一起改** —— 只改一处就会出现"勾着却没生效 / 没勾却在发"。
- *  ⚠️ 正文不是合法 JSON 时**拒绝改**（toast 说明）—— 不能为了一个开关把用户手写的逃逸口覆盖掉。 */
-function setJsonMode(on) {
-  const raw = String(form.llm.extra_params || '').trim()
-  let obj = {}
-  if (raw) {
-    try { obj = JSON.parse(raw) } catch (e) {
-      toast('extra_params 不是合法 JSON，先修好再改「要求 JSON 输出」', 'err'); return
-    }
-    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
-      toast('extra_params 必须是 JSON 对象，先修好再改「要求 JSON 输出」', 'err'); return
-    }
-  }
-  // 多 provider 模式下写的是 active 那份的 params（legacy 模式就是 [llm.params]）
-  llmParamsTarget.value.json_mode = !!on
-  if (on) obj.response_format = { type: 'json_object' }
-  else delete obj.response_format
-  form.llm.extra_params = Object.keys(obj).length ? JSON.stringify(obj, null, 2) : ''
-}
-
-/**
- * 按链路覆盖 → patch。**不勾 = 发 null = 删键**（回到跟随全局）。
- * ⚠️ 后端这次**没回**的键（不在 `knownLinks` 里）且没勾 ⇒ 整条发 `null`（连空表都别留）——
- *    否则"后端刚列出来的 title"会写出一个空 `[llm.overrides.title]`；勾上了才写值。
+/** 「要求 JSON 输出」的真源 = **[llm.defaults] json_mode**（v4 的一等公民键）。
+ *
+ *  ⚠️ 以前它是个"视图"：勾选要同时改 `[llm.params] json_mode` 与 `extra_params.response_format`
+ *  两处，否则界面显示与实际请求不一致。v4 之后 json_mode 就是一等的 bool 键，**不用再改 extra_params**
+ *  —— 反过来：extra_params 里若还手写着 response_format，保存时会被已知键冲突判据拒绝（见 parseExtraParams）。
  */
-function buildOverrides(f) {
-  const known = Array.isArray(f.knownLinks) ? f.knownLinks : Object.keys(f.overrides || {})
-  const out = {}
-  for (const [key, row] of Object.entries(f.overrides || {})) {
-    if (!row.on && !known.includes(key)) { out[key] = null; continue }
-    if (!row.on) { out[key] = { max_tokens: null, temperature: null, reasoning: null }; continue }
-    // ⚠️ 值一律过**类型归一**（空串/NaN/认不出的档位 ⇒ 不写这个值）；缺的那项发 null = 删键
-    //    （= 回到跟随全局）。**绝不许**把 '' 写进 patch —— 那是 P0 事故（整份配置回退默认）。
-    const v = normalizeParams(row)
-    out[key] = {
-      max_tokens: v.max_tokens ?? null,
-      temperature: v.temperature ?? null,
-      reasoning: v.reasoning ?? null
-    }
-  }
-  return out
-}
+const jsonModeOn = computed(() => form.llm.defaults.json_mode === true)
+function setJsonMode(on) { form.llm.defaults.json_mode = !!on }
 
 /**
- * 参数面**只发改过的键**（2026-10-20 硬约束）：没改的键不发 ⇒ 后端深合并保留原值。
- * 温度 / 输出上限在 interface 面板里已不可见，若每次都发，一改名字就会把它们写回默认值。
- * ⚠️ json_mode 的 true→false 发 `null`（= 删键），不是写 false（false 会覆盖源文件里手写的那份）。
+ * 参数面**只发改过的键**：patch 是合并语义，没改的不发 ⇒ 后端保留原值与注释。
+ *
+ * ⚠️ 值一律过**类型归一**（空串 / NaN / 认不出的档位 ⇒ 不发这个键）；
+ *    `json_mode` 的 true→false 发 **null**（= 删键）：写 false 会盖掉源文件里手写的那份语义。
+ * ⚠️ reasoning 清空是**删键**（发 null），不是"不发"—— 两者在合并语义下是两件事。
  */
 function changedParams(v, orig) {
   const o = orig || {}
@@ -897,117 +787,251 @@ function changedParams(v, orig) {
   const out = {}
   if (now.temperature !== undefined && now.temperature !== o.temperature) out.temperature = now.temperature
   if (now.max_tokens !== undefined && now.max_tokens !== o.max_tokens) out.max_tokens = now.max_tokens
-  if (now.reasoning !== undefined && now.reasoning !== o.reasoning) out.reasoning = now.reasoning
+  const r = now.reasoning === undefined ? '' : now.reasoning
+  if (r !== (o.reasoning || '')) out.reasoning = r === '' ? null : r
   if (typeof now.json_mode === 'boolean' && now.json_mode !== o.json_mode) out.json_mode = now.json_mode ? true : null
   return out
 }
 
-/** provider 的参数面（与 `[llm.params]` 同一套字段；**类型归一 + 只发改过的键**） */
-function buildProviderParams(p) {
-  return changedParams(p && p.params, p && p.paramsOrig)
+/** extra_params 里**已知的**结构化键：出现即拒绝（D4）—— 否则"手写 thinking"与"档位"会互相打架。 */
+const KNOWN_EXTRA_KEYS = [
+  'temperature', 'max_tokens', 'max_completion_tokens', 'top_p', 'reasoning',
+  'reasoning_effort', 'thinking', 'thinking_budget', 'response_format'
+]
+
+/**
+ * extra_params → 要写进 patch 的值：**空串 = null（删键）**，非空 = JSON 对象。
+ * 清空必须显式发 null：合并语义下"没提到这个键"= 保持原值，用户会看到"清空后又回来了"。
+ */
+function parseExtraParams(raw) {
+  const t = String(raw || '').trim()
+  if (!t) return null
+  let obj
+  try { obj = JSON.parse(t) } catch (e) { throw new Error('extra_params 不是合法 JSON，请检查格式') }
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) throw new Error('extra_params 必须是 JSON 对象')
+  const bad = Object.keys(obj).filter((k) => KNOWN_EXTRA_KEYS.includes(k))
+  if (bad.length) {
+    throw new Error('extra_params 里有已知键：' + bad.join(' / ')
+      + ' —— 这些请用上面的结构化设置（温度 / 输出上限 / 推理档位 / 要求 JSON），否则两处会互相打架')
+  }
+  return obj
 }
 
 /**
- * **多 provider 模式**的 patch：`active` + 整份 `providers`（数组 = **整份替换**）+ 全局的
- * `extra_params` / `overrides` / `max_concurrent`。
- * ⚠️ **不写** legacy 的 `base_url` / `model` / `params` / `models` —— 那会把文件里原来那套盖掉。
- * ⚠️ 每条 provider 的 `api_key`：**没填就整个不发**（数组项里"空串 = 不修改"不成立，省略最稳）。
+ * 链路覆盖 → 只写非空的键；**一条都没写就发 null**（删掉这张小表，别在文件里留空表）。
+ * ""/null 都表示"跟随"，所以这里只收有值的键。
  */
-function buildProviderPatch(f) {
-  const llm = {
-    active: f.active || '',
-    max_concurrent: Math.max(1, Math.round(Number(f.max_concurrent) || 3)),
-    providers: (f.providers || []).map((p) => {
-      const row = {
-        id: String(p.id || '').trim(),
-        name: p.name || '',
-        api: p.api || 'openai-chat',
-        base_url: p.base_url || '',
-        model: p.model || '',
-        params: buildProviderParams(p.params),
-        models: (p.models || [])
-          .map((m) => {
-            // ⚠️ **只发知道的字段**：后端 `LlmModel` 里 `reasoning` 是 `bool`（不是 Option）、
-            //    `context_window/max_output` 是 Option ⇒ 发 `null` 会被 400
-            //    「providers 形状不对：invalid type: null, expected a boolean」，**整份保存失败**（P0 事故）。
-            const row = { id: String(m.id || '').trim() }
-            if (m.name) row.name = m.name
-            if (m.context_window != null) row.context_window = Math.max(0, Math.round(Number(m.context_window) || 0))
-            if (m.max_output != null) row.max_output = Math.max(0, Math.round(Number(m.max_output) || 0))
-            if (Array.isArray(m.input)) row.input = m.input
-            if (typeof m.reasoning === 'boolean') row.reasoning = m.reasoning
-            const levels = (m.levels || []).filter((l) => l && l.level)
-              .map((l) => ({ level: String(l.level), wire_value: String(l.wire_value || '') }))
-            if (levels.length) row.levels = levels
-            return row
-          })
-          .filter((m) => m.id)
-      }
-      if (String(p.api_key || '').trim()) row.api_key = String(p.api_key).trim()
-      return row
-    }),
-    extra_params: null,
-    overrides: {}
+function buildLinks(f) {
+  const out = {}
+  for (const [key, row] of Object.entries(f.links || {})) {
+    const one = {}
+    if (String(row.provider || '').trim()) one.provider = String(row.provider).trim()
+    if (String(row.model || '').trim()) one.model = String(row.model).trim()
+    const p = normalizeParams(row)
+    if (p.temperature !== undefined) one.temperature = p.temperature
+    if (p.max_tokens !== undefined) one.max_tokens = p.max_tokens
+    if (p.reasoning !== undefined) one.reasoning = p.reasoning
+    out[key] = Object.keys(one).length ? one : null
   }
-  if (f.extra_params && f.extra_params.trim()) {
-    try { llm.extra_params = JSON.parse(f.extra_params) } catch (e) { throw new Error('extra_params 不是合法 JSON，请检查格式') }
-  }
-  llm.overrides = buildOverrides(f)
-  return llm
+  return out
 }
 
+/**
+ * 模型清单 → 数组（**整份替换**）。catalog / overrides 原样带回（它们是嵌套内联表，
+ * 前端只改 id / label / provider，别在这里重排它们的字段）。
+ */
+function buildModels(f) {
+  return (f.models || []).map((m) => {
+    const row = { id: String(m.id || '').trim(), provider: String(m.provider || '').trim() }
+    if (String(m.label || '').trim()) row.label = String(m.label).trim()
+    if (m.catalog && typeof m.catalog === 'object') row.catalog = m.catalog
+    if (m.overrides && typeof m.overrides === 'object' && Object.keys(m.overrides).length) row.overrides = m.overrides
+    return row
+  }).filter((m) => m.id)
+}
+
+/**
+ * 接口清单 → 数组（**整份替换**）。
+ * ⚠️ **api_key 空 = 不发这个键**：数组整份替换，但后端 fill_blank_provider_keys 会按 id
+ *    把已存的 key 填回去 —— "不发"最明确（发空串会被 drop_blank_api_key 剔掉，等价但绕）。
+ * ⚠️ **api_key_env 必须带回**（"钥匙在环境变量里"那条路）：漏了 = 整份替换时把它删掉。
+ */
+function buildProviders(f) {
+  return (f.providers || []).map((p) => {
+    const row = {
+      id: String(p.id || '').trim(),
+      name: String(p.name || ''),
+      protocol: String(p.protocol || ''),
+      base_url: String(p.base_url || '').trim(),
+      model: String(p.model || '').trim()
+    }
+    if (String(p.api_key_env || '').trim()) row.api_key_env = String(p.api_key_env).trim()
+    if (String(p.api_key || '').trim()) row.api_key = String(p.api_key).trim()
+    return row
+  }).filter((p) => p.id)
+}
+
+/** v4 的整份 patch（**唯一写通道**：PUT /api/config/llm）。 */
 function buildLlmPatch() {
   const f = form.llm
-  const p = f.params || {}
-  // **多 provider 模式**（P3）：数组 = 整份替换；legacy 字段一个都不写（见 buildProviderPatch）
-  if (Array.isArray(f.providers)) return { llm: buildProviderPatch(f) }
   const llm = {
-    base_url: f.base_url || '',
-    model: f.model || '',
+    active: String(f.active || ''),
     max_concurrent: Math.max(1, Math.round(Number(f.max_concurrent) || 3)),
-    // ⚠️ **请求参数面写 [llm.params]**（v2）：只发**改过的键**（见 changedParams）——
-    // 没改的不发 = 后端保留原值；类型不对/空串在 changedParams 里已经被归一掉了。
-    params: changedParams(p, f.paramsOrig)
-  };
-  // **能力面**（[llm.models."<id>"]）：只发**有内容的行**；四项都空的那行整条删掉（别在文件里留空表）
-  const models = {}
-  for (const [id, row] of Object.entries(f.models || {})) {
-    // `input`：Array = 用户勾过（**空数组也是"勾过"**：表示"都不支持"），null/undefined = 没手填
-    const hasInput = !!row && Array.isArray(row.input)
-    if (!row || (!row.thinking_wire && !row.max_output_wire && !row.temperature && !hasInput)) {
-      models[id] = null
-      continue
-    }
-    models[id] = {
-      thinking_wire: row.thinking_wire ? row.thinking_wire : null,
-      max_output_wire: row.max_output_wire ? row.max_output_wire : null,
-      temperature: row.temperature ? row.temperature : null,
-      input: hasInput ? row.input : null
-    }
+    defaults: changedParams(f.defaults, f.defaultsOrig),
+    extra_params: parseExtraParams(f.extra_params),
+    links: buildLinks(f)
   }
-  if (Object.keys(models).length) llm.models = models
-  // ⚠️ api_key 只写不读：**没填就整个不发这个键**。新服务端把空串当「不修改」，旧服务端却会真写一个
-  //    空串（把 key 清掉）—— 省略键在两边都等于「不修改」，所以留空时不发它（契约见 api/llm.js）。
-  if (String(f.api_key || '').trim()) llm.api_key = String(f.api_key).trim()
-  if (f.extra_params && f.extra_params.trim()) {
-    try {
-      llm.extra_params = JSON.parse(f.extra_params)
-    } catch (e) {
-      throw new Error('extra_params 不是合法 JSON，请检查格式')
-    }
-  } else {
-    // ⚠️ 清空输入框 = **要删掉这个键**，必须显式发 null。
-    // 省略它是不行的：patch 是**合并**语义（本次没提到的键保持原值），
-    // 于是模板里那条 `extra_params = { seed = 42, thinking = ... }` 永远在那儿 ——
-    // 用户清空后保存、页面重新加载，看到的又是"预设内容"（真机报的就是这个）。
-    // 同一个机制在下面的 overrides 已经用了：null = 删键。
-    llm.extra_params = null
-  }
-  // 按链路覆盖：勾上的写值，没勾的**发 null** —— `patch_config_file` 把 null 当「删键」，
-  // 这样"取消勾选 = 回到跟随全局"才表达得出来（发空串会写出 max_tokens = ""，
-  // 下次读配置直接解析失败、整份 LLM 配置被打回默认值）。
-  llm.overrides = buildOverrides(f)
+  // ⚠️ **数组是整份替换**（合并语义只对对象递归）⇒ 没改就**不发**：
+  //    发一次会把 [[llm.providers]] / [[llm.models]] 的"数组-of-表 + 段内注释"压成一行内联数组。
+  //    这条只是"少降级一次"，真正的 decor 保留要后端另开一条写法（见本页脚本顶部注释）。
+  const provs = buildProviders(f)
+  if (JSON.stringify(provs) !== JSON.stringify(JSON.parse(f.providersOrig || '[]'))) llm.providers = provs
+  const models = buildModels(f)
+  if (JSON.stringify(models) !== JSON.stringify(JSON.parse(f.modelsOrig || '[]'))) llm.models = models
   return { llm }
+}
+
+/**
+ * `/api/config` 的 `llm_config` → 表单（**v4 形状**）。
+ *
+ * 抽出来是为了"只重读 LLM 那一半"：保存 LLM 后如果整份 reload，用户在「⑤ 提示词」里
+ * 还没保存的编辑会被一起冲掉（那是"一个按钮动两个文件"留下的坑，L3 拆开后必须堵上）。
+ */
+function applyLlmConfig(d) {
+  const l = (d && d.llm_config) || {}
+  const def = l.defaults || {}
+  const gTemp = def.temperature ?? 0
+  const gMax = def.max_tokens ?? 65536
+  // 链路行 = 后端 override_links（不含 correct；后端加链路前端不用改）
+  const linkList = Array.isArray(l.override_links) ? l.override_links.filter((k) => typeof k === 'string' && k) : []
+  const rows = {}
+  for (const k of linkList) {
+    const ov = (l.links && l.links[k]) || {}
+    rows[k] = {
+      provider: String(ov.provider || ''),
+      model: String(ov.model || ''),
+      temperature: ov.temperature ?? null,
+      max_tokens: ov.max_tokens ?? null,
+      // 老配置里的 reasoning 可能是 enabled/disabled（v1 的 thinking 迁过来的）⇒ 归一成档位名
+      reasoning: normalizeLevel(ov.reasoning)
+    }
+  }
+  const extra = (l.extra_params && Object.keys(l.extra_params).length)
+    ? JSON.stringify(l.extra_params, null, 2)
+    : ''
+  form.llm = {
+    active: typeof l.active === 'string' ? l.active : '',
+    max_concurrent: l.max_concurrent ?? 3,
+    defaults: {
+      temperature: gTemp,
+      max_tokens: gMax,
+      reasoning: normalizeLevel(def.reasoning),
+      json_mode: def.json_mode === true
+    },
+    // 保存时只发**和这里不一样**的键（没改的不发 ⇒ 后端保留原值与注释）
+    defaultsOrig: {
+      temperature: gTemp,
+      max_tokens: gMax,
+      reasoning: normalizeLevel(def.reasoning),
+      json_mode: def.json_mode === true
+    },
+    extra_params: extra,
+    providers: (Array.isArray(l.providers) ? l.providers : []).map((p) => ({
+      id: String(p.id || ''),
+      name: p.name || String(p.id || ''),
+      protocol: p.protocol || 'openai-chat',
+      base_url: p.base_url || '',
+      // api_key 只写不读（服务端只回 api_key_set 布尔）—— 表单里永远是空的，填了才覆盖
+      api_key: '',
+      api_key_env: p.api_key_env || '',
+      api_key_set: p.api_key_set === true,
+      model: p.model || ''
+    })),
+    // 能力面原样带过来（catalog / overrides 是嵌套内联表，只整份回写、不在前端拆字段）
+    models: (Array.isArray(l.models) ? l.models : []).map((m) => ({
+      id: String(m.id || ''),
+      provider: String(m.provider || ''),
+      label: m.label || '',
+      catalog: (m.catalog && typeof m.catalog === 'object') ? JSON.parse(JSON.stringify(m.catalog)) : null,
+      overrides: (m.overrides && typeof m.overrides === 'object') ? JSON.parse(JSON.stringify(m.overrides)) : null
+    })),
+    links: rows,
+    overrideLinks: linkList,
+    // ⚠️ **数组的载入快照**：保存时"没改就不发"。合并语义对数组是**整份替换**，
+    //    发一次就把 [[llm.providers]] / [[llm.models]] 的**数组-of-表**格式压成一行内联数组
+    //    （toml_edit 的已知行为，v3 时代 providers 就这样）—— 少发一次就少一次降级。
+    providersOrig: '',
+    modelsOrig: '',
+    // 探针候选只是"建议"，重读配置时清掉（它从来不落盘）
+    probeModels: []
+  }
+  // 载入快照 = 刚装进表单的那两份数组**按 patch 形态**（"没改就不发"的判据）。
+  // ⚠️ 必须过 build* 再比：表单里的对象还带 api_key: '' / api_key_set 这类**不上送**的字段，
+  //    直接 JSON.stringify(form.llm.providers) 会永远"看起来改过"（于是每次保存都降级格式）。
+  form.llm.providersOrig = JSON.stringify(buildProviders(form.llm))
+  form.llm.modelsOrig = JSON.stringify(buildModels(form.llm))
+}
+
+// ---- ③ 的生效值（/api/config/llm/effective）----
+/** link → 生效快照（缺失 = 没取到）。**只来自后端**，前端不自己算。 */
+const effective = reactive({})
+const effectiveError = ref('')
+/**
+ * 逐链路取生效值：一条一个请求（`?link=` 是后端的契约）。
+ * 失败**照实说**（表格里灰字留空 + 一行原因），不许拿 defaults 在本地凑一个假的生效值。
+ */
+async function refreshEffective() {
+  effectiveError.value = ''
+  const keys = (form.llm.overrideLinks || []).slice()
+  if (!keys.length) { for (const k of Object.keys(effective)) delete effective[k]; return }
+  const got = await Promise.all(keys.map(async (k) => {
+    try { return [k, await fetchEffective(k)] } catch (e) { return [k, null] }
+  }))
+  const failed = []
+  for (const [k, v] of got) {
+    if (v) effective[k] = v
+    else { delete effective[k]; failed.push(k) }
+  }
+  if (failed.length) effectiveError.value = '这些链路没取到生效值：' + failed.join(' / ')
+}
+
+// ---- 高级：接口增删（④ 与 ③ 的引用要跟着清）----
+/** 新建一份接口：先把 active 切过去，否则"新建了却看不到"（① 只渲染当前那一份） */
+function addProvider() {
+  const used = new Set(form.llm.providers.map((p) => String(p.id || '')))
+  let n = form.llm.providers.length + 1
+  while (used.has('p' + n)) n++
+  const id = 'p' + n
+  form.llm.providers.push({
+    id, name: '新接口 ' + n, protocol: 'openai-chat', base_url: '',
+    api_key: '', api_key_env: '', api_key_set: false, model: ''
+  })
+  form.llm.active = id
+}
+/**
+ * 删一份接口：**连带**摘掉它名下的模型与指向它的链路覆盖。
+ * ⚠️ 不摘的话保存会被写通道拦下（"模型 X 的 provider 认不出"），而且是**整份 400**。
+ */
+function removeProvider(id) {
+  const pid = String(id || '')
+  form.llm.providers = form.llm.providers.filter((p) => p.id !== pid)
+  form.llm.models = form.llm.models.filter((m) => m.provider !== pid)
+  for (const row of Object.values(form.llm.links || {})) {
+    if (row.provider === pid) row.provider = ''
+  }
+  if (form.llm.active === pid) form.llm.active = (form.llm.providers[0] && form.llm.providers[0].id) || ''
+}
+
+// ---- 方言注册表（④ 的「推理写法」下拉）----
+const dialects = ref([])
+async function loadDialects() {
+  try {
+    const r = await api('/api/config/llm/dialects')
+    dialects.value = Array.isArray(r && r.dialects) ? r.dialects : []
+  } catch (e) {
+    // 只影响"手填推理写法"的候选数 —— 不改任何生效值，所以退化成空下拉即可（**不拦保存**）
+    dialects.value = []
+  }
 }
 
 async function loadConfig() {
@@ -1062,113 +1086,17 @@ async function loadConfig() {
       output_dir: c.cutting.output_dir || './output',
       overwrite: !!c.cutting.overwrite,
     })
-    const l = d.llm_config || {}
-    // v2：请求参数面在 llm_config.params（不再是 [llm] 上的 temperature/max_tokens/thinking）
-    const p = l.params || {}
-    const gMax = p.max_tokens ?? 65536
-    const gTemp = p.temperature ?? 0
-    // **链路行**：可见列表 = 后端 `override_links`（不含 correct）；缺失 ⇒ null（R4：老四行）
-    const linkList = Array.isArray(l.override_links)
-      ? l.override_links.filter((k) => typeof k === 'string' && k)
-      : null
-    const rowOf = (v) => ({
-      on: v?.max_tokens != null || v?.temperature != null || !!v?.reasoning,
-      max_tokens: v?.max_tokens ?? gMax,
-      temperature: v?.temperature ?? gTemp,
-      reasoning: normalizeLevel(v?.reasoning)
-    })
-    const knownLinks = Object.keys(l.overrides || {})
-    const gOverrides = Object.fromEntries(Object.entries(l.overrides || {}).map(([k, v]) => [k, rowOf(v)]))
-    // 后端**列了**但还没序列化出来的链路（比如刚加的 title）：补一行默认值，否则那一行没有可勾的对象
-    for (const k of (linkList || [])) if (!gOverrides[k]) gOverrides[k] = rowOf(null)
-    form.llm = {
-      // ⚠️ api_key **不预填**（P3 起接口只回 api_key_set 布尔；老服务端回明文也不填进表单）——
-      //    留空 = 不修改，填了才覆盖（见 buildLlmPatch）
-      api_key: '',
-      api_key_set: (typeof d.api_key_set === 'boolean') ? d.api_key_set : !!l.api_key,
-      base_url: l.base_url || '',
-      model: l.model || '',
-      max_concurrent: l.max_concurrent ?? 3,
-      // 老配置里的 reasoning 可能是 "enabled"/"disabled"（v1 的 thinking 迁过来的）——
-      // 归一成等价档位再显示；写回的是规范档位名（服务端两套都认，见 caps.js::normalizeLevel）
-      params: {
-        temperature: gTemp,
-        max_tokens: gMax,
-        reasoning: normalizeLevel(p.reasoning),
-        json_mode: p.json_mode === true
-      },
-      // 保存时只发**和这里不一样**的键（没改的不发 ⇒ 后端保留原值）
-      paramsOrig: {
-        temperature: gTemp,
-        max_tokens: gMax,
-        reasoning: normalizeLevel(p.reasoning),
-        json_mode: p.json_mode === true
-      },
-      // 能力面：整份带过来（只编辑当前模型那一行，其余原样回写）
-      // `input` 用 **null** 表示"没手填"（`[]` 是"手填成都不勾"，两者不能混）
-      models: Object.fromEntries(
-        Object.entries(l.models || {}).map(([id, m]) => [
-          id,
-          {
-            thinking_wire: m?.thinking_wire || '',
-            max_output_wire: m?.max_output_wire || '',
-            temperature: m?.temperature || '',
-            input: Array.isArray(m?.input) ? [...m.input] : null
-          }
-        ])
-      ),
-      // **多 provider**（P3）：只有后端真回了这个字段才进新界面；没有 ⇒ null（R4：老的单配置）
-      active: typeof l.active === 'string' ? l.active : '',
-      providers: Array.isArray(l.providers)
-        ? l.providers.map((pr) => ({
-            id: String(pr.id || ''),
-            name: pr.name || String(pr.id || ''),
-            api: pr.api || 'openai-chat',
-            base_url: pr.base_url || '',
-            // api_key 只写不读：服务端只回 api_key_set 布尔
-            api_key: '',
-            api_key_set: pr.api_key_set === true,
-            builtin: pr.builtin === true,
-            model: pr.model || '',
-            params: {
-              temperature: pr.params?.temperature ?? 0.3,
-              max_tokens: pr.params?.max_tokens ?? 65536,
-              reasoning: normalizeLevel(pr.params?.reasoning),
-              json_mode: pr.params?.json_mode === true
-            },
-            paramsOrig: {
-              temperature: pr.params?.temperature ?? 0.3,
-              max_tokens: pr.params?.max_tokens ?? 65536,
-              reasoning: normalizeLevel(pr.params?.reasoning),
-              json_mode: pr.params?.json_mode === true
-            },
-            models: (pr.models || []).map((m) => ({
-              id: m.id || '',
-              name: m.name || '',
-              context_window: m.context_window ?? null,
-              max_output: m.max_output ?? null,
-              input: Array.isArray(m.input) ? [...m.input] : null,
-              reasoning: typeof m.reasoning === 'boolean' ? m.reasoning : null,
-              levels: (m.levels || []).map((lv) => ({ level: lv.level || '', wire_value: lv.wire_value || '' }))
-            }))
-          }))
-        : null,
-      extra_params: l.extra_params ? JSON.stringify(l.extra_params, null, 2) : '',
-      // 覆盖表：键 = 后端回了的那几个（+ override_links 里列了但还没回的先补默认）
-      overrides: gOverrides,
-      overrideLinks: linkList,
-      knownLinks,
-    }
+    applyLlmConfig(d)
     loaded.value = true
     loadFailed.value = false
     configLoadError.value = ''
-    // ⚠️ 拍基线**必须等加载期的自动补全跑完**：下面那条 watch(form.llm.model) 带 immediate，
-    // 且默认 flush:'pre' ⇒ 它在**下一个微任务**里才往 form.llm.models[id] 补一行空行
-    // （当前模型在 llm.toml 里没有 [llm.models.<id>] 时必然补）。同步拍快照 = 拍到「还没补上」的样子，
-    // 于是**刚进页面什么都没点，formDirty 就已经是 true**，切任何页面都弹「未保存的设置改动」。
-    // 真机报障就是这个形态（2026-11-14）。await nextTick() 之后 watcher 已跑完，补出来的那行进基线。
+    // ⚠️ 拍基线**必须等加载期的 watcher 跑完**（默认 flush:'pre' ⇒ 下一个微任务才补数据）。
+    //    同步拍 = 刚进页面什么都没点，formDirty 就已经是 true，切任何页面都弹「未保存的设置改动」
+    //    （2026-11-14 真机报障就是这个形态）。await nextTick() 之后补出来的那行进基线。
     await nextTick()
     snapshotFormBaseline()
+    // ③ 的灰字：生效值**只有后端会算**（LlmV4::link_snapshot）—— 前端复算一遍就是第二份规则
+    await refreshEffective()
   } catch (e) {
     loaded.value = false
     loadFailed.value = true
@@ -1179,22 +1107,45 @@ async function loadConfig() {
 // ---- 未保存改动守卫（U8/F3）----
 // 设置页四个子页共用一个实例键（`route.name`），切子页 = 整块重挂：改了没保存，改动**无提示消失**。
 // 做法与保存语义一致：loadConfig 成功后拍一份表单快照，离开前比对，不一致就 confirmDialog。
-// ⚠️ 快照必须盖住**所有会丢的输入**：表单四块 + 源码编辑器的 raw + 参考标题文本框（后者在 form 外）。
-const formBaseline = ref('')
-function snapshotFormBaseline() {
-  formBaseline.value = JSON.stringify({
-    f: { asr: form.asr, detection: form.detection, cutting: form.cutting, llm: form.llm },
-    raw: globalRaw.value,
+//
+// ⚠️ **三份基线**（不是一份）：L3 起「保存 LLM」与「保存提示词」是两个独立动作，
+//    一份基线会让"存了 LLM"顺手把提示词的未保存改动也标成已保存（或反之）。
+//    三块的判定各自只覆盖自己会丢的输入：
+//      · baseLlm     = form.llm（接口 / 参数 / 链路 / 模型清单 / extra_params）
+//      · basePrompts = ⑤ 提示词那三件的文本（参考标题在 form 外）
+//      · baseGlobal  = 程序配置页那几块 + 源码编辑器的 raw（提示词那三键**除外**：它们归 basePrompts）
+let baseLlm = ''
+let basePrompts = ''
+let baseGlobal = ''
+/** ⑤ 提示词那三件的状态串（唯一口径；快照与判定都用它） */
+function promptStateJSON() {
+  return JSON.stringify({
     rt: referenceTitlesText.value,
+    sp: form.detection.system_prompt || '',
+    pt: form.detection.prompt_template || ''
   })
 }
-const formDirty = computed(() => {
-  if (!loaded.value || !formBaseline.value) return false
+/** 程序配置页那几块的状态串（**剔掉**提示词三键 —— 它们归 basePrompts） */
+function globalStateJSON() {
+  const det = Object.assign({}, form.detection)
+  delete det.system_prompt
+  delete det.prompt_template
+  delete det.reference_titles
   return JSON.stringify({
-    f: { asr: form.asr, detection: form.detection, cutting: form.cutting, llm: form.llm },
-    raw: globalRaw.value,
-    rt: referenceTitlesText.value,
-  }) !== formBaseline.value
+    f: { asr: form.asr, detection: det, cutting: form.cutting },
+    raw: globalRaw.value
+  })
+}
+function snapshotFormBaseline() {
+  baseLlm = JSON.stringify(form.llm)
+  basePrompts = promptStateJSON()
+  baseGlobal = globalStateJSON()
+}
+const formDirty = computed(() => {
+  if (!loaded.value) return false
+  return JSON.stringify(form.llm) !== baseLlm
+    || promptStateJSON() !== basePrompts
+    || globalStateJSON() !== baseGlobal
 })
 onBeforeRouteLeave(async () => {
   if (!formDirty.value) return true
@@ -1247,16 +1198,25 @@ const llmSaveError = ref('')
 /** 保存后回读的**落盘校验**结果（不一致时把差异写出来） */
 const llmSaveWarn = ref('')
 
-/** 保存后回读一次：界面上每份配置的模型数与服务端回读的条数必须一致（"刷新还是 0"的通用护栏） */
+/**
+ * 保存后回读一次：**接口数与模型清单条数**必须与服务端回读一致（"刷新还是 0"的通用护栏）。
+ * 不一致**不静默**：写进常驻的 llmSaveWarn 横幅（提示条在页面顶部）。
+ */
 async function verifyLlmSaved(expect) {
   try {
     const d = await api('/api/config')
-    const got = (d && d.llm_config && d.llm_config.providers) || []
+    const got = (d && d.llm_config) || {}
     const diffs = []
-    for (const want of expect) {
-      const row = got.find((p) => p && p.id === want.id)
-      const n = (row && Array.isArray(row.models)) ? row.models.length : 0
-      if (n !== want.n) diffs.push(want.id + '：界面 ' + want.n + ' 条 / 落盘 ' + n + ' 条')
+    const provs = Array.isArray(got.providers) ? got.providers : []
+    if (provs.length !== expect.providers) {
+      diffs.push('接口 界面 ' + expect.providers + ' 条 / 落盘 ' + provs.length + ' 条')
+    }
+    const models = Array.isArray(got.models) ? got.models : []
+    if (models.length !== expect.models) {
+      diffs.push('模型清单 界面 ' + expect.models + ' 条 / 落盘 ' + models.length + ' 条')
+    }
+    for (const id of expect.ids) {
+      if (!provs.some((p) => p && p.id === id)) diffs.push('接口 ' + id + ' 没落盘')
     }
     llmSaveWarn.value = diffs.length ? '保存后回读不一致：' + diffs.join('；') : ''
   } catch (e) {
@@ -1265,11 +1225,26 @@ async function verifyLlmSaved(expect) {
 }
 
 /**
- * 保存 LLM 配置（llm.toml + 提示词所在的 config.toml）。
+ * 只重读 LLM 那一半（/api/config 的其他字段一律不动）。
+ * ⚠️ 这是「⑤ 提示词」拆开保存的配套：整份 reload 会把那边**没保存的编辑**一起冲掉。
+ */
+async function reloadLlm() {
+  const d = await api('/api/config')
+  applyLlmConfig(d)
+  await refreshEffective()
+  await nextTick()
+  baseLlm = JSON.stringify(form.llm)
+}
+
+/**
+ * 保存 LLM 配置（**只写 llm.toml**）。
  *
- * @param {{ quiet?: boolean }} [opts] quiet = 不弹成功/失败 toast（快速配置把结果写在自己的行内），
+ * @param {{ quiet?: boolean }} [opts] quiet = 不弹成功/失败 toast（行内自己显示结果），
  *   错误横幅 `llmSaveError` 与回读校验 `llmSaveWarn` 照旧（**不许静默**）。
- * @returns {Promise<{ok: boolean, error?: string}>} 快速配置要先保存成功才测连接，所以必须回结果。
+ * @returns {Promise<{ok: boolean, error?: string}>} 调用方要先保存成功才做下一步，所以必须回结果。
+ *
+ * ⚠️ **只写 llm.toml**：提示词在「⑤ 提示词」有自己的保存按钮（它写 config.toml 的 [detection]）。
+ *    历史病根：这个按钮曾同时写两个文件 —— 用户改提示词后点这里"看着成功"，实际只落了一个文件。
  */
 async function saveLlm(opts = {}) {
   const quiet = opts && opts.quiet === true
@@ -1282,20 +1257,19 @@ async function saveLlm(opts = {}) {
   llmSaveWarn.value = ''
   try {
     const patch = buildLlmPatch()
-    // 期望落盘的模型数（多配置时逐份比；legacy 模式没有 providers 就不比）
-    const expect = ((patch.llm && patch.llm.providers) || []).map((p) => ({ id: p.id, n: (p.models || []).length }))
+    // 期望落盘条数按**表单**算（patch 里可能没带数组 —— 没改就不发）
+    const expect = {
+      providers: form.llm.providers.length,
+      models: form.llm.models.length,
+      ids: form.llm.providers.map((p) => p.id)
+    }
     await putLlm(patch)
-    // ⚠️ **提示词那一组写的是 config.toml 的 [detection]**，不是 llm.toml ——
-    //    它只是**摆在**这一页（用户要求），归属没变。所以这一页的保存必须**两个文件都存**，
-    //    否则用户在这里改了参考标题、点「保存」看着成功、实际一个字节都没落盘。
-    syncReferenceTitlesFromText()
-    await api('/api/config/global', { method: 'PUT', body: JSON.stringify({ patch: buildGlobalPatch() }) })
+    await reloadLlm()
     await verifyLlmSaved(expect)
     if (!quiet) toast(llmSaveWarn.value ? 'LLM 配置已保存（但回读不一致，见顶部提示）' : 'LLM 配置已保存')
-    await loadConfig()
     return { ok: true }
   } catch (e) {
-    // **不许静默失败**：把服务端的 error 原文留在页面上
+    // **不许静默失败**：把服务端的 error 原文留在页面上（400 曾被 toast 一闪吞掉）
     const msg = (e && e.message) || String(e)
     llmSaveError.value = '保存失败：' + msg
     if (!quiet) toast(e.message, 'err')
@@ -1303,12 +1277,46 @@ async function saveLlm(opts = {}) {
   }
 }
 
+/** ⑤ 提示词自己的保存态（与「保存 LLM」不是一件事，别合并） */
+const promptSaving = ref(false)
+/**
+ * 保存提示词：**只写 config.toml 的 [detection]** 三键（参考标题 / system_prompt / prompt_template）。
+ *
+ * ⚠️ 与 saveLlm 完全独立（用户口径：独立保存按钮 + 明确标注写哪个文件）。
+ * ⚠️ 保存后**不整份 reload**（那会冲掉还没保存的 LLM 编辑）：只把本块的基线换新。
+ */
+async function savePrompts() {
+  if (!loaded.value) { toast('配置未加载成功，已禁止保存', 'err'); return }
+  if (promptSaving.value) return
+  promptSaving.value = true
+  try {
+    syncReferenceTitlesFromText()
+    await api('/api/config/global', {
+      method: 'PUT',
+      body: JSON.stringify({ patch: { detection: {
+        reference_titles: form.detection.reference_titles || [],
+        system_prompt: form.detection.system_prompt || '',
+        prompt_template: form.detection.prompt_template || ''
+      } } })
+    })
+    basePrompts = promptStateJSON()
+    toast('提示词已保存（config.toml 的 [detection]）')
+  } catch (e) {
+    const msg = (e && e.message) || String(e)
+    llmSaveError.value = '提示词保存失败：' + msg
+    toast(e.message, 'err')
+  } finally {
+    promptSaving.value = false
+  }
+}
+
 onMounted(async () => {
   // /api/config 只有程序配置与 LLM 两个子页用（含源码编辑器）；模型列表只有「账号与模型」用。
   // 其余子页的组件自带接口，别白拉一遍。
   if (props.section === 'config' || props.section === 'llm') loadConfig()
-  // API 协议清单只服务多 provider 的「API 协议」下拉（失败退内置清单，界面上标注）
-  if (props.section === 'llm') loadProtocols()
+  // API 协议清单只服务「接口管理」的协议下拉（失败退内置清单，界面上标注）
+  // 方言清单只服务「模型列表 → 推理写法」的候选（失败就空下拉，不影响任何生效值）
+  if (props.section === 'llm') { loadProtocols(); loadDialects() }
   // 每个子页都要：标签条靠它过滤掉本地模式 / 单人下不显示的项（store 有缓存，只有首次真发请求）。
   // ⚠️ 别挪回 `account` 分支里 —— 那样只有进账号页时标签才收缩，别处照旧显示 5 个。
   // 两个位共享同一份 `/api/health` 缓存：第二次 await 直接命中，不会多一个请求。
@@ -1345,42 +1353,13 @@ onMounted(async () => {
 /* 表单密度：字段是一行「标签·滑块·数字框」，行高本来就矮，留白按行距给。
    extra_params 与「源文件」并排（各 50%）：JSON 正文不需要更宽，再宽也是换行看不清。 */
 textarea.llm-extra { min-height:230px; resize:vertical; font-size:12px; line-height:1.6; }
-.llm-cols { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:10px 20px; align-items:start; }
+/* ⚠️ 原来的 .llm-cols（两栏 50/50 的链路覆盖网格）随 L3 的**链路表格**退场 ——
+   表格 7 列各有语义，压成两栏只会把灰字截成省略号；窄屏改为**横滚**（LlmLinkTable 自带）。
+   判据随之换成 check-layout-invariants.mjs ①②'（表格列定义 + 点开才编辑）。 */
 /* LLM 块：内容列压到 ~760px（min() 兜住窄屏），**左对齐**；容器查询量的是内容列而不是视口 */
 /* **所有分页共用的内容列**（程序配置 / LLM / 账号 / 系统集成 / 用量与日志）：
    min(760px,100%) + 左对齐 ⇒ 切标签时左边缘不跳；container-type 让下面的 @container 量的是**内容列**而不是视口。 */
 .settings-block { max-width:min(760px, 100%); container-type:inline-size; }
-/* 内容列 ≤820px 时：链路覆盖四条改成**单列四行**（两栏各 ~370 太挤，硬塞会腰斩滑条） */
-@container (max-width: 820px) {
-  .settings-block .llm-cols { grid-template-columns:minmax(0,1fr); gap:8px 0; }
-}
-@media (max-width:1200px) { .llm-cols { grid-template-columns:minmax(0,1fr); gap:14px 0; } }
-/* 按链路覆盖：一条链路一格（两栏 = 2×2）—— [勾选框 + 链路名] + 该链路的参数控件（LlmParamFields）。
-   没勾的只留一行灰字（跟随全局），勾开才长出控件。控件的出现与否由**模型能力**决定。
-   ⚠️ **半宽列里的控件必须跨满整行**：并排的实测结果是滑条被压到 **59px**（1280px 下只剩 41px），
-   刻度根本看不见。下面这条 `:deep(.slf)` 是判据钉着的不变式
-   （webui/scripts/check-layout-invariants.mjs ①②，都带变异自证）—— 动它之前先读那个脚本。 */
-.llm-cols .llm-default-row {
-  grid-column:1 / -1;
-  display:grid; grid-template-columns:minmax(0,1fr); gap:2px 10px; align-items:center;
-  padding-bottom:6px; margin-bottom:2px; border-bottom:1px dashed var(--line-soft);
-}
-.llm-cols .llm-link-row {
-  display:grid; grid-template-columns:minmax(0,1fr) max-content;
-  gap:2px 10px; align-items:center;
-  /* 一张轻卡片：4 条链路才看得出是"4 个格子"（以前只有 10px 间隙，看着像 4 个孤立勾选） */
-  border:1px solid var(--line-soft); border-radius:8px; padding:6px 8px;
-}
-.llm-cols .llm-link-row .ln-name { grid-column:1; }
-.llm-cols .llm-link-row :deep(.slf),
-.llm-cols .llm-link-row .ln-inherit { grid-column:1 / -1; }
-/* LlmParamFields 整块也跨满整行（它内部再排「档位 / 温度 / 输出上限」） */
-.llm-cols .llm-link-row :deep(.lpf) { grid-column:1 / -1; }
-.ln-name { display:flex; align-items:center; gap:6px; font-size:12.5px; white-space:nowrap; cursor:pointer; }
-.ln-name input { margin:0; }
-.ln-text { min-width:0; }
-.ln-hint { font-size:11px; font-weight:400; color:var(--ink-faint); }
-.ln-inherit { font-size:11.5px; overflow-wrap:anywhere; }
 /* 能力读取失败：照实说（红色常驻，不是一闪就没的 toast） */
 .caps-err { color:var(--pink-text); }
 .form-section { padding:8px 0; border-bottom:1px dashed var(--line-soft); }
@@ -1440,9 +1419,6 @@ button:disabled { opacity:.45; cursor:not-allowed; }
 }
 @media (max-width: 900px) {
   textarea.llm-extra { min-height:160px; }
-  /* 链路覆盖格：窄屏让链路名独占一行（控件本来就跨满整行） */
-  .llm-cols .llm-link-row { grid-template-columns:minmax(0,1fr); }
-  .llm-cols .llm-link-row .ln-name { grid-column:1 / -1; }
   .span-2 { grid-column:1 / -1; }
   .prompt-pair, .prompt-with-side { grid-template-columns:1fr; }
 }

@@ -1210,15 +1210,53 @@ pub(super) struct TestQuery {
     pub provider: Option<String>,
 }
 
+/// `/api/llm/test` 的**草稿**（L3）：不落盘就能试一套还没保存的连接参数。
+///
+/// 病根：以前"想试一个 key 必须先保存"（配置重构 §2-⑨）。草稿与已存值的关系和
+/// `/api/llm/models` 完全一致（[`resolve_llm_conn`]：**草稿非空才算**，空的回落已存那份）——
+/// 两处口径必须同源，否则"取模型能用、测试连接不能用"。
+#[derive(serde::Deserialize, Default)]
+pub(super) struct TestDraft {
+    /// 还没保存的 API 地址（空 = 用已存那份的）
+    #[serde(default)]
+    pub base_url: Option<String>,
+    /// 还没保存的 key（空 = 用已存那份的；已存的那把照样只写不读）
+    #[serde(default)]
+    pub api_key: Option<String>,
+    /// 还没保存的模型 id（空 = 用已存那份的）
+    ///
+    /// ⚠️ `resolve_llm_conn` **不接**草稿模型（它只解析连接三件里的两件）—— 这里解析完再覆盖，
+    /// 因为"测哪一支模型"只在测试这条路上有含义。
+    #[serde(default)]
+    pub model: Option<String>,
+    /// 要测哪一份接口（缺省 = `active` 那份；`?provider=` 查询串仍然认，body 优先）
+    #[serde(default)]
+    pub provider: Option<String>,
+}
+
 pub(super) async fn llm_test(
     Extension(user): Extension<crate::auth::CurrentUser>,
     Query(q): Query<TestQuery>,
+    // ⚠️ **body 必须可选**：老客户端（以及路由自检）发的是空 body，`Json` 硬要求会 400
+    // （`models_download` 那条注释记着同一次事故）。带 body = 草稿测试。
+    draft: Option<Json<TestDraft>>,
 ) -> ApiResult {
+    let draft = draft.map(|Json(b)| b).unwrap_or_default();
     // 只有"读配置"是同步 IO（HTTP 调用本身是 async，保持不动）
     let owner = crate::auth::owner_of(&user);
     let llm = blocking(move || Ok(yekitrim_core::config::load_llm_config_for(owner))).await?;
     // **用该接口自己的 key**（表单草稿 > provider=<id> > legacy）；报错文案按模式分
-    let conn = resolve_llm_conn(&llm, q.provider.as_deref(), None, None, true)?;
+    let provider_id = draft.provider.clone().or_else(|| q.provider.clone());
+    let mut conn = resolve_llm_conn(
+        &llm,
+        provider_id.as_deref(),
+        draft.base_url.as_deref(),
+        draft.api_key.as_deref(),
+        true,
+    )?;
+    if let Some(m) = draft.model.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        conn.model = m.to_string();
+    }
     // B8：普通账号不许让服务器朝本机/内网发请求 —— 保存时拦得住，测试连接这里也拦
     // （判据与 config_llm_put / llm_models 同一份纯函数）。
     assert_base_url_allowed(&conn.base_url, user.is_admin())?;
