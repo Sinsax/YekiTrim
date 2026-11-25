@@ -448,14 +448,16 @@ pub(crate) async fn polish_cover_title(
             "LLM 未配置 API 密钥：请在 设置 → LLM 配置 里为当前配置填好「API 密钥」",
         ));
     }
-    // 链路解析：**标题生成**（见 [llm.overrides.title]）；thinking 的默认关思考由那条链路的
+    // 链路解析：**标题生成**（见 `[llm.links.title]`）；thinking 的默认关思考由那条链路的
     // `default_thinking` 给出（与它原来挂在零散单发上时一致 —— 行为不变）。
     let linked = llm.for_link(cover_title_link());
     // ⚠️ **温度下限**（2026-10-19 用户报「没有幽默串子那种想点进去的欲望」）：
-    // `[llm] temperature` 的模板默认是 **0**（确定性）—— 拿它写标题只会得到四平八稳的概述。
+    // `[llm.defaults] temperature` 的模板默认是 **0**（确定性）—— 拿它写标题只会得到四平八稳的概述。
     // 只在**低于**下限时抬上来；用户自己配了更高温度就照用（不覆盖用户意图）。
-    // v2：`[llm.params] temperature` 省略 = 不表态 ⇒ 按 0 交给下面那条下限规则（0.8）
-    let temp = cover_title_temperature(cfg.cover.title_temperature, linked.params.temperature.unwrap_or(0.0));
+    // v4：参数面只剩「一层 `[llm.defaults]` + 链路覆盖」，而 `for_link` 已经把链路覆盖并进
+    // `defaults` 了 ⇒ **就读这一个入口**（别再另开第二条取参数的路，那是 S1 要收掉的东西）。
+    // 省略 = 不表态 ⇒ 按 0 交给下面那条下限规则（0.8）。
+    let temp = cover_title_temperature(cfg.cover.title_temperature, linked.defaults.temperature.unwrap_or(0.0));
     let client = yekitrim_llm::LlmClient::new(&linked)
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("LLM 配置错误: {e}")))?
         .with_temperature(temp)

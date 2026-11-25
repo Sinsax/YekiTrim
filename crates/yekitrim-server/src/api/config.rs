@@ -93,47 +93,36 @@ pub(super) fn config_get_impl(owner: yekitrim_core::owner::Owner) -> ApiResult {
     let llm_raw = redact_api_key(&std::fs::read_to_string(home.join("llm.toml")).unwrap_or_default());
     let global_cfg = yekitrim_core::config::load_config_for(owner);
     let mut llm_cfg = yekitrim_core::config::load_llm_config_for(owner);
-    // 「有没有配 key」以后只由这个布尔回答（界面不再回显 key 本身）：真值 = llm.toml 里非空
-    // 「有没有配 key」：顶层那把 **或任何一份 provider** 有都算有。
-    // ⚠️ 迁移（v3）会把顶层 key 搬进 provider —— 只看顶层的话，老界面会突然显示"未设置"。
-    let api_key_set = !llm_cfg.api_key.trim().is_empty()
-        || llm_cfg.providers.iter().any(|p| !p.api_key.trim().is_empty());
-    // 解析出来的那份结构里也有一份明文（JSON 字段 `llm_config.api_key`），同样出接口 —— 一起清掉
-    llm_cfg.api_key.clear();
-    // ⚠️ **每一条 provider 都有一份自己的 key** —— 逐条抹，并各给一个 `api_key_set`
-    //    （多条时最容易漏的就是这里：只抹顶层那把 = 其余 provider 的明文照出接口）
-    let provider_key_sets: Vec<bool> = llm_cfg
-        .providers
-        .iter_mut()
-        .map(|p| {
-            let set = !p.api_key.trim().is_empty();
-            p.api_key.clear();
-            set
-        })
-        .collect();
-    // **老形状兼容（读侧）**：v3 之后"当前生效的"在 `providers[active]` 里 ⇒ 老字段（model / base_url /
-    // params）回显**那一份**的。老界面/老脚本读到的仍然是"当前在用的那份配置"（key 仍旧是空）。
-    // ⚠️ 只填空值，不覆盖顶层已有值（老文件 = 顶层就是生效值）。
-    let active_view = llm_cfg.active_provider().cloned();
-    if let Some(p) = active_view {
-        if llm_cfg.model.trim().is_empty() {
-            llm_cfg.model = p.model.clone();
-        }
-        if llm_cfg.base_url.trim().is_empty() {
-            llm_cfg.base_url = p.base_url.clone();
-        }
-        if llm_cfg.params.is_empty() {
-            llm_cfg.params = p.params.clone();
-        }
+    // 「有没有配 key」以后只由这个布尔回答（界面不再回显 key 本身）。
+    // ⚠️ **v4 没有顶层 api_key 了**：判定必须走 `has_api_key()`（= 当前生效那份接口的 key）。
+    // 读顶层字段会恒 false —— 那就是 2026-10-20 那族"明明配了却说未配置"的 bug。
+    let api_key_set = llm_cfg.has_api_key();
+    // ⚠️ **每一条接口都有一份自己的 key** —— 逐条判、逐条抹
+    //    （多条时最容易漏的就是这里：只抹生效那把 = 其余 provider 的明文照出接口）。
+    //    「有没有」的口径与该 provider 的构造口径同源（`key()`：显式 key 优先、其次 api_key_env）。
+    let provider_key_sets: Vec<bool> = llm_cfg.providers.iter().map(|p| !p.key().is_empty()).collect();
+    for p in llm_cfg.providers.iter_mut() {
+        p.api_key.clear();
     }
+    // v4 的形状由 serde 一份给出（`active` / `max_concurrent` / `defaults` / `extra_params` /
+    // `providers` / `models` / `links`）—— **别再手工拼 v3 的字段名**：顶层
+    // `api_key` / `base_url` / `model` / `params` / `overrides` / `models` 全都没有了。
     let mut llm_json = serde_json::to_value(&llm_cfg).unwrap_or_default();
     // 界面「按链路覆盖」的行 = 后端给的清单（Correct 只隐藏不删 —— 别让前端自己写死）
     if let Some(o) = llm_json.as_object_mut() {
         o.insert("override_links".into(), serde_json::json!(override_link_keys()));
+        // 空容器也回出来：三个集合在 serde 里都是 `skip_serializing_if`（空就不出现），
+        // 而前端是**照着它们画**（接口列表 / 模型清单 / 链路表）—— 缺键会变成 undefined。
+        o.entry("providers").or_insert_with(|| serde_json::json!([]));
+        o.entry("models").or_insert_with(|| serde_json::json!([]));
+        o.entry("links").or_insert_with(|| serde_json::json!({}));
     }
     if let Some(arr) = llm_json.get_mut("providers").and_then(|v| v.as_array_mut()) {
         for (i, item) in arr.iter_mut().enumerate() {
             if let Some(o) = item.as_object_mut() {
+                // 空串在 serde 里被 `skip_serializing_if` 丢掉了 ⇒ **显式补回空串**：
+                // 前端按"键在、值为空"画表单，与 `llm_raw` 的抹值形状保持一致。
+                o.insert("api_key".into(), serde_json::json!(""));
                 o.insert(
                     "api_key_set".into(),
                     serde_json::json!(provider_key_sets.get(i).copied().unwrap_or(false)),
@@ -506,44 +495,38 @@ pub(super) fn assert_base_url_allowed(base_url: &str, is_admin: bool) -> Result<
     Ok(())
 }
 
-/// 对**一份将成为 llm.toml 的文本**里的所有 base_url（顶层 + 每条 provider）过 B8 判据。
+/// 对**一份将成为 llm.toml 的文本**里的所有 base_url 过 B8 判据。
 ///
-/// 在「写盘前的最终文本」上判（patch 镜像 legacy 键、raw 还原 provider key 之后）——
-/// 只判 patch 里显式出现的那几个值会漏掉"顶层写一份、provider 里带另一份"的绕法。
+/// 在「写盘前的最终文本」上判（patch 合并完、raw 还原 provider key 之后）——
+/// 只判 patch 里显式出现的那几个值会漏掉"某一份 provider 另带一个内网地址"的绕法。
+///
+/// ⚠️ **v4 的连接面只剩 `[[llm.providers]]`**：没有顶层 `base_url` 了（旧文件里残留的那个键
+/// 在 v4 里根本没人读，判它等于给用户一个假的"拦住了"）。所以只扫 providers。
 fn assert_llm_file_bases(text: &str, is_admin: bool) -> Result<(), AppError> {
     #[derive(serde::Deserialize)]
     struct LlmFile {
         #[serde(default)]
-        llm: yekitrim_core::config::LlmConfig,
+        llm: yekitrim_core::config::LlmConfigV4,
     }
     // 解析不过 = 语法/形状错误，由前序校验（validate_toml / check_provider_*）负责报
     let Ok(f) = toml::from_str::<LlmFile>(text) else {
         return Ok(());
     };
-    for base in std::iter::once(&f.llm.base_url).chain(f.llm.providers.iter().map(|p| &p.base_url)) {
-        assert_base_url_allowed(base, is_admin)?;
+    for p in &f.llm.providers {
+        assert_base_url_allowed(&p.base_url, is_admin)?;
     }
     Ok(())
 }
 
-/// 从 `llm.toml` 文本里读 `[llm] api_key`（解析不了 / 没这个键都当空）。
-fn llm_api_key_in(text: &str) -> String {
-    toml::from_str::<toml::Value>(text)
-        .ok()
-        .and_then(|v| {
-            v.get("llm")
-                .and_then(|l| l.get("api_key"))
-                .and_then(|k| k.as_str())
-                .map(str::to_string)
-        })
-        .unwrap_or_default()
-}
-
-/// patch 里 `llm.api_key` 是**空串** ⇒ 把这个键剔掉（= 不修改）。
+/// patch 里 `api_key` 是**空串** ⇒ 把这个键剔掉（= 不修改）。
 ///
 /// ⚠️ 为什么必须有这一步：`GET /api/config` 不再回显明文 key，设置页那一栏提交上来就是空串 ——
 /// 直接深合并等于**每保存一次表单就清一次 key**。要**删** key 请发 `null`
 /// （`patch_config_file` 的删键语义，是唯一能表达"清掉"的写法）。
+///
+/// ⚠️ **v4 的 key 住在一份份 provider 里** ⇒ 规则的主战场是 `providers[].api_key`（逐份判）。
+/// 顶层那把只剩「老客户端 + [`mirror_legacy_into_active_provider`]」这条兼容路在用：
+/// 老界面发的 `llm.api_key = ""` 一旦被镜像进 active provider，就等于把真 key 抹了 —— 仍然要剔。
 fn drop_blank_api_key(patch: &serde_json::Value) -> serde_json::Value {
     let mut out = patch.clone();
     let blank = out
@@ -673,18 +656,32 @@ fn fill_blank_provider_keys(patch: &serde_json::Value, stored_text: &str) -> ser
     out
 }
 
-/// 写配置前拦下三种**静默失效**（api 认不出 / id 重复 / active 指向不存在的那份）。
+/// 写通道要拦的「半写坏」：接口没 id / id 重复 / 协议认不出 / `active` 指错 /
+/// 模型清单里 (接口, id) 重复或 provider 认不出。
 ///
-/// ⚠️ 只在 patch **真的碰了 `providers`** 时校验 —— 老文件（没有 providers）零回归。
+/// ⚠️ **「一个接口都没有」在写通道不算错**：全新安装就是这个状态，用户也可以显式把
+/// `providers` 清空（= 回到"什么都没配"）。那条判据是给「整份配置能不能跑」用的
+/// （[`LlmConfigV4::problems`]），写通道照搬会把"删掉最后一份接口"变成 400。
+fn write_channel_problems(cfg: &yekitrim_core::config::LlmConfigV4) -> Vec<String> {
+    if cfg.providers.is_empty() {
+        return Vec::new();
+    }
+    cfg.problems()
+}
+
+/// 写配置前拦下那几种**静默失效**（协议认不出 / id 重复 / active 指向不存在的那份 / 清单重复）。
+///
+/// ⚠️ 只在 patch **真的碰了 `providers`** 时校验 —— 只改 `defaults` / `links` 的 patch 零回归。
 fn check_provider_patch(patch: &serde_json::Value) -> Result<(), AppError> {
     let Some(llm) = patch.get("llm") else { return Ok(()) };
     let Some(arr) = llm.get("providers") else { return Ok(()) };
-    let providers: Vec<yekitrim_core::config::LlmProvider> = serde_json::from_value(arr.clone())
+    let providers: Vec<yekitrim_core::config::llm_v4::LlmProviderV4> = serde_json::from_value(arr.clone())
         .map_err(|e| err(StatusCode::BAD_REQUEST, format!("providers 形状不对：{e}")))?;
-    let mut probe = yekitrim_core::config::LlmConfig::default();
+    let mut probe = yekitrim_core::config::LlmConfigV4::default();
     probe.providers = providers;
-    probe.active = llm.get("active").and_then(|a| a.as_str()).map(str::to_string);
-    let problems = probe.provider_problems();
+    // v4 的 `active` 是普通字符串（空 = 第一份）
+    probe.active = llm.get("active").and_then(|a| a.as_str()).unwrap_or_default().to_string();
+    let problems = write_channel_problems(&probe);
     if problems.is_empty() {
         Ok(())
     } else {
@@ -697,12 +694,12 @@ fn check_provider_raw(raw: &str) -> Result<(), AppError> {
     #[derive(serde::Deserialize)]
     struct File {
         #[serde(default)]
-        llm: yekitrim_core::config::LlmConfig,
+        llm: yekitrim_core::config::LlmConfigV4,
     }
     let Ok(f) = toml::from_str::<File>(raw) else {
         return Ok(()); // 语法错误由上面那条 validate_toml 报，这里只管语义
     };
-    let problems = f.llm.provider_problems();
+    let problems = write_channel_problems(&f.llm);
     if problems.is_empty() {
         Ok(())
     } else {
@@ -749,12 +746,11 @@ pub(super) fn config_llm_put_locked(path: &Path, body: &serde_json::Value, is_ad
         .map_err(|e| err(StatusCode::BAD_REQUEST, format!("llm.toml 不是合法 TOML，未保存: {e}")))?;
     // ⚠️ 源文件模式守**同一条**「空 api_key = 不修改」：`GET /api/config` 回的 `llm_raw` 是**抹过值**的，
     // 用户只想改别的键、原样存一次，不能顺手把真 key 抹掉（那是静默毁配置）。
-    // 用户要改 key：在源文件里写真值即可（下面的分支就不会触发）。
-    let incoming_key = llm_api_key_in(raw);
+    // 用户要改 key：在源文件里写真值即可（`restore_llm_provider_keys` 只填空的那些）。
+    //
+    // ⚠️ **v4 的 key 只在 `[[llm.providers]]` 里**（没有顶层 `[llm] api_key` 了）⇒ 这条规则
+    //    只能按 provider 的 `id` **逐份**做；"补回顶层 api_key"那条老分支在 v4 里无处可写，已删。
     let stored_text = std::fs::read_to_string(path).unwrap_or_default();
-    let stored_key = llm_api_key_in(&stored_text);
-    // ⚠️ provider 的那些 key 同样是抹过值的（GET /api/config 的 llm_raw）⇒ 按 id 填回去，
-    //    否则"打开源文件、改个别的键、保存"就会把**所有** provider 的 key 抹掉。
     let restored = yekitrim_core::config::restore_llm_provider_keys(raw, &stored_text);
     let raw = restored.as_deref().unwrap_or(raw);
     check_provider_raw(raw)?;
@@ -766,14 +762,6 @@ pub(super) fn config_llm_put_locked(path: &Path, body: &serde_json::Value, is_ad
         std::fs::create_dir_all(parent).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("创建目录失败: {e}")))?;
     }
     std::fs::write(&tmp, raw).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("保存失败: {e}")))?;
-    if incoming_key.trim().is_empty() && !stored_key.trim().is_empty() {
-        // 整份写完之后再把已存的 key 补回去：走 patch 通道（会自己建 `[llm]` 表 / 补键），
-        // 比在文本上做"插一行"的手术稳得多（源文件可能把那一行整个删了）
-        if let Err(e) = yekitrim_core::config::patch_config_file(&tmp, &serde_json::json!({ "llm": { "api_key": stored_key } })) {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(err(StatusCode::INTERNAL_SERVER_ERROR, format!("LLM 配置保存失败: {e:#}")));
-        }
-    }
     commit_validated(&tmp, path)
 }
 
@@ -952,13 +940,16 @@ struct LlmConn {
 ///
 /// 优先级（用户口径 2026-10-20：「取模型/测试连接要用**该接口自己的** api_key」）：
 /// ① **表单草稿**：请求里显式给了 `base_url` / `api_key`（非空才算 —— 刚填还没保存的那种）；
-/// ② **`provider=<id>` 那一份**（没传 id 就用 `active` 那份）—— **该接口自己的已存 key**；
-/// ③ **legacy 顶层 `[llm]`**（没有 providers 的老文件 ⇒ 行为与从前一字不差，走 [probe_request]）。
+/// ② **`provider=<id>` 那一份**（没传 id 就用 `active` 那份）—— **该接口自己的已存 key**。
 ///
-/// ⚠️ 报错文案按模式分：provider 模式**绝不许**说 `[llm] api_key`（那是个用户在界面上看不见的字段，
+/// ⚠️ **v4 没有「legacy 顶层」这一档了**：key / 地址 / 模型全在 `[[llm.providers]]` 里
+/// （顶层 `api_key` / `base_url` / `model` 三个字段已经不存在）⇒「当前生效的那份」一律走
+/// `effective_*`（唯一口径），只有显式给了 `provider=<id>` 时才另取那一份。
+///
+/// ⚠️ 报错文案按情形分：有接口时**绝不许**说 `[llm] api_key`（那是个用户在界面上看不见的字段，
 /// 他明明已经在「API 密钥」里填过了）。
 fn resolve_llm_conn(
-    llm: &yekitrim_core::config::LlmConfig,
+    llm: &yekitrim_core::config::LlmConfigV4,
     provider_id: Option<&str>,
     draft_base: Option<&str>,
     draft_key: Option<&str>,
@@ -967,21 +958,22 @@ fn resolve_llm_conn(
 ) -> Result<LlmConn, AppError> {
     let draft_base = draft_base.map(str::trim).filter(|s| !s.is_empty());
     let draft_key = draft_key.map(str::trim).filter(|s| !s.is_empty());
-    // 选哪一份：显式 id > active（没有 providers / active 空 ⇒ legacy）
+    // 选哪一份：显式 id > active（一份接口都没有 ⇒ 两个都是 None）
     let wanted = provider_id.map(str::trim).filter(|s| !s.is_empty());
-    let chosen = match wanted {
-        Some(id) => Some(llm.providers.iter().find(|p| p.id == id).ok_or_else(|| {
+    let explicit = match wanted {
+        Some(id) => Some(llm.provider(id).ok_or_else(|| {
             err(StatusCode::BAD_REQUEST, format!("找不到这份配置：{id}"))
         })?),
-        None => llm.active_provider(),
+        None => None,
     };
 
-    let Some(p) = chosen else {
-        // ── ③ legacy：**原样走老路径**（报错文案、缺省 base_url 都不变）
-        let base = if require_key {
+    let Some(p) = explicit.or_else(|| llm.active_provider()) else {
+        // ── 一份接口都没有（全新安装 / 刚被清空）：只剩表单草稿可按，报错文案指到设置页
+        let base_url = if require_key {
             probe_request(draft_base.unwrap_or(""), draft_key, llm)?
         } else {
-            let b = draft_base.map(str::to_string).unwrap_or_else(|| llm.base_url.trim().to_string());
+            let b = draft_base.map(str::to_string).unwrap_or_else(|| llm.effective_base_url());
+            let b = b.trim().to_string();
             if b.is_empty() {
                 return Err(err(StatusCode::BAD_REQUEST, "缺少 base_url：要读哪支模型的能力？"));
             }
@@ -989,25 +981,25 @@ fn resolve_llm_conn(
         };
         return Ok(LlmConn {
             provider: None,
-            api_key: draft_key.map(str::to_string).unwrap_or_else(|| llm.api_key.clone()),
-            base_url: base,
-            model: llm.model.clone(),
+            api_key: draft_key.map(str::to_string).unwrap_or_else(|| llm.effective_api_key()),
+            base_url,
+            model: llm.effective_model(),
         });
     };
 
-    // ── ② provider：草稿优先，其次**这份接口自己的**已存值
-    // （key 的取值口径与 `From<&LlmConfig>` 的 provider_key 一致：显式 key 优先，其次 api_key_env）
-    let saved_key = if !p.api_key.trim().is_empty() {
-        p.api_key.clone()
-    } else {
-        let var = p.api_key_env.trim();
-        if var.is_empty() { String::new() } else { std::env::var(var).unwrap_or_default() }
+    // ── 有接口：草稿优先，其次**这份接口自己的**已存值
+    // （`key()` 的取值口径：显式 key 优先，其次 `api_key_env`；显式 id 与 active 不同也不会串）
+    let (saved_base, saved_key, saved_model) = match explicit {
+        Some(x) => (x.base_url.trim().to_string(), x.key(), x.model.trim().to_string()),
+        None => (
+            llm.effective_base_url().trim().to_string(),
+            llm.effective_api_key(),
+            llm.effective_model().trim().to_string(),
+        ),
     };
-    let base_url = draft_base
-        .map(str::to_string)
-        .unwrap_or_else(|| p.base_url.trim().to_string());
+    let base_url = draft_base.map(str::to_string).unwrap_or(saved_base);
     let api_key = draft_key.map(str::to_string).unwrap_or(saved_key);
-    if base_url.is_empty() {
+    if base_url.trim().is_empty() {
         return Err(err(StatusCode::BAD_REQUEST, "缺少 API 地址：要探哪个地址的模型清单？"));
     }
     if require_key && api_key.trim().is_empty() {
@@ -1019,13 +1011,8 @@ fn resolve_llm_conn(
             ),
         ));
     }
-    Ok(LlmConn { provider: Some(p.id.clone()), api_key, base_url, model: p.model.clone() })
+    Ok(LlmConn { provider: Some(p.id.clone()), api_key, base_url, model: saved_model })
 }
-
-/// 真探之前的两道检查：**key 没配就别发一个必然 401 的请求**；两个 base_url 都空就没得探。
-///
-/// 拆成纯函数是为了**能钉住**：本机的真实程序目录（`target/debug/users/<uid>/.yekitrim/llm.toml`）
-/// 里通常已经躺着一把真 key，HTTP 级用例钉不了"没配 key"那条分支（会真发一个网络请求）。
 
 /// 显示名空着就用 id（只给上面的报错文案用）。
 trait IfEmptyElse {
@@ -1037,23 +1024,27 @@ impl IfEmptyElse for str {
     }
 }
 
+/// 一份接口都没有时的两道检查：**key 没配就别发一个必然 401 的请求**；两个 base_url 都空就没得探。
+///
+/// 拆成纯函数是为了**能钉住**：本机的真实程序目录（`target/debug/users/<uid>/.yekitrim/llm.toml`）
+/// 里通常已经躺着一把真 key，HTTP 级用例钉不了"没配 key"那条分支（会真发一个网络请求）。
 fn probe_request(
     asked: &str,
     draft_key: Option<&str>,
-    llm: &yekitrim_core::config::LlmConfig,
+    llm: &yekitrim_core::config::LlmConfigV4,
 ) -> Result<String, AppError> {
     // ⚠️ 表单里刚填、**还没保存**的 key 也算数：用户就是在"先填地址+密钥 → 点获取模型 → 选模型 → 保存"
     // 这条路上踩过「还没配置 API key」——只认已存值等于逼他先保存一次才能选模型。
-    let has_key = draft_key.map(str::trim).is_some_and(|k| !k.is_empty())
-        || !llm.api_key.trim().is_empty();
+    let has_key = draft_key.map(str::trim).is_some_and(|k| !k.is_empty()) || llm.has_api_key();
     if !has_key {
         return Err(err(
             StatusCode::BAD_REQUEST,
-            "还没配置 API key（llm.toml 的 [llm] api_key）—— 填好再取模型",
+            "还没配置 API key（设置 → LLM 配置 里的「API 密钥」）—— 填好再取模型",
         ));
     }
     // 请求里给了就用它（草稿），没给才回落到已存的那条
-    let base = if asked.trim().is_empty() { llm.base_url.trim() } else { asked.trim() };
+    let stored = llm.effective_base_url();
+    let base = if asked.trim().is_empty() { stored.trim() } else { asked.trim() };
     if base.is_empty() {
         return Err(err(StatusCode::BAD_REQUEST, "缺少 base_url：要探哪个地址的模型清单？"));
     }
@@ -1192,19 +1183,24 @@ pub(super) async fn llm_test(
     // B8：普通账号不许让服务器朝本机/内网发请求 —— 保存时拦得住，测试连接这里也拦
     // （判据与 config_llm_put / llm_models 同一份纯函数）。
     assert_base_url_allowed(&conn.base_url, user.is_admin())?;
-    // 测连接只需要"这一套连接参数"：把解析结果拍成 legacy 形状再交给 test_llm
-    //（它内部走 for_link → From<&LlmConfig>，active 分支会去读 provider 自己的字段）
-    let mut plain = llm.clone();
-    plain.active = None;
-    plain.providers.clear();
-    plain.api_key = conn.api_key;
-    plain.base_url = conn.base_url;
-    plain.model = conn.model.clone();
+    // 测连接只需要"这一套连接参数"：把解析结果落成**一份接口**再交给 test_llm。
+    // ⚠️ 先 `for_link(Utility)` 把链路参数并进 defaults、并清掉 links —— 否则 test_llm 内部那次
+    //    `for_link` 会按链路把接口/模型换成配置里那一份，测的就不是这次解析出来的连接了。
+    let mut plain = llm.for_link(yekitrim_core::config::LlmLink::Utility);
+    plain.providers = vec![yekitrim_core::config::llm_v4::LlmProviderV4 {
+        id: conn.provider.clone().unwrap_or_else(|| "test".to_string()),
+        name: "测试连接".to_string(),
+        base_url: conn.base_url.clone(),
+        api_key: conn.api_key.clone(),
+        model: conn.model.clone(),
+        ..Default::default()
+    }];
+    plain.active = plain.providers[0].id.clone();
     let start = std::time::Instant::now();
     let test_ok = yekitrim_core::detection::test_llm(&plain, "ping").await.is_ok();
     let latency_ms = start.elapsed().as_millis() as u64;
     if test_ok {
-        ok(serde_json::json!({ "ok": true, "latency_ms": latency_ms, "model": plain.model, "provider": conn.provider }))
+        ok(serde_json::json!({ "ok": true, "latency_ms": latency_ms, "model": conn.model, "provider": conn.provider }))
     } else {
         Err(err(StatusCode::INTERNAL_SERVER_ERROR, format!("LLM 连接失败 ({latency_ms}ms)")))
     }
@@ -1725,11 +1721,10 @@ async fn config_is_per_account_and_llm_key_does_not_leak() {
         )
         .await
     }
-    /// 当前生效的模型 id（**两代形状都认**）：v3 之后它在 `providers[active].model`，
-    /// 老文件（没有 providers）在 `llm_config.model`。
+    /// 当前生效的模型 id：**v4 只在 `providers[<active>].model` 里**（顶层 `model` 已经没有了）。
     fn model_of(j: &serde_json::Value) -> String {
         let active = j["llm_config"]["active"].as_str().unwrap_or("");
-        let from_provider = j["llm_config"]["providers"]
+        j["llm_config"]["providers"]
             .as_array()
             .and_then(|arr| {
                 arr.iter()
@@ -1737,11 +1732,8 @@ async fn config_is_per_account_and_llm_key_does_not_leak() {
                     .or_else(|| arr.first())
             })
             .and_then(|p| p["model"].as_str())
-            .unwrap_or("");
-        if !from_provider.is_empty() {
-            return from_provider.to_string();
-        }
-        j["llm_config"]["model"].as_str().unwrap_or("").to_string()
+            .unwrap_or("")
+            .to_string()
     }
     async fn get_cfg(t: &TestApp, sid: &str, csrf: &str) -> serde_json::Value {
         let res = t
@@ -1750,12 +1742,17 @@ async fn config_is_per_account_and_llm_key_does_not_leak() {
         body_json(res).await
     }
 
-    // 甲写自己的 key。
+    // 甲写自己的 key（v4：连接面只有 `[[llm.providers]]`）。
     let res = put_llm(
         &t,
         &a.session_id,
         &a.csrf,
         "[llm]
+active = \"default\"
+
+[[llm.providers]]
+id = \"default\"
+base_url = \"https://api.example.com/v1\"
 api_key = \"key-of-alice\"
 model = \"m-a\"
 ",
@@ -1773,7 +1770,10 @@ model = \"m-a\"
         !dumped_a.contains("key-of-alice"),
         "明文 API key 不许出接口（llm_raw / llm_config 都得抹）：{dumped_a}"
     );
-    assert_eq!(ja["llm_config"]["api_key"], "", "解析出来的那份也要清：{ja}");
+    assert_eq!(
+        ja["llm_config"]["providers"][0]["api_key"], "",
+        "provider 里的明文也要清（键名留着、值置空）：{ja}"
+    );
     let raw_a = ja["llm_raw"].as_str().unwrap_or("");
     assert!(raw_a.contains("api_key = \"\""), "键与行位置要留着（源文件编辑器靠它）：{raw_a}");
     assert!(raw_a.contains("m-a"), "没被抹的键原样保留：{raw_a}");
@@ -1783,15 +1783,15 @@ model = \"m-a\"
     // **又从 1 数起** ⇒ 同一个 uid 的 llm.toml 会在**多次跑测试之间留着**。
     // 不清就断言"乙还没配 key"，第二次跑必然红（实测：left: true, right: false）。
     // 顺手也就把 null = 删键 这条路钉住了（它是唯一能表达"清掉 key"的写法）。
-    // ⚠️ v3 之后 key 可能躺在 `[[llm.providers]]` 里（迁移搬过去）⇒ 一并清：
-    //    `providers = []`（数组整体替换）+ `active = null`（否则 active 指向不存在的 provider 会被 400 拦下）。
+    // ⚠️ v4 的 key 只在 `[[llm.providers]]` 里 ⇒ 清它就等于清 key：
+    //    `providers = []`（数组整体替换）+ `active = null`（指向不存在的接口该一起清掉）。
     let res = t
         .call(
             t.req_as(&b.session_id, &b.csrf, "PUT", "/config/llm")
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({ "patch": { "llm": {
-                        "api_key": null, "active": null, "providers": []
+                        "active": null, "providers": []
                     } } })
                     .to_string(),
                 ))
@@ -1811,6 +1811,11 @@ model = \"m-a\"
 
     // 乙写自己的，两边互不覆盖。
     let res = put_llm(&t, &b.session_id, &b.csrf, "[llm]
+active = \"default\"
+
+[[llm.providers]]
+id = \"default\"
+base_url = \"https://api.example.com/v1\"
 api_key = \"key-of-bob\"
 model = \"m-b\"
 ").await;
@@ -1830,7 +1835,11 @@ model = \"m-b\"
             t.req_as(&a.session_id, &a.csrf, "PUT", "/config/llm")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    serde_json::json!({ "patch": { "llm": { "api_key": "", "model": "m-a2" } } })
+                    // v4：空 api_key = **那一份**不修改（按 id 把已存的 key 填回去）
+                    serde_json::json!({ "patch": { "llm": { "providers": [
+                        { "id": "default", "base_url": "https://api.example.com/v1",
+                          "api_key": "", "model": "m-a2" }
+                    ] } } })
                         .to_string(),
                 ))
                 .unwrap(),
@@ -2008,14 +2017,15 @@ fn llm_put_null_patch_removes_override_key() {
     let dir = std::env::temp_dir().join(format!("yekitrim-llm-put-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let p = dir.join("llm.toml");
+    // v4：参数基准只有一层 `[llm.defaults]`，链路覆盖在 `[llm.links.<link>]`
     std::fs::write(
         &p,
-        "[llm]\napi_key = \"k\"\nmax_tokens = 16384\n\n[llm.overrides.detect]\nmax_tokens = 8192\n",
+        "[llm]\n\n[llm.defaults]\nmax_tokens = 16384\n\n[llm.links.detect]\nmax_tokens = 8192\n\n[[llm.providers]]\nid = \"default\"\nbase_url = \"https://api.example.com/v1\"\napi_key = \"k\"\nmodel = \"m\"\n",
     )
     .unwrap();
 
     let body = serde_json::json!({
-        "patch": {"llm": {"overrides": {"detect": {"max_tokens": null}}}}
+        "patch": {"llm": {"links": {"detect": {"max_tokens": null}}}}
     });
     let _ = config_llm_put_locked(&p, &body, true).unwrap();
 
@@ -2045,34 +2055,34 @@ fn redact_api_key_只抹值() {
 
 
 
-/// **取模型/测连接用"该接口自己的" api_key**（P0 2026-10-20）：优先级 = 表单草稿 > `provider=<id>` > legacy。
+/// **取模型/测连接用"该接口自己的" api_key**（P0 2026-10-20）：优先级 = 表单草稿 > `provider=<id>` > active。
 ///
 /// 用户实测：provider 里填了密钥，探针却只认 `[llm] api_key` ⇒ 报"还没配置 API key"。
-/// 这条钉的就是三档优先级 + **两种模式各自的报错文案**。
+/// 这条钉的就是优先级 + **两种情形各自的报错文案**。
+/// ⚠️ v4 **没有 legacy 顶层那一档了**（顶层 `api_key` / `base_url` / `model` 三个字段已不存在）：
+/// 一份接口都没有就只能靠表单草稿，文案指到"设置 → LLM 配置"。
 #[test]
 fn resolve_llm_conn_uses_the_providers_own_key() {
-    use yekitrim_core::config::{LlmConfig, LlmProvider};
+    use yekitrim_core::config::llm_v4::LlmProviderV4;
+    use yekitrim_core::config::LlmConfigV4;
 
-    fn cfg() -> LlmConfig {
-        let mut c = LlmConfig::default();
-        // legacy 顶层（老文件那套）
-        c.api_key = "k-legacy".into();
-        c.base_url = "https://legacy.example/v1".into();
-        c.model = "m-legacy".into();
+    fn cfg() -> LlmConfigV4 {
+        let mut c = LlmConfigV4::default();
+        c.active = "a".into();
         c.providers = vec![
-            LlmProvider {
+            LlmProviderV4 {
                 id: "a".into(),
                 name: "甲".into(),
-                api: "openai-chat".into(),
+                protocol: "openai-chat".into(),
                 base_url: "https://a.example/v1".into(),
                 api_key: "k-a".into(),
                 model: "m-a".into(),
                 ..Default::default()
             },
-            LlmProvider {
+            LlmProviderV4 {
                 id: "b".into(),
                 name: "乙".into(),
-                api: "openai-chat".into(),
+                protocol: "openai-chat".into(),
                 base_url: "https://b.example/v1".into(),
                 api_key: String::new(), // ← 没填 key（要能给出对味的报错）
                 model: "m-b".into(),
@@ -2082,7 +2092,7 @@ fn resolve_llm_conn_uses_the_providers_own_key() {
         c
     }
 
-    // ① provider=<id> ⇒ **用那一份自己的 key**（不是 legacy 顶层那把）
+    // ① provider=<id> ⇒ **用那一份自己的 key**（不是 active 那把）
     let conn = resolve_llm_conn(&cfg(), Some("a"), None, None, true).expect("a 有 key");
     assert_eq!(conn.provider.as_deref(), Some("a"));
     assert_eq!(conn.api_key, "k-a", "必须是这份接口自己的 key");
@@ -2102,24 +2112,25 @@ fn resolve_llm_conn_uses_the_providers_own_key() {
     assert_eq!(conn.api_key, "k-draft", "草稿 key 压过已存值");
     assert_eq!(conn.base_url, "https://draft.example/v1", "草稿地址也优先");
 
-    // ④ legacy（没有 providers / 没指定 provider 且无 active）⇒ 行为与从前一样
-    let mut legacy = cfg();
-    legacy.providers.clear();
-    legacy.active = None;
-    let conn = resolve_llm_conn(&legacy, None, None, None, true).expect("legacy 有 key");
-    assert_eq!(conn.provider, None);
-    assert_eq!(conn.api_key, "k-legacy");
-    assert_eq!(conn.base_url, "https://legacy.example/v1");
-    let mut no_key = legacy.clone();
-    no_key.api_key.clear();
-    let e = resolve_llm_conn(&no_key, None, None, None, true).expect_err("legacy 没 key 也要报错");
+    // ④ 一份接口都没有（全新安装 / 刚清空）⇒ 没有已存值可回退，只能靠草稿；
+    //    报错要指到用户能点的位置，**别再说一个已经不存在了的 `[llm] api_key`**。
+    let mut empty = cfg();
+    empty.providers.clear();
+    empty.active.clear();
+    let e = resolve_llm_conn(&empty, None, None, None, true).expect_err("一份接口都没有要报错");
+    assert_eq!(e.0, StatusCode::BAD_REQUEST);
     let msg = e.1 .0["error"].as_str().unwrap_or("").to_string();
-    assert!(msg.contains("[llm] api_key"), "legacy 模式的文案保持不变：{msg}");
+    assert!(msg.contains("API key"), "{msg}");
+    assert!(msg.contains("设置"), "要指到用户能点的位置：{msg}");
+    assert!(!msg.contains("[llm] api_key"), "顶层 key 已经不存在了：{msg}");
+    let conn = resolve_llm_conn(&empty, None, Some("https://draft.example/v1"), Some("k-draft"), true)
+        .expect("草稿齐了就能探");
+    assert_eq!(conn.provider, None, "没有已存接口 ⇒ provider 位是 None");
+    assert_eq!(conn.base_url, "https://draft.example/v1");
+    assert_eq!(conn.api_key, "k-draft");
 
     // ⑤ 没传 provider ⇒ 用 **active** 那份（用户当前在用的就是它）
-    let mut active = cfg();
-    active.active = Some("a".into());
-    let conn = resolve_llm_conn(&active, None, None, None, true).expect("active 有 key");
+    let conn = resolve_llm_conn(&cfg(), None, None, None, true).expect("active 有 key");
     assert_eq!(conn.provider.as_deref(), Some("a"));
     assert_eq!(conn.api_key, "k-a");
 
@@ -2152,10 +2163,11 @@ fn broken_patch_is_rejected_and_the_file_is_untouched() {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("llm.toml");
     // 夹具里的 key 一律 "k"（**不许把真 key 写进仓库/输出**）
-    let original = "[llm]\napi_key = \"k\"\nmodel = \"m\"\n";
+    // v4 形状：连接面在 `[[llm.providers]]`，参数面在 `[llm.defaults]`
+    let original = "[llm]\n\n[[llm.providers]]\nid = \"default\"\nbase_url = \"https://api.example.com/v1\"\napi_key = \"k\"\nmodel = \"m\"\n";
     std::fs::write(&path, original).unwrap();
 
-    let bad = serde_json::json!({ "patch": { "llm": { "params": { "json_mode": "" } } } });
+    let bad = serde_json::json!({ "patch": { "llm": { "defaults": { "json_mode": "" } } } });
     let e = config_llm_put_locked(&path, &bad, true).expect_err("这种 patch 必须被拦下");
     assert_eq!(e.0, StatusCode::BAD_REQUEST, "要回 400（不是 200、也不是 500）");
     let msg = e.1 .0["error"].as_str().unwrap_or("").to_string();
@@ -2173,8 +2185,14 @@ fn broken_patch_is_rejected_and_the_file_is_untouched() {
     );
 
     // 合法 patch ⇒ 200，且文件真的能反序列化
-    let _ = config_llm_put_locked(&path, &serde_json::json!({ "patch": { "llm": { "model": "m2" } } }), true)
-        .expect("合法 patch 必须能存");
+    let _ = config_llm_put_locked(
+        &path,
+        &serde_json::json!({ "patch": { "llm": { "providers": [
+            { "id": "default", "base_url": "https://api.example.com/v1", "model": "m2" }
+        ] } } }),
+        true,
+    )
+    .expect("合法 patch 必须能存");
     let text = std::fs::read_to_string(&path).unwrap();
     assert!(text.contains("m2"), "改动生效：\n{text}");
     assert!(
@@ -2189,7 +2207,7 @@ fn broken_patch_is_rejected_and_the_file_is_untouched() {
 #[test]
 fn parse_error_message_does_not_leak_the_api_key() {
     // 夹具：key 故意写在**出错那一行**上（事故现场的形状）
-    let bad = "[llm]\nparams = { json_mode = \"\", api_key = \"sk-LEAK-FIXTURE\" }\n";
+    let bad = "[llm]\ndefaults = { json_mode = \"\", api_key = \"sk-LEAK-FIXTURE\" }\n";
     let e = yekitrim_core::config::validate_llm_toml(bad).expect_err("必须解析不过");
     assert!(!e.contains("sk-LEAK-FIXTURE"), "错误文案里不许有明文 key：{e}");
     assert!(!e.contains("sk-"), "连前缀都不该出现：{e}");
@@ -2267,10 +2285,15 @@ fn raw_保存时空_api_key_不会清掉已存的_key() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let p = dir.join("llm.toml");
-    std::fs::write(&p, "[llm]\napi_key = \"sk-real\"\nmodel = \"m1\"\n").unwrap();
+    // v4：key 在 `[[llm.providers]]` 里（每份一把，按 id 认人）
+    std::fs::write(
+        &p,
+        "[llm]\nactive = \"a\"\n\n[[llm.providers]]\nid = \"a\"\nbase_url = \"https://api.example.com/v1\"\napi_key = \"sk-real\"\nmodel = \"m1\"\n",
+    )
+    .unwrap();
 
     // ① 抹过值的原文原样存回：真 key 必须还在，别的改动照常落地
-    let masked = "[llm]\napi_key = \"\"\nmodel = \"m2\"\n";
+    let masked = "[llm]\nactive = \"a\"\n\n[[llm.providers]]\nid = \"a\"\nbase_url = \"https://api.example.com/v1\"\napi_key = \"\"\nmodel = \"m2\"\n";
     let _ = config_llm_put_locked(&p, &serde_json::json!({ "raw": masked }), true).unwrap();
     let after = std::fs::read_to_string(&p).unwrap();
     assert!(after.contains("api_key = \"sk-real\""), "空 api_key 不该覆盖真 key：\n{after}");
@@ -2279,22 +2302,27 @@ fn raw_保存时空_api_key_不会清掉已存的_key() {
     // ② 用户真写了新 key：照常换掉（"改 key"这条路不能被保护逻辑挡住）
     let _ = config_llm_put_locked(
         &p,
-        &serde_json::json!({ "raw": "[llm]\napi_key = \"sk-new\"\nmodel = \"m2\"\n" }),
+        &serde_json::json!({ "raw": "[llm]\nactive = \"a\"\n\n[[llm.providers]]\nid = \"a\"\nbase_url = \"https://api.example.com/v1\"\napi_key = \"sk-new\"\nmodel = \"m2\"\n" }),
         true,
     )
     .unwrap();
     let after = std::fs::read_to_string(&p).unwrap();
     assert!(after.contains("api_key = \"sk-new\"") && !after.contains("sk-real"), "\n{after}");
 
-    // ③ 源文件里连那一行都没有：也要补回来（走 patch 通道补键，别让"删一行"等于丢 key）
-    let _ = config_llm_put_locked(&p, &serde_json::json!({ "raw": "[llm]\nmodel = \"m3\"\n" }), true).unwrap();
+    // ③ 源文件里连那一行都没有：**按 id 逐份**补回来（别让"删一行"等于丢 key）
+    let _ = config_llm_put_locked(
+        &p,
+        &serde_json::json!({ "raw": "[llm]\nactive = \"a\"\n\n[[llm.providers]]\nid = \"a\"\nbase_url = \"https://api.example.com/v1\"\nmodel = \"m3\"\n" }),
+        true,
+    )
+    .unwrap();
     let after = std::fs::read_to_string(&p).unwrap();
     assert!(after.contains("api_key = \"sk-new\"") && after.contains("model = \"m3\""), "\n{after}");
 
-    // ④ 原本就没 key：不会被补出一个空的 api_key 行
+    // ④ 原本就没 key（一份接口都没有）：不会被补出一个空的 api_key 行
     let q = dir.join("empty.toml");
-    std::fs::write(&q, "[llm]\nmodel = \"m\"\n").unwrap();
-    let _ = config_llm_put_locked(&q, &serde_json::json!({ "raw": "[llm]\nmodel = \"m4\"\n" }), true).unwrap();
+    std::fs::write(&q, "[llm]\nmax_concurrent = 3\n").unwrap();
+    let _ = config_llm_put_locked(&q, &serde_json::json!({ "raw": "[llm]\nmax_concurrent = 5\n" }), true).unwrap();
     let after = std::fs::read_to_string(&q).unwrap();
     assert!(!after.contains("api_key"), "没配过 key 就别凭空写一行：\n{after}");
 
@@ -2304,24 +2332,26 @@ fn raw_保存时空_api_key_不会清掉已存的_key() {
 /// 真探之前的两道检查（纯函数：本机真程序目录里通常已有 key，HTTP 级钉不住这条分支）。
 #[test]
 fn 探之前先要_key_与_base_url() {
-    let mut llm = yekitrim_core::config::LlmConfig::default();
-    llm.base_url = "https://stored.example/v1".to_string();
-    let e = probe_request("https://asked.example/v1", None, &llm).unwrap_err();
+    use yekitrim_core::config::LlmConfigV4;
+
+    // v4：地址与 key 都在那一份接口里 —— 没填 key 就是"没配"
+    let no_key = LlmConfigV4::single("https://stored.example/v1", "m", "");
+    let e = probe_request("https://asked.example/v1", None, &no_key).unwrap_err();
     assert_eq!(e.0, StatusCode::BAD_REQUEST, "没配 key 就别发一个必然 401 的请求");
     let msg = e.1 .0["error"].as_str().unwrap_or("").to_string();
     assert!(msg.contains("API key"), "{msg}");
 
     // ⚠️ 表单里刚填、还没保存的 key 也算数（否则用户必须先保存一次才能「获取模型」）
     assert_eq!(
-        probe_request("https://asked.example/v1", Some("sk-draft"), &llm).unwrap(),
+        probe_request("https://asked.example/v1", Some("sk-draft"), &no_key).unwrap(),
         "https://asked.example/v1"
     );
 
-    llm.api_key = "sk-x".to_string();
+    let llm = LlmConfigV4::single("https://stored.example/v1", "m", "sk-x");
     assert_eq!(probe_request("https://asked.example/v1", None, &llm).unwrap(), "https://asked.example/v1");
     assert_eq!(probe_request("  ", None, &llm).unwrap(), "https://stored.example/v1", "缺省用已存的那条");
-    llm.base_url.clear();
-    assert_eq!(probe_request("", None, &llm).unwrap_err().0, StatusCode::BAD_REQUEST, "两个都空就没得探");
+    let no_base = LlmConfigV4::single("", "m", "sk-x");
+    assert_eq!(probe_request("", None, &no_base).unwrap_err().0, StatusCode::BAD_REQUEST, "两个都空就没得探");
 }
 
 /// `GET /api/llm/models`：**认识的 route ⇒ 一个网络请求都不发**（回 `source: catalog`）。
@@ -2489,21 +2519,27 @@ fn llm_put_rejects_private_base_url_for_normal_user() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let p = dir.join("llm.toml");
-    let original = "[llm]\napi_key = \"k\"\nmodel = \"m\"\nbase_url = \"https://api.example.com/v1\"\n";
+    // v4：地址只在 `[[llm.providers]]` 里（顶层 `base_url` 这个字段已经不存在了）
+    let original = "[llm]\nactive = \"a\"\n\n[[llm.providers]]\nid = \"a\"\nname = \"甲\"\nbase_url = \"https://api.example.com/v1\"\napi_key = \"k\"\nmodel = \"m\"\n";
     std::fs::write(&p, original).unwrap();
 
-    // ① patch 顶层：403，原文件不动，临时文件清掉
+    // ① patch 里**多份接口之一**带内网地址：数组整体替换也要逐份判 → 403，原文件不动、临时文件清掉
     let e = config_llm_put_locked(
         &p,
-        &serde_json::json!({ "patch": { "llm": { "base_url": "http://127.0.0.1:11434/v1" } } }),
+        &serde_json::json!({ "patch": { "llm": { "providers": [
+            { "id": "a", "name": "甲", "protocol": "openai-chat",
+              "base_url": "https://api.example.com/v1", "api_key": "k", "model": "m" },
+            { "id": "b", "name": "乙", "protocol": "openai-chat",
+              "base_url": "http://127.0.0.1:11434/v1", "model": "n" }
+        ] } } }),
         false,
     )
-    .expect_err("普通账号不许把 base_url 指到本机");
+    .expect_err("只要有一份指向本机，整份 patch 就要被拦");
     assert_eq!(e.0, StatusCode::FORBIDDEN, "{e:?}");
     assert_eq!(std::fs::read_to_string(&p).unwrap(), original, "原文件一个字节不动");
     assert!(!p.with_extension("toml.guard").exists(), "失败不留临时文件");
 
-    // ② patch 里的 provider 带内网地址：同样 403（数组整体替换的绕法也要拦）
+    // ② patch 里的 provider 带内网地址：同样 403（第一条就是内网也要拦）
     let e = config_llm_put_locked(
         &p,
         &serde_json::json!({ "patch": { "llm": { "providers": [
@@ -2518,7 +2554,7 @@ fn llm_put_rejects_private_base_url_for_normal_user() {
     // ③ raw 源文件模式：同样 403
     let e = config_llm_put_locked(
         &p,
-        &serde_json::json!({ "raw": "[llm]\napi_key = \"k\"\nbase_url = \"http://169.254.169.254/\"\n" }),
+        &serde_json::json!({ "raw": "[llm]\nactive = \"a\"\n\n[[llm.providers]]\nid = \"a\"\nbase_url = \"http://169.254.169.254/\"\napi_key = \"k\"\nmodel = \"m\"\n" }),
         false,
     )
     .expect_err("raw 模式同样要拦");
@@ -2528,7 +2564,10 @@ fn llm_put_rejects_private_base_url_for_normal_user() {
     // ④ 同样的 patch，admin 放行且真的落盘
     let _ = config_llm_put_locked(
         &p,
-        &serde_json::json!({ "patch": { "llm": { "base_url": "http://127.0.0.1:11434/v1" } } }),
+        &serde_json::json!({ "patch": { "llm": { "providers": [
+            { "id": "a", "name": "甲", "protocol": "openai-chat",
+              "base_url": "http://127.0.0.1:11434/v1", "api_key": "k", "model": "m" }
+        ] } } }),
         true,
     )
     .expect("admin 可以配内网中转");
@@ -2560,7 +2599,7 @@ async fn llm_test_rejects_private_base_url_for_normal_user() {
     std::fs::create_dir_all(&home).unwrap();
     std::fs::write(
         home.join("llm.toml"),
-        "[llm]\napi_key = \"k\"\nmodel = \"m\"\nbase_url = \"http://127.0.0.1:9/v1\"\n",
+        "[llm]\nactive = \"a\"\n\n[[llm.providers]]\nid = \"a\"\nbase_url = \"http://127.0.0.1:9/v1\"\napi_key = \"k\"\nmodel = \"m\"\n",
     )
     .unwrap();
 
@@ -2573,7 +2612,7 @@ async fn llm_test_rejects_private_base_url_for_normal_user() {
     // 这里只验"不是 403"，防止判据把公网用户一起拦掉）
     std::fs::write(
         home.join("llm.toml"),
-        "[llm]\napi_key = \"k\"\nmodel = \"m\"\nbase_url = \"https://b8.invalid.example/v1\"\n",
+        "[llm]\nactive = \"a\"\n\n[[llm.providers]]\nid = \"a\"\nbase_url = \"https://b8.invalid.example/v1\"\napi_key = \"k\"\nmodel = \"m\"\n",
     )
     .unwrap();
     let res = t
