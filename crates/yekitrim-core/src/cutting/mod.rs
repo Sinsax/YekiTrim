@@ -367,6 +367,21 @@ type EncoderSpec = (&'static str, &'static str, &'static str);
 
 const SOFTWARE_ENCODER: EncoderSpec = ("libx264", "ultrafast", "-crf");
 
+/// 软件编码器的线程上限。⚠️ **必须显式设**（2026-11-25 排查）：不写 `-threads` 时 x264
+/// 按核数自动铺线程，实测**单路剪切就吃 ~11.5 核**（16 核机）；而 cutting 固定 3 路并发，
+/// 峰值需求 ~34 核压在 16 核上 —— 任务排队时预览/接口全部被拖慢。
+/// 限到 4 线程/路：实测降到 ~6 核、**耗时不变**（ultrafast 下高线程数全是同步开销，
+/// 总功反而更低：1150%×7s → 600%×6s）。硬件编码器自己管线程，不设。
+const SOFTWARE_ENCODER_THREADS: &str = "4";
+
+/// 给**软件**编码器的 ffmpeg 命令行追加上面的线程上限（硬件编码器不设，它自己管线程）。
+fn push_software_thread_limit(cmd: &mut std::process::Command, enc: EncoderSpec) {
+    if is_software_encoder(enc) {
+        cmd.arg("-threads").arg(SOFTWARE_ENCODER_THREADS);
+    }
+}
+
+
 /// 硬件编码器的候选表（**顺序即优先级**）。
 ///
 /// ⚠️ 探测分两步，缺一不可（2026-10-05 修）：
@@ -580,8 +595,9 @@ fn run_cut_part(
         .arg("-preset")
         .arg(enc.1)
         .arg(enc.2)
-        .arg("23")
-        .arg("-pix_fmt")
+        .arg("23");
+    push_software_thread_limit(&mut cmd, enc);
+    cmd.arg("-pix_fmt")
         .arg("yuv420p")
         .arg("-c:a")
         .arg("aac")
@@ -664,8 +680,9 @@ fn concat_parts_reencode(parts: &[PathBuf], output: &Path, enc: EncoderSpec) -> 
         .arg("-preset")
         .arg(enc.1)
         .arg(enc.2)
-        .arg("23")
-        .arg("-pix_fmt")
+        .arg("23");
+    push_software_thread_limit(&mut cmd, enc);
+    cmd.arg("-pix_fmt")
         .arg("yuv420p")
         .arg("-c:a")
         .arg("aac")
@@ -713,8 +730,9 @@ fn run_cut(video: &Path, start: f64, end: f64, output: &Path, enc: EncoderSpec) 
         .arg("-preset")
         .arg(enc.1)
         .arg(enc.2)
-        .arg("23")
-        .arg("-pix_fmt")
+        .arg("23");
+    push_software_thread_limit(&mut cmd, enc);
+    cmd.arg("-pix_fmt")
         .arg("yuv420p")
         .arg("-c:a")
         .arg("aac")

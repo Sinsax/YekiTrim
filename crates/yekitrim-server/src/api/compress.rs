@@ -123,9 +123,18 @@ pub(super) async fn compress_json(req: Request, next: Next) -> Response {
     if raw.len() < MIN_LEN {
         return Response::from_parts(parts, Body::from(raw));
     }
-    let gz = crate::media::gzip_bytes(&raw);
-    // 压不小就别压（很小的 JSON / 高熵内容）：体积更小才用压缩后的那份
-    if gz.len() >= raw.len() {
+    let raw_len = raw.len();
+    // ⚠️ gzip 是同步 CPU 活（120KB 的 clips 列表压一遍 ~10ms；任务跑起来时并发一多就放大），
+    // 下 blocking 池，别占 async worker（2026-11-25 排查「任务排队时预览卡」）。
+    let (gz, raw) = tokio::task::spawn_blocking(move || {
+        let gz = crate::media::gzip_bytes(&raw);
+        (gz, raw)
+    })
+    .await
+    .unwrap_or_default();
+    // 压不小就别压（很小的 JSON / 高熵内容）：体积更小才用压缩后的那份。
+    // join 失败 ⇒ gz/raw 双空 ⇒ 0 >= 0 成立 ⇒ 原样放行（空），与"收不到 body"同义。
+    if gz.len() >= raw_len {
         return Response::from_parts(parts, Body::from(raw));
     }
     parts

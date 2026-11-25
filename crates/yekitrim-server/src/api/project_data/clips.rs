@@ -19,9 +19,21 @@ use super::status::danmaku_starts;
 use super::*;
 
 
-pub(crate) async fn project_data_clips(scope: Scope) -> ApiResult {
+pub(crate) async fn project_data_clips(
+    scope: Scope,
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
     let ws = scope.ws;
-    blocking(move || data_clips_impl(&ws)).await
+    let inm = headers
+        .get(axum::http::header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    // 120+ 片段的列表 ≈ 120KB：序列化 + gzip 都在请求路径上，而内容只在任务完成 / 用户编辑后
+    // 变化 ⇒ ETag/304 让切片页反复轮询几乎零成本（2026-11-25 排查「任务排队时预览卡」）。
+    match blocking(move || data_clips_impl(&ws)).await {
+        Ok(Json(v)) => crate::api::etag_json(inm.as_deref(), v),
+        Err(e) => e.into_response(),
+    }
 }
 
 

@@ -17,6 +17,7 @@ use std::sync::Arc;
 use axum::{
     extract::State,
     http::StatusCode,
+    response::IntoResponse,
     Json,
 };
 use crate::model::AppState;
@@ -60,6 +61,42 @@ where
         Err(e) => Err(err(StatusCode::INTERNAL_SERVER_ERROR, format!("阻塞任务失败: {e}"))),
     }
 }
+
+/// 给「重序列化的项目数据」响应挂强 ETag：内容没变 ⇒ **304**（前端反复轮询几乎零成本）。
+///
+/// 背景（2026-11-25 排查「任务排队时预览卡」）：切片/首页每次进出都重打
+/// `/project-data/clips|events`（120+ 片段 ≈ 120KB），序列化与 gzip 都在请求路径上，
+/// 而内容只在任务完成 / 用户编辑后变化。`If-None-Match` 命中回 304 空体，
+/// 浏览器与 `fetch` 会自动带上（响应带 `no-cache` ⇒ 每次都回来校验，不会陈旧）。
+///
+/// 哈希用 `DefaultHasher`：**进程内**确定性即可 —— ETag 不需要跨进程稳定，
+/// 重启后哈希变了 ⇒ 浏览器 cache miss 全量拉一次，无害。
+pub(crate) fn etag_json(if_none_match: Option<&str>, v: serde_json::Value) -> axum::response::Response {
+    let body = serde_json::to_string(&v).unwrap_or_default();
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    std::hash::Hasher::write(&mut h, body.as_bytes());
+    let tag = format!("\"{}\"", std::hash::Hasher::finish(&h));
+    if let Some(inm) = if_none_match {
+        if inm.split(',').any(|c| c.trim() == tag || c.trim() == "*") {
+            return axum::response::Response::builder()
+                .status(StatusCode::NOT_MODIFIED)
+                .header(axum::http::header::ETAG, tag)
+                .header(axum::http::header::CACHE_CONTROL, "no-cache")
+                .body(axum::body::Body::empty())
+                .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+        }
+    }
+    let mut res = (StatusCode::OK, axum::Json(v)).into_response();
+    if let Ok(val) = axum::http::HeaderValue::from_str(&tag) {
+        res.headers_mut().insert(axum::http::header::ETAG, val);
+    }
+    res.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-cache"),
+    );
+    res
+}
+
 
 /// `polish` 系列接口（以及任何"传一个工程目录"的写接口）的 `dir` 参数校验：
 /// **非空 + 必须已存在且是目录**。接受 `&str` / `String` / `&String` / `&Path`。

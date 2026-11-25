@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 use axum::Json;
+use axum::response::IntoResponse;
 use yekitrim_service::Workspace;
 
 use crate::scope::Scope;
@@ -29,9 +30,20 @@ pub(crate) async fn project_data_status(scope: Scope) -> ApiResult {
     blocking(move || project_status_impl(&ws)).await
 }
 
-pub(crate) async fn project_data_events(scope: Scope) -> ApiResult {
+pub(crate) async fn project_data_events(
+    scope: Scope,
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
     let ws = scope.ws;
-    blocking(move || data_events_impl(&ws)).await
+    let inm = headers
+        .get(axum::http::header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    // 同 clips：events.json 只在检测 / 剪切 / 编辑后变化 ⇒ ETag/304（2026-11-25）
+    match blocking(move || data_events_impl(&ws)).await {
+        Ok(Json(v)) => crate::api::etag_json(inm.as_deref(), v),
+        Err(e) => e.into_response(),
+    }
 }
 
 pub(crate) async fn project_data_polish(scope: Scope) -> ApiResult {
