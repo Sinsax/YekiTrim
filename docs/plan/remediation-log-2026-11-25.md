@@ -93,3 +93,14 @@ T14 / T15 仍等 `webui/src/components/ProjectClipsSection.vue` 那份**未提�
 验证：`node scripts/gate.mjs --all` → 通过 194 / 0 条非基线失败 · EXIT=0。
 
 **教训**：拆文件的验收不能只看 cargo —— 必须跑一次 `gate --all`。
+
+## 第七轮补记：baseline 清账 + clippy 债务（如实记）
+
+- **gate-baseline.json 4 条 → 1 条**：check-39-tiers-pixels / check-perchar-stagger / check-render-visible 这三个脚本
+  后来自己改成了「缺前置就 exit 2 并打印要准备什么」，gate 已经把它们记成 SKIP，基线里那三条永远不会再命中
+  —— 留着就是「第二个静默跳过」（gate 自己每次都在提示可删）。已删；剩下的只有 check-polish-page-loads#self-test。
+- **clippy 没做，记成债务**：计划 T20 的第三小项标着「可选」，实测 cargo clippy --workspace --all-targets 有 **196 条告警**
+  （23 field-reassign-with-default / 15 doc-list-item-indentation / 11 neg-cmp-op-on-partial-ord / 10 type-complexity /
+  7 empty-line-after-doc-comment / 7 unnecessary-sort-by / 6 needless-borrow / 5 too-many-arguments …）。
+  没有把 -D warnings 塞进 gate —— 在清零之前塞进去，要么立刻红一片，要么逼着人拿 baseline 把红盖住
+  （而 baseline 只准登记环境性失败）。顺序 = 先分批清零，最后一类清完再加 gate 项；任务记为 T20a。
