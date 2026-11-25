@@ -939,3 +939,76 @@ mod runtime_tests {
         assert!(empty.problems().iter().any(|s| s.contains("没有任何接口")));
     }
 }
+
+#[cfg(test)]
+mod caps_source_tests {
+    use super::*;
+
+    /// 造一份「一支内置表认识的模型」的配置（deepseek 的方言是 thinking_type）。
+    fn with_model_entry(entry: Option<LlmModelEntry>) -> LlmV4 {
+        let mut c = LlmV4::single("https://api.deepseek.com/v1", "deepseek-v4-pro", "k");
+        if let Some(mut e) = entry {
+            e.id = "deepseek-v4-pro".into();
+            e.provider = "default".into();
+            c.models.push(e);
+        }
+        c
+    }
+
+    /// **表里写了、清单里也写了 ⇒ 清单说了算**（内置表只做建议值）。
+    #[test]
+    fn model_list_wins_over_the_builtin_table() {
+        let only_table = with_model_entry(None);
+        let caps = only_table.effective_caps("default", "deepseek-v4-pro");
+        assert_eq!(caps.dialect.id, "thinking_type", "内置表给的是 thinking_type");
+
+        let with_list = with_model_entry(Some(LlmModelEntry {
+            overrides: Some(ModelOverrideToml {
+                thinking_wire: Some("openai_effort".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }));
+        let caps2 = with_list.effective_caps("default", "deepseek-v4-pro");
+        assert_eq!(caps2.dialect.id, "openai_effort", "清单里写了的必须盖过内置表");
+    }
+
+    /// **清单没写的字段仍然由内置表补齐**（建议值的价值就在这：用户只改他关心的那一项）。
+    #[test]
+    fn builtin_table_still_fills_the_gaps_the_list_is_silent_about() {
+        let c = with_model_entry(Some(LlmModelEntry {
+            overrides: Some(ModelOverrideToml {
+                input: Some(vec!["text".into(), "image".into()]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }));
+        let caps = c.effective_caps("default", "deepseek-v4-pro");
+        assert!(caps.input.image, "清单里写了多模态 ⇒ 生效");
+        assert_eq!(
+            caps.dialect.id, "thinking_type",
+            "清单没提推理写法 ⇒ 照样是内置表给的那条（不是退回 none）"
+        );
+    }
+
+    /// **表里没有、清单里写了 ⇒ 清单直接生效**（自建网关 / 表外模型的那条路）。
+    #[test]
+    fn unknown_model_gets_its_caps_only_from_the_list() {
+        let mut c = LlmV4::single("https://my-gateway.example.com/v1", "my-model", "k");
+        let before = c.effective_caps("default", "my-model");
+        assert_eq!(before.dialect.id, "none", "表外模型保守默认");
+        assert!(!before.input.image, "没有被猜成多模态");
+
+        c.models.push(LlmModelEntry {
+            id: "my-model".into(),
+            provider: "default".into(),
+            overrides: Some(ModelOverrideToml {
+                thinking_wire: Some("openai_effort".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let after = c.effective_caps("default", "my-model");
+        assert_eq!(after.dialect.id, "openai_effort", "清单是表外模型的唯一来源");
+    }
+}
