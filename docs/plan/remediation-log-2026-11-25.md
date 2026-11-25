@@ -134,3 +134,15 @@ GET  /api/health                 = cover_static {compiled:true, ready:true}   �
 `run_with` 的 shutdown future 是 `tokio::signal::ctrl_c()`，只接 SIGINT；而 systemd 默认 KillSignal 是 SIGTERM，
 `systemctl --user stop` 就是硬杀（`SHUTDOWN_GRACE` / 锁 Drop / SSE 收尾都跑不到，下次启动靠残留锁自动接管兜住）。
 这是冒烟测试才发现的那类问题 —— 单测覆盖不到「linux 真实信号」。
+## 第九轮：T14 第 3 步的「前半」落地 + 后半的施工图
+
+**前半（已提交 `fb67551d`）**：T14 第 1、2 步之后，`POST /api/polish/preview` 与 `POST /api/polish/cover-preview`
+已经没有任何调用方（前端 T14-1 清掉、CLI T14-2 改成指引退出、`polish test` 走进程内 `RenderServer` 不经 HTTP），
+于是整条链一并删掉：两条路由 + `api/polish/preview.rs`（198 行）+ `model.rs` 的 `PreviewPorts` LRU 与
+`AppState::preview_servers`（含 3 条只测它的用例，其中一条是「淘汰必须真的关监听」的真监听测例）。
+数字对得上：server 测试 311 → **307**（−4 正是这批用例），route_manifest 142 → **140**（−2 正是这两条路由）。
+
+**后半（未做，写在 `docs/plan/t14-step3-impact.md`）**：`templates/index.html`（3,229 行）仍在给 **12 个门禁脚本**当参照实现，
+外加两处 `include_str!`（预览 HTML 与一条契约测试）。删它=先把这 12 条判据按 D-1 重新划线（保留数值面、删掉模板独有那一列、
+每条附变异自证），再删 `cmd_preview` 与 `render/server.rs` 的监听/模板壳（字体那族保留）。
+这就是计划要求「第 1、2 步稳定一个版本后再删」的原因：**它是唯一一份被当作参照的逐帧实现**，删掉后没有第二个视角兜漂移。
