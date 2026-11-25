@@ -23,10 +23,10 @@ use crate::usage::{UsageRecord, UsageSink};
 /// - `/chat/completions` 路径（自动补全）
 /// - 429 / 5xx / 超时 / 连接错误自动重试（指数退避，最多 3 次）
 ///
-/// 两条构造路径：
-/// - [`LlmClient::from_config`] — 从 `LlmConfig`（yekitrim.toml / .yekitrim/config.toml）构造，
-///   携带 temperature / max_tokens / extra_params（含 thinking 等透传参数）
-/// - [`LlmClient::new`] — 从裸参数构造（polish 用），默认 temperature 0.3、不发送 max_tokens
+/// 唯一的构造入口是 [`LlmClient::new`]：它吃任何 `Into<LlmParams>`。
+///
+/// 配置层（`yekitrim-core::config`）从 `LinkedLlm` 转出 `LlmParams`，所以业务侧必须先
+/// `config.for_link(link)` 才拿得到能建客户端的值（S1：忘记套链路参数 = 编译错误）。
 /// 浏览器 UA：部分网关/反爬会按 UA 放行，缺了容易被拒。
 const BROWSER_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36";
 

@@ -105,10 +105,10 @@ mod tests {
             assert!(!t.label.trim().is_empty(), "任务 {} 没有用量标签", t.key);
             assert!(!t.link_key.trim().is_empty(), "任务 {} 没有 link", t.key);
         }
-        for i in 0..TASKS.len() {
-            for j in (i + 1)..TASKS.len() {
-                assert_ne!(TASKS[i].key, TASKS[j].key, "key 重复：{}", TASKS[i].key);
-                assert_ne!(TASKS[i].label, TASKS[j].label, "label 重复：{}", TASKS[i].label);
+        for (i, a) in TASKS.iter().enumerate() {
+            for b in TASKS.iter().skip(i + 1) {
+                assert_ne!(a.key, b.key, "key 重复：{}", a.key);
+                assert_ne!(a.label, b.label, "label 重复：{}", a.label);
             }
         }
     }
