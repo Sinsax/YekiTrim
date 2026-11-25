@@ -142,3 +142,30 @@ npm --prefix webui run build                   # UI 期必跑，dist 与 src 同
 - 新增第二家 `protocol`（现在只有 `openai-chat`）；
 - 重试策略/超时数值调整（`client.rs` 现有 1 次重试、10s 连接超时）；
 - 多模态输入（`input` 能力位已有，链路侧没有消费方）。
+## 8. 进度与重新排期（2026-11-25 晚，执行中）
+
+| 期 | 状态 | 提交 |
+|---|---|---|
+| L1 配置 v4 + 迁移 + server 通道 | ✅ | `c14235c9` `f61aff2f` `7724ed8c` `f0cfaa7a` `4247a3f6` |
+| S1 构造入口唯一化 | ✅ | `850ea110` `620e512f` `998478fe` |
+| S3 caps 单源（后端判据） | ✅ | `0ace3189`（UI 那半并入 L3） |
+| L2 端点（`link_snapshot` + `/effective`） | ✅ 2/2 | `c33a66f2` `c298b227` |
+| S2 F2 温度第二入口 | ✅ 1/3 | `be222d4e` |
+| S2 F4/F5 `LlmTaskSpec` + 用量标签 | 待做 | — |
+| S2 F7 删 `reasoning_explicit` 双轨 | **并入 S4** | — |
+| L3 WebUI 五块 IA | 待做 | — |
+| S4 配置边界搬键 | 待做 | — |
+| L4 删旧分支 | 待做 | — |
+
+### 为什么 F7 并入 S4
+
+`reasoning_explicit` 不只是一条**老开关的双轨**，它同时是 `LlmClient::with_thinking()` 与 `wire.rs` 的
+语义锚点（「LLM 层有没有表过态」决定发不发推理参数）。真正要退场的是 `[correct] thinking` 这个**配置键**，
+而删配置键按本仓规矩必须走「`CONFIG_VERSION` +1 + `retired_in` 登记 + 模板注释」那三步 ——
+那正是 S4「把 `[correct] thinking` 搬进 `llm.toml`」要动的东西。分两处改会把同一次迁移拆成两次版本升级。
+
+### L2 剩余一项也并入 L3
+
+`POST /api/llm/test` 的**草稿测试**（不落盘就能试一个新 key）在语义上依赖「按链路测哪个连接」，
+而 L3 的链路表格才是它的入口（每行一个「测试这条链路」）。后端参数（`base_url`/`api_key`/`model` 草稿）
+已经由 `resolve_llm_conn` 的 draft 参数支持，L3 时把它接到 `llm_test` 的 body 上即可。
