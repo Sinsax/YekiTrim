@@ -35,31 +35,54 @@ const fn spec(
 }
 
 /// 全部任务（顺序 = 报表里习惯的阅读顺序）。
-pub const TASKS: &[LlmTaskSpec] = &[
-    spec("detect_window", "detect", "事件检测窗口", None, true),
-    spec("detect_hot_score", "detect", "事件热度LLM评分", None, true),
-    spec("polish_segment", "polish", "精修分段", None, true),
-    spec("polish_events", "polish", "精修逐段事件", None, true),
-    spec("polish_keywords", "polish", "精修关键词", None, true),
-    spec("polish_sticker_pick", "polish", "精修贴纸挑选", None, true),
-    spec("correct", "correct", "字幕订正", Some(25), false),
-    spec("cover_title", "title", "封面文案", None, true),
-    spec("sticker_pack_tags", "utility", "贴纸包标签", None, true),
-    spec("sticker_scan_tags", "utility", "贴纸扫描标签", None, true),
-    spec("emoji_classify", "utility", "emoji 多维分类", None, true),
-    spec("connection_test", "utility", "测试链路", None, false),
-    spec("llm_test", "utility", "LLM 测试", None, false),
+///
+/// ⚠️ 每条任务**必须**是独立常量（而不是只在这张表里出现一次）：业务侧要用
+/// `tasks::POLISH_SEGMENT.label` 这样的写法取值，**拼错 key 就是编译错误**，
+/// 而不是运行时拿到一个兜底标签（那样统计里会出现莫名其妙的"LLM"分组）。
+pub const TASKS: &[&LlmTaskSpec] = &[
+    &DETECT_WINDOW,
+    &DETECT_HOT_SCORE,
+    &POLISH_SEGMENT,
+    &POLISH_EVENTS,
+    &POLISH_KEYWORDS,
+    &POLISH_STICKER_PICK,
+    &CORRECT,
+    &COVER_TITLE,
+    &STICKER_PACK_TAGS,
+    &STICKER_SCAN_TAGS,
+    &EMOJI_CLASSIFY,
+    &CONNECTION_TEST,
+    &LLM_TEST,
 ];
+
+pub const DETECT_WINDOW: LlmTaskSpec = spec("detect_window", "detect", "事件检测窗口", None, true);
+pub const DETECT_HOT_SCORE: LlmTaskSpec =
+    spec("detect_hot_score", "detect", "事件热度LLM评分", None, true);
+pub const POLISH_SEGMENT: LlmTaskSpec = spec("polish_segment", "polish", "精修分段", None, true);
+pub const POLISH_EVENTS: LlmTaskSpec = spec("polish_events", "polish", "精修逐段事件", None, true);
+pub const POLISH_KEYWORDS: LlmTaskSpec = spec("polish_keywords", "polish", "精修关键词", None, true);
+pub const POLISH_STICKER_PICK: LlmTaskSpec =
+    spec("polish_sticker_pick", "polish", "精修贴纸挑选", None, true);
+pub const CORRECT: LlmTaskSpec = spec("correct", "correct", "字幕订正", Some(25), false);
+pub const COVER_TITLE: LlmTaskSpec = spec("cover_title", "title", "封面文案", None, true);
+pub const STICKER_PACK_TAGS: LlmTaskSpec =
+    spec("sticker_pack_tags", "utility", "贴纸包标签", None, true);
+pub const STICKER_SCAN_TAGS: LlmTaskSpec =
+    spec("sticker_scan_tags", "utility", "贴纸扫描标签", None, true);
+pub const EMOJI_CLASSIFY: LlmTaskSpec =
+    spec("emoji_classify", "utility", "emoji 多维分类", None, true);
+pub const CONNECTION_TEST: LlmTaskSpec = spec("connection_test", "utility", "测试链路", None, false);
+pub const LLM_TEST: LlmTaskSpec = spec("llm_test", "utility", "LLM 测试", None, false);
 
 /// 按 key 找一条。
 pub fn task(key: &str) -> Option<&'static LlmTaskSpec> {
     let key = key.trim();
-    TASKS.iter().find(|t| t.key == key)
+    TASKS.iter().copied().find(|t| t.key == key)
 }
 
 /// 某条链路下的全部任务。
 pub fn by_link(link_key: &str) -> Vec<&'static LlmTaskSpec> {
-    TASKS.iter().filter(|t| t.link_key == link_key).collect()
+    TASKS.iter().copied().filter(|t| t.link_key == link_key).collect()
 }
 
 #[cfg(test)]
