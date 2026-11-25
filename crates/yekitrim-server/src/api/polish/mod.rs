@@ -9,7 +9,6 @@
 //! | `cover` | 封面：标题生成的一族纯函数 + 配置 / 背景 / 帧 |
 //! | `fonts` | 字体库（按 `Owner` 分库）|
 //! | `assets` | 素材：贴纸 / 视频库 / 音效 / emoji / 贴纸帧与预热 |
-//! | `preview` | 预览端口 LRU + 两条预览入口 |
 //! | `dhampir` | 底座出片通道：就绪位 / 工程转译缓存 / wasm 转发 |
 //!
 //! ⚠️ **模块之间只许显式 `use`**（整改 P4 T16）：拆分前 `polish.rs` 与
@@ -25,7 +24,6 @@ pub(super) mod project;
 pub(super) mod cover;
 pub(super) mod fonts;
 pub(super) mod assets;
-pub(super) mod preview;
 pub(super) mod dhampir;
 
 // ---- 对外出口（`api/routes.rs` 的路由表）：**逐条点名** ----
@@ -50,7 +48,6 @@ pub(crate) use assets::{
     polish_sticker_frame, polish_sticker_library, polish_sticker_prewarm, polish_sticker_sources,
     polish_video_library, polish_video_thumb,
 };
-pub(crate) use preview::{polish_cover_preview, polish_preview};
 pub(crate) use dhampir::{polish_dhampir_project, polish_dhampir_status, polish_dhampir_wasm};
 
 

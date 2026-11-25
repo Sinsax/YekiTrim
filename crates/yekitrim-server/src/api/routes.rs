@@ -35,10 +35,10 @@ use super::logs::{admin_logs, admin_logs_stream, admin_usage};
 use super::pipeline::{global_stream, job_cancel, job_events, job_get, jobs_list};
 use super::polish::{
     polish_asset_file, polish_cover, polish_cover_background, polish_cover_config, polish_cover_frame,
-    polish_cover_preview, polish_cover_title, polish_dhampir_project, polish_dhampir_status,
+    polish_cover_title, polish_dhampir_project, polish_dhampir_status,
     polish_dhampir_wasm, polish_emoji_catalog, polish_emotion_get, polish_font, polish_fonts,
     polish_fonts_builtin, polish_fonts_default, polish_fonts_delete, polish_fonts_import,
-    polish_fonts_upload, polish_init, polish_llm, polish_llm_segment, polish_preview, polish_process,
+    polish_fonts_upload, polish_init, polish_llm, polish_llm_segment, polish_process,
     polish_project_get, polish_project_put, polish_render, polish_select_version, polish_sfx_catalog,
     polish_silence, polish_sticker_file, polish_sticker_frame, polish_sticker_library,
     polish_sticker_prewarm, polish_sticker_sources, polish_subtitles_get, polish_subtitles_put,
@@ -288,9 +288,6 @@ pub(crate) fn router_inner(state: Arc<AppState>, extra: Router<Arc<AppState>>) -
         .route("/polish/process", post(polish_process))
         .route("/polish/render", post(polish_render))
         .route("/polish/cover", post(polish_cover))
-        // ⚠️ **仅 CLI `polish preview` 兜底**：前端已不再调用（整改 T14 第 1 步清掉了那两个死调用）。
-        // 别把前端接回来 —— 新前端走 Dhampir 预览（wasm），这条是给"没有工程文件、只有片段目录"的旧路径留的。
-        .route("/polish/preview", post(polish_preview))
     // Dhampir **浏览器端**预览：渲染跑在页面（wasm + WebGPU），后端只发资源与工程 JSON。
     // 与上面那条 DOM 预览**并列**（按钮切换保留）：一个看 CSS/DOM 复刻、一个看真底座。
     .route("/polish/dhampir-project", post(polish_dhampir_project))
@@ -298,7 +295,6 @@ pub(crate) fn router_inner(state: Arc<AppState>, extra: Router<Arc<AppState>>) -
     // 让"底座不可用"在点渲染之前就可见（前端挂在渲染弹窗上，`yekitrim doctor` 用同一份判断）。
     .route("/polish/dhampir-status", post(polish_dhampir_status))
     .route("/polish/dhampir-wasm/*path", get(polish_dhampir_wasm))
-        .route("/polish/cover-preview", post(polish_cover_preview))
         .route("/polish/cover-background", post(polish_cover_background))
         .route("/polish/cover-frame", post(polish_cover_frame))
         .route("/polish/project", get(polish_project_get).put(polish_project_put))
