@@ -137,6 +137,7 @@ pub struct LlmV4 {
     pub links: BTreeMap<String, LlmLinkSetting>,
 }
 
+#[allow(clippy::derivable_impls)] // 配置卡要求手写 Default（serde 默认值必须与 Rust 默认值一致）
 impl Default for LlmProviderV4 {
     fn default() -> Self {
         Self {
@@ -151,6 +152,7 @@ impl Default for LlmProviderV4 {
     }
 }
 
+#[allow(clippy::derivable_impls)] // 配置卡要求手写 Default（serde 默认值必须与 Rust 默认值一致）
 impl Default for LlmModelEntry {
     fn default() -> Self {
         Self {
@@ -163,6 +165,7 @@ impl Default for LlmModelEntry {
     }
 }
 
+#[allow(clippy::derivable_impls)] // 配置卡要求手写 Default（serde 默认值必须与 Rust 默认值一致）
 impl Default for LlmLinkSetting {
     fn default() -> Self {
         Self {
@@ -667,8 +670,7 @@ impl LlmV4 {
 
     /// 造一份「一条接口 + 一个模型」的最小配置（测试夹具与迁移默认值共用）。
     pub fn single(base_url: &str, model: &str, api_key: &str) -> LlmV4 {
-        let mut c = LlmV4::default();
-        c.active = "default".to_string();
+        let mut c = LlmV4 { active: "default".to_string(), ..Default::default() };
         c.providers.push(LlmProviderV4 {
             id: "default".to_string(),
             name: "默认接口".to_string(),

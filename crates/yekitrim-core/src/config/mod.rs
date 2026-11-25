@@ -357,7 +357,7 @@ max_concurrent = 3
 # 额外请求参数：**逃逸口**，整表原样进请求体、优先级最低（结构化参数之后才盖）。
 # ⚠️ 已知参数请用下面的结构化键（temperature / max_tokens / reasoning / top_p / json_mode），
 #    这里只放 provider 私有、上面表达不了的键（如 vendor 扩展）。
-# extra_params = { chat_template_kwargs = { enable_thinking = true } }
+# extra_params = { repetition_penalty = 1.05 }
 
 # ── 请求参数：唯一基准（**省略 = 不发送**）──────────────────────────────
 [llm.defaults]
