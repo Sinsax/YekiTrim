@@ -2310,7 +2310,6 @@ impl From<&LlmConfig> for yekitrim_llm::LlmParams {
             json_mode: p.json_mode.unwrap_or(false),
             // extra_params 是 TOML 表，传输层只认 JSON —— 在这里转一次。
             extra_params: c.extra_params.as_ref().and_then(|t| serde_json::to_value(t).ok()),
-            max_concurrent: c.concurrency(None),
             caps,
         }
     }

@@ -225,8 +225,11 @@ impl Agent {
     /// 接受任何 `Into<LlmParams>`（配置层解析出来的参数，见 `LlmClient::new`）。
     pub fn new<P: Into<LlmParams>>(llm: P) -> Self {
         let llm = llm.into();
-        // 默认并发跟随 `[llm] max_concurrent`，别在这里另写一个常数
-        let max_concurrent = llm.max_concurrent;
+        // ⚠️ 并发**必须由调用方显式给**（`with_max_concurrent`），唯一解析入口是
+        // `LlmConfig::concurrency(link)` —— 以前这里读 `LlmParams.max_concurrent`，
+        // 那是同一个旋钮的第二个读法（读到的是全局值，与实际用的可能不一致）。
+        // 默认 1 = 保守：忘了给只会慢，不会把服务打爆。
+        let max_concurrent = 1;
         Self {
             llm,
             window_size: 25,

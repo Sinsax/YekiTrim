@@ -752,7 +752,6 @@ impl LlmV4 {
             top_p: p.top_p.filter(|v| v.is_finite()),
             json_mode: p.json_mode.unwrap_or(false),
             extra_params: self.extra_params.as_ref().and_then(|t| serde_json::to_value(t).ok()),
-            max_concurrent: self.concurrency(None),
             caps,
         }
     }

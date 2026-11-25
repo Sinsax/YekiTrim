@@ -212,14 +212,15 @@ pub struct LlmParams {
     pub json_mode: bool,
     /// 原样透传给请求体的额外键。**覆盖上面这些**（老逃逸口，2026-10 之前就是最后盖）。
     pub extra_params: Option<Value>,
-    /// 并发窗口数（`[llm] max_concurrent`，四条链路共用）。
-    pub max_concurrent: usize,
     /// 这个模型的能力（决定"发不发/怎么发"）。
     pub caps: ModelCaps,
 }
 
 impl Default for LlmParams {
-    /// 与 `LlmConfig::default()` 同值：temperature 0.3、并发 3（否则搬迁就会改行为）。
+    /// 与 `LlmConfig::default()` 同值：temperature 0.3（否则搬迁就会改行为）。
+    ///
+    /// ⚠️ 并发**不在这里**：它是每条链路的解析结果（`LlmConfig::concurrency`），
+    /// 由调用方 `Agent::with_max_concurrent` 显式给，别在传输层存第二份。
     fn default() -> Self {
         Self {
             api_key: String::new(),
@@ -233,7 +234,6 @@ impl Default for LlmParams {
             top_p: None,
             json_mode: false,
             extra_params: None,
-            max_concurrent: 3,
             caps: ModelCaps::default(),
         }
     }
