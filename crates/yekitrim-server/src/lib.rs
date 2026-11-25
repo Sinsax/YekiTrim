@@ -643,7 +643,8 @@ where
     if bootstrap.must_change_password {
         info!("登录账号: admin（密码见上方初始密码 / 初始密码文件）");
     }
-    info!("按 Ctrl+C 退出");
+    // T24：SIGTERM（systemd / `systemctl --user stop`）也走同一条优雅关停 —— 别再只写「按 Ctrl+C」。
+    info!("按 Ctrl+C（或 systemctl stop / SIGTERM）退出");
 
     if args.open {
         let url = format!("http://{actual}{}", args.open_path);

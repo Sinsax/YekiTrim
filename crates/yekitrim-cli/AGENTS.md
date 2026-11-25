@@ -72,8 +72,11 @@
   `ingest` 录播姬 webhook / 采集配置概览；`user invite|invites|invite-revoke` = 邀请码
   （**明文落库、可重复查看**）+ 注册开关；`config` 全局配置生成 / 显示；`correct` LLM 订正转录文本；
   `polish stickers list|test|scan` 本地贴纸（列出 / 测 keyword 匹配 / 生成清单）。
-- **服务端转发**：`Command::Server(args) => yekitrim_server::run(args.clone()).await`；
-  `run()` = `run_with(args, ctrl_c(), |_| {})` —— `shutdown` 一到就**优雅关停**（限时 `SHUTDOWN_GRACE`），
+- **服务端转发**：`Command::Server(args) => yekitrim_server::run_with(args.clone(), shutdown_signal(), |_| {}).await`；
+  CLI 侧调 `yekitrim_server::run_with(args, shutdown_signal(), |_| {})` —— `shutdown` 一到就**优雅关停**（限时 `SHUTDOWN_GRACE`）。
+  ⚠️ `shutdown_signal()` **同时接 SIGINT 与 SIGTERM**（整改 T24，2026-11-25）：只接 `ctrl_c()` 的话
+  `systemctl --user stop`（systemd 默认 KillSignal = SIGTERM）是硬杀 —— `SHUTDOWN_GRACE` / 锁 Drop / SSE 收尾全不跑。
+  实测：旧写法 `kill -TERM` ⇒ 退出码 -15；新写法 ⇒ 退出码 0 + 日志「收到 SIGTERM（systemd/systemctl），开始优雅关停」。
   于是 Ctrl+C 不再让 `InstanceLock` 的 Drop 跑不到、下次启动少一条"残留锁"WARN；
   `on_listening(url)` 回调给的是**实际**监听地址（端口被占时服务端会自己换一个）。
   ⚠️ 门禁 `cli 只用 server 的入口` 放行的是 `yekitrim_server::{run*, ServerArgs}`；

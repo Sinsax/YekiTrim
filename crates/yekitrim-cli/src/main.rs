@@ -148,6 +148,35 @@ fn project_id_for_config(db_file: &Path, cfg_file: &Path) -> Option<i64> {
 
 /// 尝试把 polish clip 目录定位到所属 yekitrim 工程，并启动/打开同一 WebUI 精修页。
 /// 找不到工程时回退旧的独立 preview，保证命令仍然可用。
+/// 关停信号：Ctrl+C（SIGINT）**或** SIGTERM。
+///
+/// ⚠️ **只接 SIGINT 是不够的**（2026-11-25 冒烟测试实测：`kill -TERM` 直接 -15 退出、没走优雅关停）：
+/// systemd 的默认 `KillSignal` 是 **SIGTERM**，所以 `systemctl --user stop/restart yekitrim` 在旧写法下是硬杀 ——
+/// `SHUTDOWN_GRACE` 那 3 秒、`InstanceLock` 的 Drop、SSE 收尾全都不跑（下次启动靠「残留锁自动接管」兜住）。
+/// Windows 上没有 SIGTERM 语义，保持 `ctrl_c()`。
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut term = match signal(SignalKind::terminate()) {
+            Ok(sig) => sig,
+            Err(e) => {
+                tracing::warn!("装 SIGTERM 监听失败（只能用 Ctrl+C 关停）: {e}");
+                let _ = tokio::signal::ctrl_c().await;
+                return;
+            }
+        };
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => tracing::info!("收到 SIGINT（Ctrl+C），开始优雅关停"),
+            _ = term.recv() => tracing::info!("收到 SIGTERM（systemd/systemctl），开始优雅关停"),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+        tracing::info!("收到 Ctrl+C，开始优雅关停");
+    }
+}
 async fn run_polish_preview(
     input: &std::path::Path,
     // `--mode` 只对**已退役**的旧独立预览腿有意义（整改 T14 第 2 步删掉了那条回退路）。
@@ -202,7 +231,7 @@ async fn run_polish_preview(
         local_no_auth: false,
         open_path,
     };
-    yekitrim_server::run(args).await
+    yekitrim_server::run_with(args, shutdown_signal(), |_| {}).await
 }
 
 /// 把「当前管理员是谁」装进 `owner`（`Owner::Local` 靠它解析配置路径）。
@@ -408,7 +437,7 @@ Command::Doctor { url } => {
         }
 
 Command::Server(args) => {
-            yekitrim_server::run(args.clone()).await?;
+            yekitrim_server::run_with(args.clone(), shutdown_signal(), |_| {}).await?;
         }
 
         Command::Status => {
