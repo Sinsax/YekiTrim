@@ -55,22 +55,24 @@ const ok = (cond, msg) => {
   return cond;
 };
 
-// ---- 前置条件：不满足就拒绝跑（**不跳过**：跳过的判据 = 没有判据）----
+// ---- 前置条件：不满足就**拒绝跑**，但用 exit 3（缺前置）而不是 2（用法错）----
+// 约定来自 scripts/AGENTS.md：缺样本/缺前置 = exit 3 ⇒ gate 记成 SKIP（打印要准备什么，**永不算通过**）；
+// exit 2 只给「参数写错了」这类。以前这里写 2，gate 只能把它当 FAIL，只能靠 baseline 盖住。
 if (!existsSync(BIN)) {
   console.error(`✗ 找不到底座二进制：${BIN}\n  先 cargo build -p dhampir-worker --bin dhampir`);
-  process.exit(2);
+  process.exit(3);
 }
 const FONT = join(FONT_DIR, 'Default.ttf');
 if (!existsSync(FONT)) {
   console.error(`✗ 找不到中文字体：${FONT}`);
   console.error('  底座的 frame 走 --font-dir + 工程里的 font_family（按文件名主干匹配）。');
-  process.exit(2);
+  process.exit(3);
 }
 try {
   execFileSync('ffmpeg', ['-version'], { stdio: 'ignore' });
 } catch {
   console.error('✗ PATH 上没有 ffmpeg —— 底座的栅格化走它。');
-  process.exit(2);
+  process.exit(3);
 }
 
 // ⚠️ 旧二进制会给出**改了之前的**画面 ⇒ 拒绝跑（与另外两条判据同一条纪律）。
@@ -103,7 +105,7 @@ try {
   if (newest > binTime) {
     console.error(`✗ 底座二进制比源码旧（${file}）—— 拒绝在旧二进制上判定。`);
     console.error('  先重建：cd F:/para/Code/Dhampir && cargo build -p dhampir-worker --bin dhampir');
-    process.exit(2);
+    process.exit(3);
   }
 }
 

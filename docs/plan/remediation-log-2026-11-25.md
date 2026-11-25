@@ -104,3 +104,12 @@ T14 / T15 仍等 `webui/src/components/ProjectClipsSection.vue` 那份**未提�
   7 empty-line-after-doc-comment / 7 unnecessary-sort-by / 6 needless-borrow / 5 too-many-arguments …）。
   没有把 -D warnings 塞进 gate —— 在清零之前塞进去，要么立刻红一片，要么逼着人拿 baseline 把红盖住
   （而 baseline 只准登记环境性失败）。顺序 = 先分批清零，最后一类清完再加 gate 项；任务记为 T20a。
+### 同轮的收尾：三个像素判据的 exit code 归位（2 → 3）
+
+清掉 baseline 之后 gate 立刻把 `check-39-tiers-pixels` / `check-perchar-stagger` / `check-render-visible` 报成 FAIL ——
+因为它们在「缺前置」时用的是 **exit 2（用法错）**，gate 按约定只能当失败。这三个脚本的前置是「底座二进制 / 中文字体 /
+ffmpeg / 二进制比源码新」，本机都没有，于是只能靠 baseline 盖住。
+
+改成 **exit 3（缺前置）** 之后 gate 记成 SKIP 并原样打印「先 cargo build -p dhampir-worker --bin dhampir」，
+`gate-baseline.json` 因此**清空到 1 条**（只剩真浏览器那条）。这也是 scripts 卡里那条约定的本意：
+缺样本/缺前置 = exit 3，exit 2 只给参数写错。

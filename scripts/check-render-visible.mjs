@@ -182,9 +182,9 @@ function main() {
   const project = gi('--project');
   const kind = gi('--kind', 'text');
   if (!project) {
-    console.log('用法：node scripts/check-render-visible.mjs --project <片段目录> [--kind text|sticker]');
+    console.log('· SKIP 渲染可见性判据：这是**验收工具**，必须给 --project <片段目录>（或 --self-test）—— 没跑，不是通过');
     console.log('      node scripts/check-render-visible.mjs --self-test');
-    process.exit(2);
+    process.exit(3);
   }
 
   const dh = findDhampir();

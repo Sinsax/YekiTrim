@@ -65,7 +65,7 @@ const ok = (cond, msg) => {
 
 if (!existsSync(BIN)) {
   console.error(`✗ 找不到底座二进制：${BIN}\n  先 cargo build -p dhampir-worker --bin dhampir`);
-  process.exit(2);
+  process.exit(3);
 }
 
 // ⚠️ 旧二进制会给出**改了之前的**答案 ⇒ 拒绝跑（与 `check-perchar-parity.mjs` 同一条纪律）。
@@ -99,7 +99,7 @@ function staleBinary() {
 const stale = staleBinary();
 if (stale) {
   console.error(`✗ 底座二进制比源码旧（${stale}）—— 拒绝在旧二进制上判定。`);
-  process.exit(2);
+  process.exit(3);
 }
 
 const require_ = createRequire(import.meta.url);
