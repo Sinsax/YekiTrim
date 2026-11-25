@@ -113,3 +113,24 @@ ffmpeg / 二进制比源码新」，本机都没有，于是只能靠 baseline �
 改成 **exit 3（缺前置）** 之后 gate 记成 SKIP 并原样打印「先 cargo build -p dhampir-worker --bin dhampir」，
 `gate-baseline.json` 因此**清空到 1 条**（只剩真浏览器那条）。这也是 scripts 卡里那条约定的本意：
 缺样本/缺前置 = exit 3，exit 2 只给参数写错。
+## 第八轮：真实 HTTP 冒烟（不是单测，起的是真进程）
+
+用 `target/debug/yekitrim server` + 临时 data 目录 + `urllib` 会话（带 CSRF）跑了一遍本轮改动的行为面：
+
+```
+health_ready                     = True
+unauth GET /api/projects         = 401 {"error":"未登录，请先登录"}        ← T10 认证兜底
+GET /api/nope                    = 404 {"error":"未知接口"}                ← JSON 404 未退化成 SPA
+POST /api/auth/login             = 200 must_change_password=true
+POST /api/rooms（改密前）        = 403 「仍在使用初始密码，请先修改密码」    ← 改密强制门
+PUT  /api/auth/password          = 200 must_change_password=false
+POST /api/rooms {url:123}        = 400 「请求体字段 `url` 不对: invalid type: integer `123`, expected a string」  ← T9 结构体化
+POST /api/rooms {}               = 400 「缺少 url 或 room_id（至少给一个）」  ← T9 新增文案
+GET  /api/projects（带会话）     = 200 {"ok":true,"projects":[]}
+GET  /api/health                 = cover_static {compiled:true, ready:true}   ← T12 feature 编进来了
+```
+
+**副产品（记成 T24）**：`proc.terminate()`（= SIGTERM）后进程以 **-15** 退出 ⇒ 没走优雅关停。
+`run_with` 的 shutdown future 是 `tokio::signal::ctrl_c()`，只接 SIGINT；而 systemd 默认 KillSignal 是 SIGTERM，
+`systemctl --user stop` 就是硬杀（`SHUTDOWN_GRACE` / 锁 Drop / SSE 收尾都跑不到，下次启动靠残留锁自动接管兜住）。
+这是冒烟测试才发现的那类问题 —— 单测覆盖不到「linux 真实信号」。
