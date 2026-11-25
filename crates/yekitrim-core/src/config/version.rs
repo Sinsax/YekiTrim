@@ -41,6 +41,12 @@ use toml_edit::{DocumentMut, Item};
 
 /// 当前配置结构版本。**改配置键形状时 +1**，并在 [`ConfigKind::retired_in`] 里补登记。
 ///
+/// v4（2026-11-25）：llm.toml 只剩**一份真相** —— `[llm.defaults]`（参数基准）+ `[[llm.providers]]`（怎么连）
+/// + `[[llm.models]]`（唯一模型清单）+ `[llm.links.<link>]`（链路覆盖）。v3 的顶层
+/// `api_key/base_url/model`、`[llm.params]`、`[llm.overrides.*]`、`[llm.models."<id>"]` 以及
+/// `[[llm.providers]]` 的 `api/params/models` 全部由 [`migrate_llm_v4`] 一次搬完，
+/// [`ConfigKind::retired_in`] 只兜底清"搬不动 / 手改坏"的残留。
+///
 /// v3（2026-10-19）：llm.toml 支持**多份 provider** —— 老的顶层
 /// `api_key/base_url/model` + `[llm.params]` 搬成**一份 provider**（`id = "default"`）+ `active = "default"`。
 /// ⚠️ **`[llm.models."<id>"]` 留在原地**：它是"与 provider 无关的能力覆盖"（换 provider 也照用），
@@ -49,7 +55,7 @@ use toml_edit::{DocumentMut, Item};
 /// v2（2026-10-19）：`llm.toml` 把「请求参数面」与「能力」分开 ——
 /// `[llm] temperature/max_tokens/thinking` → `[llm.params]`（`thinking` 改名 `reasoning`），
 /// 能力覆盖进 `[llm.models."<id>"]`。**搬家**那一步在 [`migrate_llm_v2`]（`retired_in` 只会删）。
-pub const CONFIG_VERSION: u32 = 3;
+pub const CONFIG_VERSION: u32 = 4;
 
 /// 版本键名（顶层）。**缺键 = 0**。
 pub const VERSION_KEY: &str = "config_version";
@@ -115,6 +121,20 @@ impl ConfigKind {
             // 这一条是**兜底**：只有"不是字符串"那种手改坏的值会留在这儿（搬不动），
             // 由这一趟清掉，别让它以"没人认的键"的身份永远躺着。
             (Self::Llm, 1) => &[&["llm", "thinking"]],
+            // v3 → v4：llm.toml 改成"一份真相"的形状（搬家在 [`migrate_llm_v4`]）。
+            // 下面几条是**兜底**：正常情形下搬家那一步已经把它们清干净了，这里只收拾
+            // "搬不动 / 手改坏"的残留（`[llm]` 写成内联表、`params` 被写成标量之类）。
+            //
+            // ⚠️ **`llm.models` 故意不登记**：v4 里它还是**活的**（`[[llm.models]]`）。
+            // `retired_in` 是按路径删，分不清"老的那张键值表"和"新的数组"——
+            // 登记了就会把刚写好的模型清单整份删掉。老形状（`[llm.models."<id>"]`）由搬家那一步转成数组。
+            (Self::Llm, 3) => &[
+                &["llm", "params"],
+                &["llm", "overrides"],
+                &["llm", "api_key"],
+                &["llm", "base_url"],
+                &["llm", "model"],
+            ],
             _ => &[],
         }
     }
@@ -156,6 +176,11 @@ fn migrate_step(doc: &mut DocumentMut, kind: ConfigKind, step: u32) {
     }
     if kind == ConfigKind::Llm && step == 2 {
         migrate_llm_v3(doc);
+    }
+    if kind == ConfigKind::Llm && step == 3 {
+        // 返回值是"这一步有没有改动"（给判据用：同一份文本迁两次，第二次必须是 false）。
+        // 版本号的推进由 [`migrate_text`] 统一负责，这一步只管搬东西。
+        let _ = migrate_llm_v4(doc);
     }
 }
 
@@ -334,6 +359,378 @@ fn migrate_llm_v2(doc: &mut DocumentMut) {
     }
 }
 
+/// **v3 → v4**（llm.toml）：把"两份真相"合成 v4 的形状（[`super::llm_v4::from_v3`] 的文本版）。
+///
+/// 六件事，逐条对应 v3 的回落链（口径见 config/AGENTS.md「LLM 配置 v4」）：
+/// 1. 顶层 `api_key/base_url/model` → 一份 `id = "default"` 的接口（**只在完全没有** `[[llm.providers]]` 时），
+///    然后这三个键从 `[llm]` 上删掉；`active` 落成 `"default"`（v4 里它是字符串，不是 Option）。
+///    ⚠️ 已经有多份接口时**不搬**这三样（v3 里 active 命中时它们本来就是死的）—— 由 `retired_in` 那一趟直接清掉，
+///    这是"v4 不留 legacy 回落链"的口径：没人读的键不留在文件里。
+/// 2. `[llm] params` → `[llm] defaults`：**改名**，表头 decor（上方那段注释）跟着走。
+/// 3. `[llm.overrides.<link>]` → `[llm.links.<link>]`：连注释一起搬；**空表不写**（空 = 跟随）。
+/// 4. `[[llm.providers]]` 的 `api` → `protocol`（decor 跟着走）。
+/// 5. `[[llm.providers]].params`：**当前生效那份**逐键并进 `[llm.defaults]`（已存在的不覆盖），
+///    其余各份删掉并 warn 一条（写清接口 id）—— v4 只有一层参数面，那些值**无法表达**。
+/// 6. 模型：`[[llm.providers]].models` 与 `[llm.models."<id>"]` 都进顶层 `[[llm.models]]`
+///    （前者 `provider` = 各自接口，后者 `provider` = 生效接口；原表的键平铺进条目，
+///    `id` / `provider` 排在最前）。
+///
+/// 返回**有没有改动**：已经是 v4 形状的文本再过一遍必须返回 false 且一个字节不动（幂等）。
+///
+/// ⚠️ **纯函数、不打日志**，只有第 5 条的「丢弃参数」例外 —— 那条信息只有这里知道，
+/// 而写盘之后那几个值就真的没了（`Prepared::retired` 装的是"删掉的键"，装不下这个）。
+///
+/// ⚠️ 为什么不用 `toml::to_string`：那会把注释全丢掉，而 llm.toml 的说明全写在注释里。
+/// 这里逐键搬，连 `Key` 的 leaf decor 与 `Table` 的 decor 都跟着走。
+fn migrate_llm_v4(doc: &mut DocumentMut) -> bool {
+    let Some(llm) = doc.get_mut("llm").and_then(Item::as_table_mut) else {
+        return false;
+    };
+    let mut changed = false;
+
+    // ── ① 一份接口都没有 ⇒ 用顶层三件造一条（v4 不允许"没有接口"）──
+    // ⚠️ 与 v2 → v3 那一步不同，这里**空值也造**：v4 的形状硬要求至少一份接口，
+    // 而"老文件从没配过"本来就是三行空串（模板带出来的），搬过去正好是"待填"的那份。
+    if !llm.contains_key("providers") {
+        // ⚠️ 连 **Key** 一起搬（不是只搬值）：key 的 leaf decor 里可能挂着上方那行注释
+        let moved: Vec<(toml_edit::Key, Item)> = ["api_key", "base_url", "model"]
+            .into_iter()
+            .filter_map(|key| take_key(llm, key))
+            .collect();
+        let mut prov = toml_edit::Table::new();
+        prov.insert("id", toml_edit::value("default"));
+        prov.insert("name", toml_edit::value("默认接口"));
+        for (key, item) in moved {
+            prov.insert_formatted(&key, item);
+        }
+        let mut arr = toml_edit::ArrayOfTables::new();
+        arr.push(prov);
+        // active 原来空着、或指向一个不存在的接口 ⇒ 一律归位（否则 v4 会报"active 指向不存在的接口"）
+        if llm.get("active").and_then(Item::as_str).map(str::trim) != Some("default") {
+            llm.insert("active", toml_edit::value("default"));
+        }
+        llm.insert("providers", Item::ArrayOfTables(arr));
+        changed = true;
+    }
+
+    // ── ② params → defaults（改名，表头注释跟着走）──
+    if llm.contains_key("params") {
+        let had_defaults = llm.contains_key("defaults");
+        if let Some((key, item)) = take_key(llm, "params") {
+            changed = true;
+            if item.as_table_like().is_some() {
+                if had_defaults {
+                    // 已经有人手写过 defaults（半迁移的文件）：逐键并入，已存在的不覆盖
+                    if let Some(dst) = llm.get_mut("defaults").and_then(Item::as_table_mut) {
+                        merge_params_into(dst, item);
+                    }
+                } else {
+                    llm.insert_formatted(&rename_key(&key, "defaults"), item);
+                }
+            }
+            // 不是表（手改出 params = 5）：v4 的 defaults 是张表，搬过去只会让整份文件读不动 ⇒ 丢掉
+        }
+    }
+
+    // ── ③ overrides → links（连注释；空表不写）──
+    if llm.contains_key("overrides") {
+        if let Some((key, item)) = take_key(llm, "overrides") {
+            changed = true;
+            match item {
+                Item::Table(src) => {
+                    let mut src = src;
+                    let mut links = toml_edit::Table::new();
+                    // 老 `[llm.overrides]` 上方的注释跟着这张表走
+                    *links.decor_mut() = src.decor().clone();
+                    if let Some(pos) = src.position() {
+                        links.set_position(pos);
+                    }
+                    let names: Vec<String> = src.iter().map(|(k, _)| k.to_string()).collect();
+                    for name in names {
+                        let Some((link, body)) = take_key(&mut src, &name) else {
+                            continue;
+                        };
+                        // 空表不写（v4 的口径：文件里不出现 = 跟随上层）
+                        if body.as_table_like().map(|t| t.is_empty()).unwrap_or(false) {
+                            continue;
+                        }
+                        links.insert_formatted(&link, body);
+                    }
+                    if !links.is_empty() {
+                        // 只有子表时不要那行空表头（老文件里 `[llm.overrides]` 本来也是隐形的）
+                        links.set_implicit(links.get_values().is_empty());
+                        match llm.get_mut("links").and_then(Item::as_table_mut) {
+                            Some(dst) => {
+                                for (k, v) in links.iter() {
+                                    if dst.get(k).is_none() {
+                                        dst.insert(k, v.clone());
+                                    }
+                                }
+                            }
+                            None => {
+                                llm.insert("links", Item::Table(links));
+                            }
+                        }
+                    }
+                }
+                // 不是表（手改坏）：改名搬过去，让它以"没人认的键"的身份留着，别静默删值
+                other => {
+                    llm.insert_formatted(&rename_key(&key, "links"), other);
+                }
+            }
+        }
+    }
+
+    // 生效那份接口（v4 口径：active 认不出 ⇒ 第一份）。下面两处都要它，先算一次。
+    let active = active_llm_provider(llm);
+
+    // ── ④ 接口：api → protocol；params / models 先取出来 ──
+    let mut prov_params: Vec<(usize, String, Item)> = Vec::new();
+    let mut prov_models: Vec<(String, Item)> = Vec::new();
+    if let Some(providers) = llm.get_mut("providers").and_then(Item::as_array_of_tables_mut) {
+        for (idx, prov) in providers.iter_mut().enumerate() {
+            let id = prov
+                .get("id")
+                .and_then(Item::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if let Some((key, item)) = take_key(prov, "api") {
+                prov.insert_formatted(&rename_key(&key, "protocol"), item);
+                changed = true;
+            }
+            // v4 的接口只描述"怎么连"：参数面归 defaults、模型清单归顶层
+            if let Some((_, item)) = take_key(prov, "params") {
+                prov_params.push((idx, id.clone(), item));
+                changed = true;
+            }
+            if let Some((_, item)) = take_key(prov, "models") {
+                prov_models.push((id, item));
+                changed = true;
+            }
+        }
+    }
+
+    // ── ⑤ 生效那份的参数并进 defaults；其余各份表达不了 ⇒ 丢弃并 warn ──
+    if !prov_params.is_empty() {
+        if !llm.contains_key("defaults") {
+            let mut defaults = toml_edit::Table::new();
+            defaults.set_implicit(false);
+            llm.insert("defaults", Item::Table(defaults));
+        }
+        for (idx, id, item) in prov_params {
+            // 按**下标**判生效（接口 id 可能是空串，比 id 更稳）
+            if active.as_ref().map(|(i, _)| *i == idx).unwrap_or(false) {
+                if let Some(dst) = llm.get_mut("defaults").and_then(Item::as_table_mut) {
+                    merge_params_into(dst, item);
+                }
+            } else {
+                tracing::warn!(
+                    "llm.toml 迁移到 v4：接口 `{id}` 的 [llm.providers.params] 无法表达（v4 只有一层 [llm.defaults]），已丢弃"
+                );
+            }
+        }
+    }
+
+    // ── ⑥ 模型：两套来源 → 一张 [[llm.models]] 清单 ──
+    let legacy_provider = active
+        .as_ref()
+        .map(|(_, id)| id.clone())
+        .unwrap_or_else(|| "default".to_string());
+    let mut entries: Vec<toml_edit::Table> = Vec::new();
+    for (id, item) in prov_models {
+        match item {
+            Item::ArrayOfTables(arr) => {
+                for model in arr {
+                    if let Some(entry) = llm_model_entry(Item::Table(model), "", &id) {
+                        entries.push(entry);
+                    }
+                }
+            }
+            // `models = [{ id = "m" }]`（设置页 patch 出来的内联数组）
+            Item::Value(toml_edit::Value::Array(arr)) => {
+                for model in arr.iter() {
+                    if let Some(entry) = llm_model_entry(Item::Value(model.clone()), "", &id) {
+                        entries.push(entry);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let models_shape = match llm.get("models") {
+        Some(Item::Table(_)) => 1u8, // 老形状：模型 id 为键的键值表
+        Some(Item::Value(toml_edit::Value::Array(_))) => 0, // 已经是 v4 的数组：别动
+        Some(Item::ArrayOfTables(_)) => 0, // 已经是 v4 的 [[llm.models]]：别动（否则第二遍会把清单删掉）
+        Some(Item::None) | None => 0,
+        Some(_) => 2, // 手改出的标量：没人认，删掉
+    };
+    let mut models_prefix: Option<toml_edit::RawString> = None;
+    if models_shape == 1 {
+        if let Some((_, item)) = take_key(llm, "models") {
+            changed = true;
+            if let Item::Table(mut models) = item {
+                // 老 `[llm.models]` 上方那段注释搬到第一条 `[[llm.models]]` 之前
+                models_prefix = models.decor().prefix().cloned();
+                let ids: Vec<String> = models.iter().map(|(k, _)| k.to_string()).collect();
+                for id in ids {
+                    if let Some((_, body)) = take_key(&mut models, &id) {
+                        if let Some(entry) = llm_model_entry(body, &id, &legacy_provider) {
+                            entries.push(entry);
+                        }
+                    }
+                }
+            }
+        }
+    } else if models_shape == 2 {
+        llm.remove("models");
+        changed = true;
+    }
+    if !entries.is_empty() {
+        if let Some(prefix) = models_prefix {
+            if let Some(first) = entries.first_mut() {
+                if first.decor().prefix().is_none() {
+                    first.decor_mut().set_prefix(prefix);
+                }
+            }
+        }
+        let mut arr = toml_edit::ArrayOfTables::new();
+        for mut entry in entries {
+            // 整张清单排到所有老表之后：各条目原本散在 providers 中间（position 记的是老位置），
+            // 就着 position 排会插出一条条模型夹在 [[llm.providers]] 中间的怪形状。
+            entry.set_position(usize::MAX);
+            arr.push(entry);
+        }
+        llm.insert("models", Item::ArrayOfTables(arr));
+        changed = true;
+    }
+    changed
+}
+
+/// 当前生效的**接口**（下标 + id）：`active` 命中就用它，否则第一份（与 v4 的 `active_provider` 同口径）。
+///
+/// 没有 id 的那份给个 "default" 当归属（v4 的模型清单要求 `provider` 非空）。
+fn active_llm_provider(llm: &toml_edit::Table) -> Option<(usize, String)> {
+    let providers = llm.get("providers").and_then(Item::as_array_of_tables)?;
+    if providers.is_empty() {
+        return None;
+    }
+    let id_of = |i: usize| -> String {
+        providers
+            .get(i)
+            .and_then(|t| t.get("id"))
+            .and_then(Item::as_str)
+            .map(str::trim)
+            .unwrap_or("")
+            .to_string()
+    };
+    let active = llm.get("active").and_then(Item::as_str).map(str::trim).unwrap_or("");
+    if !active.is_empty() {
+        for i in 0..providers.len() {
+            if id_of(i) == active {
+                return Some((i, active.to_string()));
+            }
+        }
+    }
+    let first = id_of(0);
+    Some((0, if first.is_empty() { "default".to_string() } else { first }))
+}
+
+/// 把一份参数面（真表或内联表）逐键并进目标表：**目标里已经有的键不覆盖**（先写的那份说了算）。
+///
+/// 口径来自"迁移不能悄悄改值"：`[llm.defaults]` 是唯一基准，provider 那份只补它没写的键。
+fn merge_params_into(dst: &mut toml_edit::Table, src: Item) {
+    match src {
+        Item::Table(mut src) => {
+            let keys: Vec<String> = src.iter().map(|(k, _)| k.to_string()).collect();
+            for key in keys {
+                if dst.get(&key).is_some() {
+                    continue;
+                }
+                if let Some((key, item)) = take_key(&mut src, &key) {
+                    dst.insert_formatted(&key, item);
+                }
+            }
+        }
+        Item::Value(toml_edit::Value::InlineTable(it)) => {
+            // 内联表里放不下注释（TOML 也不许），值原样克隆即可
+            for (key, value) in it.iter() {
+                if dst.get(key).is_some() {
+                    continue;
+                }
+                dst.insert(key, Item::Value(value.clone()));
+            }
+        }
+        // 标量等手改坏的值：v4 的参数面读不动，丢掉（调用方已把这一步记成"改动"）
+        _ => {}
+    }
+}
+
+/// 一条 v3 的模型条目（`[[llm.providers.models]]` 的一项，或 `[llm.models."<id>"]` 那张表）
+/// → `[[llm.models]]` 的一项：`id` / `provider` 排在最前，原表的键**平铺**在后（注释/decor 都跟着）。
+///
+/// ⚠️ **平铺 vs 嵌套**（口径待定，两边差一行）：本步的口径是"原表的键原样平铺"（本函数照做），
+/// 而当前 `llm_v4::LlmModelEntry` 仍是 `catalog` / `overrides` 两个嵌套字段 ——
+/// 也就是说，平铺出来的 `thinking_wire` 这类键现在**读不回来**（serde 当未知字段忽略）。
+/// 两条路选一条即可：① 给 `LlmModelEntry.overrides` 加 `#[serde(flatten)]`（改动最小，与本节一致）；
+/// ② 本函数改成把原表的键塞进 `overrides = { … }` 子表（那就与本步"平铺"的口径不符）。
+///
+/// id：源里自带就沿用那个值（连 decor），没有就用 id 参数；两处都没有 ⇒ 返回 None
+/// （没有 id 的条目在 v4 里没法被引用，落下去只会让 problems() 报警）。
+fn llm_model_entry(src: Item, id: &str, provider: &str) -> Option<toml_edit::Table> {
+    let mut out = toml_edit::Table::new();
+    let (mut table, existing_id) = match src {
+        Item::Table(mut table) => {
+            let id_item = take_key(&mut table, "id");
+            // 表头 decor（上方那段注释）跟着走 —— 这正是"[llm.models] 上方的注释搬到第一条之前"
+            *out.decor_mut() = table.decor().clone();
+            (table, id_item)
+        }
+        Item::Value(toml_edit::Value::InlineTable(it)) => {
+            let mut table = toml_edit::Table::new();
+            for (k, v) in it.iter() {
+                table.insert(k, Item::Value(v.clone()));
+            }
+            let id_item = take_key(&mut table, "id");
+            (table, id_item)
+        }
+        _ => return None,
+    };
+    match existing_id {
+        Some((key, item)) => {
+            out.insert_formatted(&rename_key(&key, "id"), item);
+        }
+        None if id.is_empty() => return None,
+        None => {
+            out.insert("id", toml_edit::value(id));
+        }
+    }
+    out.insert("provider", toml_edit::value(provider));
+    let keys: Vec<String> = table.iter().map(|(k, _)| k.to_string()).collect();
+    for key in keys {
+        if let Some((key, item)) = take_key(&mut table, &key) {
+            out.insert_formatted(&key, item);
+        }
+    }
+    Some(out)
+}
+
+/// 把版本号写进文档顶层：**已经有的那一行连它的 decor（上方注释）一起保留**。
+///
+/// ⚠️ 不能用 `doc.insert(VERSION_KEY, …)`：那是"换一个新键"，键自己的 decor 会被丢掉，
+/// 于是"# 说明 / config_version = 3"这两行迁完只剩孤零零一行版本号 —— 那也是"迁移吃掉了注释"。
+fn stamp_version(doc: &mut DocumentMut) {
+    let item = toml_edit::value(CONFIG_VERSION as i64);
+    match doc.as_table().get_key_value(VERSION_KEY).map(|(k, _)| k.clone()) {
+        Some(key) => {
+            doc.as_table_mut().insert_formatted(&key, item);
+        }
+        None => {
+            doc.insert(VERSION_KEY, item);
+        }
+    }
+}
+
 /// 纯函数：把文本升到 [`CONFIG_VERSION`]。**不碰磁盘**（写回由 [`prepare`] / `edit` 那条路负责）。
 ///
 /// 解析失败时返回 `Err` —— 调用方要保留各自原有的"坏文件"处理（有的备份、有的退回默认值）。
@@ -361,7 +758,7 @@ pub fn migrate_text(kind: ConfigKind, raw: &str) -> Result<Prepared> {
             }
         }
     }
-    doc.insert(VERSION_KEY, toml_edit::value(CONFIG_VERSION as i64));
+    stamp_version(&mut doc);
 
     // 版本行摆在最前面（`toml_edit` 插根键会落到哪儿不好保证，而"第一行是版本"最好读）。
     let text = ensure_version_line(&doc.to_string());
@@ -407,7 +804,7 @@ pub fn migrate_doc_in_place(kind: ConfigKind, doc: &mut DocumentMut) -> u32 {
             remove_path(doc, path);
         }
     }
-    doc.insert(VERSION_KEY, toml_edit::value(CONFIG_VERSION as i64));
+    stamp_version(doc);
     from
 }
 
@@ -597,6 +994,16 @@ fn remove_path(doc: &mut DocumentMut, path: &[&str]) -> bool {
 mod tests {
     use super::*;
 
+    /// 迁移产物按 **v4** 读回来：config::llm_v4::LlmV4 是目标形状的唯一权威，判据别自己另写一套结构。
+    #[derive(serde::Deserialize)]
+    struct LlmFile {
+        llm: super::super::llm_v4::LlmV4,
+    }
+
+    fn llm_v4(text: &str) -> super::super::llm_v4::LlmV4 {
+        toml::from_str::<LlmFile>(text).expect("迁移后必须能按 v4 读回来").llm
+    }
+
     /// 老文件长这样（没有 `config_version`，还带着 4 个死键和一堆注释）。
     const V0_GLOBAL: &str = r#"# YekiTrim 全局默认配置 — 所有工程共享
 # 这些注释**必须活着**（模板里的说明全在注释里）
@@ -706,9 +1113,11 @@ overwrite = false
     /// **更新的版本不许被降级** —— 这条是保护用户数据的关键。
     #[test]
     fn a_newer_version_is_left_completely_untouched() {
-        let future = "config_version = 3\n\n[asr]\nmode = \"single\"\n";
-        let p = migrate_text(ConfigKind::Global, future).unwrap();
-        assert_eq!(p.from, 3);
+        // ⚠️ 用 CONFIG_VERSION + 1，别写死数字：写死的那个每 +1 一次就变成"过期夹具"
+        // （把 v3 当"未来版本"的写法在 v4 这一版就翻面了 —— 它会开始被迁移）。
+        let future = format!("config_version = {}\n\n[asr]\nmode = \"single\"\n", CONFIG_VERSION + 1);
+        let p = migrate_text(ConfigKind::Global, &future).unwrap();
+        assert_eq!(p.from, CONFIG_VERSION + 1);
         assert!(!p.changed);
         assert_eq!(p.text, future, "一个字节都不许动");
     }
@@ -837,6 +1246,9 @@ overwrite = false
 
     /// v1 → v2 的**结构**判据：搬家（键与注释一起）、改名（含链路覆盖）、
     /// 缺席值落成 v1 的生效值、extra_params 原位不动、幂等。
+    ///
+    /// ⚠️ 终点是**当前**版本（现在 v4）：`[llm.params]` → `[llm.defaults]`、`api` → `protocol`
+    /// 是 v3 → v4 那一步顺手做的，判据跟着读 v4（v2→v3 那一跳本身的映射没变）。
     #[test]
     fn migrate_llm_v2_moves_keys_and_keeps_comments() {
         const OLD: &str = r#"# 顶部注释
@@ -858,11 +1270,14 @@ max_tokens = 8192
         let p = migrate_text(ConfigKind::Llm, OLD).unwrap();
         assert_eq!(p.from, 1, "这份夹具是 v1");
         let text = &p.text;
-        assert!(text.starts_with(&format!("config_version = {CONFIG_VERSION}\n")), "{text}");
-        assert!(text.contains("[llm.params]"), "没有搬出参数表：\n{text}");
-        // v3 只是把三个标量搬成一份 provider；**参数面留在顶层**
-        assert!(text.contains("[[llm.providers]]"), "没有造出 provider：\n{text}");
-        assert!(text.contains("active = \"default\""), "active 没指向那份 provider：\n{text}");
+        // ⚠️ 版本号**不清掉它上方的注释**（模板头几行就写在 config_version 上面）：
+        // 所以这里问"文件里有当前版本"，而不是"第一行就是版本号"。
+        assert!(text.starts_with("# 顶部注释\n"), "顶部的注释被吃掉了：\n{text}");
+        assert!(text.contains(&format!("config_version = {CONFIG_VERSION}\n")), "版本没升：\n{text}");
+        assert!(text.contains("[llm.defaults]"), "参数面要落在 defaults：\n{text}");
+        assert!(text.contains("[[llm.providers]]"), "没有造出接口：\n{text}");
+        assert!(text.contains("protocol = \"openai-chat\""), "api 要改名 protocol：\n{text}");
+        assert!(text.contains("active = \"default\""), "active 没指向那份接口：\n{text}");
         assert!(text.contains("温度参数（这句注释必须活着）"), "键上方注释被吃掉了：\n{text}");
         assert!(text.contains("reasoning = \"high\""), "enabled 该变成 high：\n{text}");
         assert!(text.contains("reasoning = \"off\""), "链路覆盖的 disabled 该变成 off：\n{text}");
@@ -870,75 +1285,76 @@ max_tokens = 8192
         assert!(text.contains("extra_params = { seed = 42 }"), "逃逸口原位不动：\n{text}");
         assert!(text.contains("max_tokens = 8192"), "链路覆盖的值要保留：\n{text}");
 
-        #[derive(serde::Deserialize)]
-        struct File {
-            llm: super::super::types::LlmConfig,
-        }
-        let f: File = toml::from_str(text).expect("迁移后必须能解析成新结构");
-        assert_eq!(f.llm.active.as_deref(), Some("default"), "迁移后 active 指向 default");
-        let prov = f.llm.active_provider().expect("active 必须命中一份 provider");
-        assert_eq!(prov.api, "openai-chat", "协议要写进来（自解释）");
-        assert!(prov.params.is_empty(), "provider 自己没写参数面（回落顶层）");
-        let eff = f.llm.effective_params();
-        assert_eq!(eff.temperature, Some(0.0));
-        assert_eq!(eff.max_tokens, Some(16384));
-        assert_eq!(eff.reasoning.as_deref(), Some("high"));
-        assert_eq!(f.llm.overrides.detect.reasoning.as_deref(), Some("off"));
-        assert_eq!(f.llm.overrides.detect.max_tokens, Some(8192));
+        let llm = llm_v4(text);
+        assert_eq!(llm.active, "default", "迁移后 active 指向 default");
+        let prov = llm.active_provider().expect("active 必须命中一份接口");
+        assert_eq!(prov.protocol, "openai-chat", "协议要写进来（自解释）");
+        assert_eq!(llm.defaults.temperature, Some(0.0));
+        assert_eq!(llm.defaults.max_tokens, Some(16384));
+        assert_eq!(llm.defaults.reasoning.as_deref(), Some("high"));
+        let detect = llm.links.get("detect").expect("链路覆盖要在 links 里");
+        assert_eq!(detect.params.reasoning.as_deref(), Some("off"));
+        assert_eq!(detect.params.max_tokens, Some(8192));
 
         // 缺席的那两个键要**落成 v1 的生效值**（新形状里"缺席"= 不发送，不落就等于悄悄改了请求体）
         let bare = migrate_text(ConfigKind::Llm, "[llm]\nmodel = \"m\"\n").unwrap().text;
         assert!(bare.contains("temperature = 0.1"), "缺温度要补 v1 默认值：\n{bare}");
         assert!(bare.contains("max_tokens = 65536"), "缺上限要补 v1 默认值：\n{bare}");
-        let bare_file: File = toml::from_str(&bare).expect("能解析");
-        let bare_prov = bare_file.llm.active_provider().expect("能有 provider");
-        assert_eq!(bare_prov.model, "m", "模型搬进 provider 了");
-        assert_eq!(bare_file.llm.effective_params().temperature, Some(0.1));
-        assert_eq!(bare_file.llm.effective_params().max_tokens, Some(65536));
+        let bare_file = llm_v4(&bare);
+        let bare_prov = bare_file.active_provider().expect("能有接口");
+        assert_eq!(bare_prov.model, "m", "模型搬进接口了");
+        assert_eq!(bare_file.defaults.temperature, Some(0.1));
+        assert_eq!(bare_file.defaults.max_tokens, Some(65536));
 
-        // 幂等：已经是 v2 的文本再迁一次，一个字节都不动
+        // 幂等：已经是当前版本的文本再迁一次，一个字节都不动
         let again = migrate_text(ConfigKind::Llm, text).unwrap();
         assert!(!again.changed);
         assert_eq!(&again.text, text);
     }
 
-    /// **v2 → v3**：老的单份 `[llm]` 搬成**一份 provider**，`[llm.models.*]` 留在原地；
-    /// 再迁一次一个字节都不动（幂等）。`--nocapture` 能看到迁移后的真样子（key 是夹具里的假值）。
+    /// **v2 → v3 → v4**：老的单份 `[llm]` 搬成**一份接口**；`[llm.models.*]` 跟着进 `[[llm.models]]`
+    /// （带 provider）；再迁一次一个字节都不动（幂等）。--nocapture 能看到迁移后的真样子（key 是夹具里的假值）。
     #[test]
     fn migrate_llm_v3_moves_top_level_into_one_provider() {
         const OLD: &str = "[llm]\napi_key = \"k\"\nbase_url = \"http://h/v1\"\nmodel = \"m\"\n\n[llm.params]\ntemperature = 0\n\n[llm.models.\"m\"]\nthinking_wire = \"thinking_type\"\n";
         let text = migrate_text(ConfigKind::Llm, OLD).unwrap().text;
-        println!("MIGRATED_V3=\n{text}");
+        println!("MIGRATED_V4=\n{text}");
         assert!(text.contains("active = \"default\""), "{text}");
         assert!(text.contains("[[llm.providers]]"), "{text}");
-        assert!(text.contains("[llm.params]"), "参数面**留在顶层**（所有 provider 的缺省）：\n{text}");
-        assert!(!text.contains("[llm.providers.params]"), "别把参数面塞进 provider（那会生成非法 TOML）：\n{text}");
-        assert!(text.contains("[llm.models.\"m\"]"), "[llm.models.*] 必须留在原地（与 provider 无关）：\n{text}");
+        assert!(text.contains("[llm.defaults]"), "参数面搬进 defaults：\n{text}");
+        assert!(!text.contains("[llm.params]"), "老表名不许留着：\n{text}");
+        assert!(!text.contains("[llm.models."), "老的键值表不许留着：\n{text}");
+        assert!(text.contains("[[llm.models]]"), "模型要成为数组：\n{text}");
+        assert!(text.contains("provider = \"default\""), "每项要带 provider：\n{text}");
+        assert!(text.contains("thinking_wire = \"thinking_type\""), "原表的键要平铺进去：\n{text}");
+        let llm = llm_v4(&text);
+        assert_eq!(llm.models.len(), 1);
+        assert_eq!(llm.models[0].id, "m");
+        assert_eq!(llm.models[0].provider, "default");
         let again = migrate_text(ConfigKind::Llm, &text).unwrap();
-        assert!(!again.changed, "已经是 v3 了，不该再改：\n{}", again.text);
+        assert!(!again.changed, "已经是最新版本了，不该再改：\n{}", again.text);
         assert_eq!(again.text, text, "幂等");
     }
 
-    /// ⚠️ **验收项：v1 的 llm.toml 迁移到 v2 之后，请求体逐字节不变。**
+    /// ⚠️ **验收项：v1 的 llm.toml 迁移到当前版本之后，请求体逐字节不变。**
     ///
     /// 下面那 12 行 JSON 是**迁移前的老代码真跑出来的**（同一条 wire::apply、同样三个文件），
     /// 所以这条判据不是"我写了个期望值"，而是"升级前后打出去的字节一模一样"。
     /// 三个文件各钉一类：认识的模型（走能力表）/ 表外的模型（保守默认）/ **省掉两个键**的那种
     /// （v1 有代码级默认值 ⇒ 必须由迁移落成显式键）。
+    ///
+    /// ⚠️ 读的是 **v4**（`LlmV4::for_link` → `LlmParams`）：v3→v4 之后 `LlmConfig` 不再是读形状，
+    /// 而这条判据问的正是"喂给 wire 的那份参数"，与中间是哪个版本无关。
     #[test]
     fn migrated_v1_llm_toml_produces_byte_identical_bodies() {
-        #[derive(serde::Deserialize)]
-        struct File {
-            llm: super::super::types::LlmConfig,
-        }
         fn bodies(text: &str) -> Vec<(String, String)> {
-            let f: File = toml::from_str(text).expect("老形状必须能解析");
+            let llm = llm_v4(text);
             // ⚠️ **v1 的四条**（不是 ALL）：金色数据是"迁移前的老代码真跑出来的" 12 条，
             // 加了新链路（Title）之后继续用 ALL 会去找第 5 条 —— 那是改判据去凑数据。
             super::super::types::LlmLink::LEGACY_V1
                 .iter()
                 .map(|link| {
-                    let linked = f.llm.for_link(*link);
+                    let linked = llm.for_link(*link);
                     let p: yekitrim_llm::LlmParams = (&linked).into();
                     let mut body =
                         serde_json::json!({ "messages": [{ "role": "user", "content": "hi" }] });
@@ -1003,6 +1419,210 @@ thinking = "disabled"
                 assert_eq!(body, &want_body, "{tag}/{link} 的请求体变了");
             }
         }
+    }
+
+    /// **v3 → v4（老文件）**：只有顶层三件 + `[llm.params]` + `[llm.overrides.detect]` 的文件，
+    /// 迁完要有 `[[llm.providers]]`（`id = "default"`）、`active = "default"`、`[llm.defaults]`、
+    /// `[llm.links.detect]`，而**顶层 `api_key` 已经不在了**（搬进那份接口）。
+    #[test]
+    fn migrate_llm_v4_legacy_file_becomes_provider_defaults_and_links() {
+        const OLD: &str = r#"# YekiTrim LLM 配置
+config_version = 3
+
+[llm]
+api_key = "sk-legacy"
+base_url = "https://api.example.com/v1"
+model = "example-chat"
+max_concurrent = 3
+
+[llm.params]
+temperature = 0.7
+max_tokens = 4096
+
+[llm.overrides.detect]
+max_tokens = 8192
+"#;
+        let p = migrate_text(ConfigKind::Llm, OLD).unwrap();
+        assert_eq!(p.from, 3, "这份夹具是 v3");
+        let text = &p.text;
+        assert!(text.contains("[[llm.providers]]"), "没有造出接口：\n{text}");
+        assert!(text.contains("id = \"default\""), "{text}");
+        assert!(text.contains("active = \"default\""), "{text}");
+        assert!(text.contains("[llm.defaults]"), "params 要改名成 defaults：\n{text}");
+        assert!(text.contains("[llm.links.detect]"), "overrides 要改名成 links：\n{text}");
+        assert!(!text.contains("[llm.params]"), "老表名不许留着：\n{text}");
+        assert!(!text.contains("[llm.overrides"), "老表名不许留着：\n{text}");
+
+        // 顶层连接面必须搬空（v4 里这三个键不再存在）
+        let doc: DocumentMut = text.parse().unwrap();
+        let llm_table = doc.get("llm").and_then(Item::as_table).expect("有 [llm]");
+        for gone in ["api_key", "base_url", "model", "params", "overrides"] {
+            assert!(llm_table.get(gone).is_none(), "顶层 {gone} 必须搬走：\n{text}");
+        }
+
+        let llm = llm_v4(text);
+        let prov = llm.active_provider().expect("active 必须命中一份接口");
+        assert_eq!(prov.id, "default");
+        assert_eq!(prov.api_key, "sk-legacy", "key 跟着接口走");
+        assert_eq!(prov.base_url, "https://api.example.com/v1");
+        assert_eq!(prov.model, "example-chat");
+        assert_eq!(llm.defaults.temperature, Some(0.7));
+        assert_eq!(llm.defaults.max_tokens, Some(4096));
+        assert_eq!(llm.links.get("detect").and_then(|l| l.params.max_tokens), Some(8192));
+    }
+
+    /// **v3 → v4（多接口）**：`[[llm.providers]]` 的 `api` → `protocol`；**生效那份**的 `params`
+    /// 并进 `[llm.defaults]`（非生效那份表达不了 ⇒ 丢弃 + warn）；`models` 进 `[[llm.models]]` 且带 provider。
+    #[test]
+    fn migrate_llm_v4_moves_provider_api_params_and_models() {
+        const OLD: &str = r#"config_version = 3
+
+[llm]
+active = "main"
+max_concurrent = 5
+
+[[llm.providers]]
+id = "main"
+name = "主力"
+api = "openai-chat"
+base_url = "https://a.example.com/v1"
+api_key = "sk-main"
+model = "m-main"
+
+[llm.providers.params]
+temperature = 0.3
+top_p = 0.9
+
+[[llm.providers.models]]
+id = "m-main"
+name = "主力模型"
+
+[[llm.providers]]
+id = "cheap"
+name = "便宜"
+api = "openai-chat"
+base_url = "https://b.example.com/v1"
+api_key = "sk-cheap"
+model = "m-cheap"
+
+[llm.providers.params]
+max_tokens = 512
+"#;
+        let text = migrate_text(ConfigKind::Llm, OLD).unwrap().text;
+        assert!(!text.contains("api = "), "api 要改名成 protocol：\n{text}");
+        assert!(!text.contains("[llm.providers.params]"), "接口自己的参数面不许留着：\n{text}");
+        assert!(!text.contains("[[llm.providers.models]]"), "模型要搬到顶层清单：\n{text}");
+
+        let llm = llm_v4(&text);
+        assert_eq!(llm.providers.len(), 2, "两份接口都要在：\n{text}");
+        assert!(llm.providers.iter().all(|p| p.protocol == "openai-chat"), "{text}");
+        assert_eq!(llm.active, "main");
+        // 生效那份的参数并进 defaults；非生效那份的 max_tokens 表达不了
+        assert_eq!(llm.defaults.temperature, Some(0.3));
+        assert_eq!(llm.defaults.top_p, Some(0.9));
+        assert_eq!(llm.defaults.max_tokens, None, "非生效接口的参数只能丢弃（并 warn）");
+        // 模型清单：provider = 各自接口
+        let got: Vec<(&str, &str)> =
+            llm.models.iter().map(|m| (m.id.as_str(), m.provider.as_str())).collect();
+        assert_eq!(got, vec![("m-main", "main")], "models 要进 [[llm.models]] 且带 provider：\n{text}");
+    }
+
+    /// **api_key 逐字节不变** —— 迁移里唯一不可重建的东西：值里的 / + = 与行尾注释都不许被重排。
+    #[test]
+    fn migrate_llm_v4_keeps_api_key_byte_for_byte() {
+        const KEY: &str = "sk-live/a+b=c_0123456789";
+        let old = format!(
+            "config_version = 3\n\n[llm]\napi_key = \"{KEY}\"   # 这行一个字都不许动\nbase_url = \"https://x/v1\"\nmodel = \"m\"\n"
+        );
+        let text = migrate_text(ConfigKind::Llm, &old).unwrap().text;
+        let line = text
+            .lines()
+            .find(|l| l.trim_start().starts_with("api_key"))
+            .unwrap_or_else(|| panic!("api_key 不见了：\n{text}"));
+        assert_eq!(
+            line.trim_end(),
+            format!("api_key = \"{KEY}\"   # 这行一个字都不许动"),
+            "api_key 那一行必须逐字节不变：\n{text}"
+        );
+        assert_eq!(llm_v4(&text).providers[0].api_key, KEY);
+    }
+
+    /// **幂等**：同一份文本迁两次，第二次 `changed == false` 且一个字节都不动；
+    /// 纯函数自己也要能回答"有没有改动"（v4 形状 ⇒ false）。
+    #[test]
+    fn migrate_llm_v4_is_idempotent() {
+        const OLD: &str = r#"config_version = 3
+
+[llm]
+api_key = "k"
+base_url = "https://x/v1"
+model = "m"
+
+[llm.params]
+temperature = 0
+
+[llm.overrides.detect]
+max_tokens = 1024
+
+[llm.models."m"]
+thinking_wire = "thinking_type"
+"#;
+        let once = migrate_text(ConfigKind::Llm, OLD).unwrap().text;
+        let twice = migrate_text(ConfigKind::Llm, &once).unwrap();
+        assert_eq!(twice.from, CONFIG_VERSION);
+        assert!(!twice.changed, "已经是最新版本，不该再改");
+        assert_eq!(twice.text, once, "第二次必须逐字节相同（否则每次启动都重写文件）");
+
+        let mut doc: DocumentMut = once.parse().unwrap();
+        assert!(!migrate_llm_v4(&mut doc), "v4 形状再过一遍必须返回 false（有没有改动的判据）");
+        assert_eq!(doc.to_string(), once, "返回 false 的那次不许动一个字节");
+    }
+
+    /// **注释不丢**：`[llm]` 上方那段仍在原处；`[llm.overrides.detect]` 那两段跟着搬到 links；
+    /// `[llm.models]` 上方那段落到**第一条** `[[llm.models]]` 之前。
+    #[test]
+    fn migrate_llm_v4_keeps_comments() {
+        const OLD: &str = r#"# 顶部注释
+config_version = 3
+
+# ── 接口（这段必须活着）──
+[llm]
+api_key = "k"
+base_url = "https://x/v1"
+model = "m"
+
+# ── 请求参数面（也要活着）──
+[llm.params]
+temperature = 0
+
+# ── 按链路覆盖（跟着走）──
+[llm.overrides.detect]
+# 检测这条
+max_tokens = 8192
+
+# ── 模型能力（搬到第一条模型之前）──
+# 内置表没有的模型在这里手填
+[llm.models."m"]
+thinking_wire = "thinking_type"
+"#;
+        let text = migrate_text(ConfigKind::Llm, OLD).unwrap().text;
+        for keep in [
+            "# 顶部注释",
+            "# ── 接口（这段必须活着）──",
+            "# ── 请求参数面（也要活着）──",
+            "# ── 按链路覆盖（跟着走）──",
+            "# 检测这条",
+            "# ── 模型能力（搬到第一条模型之前）──",
+            "# 内置表没有的模型在这里手填",
+        ] {
+            assert!(text.contains(keep), "注释丢了：{keep}\n{text}");
+        }
+        // 位置也要对，不能只是"还在文件里"
+        assert!(text.contains("# ── 接口（这段必须活着）──\n[llm]\n"), "接口那段跑了：\n{text}");
+        assert!(
+            text.contains("# ── 模型能力（搬到第一条模型之前）──\n# 内置表没有的模型在这里手填\n[[llm.models]]\n"),
+            "模型那段要落到第一条 [[llm.models]] 之前：\n{text}"
+        );
     }
 
     /// 坏 TOML 要**报错**（让调用方走各自原有的"坏文件"处理），不能悄悄当成空文档。
