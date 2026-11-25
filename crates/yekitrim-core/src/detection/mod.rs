@@ -224,11 +224,13 @@ impl Stage for EventDetector {
 
         // 标题+摘要 LLM 传播潜力评分：只喂 label+summary，加权进最终 popularity。
         // 失败不阻断检测，回退到原弹幕/字幕热度。
+        // 检测链路的**本地行为参数**（评分权重 / 并发）：S4 起住 [llm.links.detect.run]
+        let detect_run = llm_config.run_for(crate::config::LlmLink::Detect);
         let llm_scores = if llm_config.has_api_key() {
             match llm::score_events_with_llm(
                 &events,
                 llm_config,
-                detect_config,
+                detect_run,
                 ctx.output_dir.parent(),
                 cancel.clone(),
             )
@@ -241,7 +243,7 @@ impl Stage for EventDetector {
                             "LLM 标题+摘要热度评分: {}/{} 条 (权重 {:.2})",
                             scored,
                             events.len(),
-                            detect_config.llm_score_weight
+                            detect_run.llm_score_weight
                         );
                         Some(scores)
                     } else {
@@ -274,7 +276,7 @@ impl Stage for EventDetector {
                     detect_config.danmaku_window_secs,
                     &transcript_densities,
                     llm_scores.as_deref(),
-                    detect_config.llm_score_weight,
+                    detect_run.llm_score_weight,
                 );
             }
             None => {
@@ -283,7 +285,7 @@ impl Stage for EventDetector {
                     &mut events,
                     &transcript_densities,
                     llm_scores.as_deref(),
-                    detect_config.llm_score_weight,
+                    detect_run.llm_score_weight,
                 );
             }
         }
@@ -1778,7 +1780,15 @@ mod scatter_stage_diag {
             return;
         }
         cfg.detection.scattered.enabled = true;
-        cfg.detection.llm_score_weight = 0.0; // 评分那次调用与本题无关，省掉
+        // 评分那次调用与本题无关 ⇒ 权重 0（S4 起住 [llm.links.detect.run]）
+        cfg.llm
+            .links
+            .entry("detect".to_string())
+            .or_default()
+            .run = Some(crate::config::llm_v4::LlmRunCfg {
+            llm_score_weight: Some(0.0),
+            ..Default::default()
+        });
 
         let mut ctx = PipelineContext::new(tmp.join("input.mp4"), out.clone());
         ctx.config = Arc::new(cfg);

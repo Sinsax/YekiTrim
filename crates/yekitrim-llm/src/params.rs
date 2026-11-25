@@ -197,16 +197,15 @@ pub struct LlmParams {
     /// 输出上限（字段名由 `caps.dialect.max_output_field` 决定）。`None` = **不发送**。
     pub max_tokens: Option<u32>,
     /// 推理档位。
-    pub reasoning: ReasoningLevel,
+    ///
+    /// ⚠️ **`None` = LLM 层没表态**（配置里没有这个键）—— 这一档以前叫 `reasoning_explicit` 的布尔，
+    /// 现在直接由 `Option` 表达（S4/F7：双轨退场）。传输层据此决定：
+    /// 能识别的方言按档位发；表外模型只在**表态过**时才发最保守的 `thinking{type}`。
+    pub reasoning: Option<ReasoningLevel>,
     /// **预算型方言的 token 数**（`thinking_budget` / `reasoning_max_tokens` / `thinking_token_budget`）。
     ///
     /// `None` = 没配 ⇒ 按档位映射表给默认（`dialect::budget_for`；off 档没有预算）。
     pub thinking_budget: Option<u32>,
-    /// **LLM 层是否表过态**（旧 `[llm] thinking` 的语义）。
-    ///
-    /// 链路自己的老开关（如 `[correct] thinking`）只在它为 `false` 时才生效 ——
-    /// 否则会把按链路解析出来的档位顶掉（2026-09 修过的一个真 bug）。
-    pub reasoning_explicit: bool,
     pub top_p: Option<f64>,
     /// 要求 JSON 输出（写 `response_format: {"type":"json_object"}`）。
     pub json_mode: bool,
@@ -228,9 +227,8 @@ impl Default for LlmParams {
             model: String::new(),
             temperature: 0.3,
             max_tokens: None,
-            reasoning: ReasoningLevel::Off,
+            reasoning: Some(ReasoningLevel::Off),
             thinking_budget: None,
-            reasoning_explicit: false,
             top_p: None,
             json_mode: false,
             extra_params: None,

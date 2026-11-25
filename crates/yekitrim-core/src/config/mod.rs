@@ -16,12 +16,18 @@ use serde::Deserialize;
 
 use crate::path::PROJECT_CONFIG_FILE;
 
-/// 解析参考标题：优先使用 `detection.reference_titles`；
-/// 其次从 `prompt_template` 的“参考标题：”段落中兼容解析（旧配置）；
+/// 解析参考标题：优先使用 `[llm.links.detect.prompt].reference_titles`；
+/// 其次从它的 `prompt_template` 的“参考标题：”段落中兼容解析（老文件搬过来的那种格式）；
 /// 都为空时回退到内建示例 `detection::DEFAULT_REFERENCE_TITLES`。
-pub fn resolve_reference_titles(det: &DetectionConfig) -> Vec<String> {
+///
+/// ⚠️ S4 起这些文本住 `llm.toml`（`[llm.links.detect.prompt]`），入参从 `&DetectionConfig`
+/// 换成了 `Option<&LlmPromptCfg>`（`None` = 没配 ⇒ 内建默认）。**兼容解析那一段要留着**：
+/// 老文件的 prompt_template 里确实可能有“参考标题：”段落，迁移只是搬文本、不重写内容。
+pub fn resolve_reference_titles(prompts: Option<&crate::config::llm_v4::LlmPromptCfg>) -> Vec<String> {
+    let empty = crate::config::llm_v4::LlmPromptCfg::default();
+    let prompt = prompts.unwrap_or(&empty);
     let mut out: Vec<String> = Vec::new();
-    for raw in &det.reference_titles {
+    for raw in &prompt.reference_titles {
         for line in raw.lines() {
             let line = line.trim().trim_start_matches('▶').trim();
             if !line.is_empty() {
@@ -32,10 +38,10 @@ pub fn resolve_reference_titles(det: &DetectionConfig) -> Vec<String> {
     if !out.is_empty() {
         return out;
     }
-    let Some(pos) = det.prompt_template.find("参考标题：") else {
+    let Some(pos) = prompt.prompt_template.find("参考标题：") else {
         return default_reference_titles();
     };
-    let tail = &det.prompt_template[pos + "参考标题：".len()..];
+    let tail = &prompt.prompt_template[pos + "参考标题：".len()..];
     for line in tail.lines() {
         let line = line.trim();
         if line.is_empty() {
@@ -77,7 +83,7 @@ pub const GLOBAL_CONFIG_TOML: &str = r#"# YekiTrim 全局默认配置 — 所有
 # 相同参数会被 yekitrim.toml 覆盖
 # ⚠️ config_version 是**配置结构版本**：程序读它决定要不要跑迁移。
 #    手工改配置时**别动这一行**（改了会让迁移跑错；见 config/version.rs）。
-config_version = 4
+config_version = 5
 
 [asr]
 # ASR 模式: "single"（SenseVoice 单模型）| "hybrid"（SenseVoice 打轴 + qwen3 填词）
@@ -122,12 +128,8 @@ vad_rescue_db = 16.0
 system_prompt = "{{CORRECT_SYSTEM_PROMPT}}"
 # 订正 user_prompt（{global_context}/{window_context}/{segments} 会被自动替换）
 prompt = "{{CORRECT_USER_PROMPT}}"
-# 是否启用思考模式（LLM 先推理再输出）
-thinking = false
-# Agent 窗口大小（每次处理条数）
-window_size = 25
-# Agent 最大并发数
-max_concurrent = 3
+# ⚠️ thinking / window_size / max_concurrent 已搬到 .yekitrim/llm.toml 的
+#    [llm.links.correct]（思考档位）与 [llm.links.correct.run]（窗口 / 并发）—— S4
 # 自定义热词（主播名/游戏/歌曲/梗，订正时优先使用）
 hotwords = []
 
@@ -136,20 +138,10 @@ hotwords = []
 vtuber_name = ""
 # 弹幕密度统计窗口(秒)
 danmaku_window_secs = 10
-# 标题+摘要 LLM 传播潜力评分权重（0 = 关闭该标准）
-# 评分只喂 label+summary，按预测点击率/有趣程度/爆点强度给 0~100 分；
-# 最终 popularity = (1-w)*弹幕/字幕热度 + w*LLM评分
-llm_score_weight = 0.3
-# 参考标题示例（检测和封面标题生成共用；每项一条，可含 emoji）
-# 留空 = 使用内建示例标题（或旧版 prompt_template「参考标题：」段落）
-reference_titles = [
-]
-# 检测 system_prompt（修改此处覆盖内建默认）
-system_prompt = "{{DETECT_SYSTEM_PROMPT}}"
-# 检测 user prompt_template（{segments} 会被替换；留空 = 恢复内建默认值）
-prompt_template = "{{DETECT_USER_PROMPT}}"
-# LLM 最大并发窗口数（默认 3；可根据 API 限流调大/调小）
-max_concurrent = 3
+# ⚠️ 这一节只剩与 LLM 无关的项。提示词三件（system_prompt / prompt_template /
+#    reference_titles）、评分权重 llm_score_weight、段级并发 max_concurrent
+#    已搬到 .yekitrim/llm.toml 的 [llm.links.detect.prompt] / [llm.links.detect.run]（S4）——
+#    「LLM 怎么跑」只在一个文件里找。别在这里加回来（迁移只跑一次，写回来也没人读）。
 
 # ── 分散事件合并（检测第二趟；2026-10-06 新增，默认关）──
 # 第一趟只收"完整话题"（硬标准 ≥30s）；同一个话题被别的话题打断成几小段时会被吞并或不报。
@@ -344,15 +336,15 @@ multi_user = false
 /// **能力面**（`[llm.models."<id>"]`）分开。老文件由 `version.rs` 的 v1→v2 搬过来，不用手改。
 /// 这里的 `config_version = 4` 必须与 [`super::version::CONFIG_VERSION`] 一致 ——
 /// 写小了的话新装的文件会被"升级"一次（多一个 .bak-v1），写大了则是本程序读不懂自己的模板。
-pub const LLM_CONFIG_TOML: &str = r#"# YekiTrim LLM 配置 — 独立于工程配置（v4：接口 / 模型清单 / 默认参数 / 链路覆盖）
+pub const LLM_CONFIG_TOML: &str = r#"# YekiTrim LLM 配置 — 独立于工程配置（v5：接口 / 模型清单 / 默认参数 / 链路覆盖 + 链路提示词与行为）
 # ⚠️ 配置结构版本，别手改（见 config/version.rs）
-config_version = 4
+config_version = 5
 
 [llm]
 # 当前用哪一份接口（= 下面 [[llm.providers]] 的 id；留空 = 第一份）
 active = "main"
 # 并发请求数——事件检测 / 精修事件生成 / 字幕订正**共用这一个值**
-#（[detection]/[correct] 各自的 max_concurrent 留空即跟随这里）
+#（各链路要单独压，用 [llm.links.<link>.run] max_concurrent）
 max_concurrent = 3
 # 额外请求参数：**逃逸口**，整表原样进请求体、优先级最低（结构化参数之后才盖）。
 # ⚠️ 已知参数请用下面的结构化键（temperature / max_tokens / reasoning / top_p / json_mode），
@@ -397,10 +389,45 @@ model = ""
 # 留空 = 跟随 [llm] active 与那份接口的默认模型；参数缺一项 = 跟随 [llm.defaults]。
 [llm.links.detect]
 max_tokens = 8192
+
+# ── 检测链路的**提示词**（S4：从 config.toml 的 [detection] 搬来）──────────
+# ⚠️ 它们**不是请求参数**（不进请求体）；参考标题也喂给封面标题生成。
+# 清空 = 用内建默认值（改内建默认只对新装生效，这里是副本）。
+[llm.links.detect.prompt]
+# 检测 system_prompt
+system_prompt = "{{DETECT_SYSTEM_PROMPT}}"
+# 检测 user prompt_template（{segments} / {reference_titles} 会被替换）
+prompt_template = "{{DETECT_USER_PROMPT}}"
+# 参考标题示例（每项一条，可含 emoji；留空 = 内建示例）
+reference_titles = [
+]
+
+# ── 检测链路的**本地行为参数**（S4：从 config.toml 的 [detection] 搬来）────
+# ⚠️ 同样不进请求体：它们决定"本机怎么跑"，不是"发给模型什么"。
+[llm.links.detect.run]
+# 标题+摘要 LLM 评分在最终热度里的权重（0 = 关闭该标准、也不再发那次请求）
+# 最终 popularity = (1-w)*弹幕/字幕热度 + w*LLM评分
+llm_score_weight = 0.3
+# 段级并发（留空 = 跟随 [llm] max_concurrent）
+# max_concurrent = 3
+
 [llm.links.polish]
 max_tokens = 32768
+
 [llm.links.correct]
 max_tokens = 8192
+# 思考档位（off|minimal|low|medium|high|xhigh|max；留空 = 不表态）
+# S4 之前这里是 config.toml 的 [correct] thinking = true/false：
+#   true ⇒ reasoning = "high"；false ⇒ **什么都不写**（写 "off" 会变成"显式关思考"）
+# reasoning = "high"
+
+# ── 订正链路的本地行为参数 ────────────────────────────────────────
+[llm.links.correct.run]
+# Agent 窗口大小（每次处理条数；留空 = 代码表缺省 25）
+# window_size = 25
+# 段级并发（留空 = 跟随 [llm] max_concurrent）
+# max_concurrent = 3
+
 # [llm.links.title]
 # 换一条链路用便宜模型示例：
 # provider = "cheap"
@@ -451,7 +478,8 @@ pub fn write_project_config_exact(
 ///
 /// 剥离清单：`[llm]`（独立 llm.toml）/ `[correct]`（订正 prompt 只住程序配置）/
 /// `[auth]` / `[publish]` / `[storage]` / `[stickers]` / `[ingest]`（含 `ingest.*` 子表）。
-/// `[detection]` 里的 prompt 同样只住程序配置 —— 见「改内建 prompt 要同步用户配置」。
+/// `[detection]` 里的 prompt 也剥掉 —— S4 起它们干脆不住 config.toml 了（住 llm.toml 的
+/// `[llm.links.detect.prompt]`），但老工程文件里可能还留着副本，这里照旧清一遍。
 fn project_config_body(global_text: &str, output_dir: Option<&str>) -> Result<String> {
     let mut doc: toml_edit::DocumentMut = global_text.parse()?;
     // 程序级段（其中多个带凭证）：不是工程该覆盖的东西，别抄进工程文件。
@@ -462,11 +490,19 @@ fn project_config_body(global_text: &str, output_dir: Option<&str>) -> Result<St
     // 表头之后的键一律归那张表 —— 版本键会落成 `project.config_version`，根层反而没有。
     // 根层那一行由 `write_project_config_inner_with` 统一负责（并顺手摘掉这里残留的旧键）。
 
-    // 移除 [detection] 中的 prompt 字段，仅保留在 config.toml
+    // 老工程文件里可能还抄着这些「LLM 行为键」：S4 起它们**不属于工程级**，能剥就剥。
+    // （新模板里已经没有这几行了，这里只是不把老副本继续往下带。）
     if let Some(detection) = doc.get_mut("detection") {
         if let Some(table) = detection.as_table_mut() {
-            table.remove("system_prompt");
-            table.remove("prompt_template");
+            for k in [
+                "system_prompt",
+                "prompt_template",
+                "reference_titles",
+                "llm_score_weight",
+                "max_concurrent",
+            ] {
+                table.remove(k);
+            }
             // 分散事件第二趟的两份 prompt 同理：只留在 `.yekitrim/config.toml`
             if let Some(sc) = table.get_mut("scattered").and_then(|v| v.as_table_mut()) {
                 sc.remove("system_prompt");
@@ -649,7 +685,6 @@ fn merge(base: &mut Config, overlay: Config) {
     let audio_d = crate::config::types::AudioConfig::default();
     let asr_d = crate::config::types::AsrConfig::default();
     let det_d = crate::config::types::DetectionConfig::default();
-    let correct_d = crate::config::types::CorrectConfig::default();
     // Project fields
     if overlay.project.input_file.is_some() {
         base.project
@@ -763,25 +798,12 @@ fn merge(base: &mut Config, overlay: Config) {
     if overlay.detection.danmaku_window_secs != det_d.danmaku_window_secs {
         base.detection.danmaku_window_secs = overlay.detection.danmaku_window_secs;
     }
-    if !overlay.detection.system_prompt.is_empty() {
-        base.detection.system_prompt = overlay.detection.system_prompt;
-    }
-    if !overlay.detection.prompt_template.is_empty() {
-        base.detection.prompt_template = overlay.detection.prompt_template;
-    }
     if !overlay.detection.vtuber_name.is_empty() {
         base.detection.vtuber_name = overlay.detection.vtuber_name;
     }
-    if !overlay.detection.reference_titles.is_empty() {
-        base.detection.reference_titles = overlay.detection.reference_titles.clone();
-    }
-    if overlay.detection.llm_score_weight != det_d.llm_score_weight {
-        base.detection.llm_score_weight = overlay.detection.llm_score_weight;
-    }
-    // Option 字段：Some 才覆盖（None = 跟随 llm.toml 的全局并发）
-    if overlay.detection.max_concurrent.is_some() {
-        base.detection.max_concurrent = overlay.detection.max_concurrent;
-    }
+    // ⚠️ S4：提示词 / 评分权重 / 段级并发**不在这里 merge** —— 它们住 llm.toml
+    // （`[llm.links.detect.prompt]` / `[llm.links.detect.run]`），而 `[llm]` 本来就不参与
+    // 工程级合并（`load_config_at` 最后一句无条件覆盖）。别再给它们加回覆盖条件。
     // 分散事件合并（`[detection.scattered]`）：项目里写过的才覆盖程序默认。
     // 口径与本节其余字段一致：bool 取**或**（不能靠"关"去覆盖程序里的开）、
     // 数值/字符串"非默认才覆盖"（否则项目里的空段会把程序配置抹平）。
@@ -839,15 +861,8 @@ fn merge(base: &mut Config, overlay: Config) {
     if !overlay.correct.prompt.is_empty() {
         base.correct.prompt = overlay.correct.prompt;
     }
-    if overlay.correct.thinking {
-        base.correct.thinking = true;
-    }
-    if overlay.correct.window_size != correct_d.window_size {
-        base.correct.window_size = overlay.correct.window_size;
-    }
-    if overlay.correct.max_concurrent.is_some() {
-        base.correct.max_concurrent = overlay.correct.max_concurrent;
-    }
+    // ⚠️ S4：`thinking` / `window_size` / `max_concurrent` 已搬进 llm.toml 的
+    // `[llm.links.correct]` 与 `[llm.links.correct.run]` —— 这里不再有对应的覆盖条件。
     if !overlay.correct.hotwords.is_empty() {
         // 热词追加合并（全局 + 项目）
         for w in &overlay.correct.hotwords {
@@ -1464,6 +1479,13 @@ fn edit_toml_at(project_file: &Path, f: impl FnOnce(&mut toml_edit::DocumentMut)
         // 那个文件永远升不上来，里面已下线的键也永远清不掉（patch 只合并不删）。
         // 迁移失败（坏 TOML）时保持原样交给下面那段"备份 + 从空文档起"的既有处理。
         let kind = ConfigKind::of_path(project_file);
+        // 读-改-写这条路同样要先跑 v4→v5 的**跨文件**搬家（config.toml → llm.toml），
+        // 否则「保存一次设置」会把 LLM 行为键当历史键删掉、却一个都没搬过去（只删不搬）。
+        let content = if kind == ConfigKind::Global {
+            version::migrate_global_pair(project_file, &content).unwrap_or_else(|_| content.clone())
+        } else {
+            content
+        };
         let base = match version::migrate_text(kind, &content) {
             Ok(prepared) => {
                 // ⚠️ `migrate_text` 是纯函数、**不打日志**（工程级文件不写回，在纯函数里报就是刷屏）。
@@ -1798,31 +1820,31 @@ mod vad_merge_tests {
 mod reference_titles_tests {
     use super::*;
 
-    fn det(titles: Vec<String>, template: &str) -> DetectionConfig {
-        DetectionConfig {
-            reference_titles: titles,
+    fn prompts(titles: Vec<String>, template: &str) -> crate::config::llm_v4::LlmPromptCfg {
+        crate::config::llm_v4::LlmPromptCfg {
+            system_prompt: String::new(),
             prompt_template: template.to_string(),
-            ..Default::default()
+            reference_titles: titles,
         }
     }
 
     #[test]
     fn config_titles_win_over_everything() {
-        let d = det(vec!["自定义标题🤣".into()], "参考标题：\n▶ 旧示例");
+        let d = prompts(vec!["自定义标题🤣".into()], "参考标题：\n▶ 旧示例");
         assert_eq!(
-            resolve_reference_titles(&d),
+            resolve_reference_titles(Some(&d)),
             vec!["自定义标题🤣".to_string()]
         );
     }
 
     #[test]
     fn legacy_prompt_section_is_parsed() {
-        let d = det(
+        let d = prompts(
             vec![],
             "前文\n参考标题：\n▶ 旧示例一🥵\n▶ 旧示例二😅\n\n输出：只输出 JSON",
         );
         assert_eq!(
-            resolve_reference_titles(&d),
+            resolve_reference_titles(Some(&d)),
             vec!["旧示例一🥵".to_string(), "旧示例二😅".to_string()]
         );
     }
@@ -1830,8 +1852,8 @@ mod reference_titles_tests {
     #[test]
     fn placeholder_literal_is_skipped_and_builtin_used() {
         // init 写出的新版内建 prompt：该段落只剩待替换的占位符
-        let d = det(vec![], crate::detection::DEFAULT_PROMPT);
-        let resolved = resolve_reference_titles(&d);
+        let d = prompts(vec![], crate::detection::DEFAULT_PROMPT);
+        let resolved = resolve_reference_titles(Some(&d));
         assert_eq!(
             resolved,
             crate::detection::DEFAULT_REFERENCE_TITLES
@@ -1844,9 +1866,9 @@ mod reference_titles_tests {
 
     #[test]
     fn empty_everything_falls_back_to_builtin() {
-        let d = det(vec![], "");
+        let d = prompts(vec![], "");
         assert_eq!(
-            resolve_reference_titles(&d),
+            resolve_reference_titles(Some(&d)),
             crate::detection::DEFAULT_REFERENCE_TITLES
                 .iter()
                 .map(|s| s.to_string())
@@ -2743,25 +2765,19 @@ mod config_migration_tests {
         let uid = crate::owner::local_admin_uid();
         let state = home.join("users").join(uid.to_string()).join(".yekitrim");
         std::fs::create_dir_all(&state).unwrap();
-        std::fs::write(
-            state.join("config.toml"),
-            "[detection]\nreference_titles = [\"账号标题\"]\n",
-        )
-        .unwrap();
+        std::fs::write(state.join("config.toml"), "[detection]\n").unwrap();
+        // ⚠️ S4：提示词已经住 llm.toml 的 [llm.links.detect.prompt] —— 账号那份才是权威。
+        // 这里用 v4 形状写（不再靠迁移，免得这条用例同时测两件事）。
         std::fs::write(
             state.join("llm.toml"),
-            "[llm]\napi_key = \"sk-owner\"\nbase_url = \"http://owner/v1\"\nmodel = \"m\"\n",
+            "config_version = 4\n[llm]\nactive = \"main\"\n             [[llm.providers]]\nid = \"main\"\napi_key = \"sk-owner\"\n             base_url = \"http://owner/v1\"\nmodel = \"m\"\n             [llm.links.detect.prompt]\nreference_titles = [\"账号标题\"]\n",
         )
         .unwrap();
         // 诱饵：已退役的顶层那份（值不同）
-        std::fs::write(
-            home.join(".yekitrim/config.toml"),
-            "[detection]\nreference_titles = [\"顶层标题\"]\n",
-        )
-        .unwrap();
+        std::fs::write(home.join(".yekitrim/config.toml"), "[detection]\n").unwrap();
         std::fs::write(
             home.join(".yekitrim/llm.toml"),
-            "[llm]\napi_key = \"sk-top\"\nbase_url = \"http://top/v1\"\n",
+            "config_version = 4\n[llm]\nactive = \"main\"\n             [[llm.providers]]\nid = \"main\"\nbase_url = \"http://top/v1\"\n             [llm.links.detect.prompt]\nreference_titles = [\"顶层标题\"]\n",
         )
         .unwrap();
         let proj = home.join("proj");
@@ -2778,9 +2794,9 @@ mod config_migration_tests {
         }
 
         assert_eq!(
-            cfg.detection.reference_titles,
+            resolve_reference_titles(cfg.llm.prompt_for(crate::config::LlmLink::Detect)),
             vec!["账号标题".to_string()],
-            "管线还在读顶层那份（诱饵）—— 设置页的参考标题因此不生效"
+            "提示词只认账号 llm.toml（读顶层那份诱饵就说明又退回旧位置了）"
         );
         assert_eq!(
             cfg.llm.effective_api_key(),

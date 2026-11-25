@@ -112,9 +112,8 @@
                 <input id="llmCorrect" v-model="form.asr.llm_correct" type="checkbox">
                 <label for="llmCorrect">LLM 订正转录</label>
               </div>
-              <SliderField v-model="form.detection.llm_score_weight" class="span-4"
-                           label="LLM 评分权重" :min="0" :max="1" :step="0.05"
-                           hint="0 = 只用弹幕/字幕热度" />
+              <!-- ⚠️ S4：「LLM 评分权重」已搬进 llm.toml 的 [llm.links.detect.run].llm_score_weight，
+                   入口在「AI 模型」页的高级配置里（这一页只放 config.toml 的项）。 -->
             </div>
           </div>
 
@@ -293,13 +292,13 @@
             </div>
           </div>
           <div>
-            <label>检测 system_prompt</label>
-            <textarea v-model="form.detection.system_prompt" rows="8" placeholder="留空使用内建默认"></textarea>
+            <label>检测 system_prompt<span class="muted small">（写 llm.toml 的 [llm.links.detect.prompt]）</span></label>
+            <textarea v-model="form.llm.detectPrompt.system_prompt" rows="8" placeholder="留空使用内建默认"></textarea>
           </div>
         </div>
         <div class="mt-8">
           <label>检测 prompt_template<span class="muted small">（{segments} 会被替换）</span></label>
-          <textarea v-model="form.detection.prompt_template" rows="12" placeholder="留空使用内建默认"></textarea>
+          <textarea v-model="form.llm.detectPrompt.prompt_template" rows="12" placeholder="留空使用内建默认"></textarea>
         </div>
         <div class="row mt-12">
           <button class="btn btn-primary" :disabled="!loaded || promptSaving" @click="savePrompts()">
@@ -322,6 +321,15 @@
                         :protocols="protocols" :protocols-source="protocolsSource"
                         @update:active-id="form.llm.active = $event"
                         @add="addProvider" @remove="removeProvider" />
+        </div>
+        <div class="form-section">
+          <div class="form-section-title">检测评分权重
+            <span class="t-sub">[llm.links.detect.run] llm_score_weight</span></div>
+          <div class="form-grid">
+            <SliderField v-model="form.llm.detectRun.llm_score_weight" class="span-2"
+                         label="LLM 评分权重" :min="0" :max="1" :step="0.05"
+                         hint="0 = 只用弹幕/字幕热度（也不再发那次评分请求）" />
+          </div>
         </div>
         <div class="form-section">
           <div class="form-section-title">额外请求参数
@@ -541,13 +549,11 @@ const form = reactive({
     vad_rescue_db: 16,
     llm_correct: false
   },
+  // ⚠️ S4：提示词三件与评分权重已经搬进 llm.toml（见下 form.llm.detectPrompt / detectRun），
+  // 这里只剩 config.toml 真正还在的 [detection] 键。
   detection: {
     danmaku_window_secs: 10,
-    llm_score_weight: 0.3,
-    vtuber_name: '',
-    reference_titles: [],
-    system_prompt: '',
-    prompt_template: ''
+    vtuber_name: ''
   },
   cutting: {
     output_dir: './output',
@@ -575,6 +581,12 @@ const form = reactive({
     links: {},
     /** 界面可见的链路键（后端 override_links；不含 correct —— 它只隐藏不删） */
     overrideLinks: [],
+    /** 检测链路的提示词（[llm.links.detect.prompt]；S4 从 config.toml 搬来） */
+    detectPrompt: { system_prompt: '', prompt_template: '', reference_titles: [] },
+    /** 载入时那份（保存时只发改过的键，同上） */
+    detectPromptOrig: { system_prompt: '', prompt_template: '', reference_titles: [] },
+    /** 检测链路的本地行为参数（[llm.links.detect.run]）—— 只有评分权重有 UI（它原来是程序配置页的滑块） */
+    detectRun: { llm_score_weight: 0.3 },
     /** 刚探测到、还没加入清单的模型（只做 ① 的候选，**不落盘**） */
     probeModels: [],
     /** providers / models 的**载入快照**（保存时"没改不发"：数组是整份替换，发一次就把
@@ -750,13 +762,11 @@ function buildGlobalPatch() {
       vad_rescue_db: Number(f.asr.vad_rescue_db ?? 16),
       llm_correct: !!f.asr.llm_correct
     },
+    // ⚠️ S4：提示词三件 / 评分权重**不住 config.toml 了**（住 llm.toml 的 [llm.links.detect.*]）。
+    // 这里再写就会把已退役的键复活 —— patch 只合并不删，而文件已是 v5、迁移不会再跑。
     detection: {
       danmaku_window_secs: Number(f.detection.danmaku_window_secs) || 10,
-      llm_score_weight: Number(f.detection.llm_score_weight ?? 0.3),
-      vtuber_name: f.detection.vtuber_name || '',
-      reference_titles: f.detection.reference_titles || [],
-      system_prompt: f.detection.system_prompt || '',
-      prompt_template: f.detection.prompt_template || ''
+      vtuber_name: f.detection.vtuber_name || ''
     },
     cutting: {
       output_dir: f.cutting.output_dir || './output',
@@ -821,6 +831,17 @@ function parseExtraParams(raw) {
  * 链路覆盖 → 只写非空的键；**一条都没写就发 null**（删掉这张小表，别在文件里留空表）。
  * ""/null 都表示"跟随"，所以这里只收有值的键。
  */
+/** 提示词三件：全空 ⇒ `null`（= 删掉这张子表 / 回到内建默认） */
+function cleanPrompt(p) {
+  const o = {
+    system_prompt: String((p && p.system_prompt) || ''),
+    prompt_template: String((p && p.prompt_template) || ''),
+    reference_titles: Array.isArray(p && p.reference_titles) ? p.reference_titles : []
+  }
+  const empty = !o.system_prompt.trim() && !o.prompt_template.trim() && !o.reference_titles.length
+  return empty ? null : o
+}
+
 function buildLinks(f) {
   const out = {}
   for (const [key, row] of Object.entries(f.links || {})) {
@@ -831,6 +852,14 @@ function buildLinks(f) {
     if (p.temperature !== undefined) one.temperature = p.temperature
     if (p.max_tokens !== undefined) one.max_tokens = p.max_tokens
     if (p.reasoning !== undefined) one.reasoning = p.reasoning
+    // 检测链路还带两张**不进请求体**的子表（S4）：提示词与本地行为参数
+    if (key === 'detect') {
+      const pr = cleanPrompt(f.detectPrompt)
+      if (pr) one.prompt = pr
+      else if (cleanPrompt(f.detectPromptOrig)) one.prompt = null
+      const w = Number(f.detectRun && f.detectRun.llm_score_weight)
+      one.run = { llm_score_weight: Number.isFinite(w) ? Math.min(1, Math.max(0, w)) : 0.3 }
+    }
     out[key] = Object.keys(one).length ? one : null
   }
   return out
@@ -919,6 +948,14 @@ function applyLlmConfig(d) {
   const extra = (l.extra_params && Object.keys(l.extra_params).length)
     ? JSON.stringify(l.extra_params, null, 2)
     : ''
+  // 检测链路的提示词与评分权重（S4 起住 llm.toml；[detection] 里那两个键已经没有了）
+  const dp = (l.links && l.links.detect && l.links.detect.prompt) || {}
+  const dprompt = {
+    system_prompt: String(dp.system_prompt || ''),
+    prompt_template: String(dp.prompt_template || ''),
+    reference_titles: Array.isArray(dp.reference_titles) ? [...dp.reference_titles] : []
+  }
+  const drun = (l.links && l.links.detect && l.links.detect.run) || {}
   form.llm = {
     active: typeof l.active === 'string' ? l.active : '',
     max_concurrent: l.max_concurrent ?? 3,
@@ -936,6 +973,9 @@ function applyLlmConfig(d) {
       json_mode: def.json_mode === true
     },
     extra_params: extra,
+    detectPrompt: { ...dprompt, reference_titles: [...dprompt.reference_titles] },
+    detectPromptOrig: { ...dprompt, reference_titles: [...dprompt.reference_titles] },
+    detectRun: { llm_score_weight: drun.llm_score_weight ?? 0.3 },
     providers: (Array.isArray(l.providers) ? l.providers : []).map((p) => ({
       id: String(p.id || ''),
       name: p.name || String(p.id || ''),
@@ -1066,13 +1106,12 @@ async function loadConfig() {
     })
     if (c.detection) Object.assign(form.detection, {
       danmaku_window_secs: c.detection.danmaku_window_secs ?? 10,
-      llm_score_weight: c.detection.llm_score_weight ?? 0.3,
-      vtuber_name: c.detection.vtuber_name || '',
-      reference_titles: Array.isArray(c.detection.reference_titles) ? [...c.detection.reference_titles] : [],
-      system_prompt: c.detection.system_prompt || '',
-      prompt_template: c.detection.prompt_template || ''
+      vtuber_name: c.detection.vtuber_name || ''
     })
-    referenceTitlesText.value = (form.detection.reference_titles || []).join('\n')
+    // LLM 那一半**先**装（提示词 / 参考标题现在住 llm.toml —— 下面那行要用它）
+    applyLlmConfig(d)
+    // ⚠️ S4：参考标题在 llm.toml 的 [llm.links.detect.prompt] ⇒ 必须在 applyLlmConfig 之后读
+    referenceTitlesText.value = (form.llm.detectPrompt.reference_titles || []).join('\n')
     // **留空 ⇒ 把内建默认值填进去**（用户口径，见 `referenceTitlesDefault` 的注释）：
     // 与其他设置项一致 —— 表单显示"实际会用的那一份"，保存时经 syncReferenceTitlesFromText
     // 写进 config.toml；清空再保存 = 回到预设。
@@ -1086,7 +1125,6 @@ async function loadConfig() {
       output_dir: c.cutting.output_dir || './output',
       overwrite: !!c.cutting.overwrite,
     })
-    applyLlmConfig(d)
     loaded.value = true
     loadFailed.value = false
     configLoadError.value = ''
@@ -1121,8 +1159,8 @@ let baseGlobal = ''
 function promptStateJSON() {
   return JSON.stringify({
     rt: referenceTitlesText.value,
-    sp: form.detection.system_prompt || '',
-    pt: form.detection.prompt_template || ''
+    sp: form.llm.detectPrompt.system_prompt || '',
+    pt: form.llm.detectPrompt.prompt_template || ''
   })
 }
 /** 程序配置页那几块的状态串（**剔掉**提示词三键 —— 它们归 basePrompts） */
@@ -1171,7 +1209,7 @@ async function toggleSource() {
  *  ⚠️ **两页共用一个函数**（程序配置页的保存 + LLM 页的保存都要它）：
  *  抄两份必然漂移，而漂移的表现是"在某一页改的没生效"。 */
 function syncReferenceTitlesFromText() {
-  form.detection.reference_titles = referenceTitlesText.value
+  form.llm.detectPrompt.reference_titles = referenceTitlesText.value
     .split('\n')
     .map(s => s.trim())
     .filter(Boolean)
@@ -1291,16 +1329,20 @@ async function savePrompts() {
   promptSaving.value = true
   try {
     syncReferenceTitlesFromText()
-    await api('/api/config/global', {
-      method: 'PUT',
-      body: JSON.stringify({ patch: { detection: {
-        reference_titles: form.detection.reference_titles || [],
-        system_prompt: form.detection.system_prompt || '',
-        prompt_template: form.detection.prompt_template || ''
-      } } })
-    })
+    // ⚠️ S4：提示词**不住 config.toml 了** —— 写 llm.toml 的 [llm.links.detect.prompt]。
+    // 「新建 / 清空」都靠这三个键表达：全空时发 null（= 删掉这张子表，回到内建默认）。
+    const p = form.llm.detectPrompt
+    const prompt = {
+      system_prompt: String(p.system_prompt || ''),
+      prompt_template: String(p.prompt_template || ''),
+      reference_titles: Array.isArray(p.reference_titles) ? p.reference_titles : []
+    }
+    const empty = !prompt.system_prompt.trim() && !prompt.prompt_template.trim() && !prompt.reference_titles.length
+    await putLlm({ llm: { links: { detect: { prompt: empty ? null : prompt } } } })
+    form.llm.detectPromptOrig = JSON.parse(JSON.stringify(p))
     basePrompts = promptStateJSON()
-    toast('提示词已保存（config.toml 的 [detection]）')
+    baseLlm = JSON.stringify(form.llm)
+    toast('提示词已保存（llm.toml 的 [llm.links.detect.prompt]）')
   } catch (e) {
     const msg = (e && e.message) || String(e)
     llmSaveError.value = '提示词保存失败：' + msg

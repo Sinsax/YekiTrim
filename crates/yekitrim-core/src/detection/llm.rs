@@ -105,7 +105,7 @@ impl DetectPass {
     }
 }
 
-/// 内建参考标题示例：config `detection.reference_titles` 与旧版
+/// 内建参考标题示例：llm.toml 的 `[llm.links.detect.prompt].reference_titles` 与旧版
 /// prompt_template「参考标题：」段落都为空时的兜底（检测与封面标题共用）。
 ///
 /// # 这几条是**格式示范**，不是某个主播的数据
@@ -143,19 +143,22 @@ fn format_segments(segments: &[TranscriptSegment]) -> String {
 fn build_prompt(
     segments: &[TranscriptSegment],
     config: &DetectionConfig,
+    prompts: Option<&crate::config::llm_v4::LlmPromptCfg>,
     hot_windows: &[(f64, f64)],
     pass: DetectPass,
 ) -> String {
     let sc = &config.scattered;
+    // 主检测的模板住 llm.toml 的 [llm.links.detect.prompt]（S4）；第二趟的住 [detection.scattered]
+    let main_template = prompts.map(|p| p.prompt_template.as_str()).unwrap_or("");
     let template = match pass {
-        DetectPass::Main if !config.prompt_template.is_empty() => &config.prompt_template,
+        DetectPass::Main if !main_template.is_empty() => main_template,
         DetectPass::Main => DEFAULT_PROMPT,
         DetectPass::Scattered if !sc.prompt_template.is_empty() => &sc.prompt_template,
         DetectPass::Scattered => SCATTER_PROMPT,
     };
     let seg_text = format_segments(segments);
     let hot = hot_windows_block(hot_windows);
-    let refs = crate::config::resolve_reference_titles(config).join("\n");
+    let refs = crate::config::resolve_reference_titles(prompts).join("\n");
 
     // 前缀缓存：provider（DeepSeek 系等）按**最长公共前缀**命中上下文缓存，
     // 所以每窗口才变化的内容要尽量靠后——模板里 {segments} 收尾，
@@ -505,11 +508,11 @@ fn parse_event_type(raw: &str) -> EventType {
 }
 
 pub const DEFAULT_SYSTEM_PROMPT: &str = r#"你是直播切片分析助手。把转录切成以话题为单位的短视频切片（一般 0.5~3 分钟，话题没讲完就让它更长）：优先保证每个事件是完整话题/名场面，不要为了多切而把内容拦腰截断，更不要把一个连续事件等分成「（1/2）」「（2/2）」这种同题分段。明显话题转换才切分；字幕很少的低密度长段不要单独成段，应并入相邻完整话题。start 包含必要上下文，end 到话题自然结束，禁止事件还没讲完就切。标题必须高信息密度，以主播原话/名场面/具体情景+反应吐槽为主体，禁止"主播聊/主播说"式第三人称开头，相邻标题句式不得重复。摘要 40~80 字。event_type 以整段主体为准，ASR 乱码不单独成段。"#;
-fn system_prompt(config: &DetectionConfig) -> &str {
-    if !config.system_prompt.is_empty() {
-        return &config.system_prompt;
+fn system_prompt(prompts: Option<&crate::config::llm_v4::LlmPromptCfg>) -> &str {
+    match prompts.map(|p| p.system_prompt.as_str()) {
+        Some(s) if !s.is_empty() => s,
+        _ => DEFAULT_SYSTEM_PROMPT,
     }
-    DEFAULT_SYSTEM_PROMPT
 }
 
 /// 第二趟（分散片段）的 system prompt：自己的覆盖项 → 内建。
@@ -521,9 +524,13 @@ fn scatter_system_prompt(config: &DetectionConfig) -> &str {
 }
 
 /// 按趟取 system prompt（窗口调用只认这一处，别在别处再分支一遍）。
-fn system_prompt_for(config: &DetectionConfig, pass: DetectPass) -> &str {
+fn system_prompt_for<'a>(
+    config: &'a DetectionConfig,
+    prompts: Option<&'a crate::config::llm_v4::LlmPromptCfg>,
+    pass: DetectPass,
+) -> &'a str {
     match pass {
-        DetectPass::Main => system_prompt(config),
+        DetectPass::Main => system_prompt(prompts),
         DetectPass::Scattered => scatter_system_prompt(config),
     }
 }
@@ -545,7 +552,7 @@ const SCORE_BATCH_SIZE: usize = 40;
 pub async fn score_events_with_llm(
     events: &[Event],
     llm: &crate::config::LlmConfigV4,
-    detect: &DetectionConfig,
+    run: crate::config::llm_v4::LlmRunResolved,
     project: Option<&Path>,
     cancel: Option<yekitrim_llm::agent::CancelProbe>,
 ) -> Result<Vec<Option<f64>>> {
@@ -557,8 +564,9 @@ pub async fn score_events_with_llm(
     if cancel.as_ref().is_some_and(|c| c()) {
         anyhow::bail!("任务已取消");
     }
-    let weight = if detect.llm_score_weight.is_finite() {
-        detect.llm_score_weight.clamp(0.0, 1.0)
+    // 权重来自 [llm.links.detect.run] llm_score_weight（S4 之前是 [detection] llm_score_weight）
+    let weight = if run.llm_score_weight.is_finite() {
+        run.llm_score_weight.clamp(0.0, 1.0)
     } else {
         0.0
     };
@@ -576,7 +584,7 @@ pub async fn score_events_with_llm(
                 yekitrim_llm::usage::UsageContext::new(yekitrim_llm::tasks::DETECT_HOT_SCORE.label).project(usage_project),
             ),
     );
-    let max_concurrent = llm.concurrency(detect.max_concurrent).max(1);
+    let max_concurrent = run.max_concurrent.max(1);
 
     let all_items: Vec<(usize, String, String)> = events
         .iter()
@@ -876,7 +884,8 @@ pub async fn call_with_progress(
         start = end.saturating_sub(overlap);
     }
 
-    let max_concurrent = llm.concurrency(detect.max_concurrent);
+    // 并发读 [llm.links.detect.run] max_concurrent（留空 = [llm] max_concurrent）
+    let max_concurrent = llm.concurrency_for(crate::config::LlmLink::Detect);
     let total_windows = agent_windows.len();
     tracing::info!(
         "事件检测: {} 个窗口，并发 {}",
@@ -886,6 +895,7 @@ pub async fn call_with_progress(
 
     let task = DetectionTask {
         detect: detect.clone(),
+        prompts: llm.prompt_for(crate::config::LlmLink::Detect).cloned(),
         hot_windows: hot_windows.to_vec(),
         project: project.map(crate::path::display),
         pass,
@@ -954,6 +964,8 @@ pub async fn call_with_progress(
 /// 事件检测任务：实现通用 AgentTask<Vec<Event>>。
 struct DetectionTask {
     detect: DetectionConfig,
+    /// 检测链路的提示词（`[llm.links.detect.prompt]`；`None` = 全用内建）
+    prompts: Option<crate::config::llm_v4::LlmPromptCfg>,
     hot_windows: Vec<(f64, f64)>,
     /// 项目根目录（`output_dir` 的父级），只用于用量记账归因。
     project: Option<String>,
@@ -974,11 +986,6 @@ impl AgentTask<Vec<Event>> for DetectionTask {
         yekitrim_llm::usage::UsageContext::new(self.name()).project(self.project.clone())
     }
 
-    fn thinking(&self) -> bool {
-        // 思考模式由 [llm].extra_params.thinking 控制，这里不再强制开启
-        false
-    }
-
     fn build_global_context(&self, items: &[AgentItem]) -> String {
         // 事件检测目前不需要全局上下文（窗口内已含足够上下文）
         let _ = items;
@@ -997,7 +1004,7 @@ impl AgentTask<Vec<Event>> for DetectionTask {
     }
 
     fn system_prompt(&self) -> String {
-        system_prompt_for(&self.detect, self.pass).to_string()
+        system_prompt_for(&self.detect, self.prompts.as_ref(), self.pass).to_string()
     }
 
     /// system/user prompt 的指纹 → 折进窗口 id。改了 prompt 之后重跑检测，
@@ -1006,7 +1013,11 @@ impl AgentTask<Vec<Event>> for DetectionTask {
         let mut parts = vec![
             self.system_prompt(),
             match self.pass {
-                DetectPass::Main => self.detect.prompt_template.clone(),
+                DetectPass::Main => self
+                    .prompts
+                    .as_ref()
+                    .map(|p| p.prompt_template.clone())
+                    .unwrap_or_default(),
                 DetectPass::Scattered => self.detect.scattered.prompt_template.clone(),
             },
             // 趟名：两趟的 prompt 撞上时（比如用户把第二趟模板填成第一趟那份）
@@ -1016,7 +1027,7 @@ impl AgentTask<Vec<Event>> for DetectionTask {
             } else {
                 "pass=main".to_string()
             },
-            crate::config::resolve_reference_titles(&self.detect).join(
+            crate::config::resolve_reference_titles(self.prompts.as_ref()).join(
                 "
 ",
             ),
@@ -1039,7 +1050,7 @@ impl AgentTask<Vec<Event>> for DetectionTask {
                 confidence: 1.0,
             })
             .collect();
-        build_prompt(&segments, &self.detect, &self.hot_windows, self.pass)
+        build_prompt(&segments, &self.detect, self.prompts.as_ref(), &self.hot_windows, self.pass)
     }
 
     fn parse_output(&self, _content: &str, _window: &[AgentItem]) -> Result<Vec<Event>> {
@@ -1069,7 +1080,15 @@ impl AgentTask<Vec<Event>> for DetectionTask {
         let client = yekitrim_llm::LlmClient::new(llm_cfg)?
             .with_timeout(180)
             .with_usage_context(self.usage_context());
-        process_window_inner(&client, &segments, &self.detect, &self.hot_windows, 0, self.pass)
+        process_window_inner(
+            &client,
+            &segments,
+            &self.detect,
+            self.prompts.as_ref(),
+            &self.hot_windows,
+            0,
+            self.pass,
+        )
             .await
     }
 
@@ -1159,6 +1178,7 @@ fn process_window_inner<'a>(
     client: &'a yekitrim_llm::LlmClient,
     segments: &'a [TranscriptSegment],
     detect: &'a DetectionConfig,
+    prompts: Option<&'a crate::config::llm_v4::LlmPromptCfg>,
     hot_windows: &'a [(f64, f64)],
     depth: u8,
     pass: DetectPass,
@@ -1173,9 +1193,9 @@ fn process_window_inner<'a>(
             .filter(|(s, e)| s < &win_end && e > &win_start)
             .collect();
 
-        let prompt = build_prompt(segments, detect, &window_hot, pass);
+        let prompt = build_prompt(segments, detect, prompts, &window_hot, pass);
         let messages = serde_json::json!([
-            {"role": "system", "content": system_prompt_for(detect, pass)},
+            {"role": "system", "content": system_prompt_for(detect, prompts, pass)},
             {"role": "user", "content": prompt}
         ]);
 
@@ -1249,11 +1269,11 @@ fn process_window_inner<'a>(
             // 顺序执行（不并发），避免绕过 Agent 的并发闸门把在飞请求数翻倍。
             let mut combined: Vec<Event> = Vec::new();
             let mut errs: Vec<String> = Vec::new();
-            match process_window_inner(client, left, detect, hot_windows, depth + 1, pass).await {
+            match process_window_inner(client, left, detect, prompts, hot_windows, depth + 1, pass).await {
                 Ok(mut events) => combined.append(&mut events),
                 Err(e) => errs.push(format!("{e:#}")),
             }
-            match process_window_inner(client, right, detect, hot_windows, depth + 1, pass).await {
+            match process_window_inner(client, right, detect, prompts, hot_windows, depth + 1, pass).await {
                 Ok(mut events) => combined.append(&mut events),
                 Err(e) => errs.push(format!("{e:#}")),
             }
@@ -1564,11 +1584,11 @@ mod tests {
         // 无热点：不追加爆发段落
         // 注：默认 user prompt 模板本身就含"弹幕爆发"字样（见文件顶部 prompt），
         // 所以这里断言的是"注入的爆发区间段落"没有出现，而不是这个词本身。
-        let no_hot = build_prompt(&segs, &cfg, &[], DetectPass::Main);
+        let no_hot = build_prompt(&segs, &cfg, None, &[], DetectPass::Main);
         assert!(!no_hot.contains("观众弹幕爆发时刻"));
 
         // 有热点：追加区间 + 要求
-        let hot = build_prompt(&segs, &cfg, &[(12.0, 22.0), (45.5, 55.5)], DetectPass::Main);
+        let hot = build_prompt(&segs, &cfg, None, &[(12.0, 22.0), (45.5, 55.5)], DetectPass::Main);
         assert!(hot.contains("[12.0-22.0] 弹幕爆发"));
         assert!(hot.contains("[45.5-55.5] 弹幕爆发"));
         assert!(hot.contains("不得切在这些爆发区间内部"));
@@ -1631,9 +1651,9 @@ mod tests {
             topic: None,
         }];
         let llm = crate::config::LlmConfigV4::default();
-        let mut detect = DetectionConfig::default();
-        detect.llm_score_weight = 0.0;
-        let scores = score_events_with_llm(&events, &llm, &detect, None, None)
+        // 权重 0 = 关闭：直接回全 None，不发请求
+        let run = crate::config::llm_v4::LlmRunResolved { llm_score_weight: 0.0, ..Default::default() };
+        let scores = score_events_with_llm(&events, &llm, run, None, None)
             .await
             .unwrap();
         assert_eq!(scores, vec![None]);
@@ -1663,11 +1683,10 @@ mod tests {
         // 给个非空 key + 非 0 权重，确保不会被"未配置/权重为 0"的早退挡住，
         // 真正走到探针那一步（它是比建客户端更早的那道门）。
         let llm = crate::config::LlmConfigV4::single("https://example.invalid/v1", "m", "sk-test");
-        let mut detect = DetectionConfig::default();
-        detect.llm_score_weight = 0.3;
+        let run = crate::config::llm_v4::LlmRunResolved { llm_score_weight: 0.3, ..Default::default() };
         let cancel: Option<yekitrim_llm::agent::CancelProbe> =
             Some(std::sync::Arc::new(|| true));
-        let err = score_events_with_llm(&events, &llm, &detect, None, cancel)
+        let err = score_events_with_llm(&events, &llm, run, None, cancel)
             .await
             .expect_err("已取消时不应返回评分");
         assert!(format!("{err:#}").contains("任务已取消"), "{err:#}");
@@ -1782,7 +1801,7 @@ mod tests {
     fn prompt_puts_varying_segments_last() {
         let cfg = DetectionConfig::default();
         let segs = vec![seg(0.0, "第一句"), seg(10.0, "第二句")];
-        let p = build_prompt(&segs, &cfg, &[(120.0, 135.0)], DetectPass::Main);
+        let p = build_prompt(&segs, &cfg, None, &[(120.0, 135.0)], DetectPass::Main);
 
         let seg_pos = p.find("第一句").expect("字幕应在 prompt 里");
         let hot_pos = p.find("观众弹幕爆发时刻").expect("爆发块应在 prompt 里");
@@ -1799,12 +1818,15 @@ mod tests {
     /// 爆发块仍要插在字幕之前，不能丢、也不能跑到字幕后面。
     #[test]
     fn prompt_injects_hot_block_into_legacy_template() {
-        let mut cfg = DetectionConfig::default();
-        cfg.prompt_template = "规则若干。
+        let cfg = DetectionConfig::default();
+        let prompts = crate::config::llm_v4::LlmPromptCfg {
+            prompt_template: "规则若干。
 转录片段：
 {segments}"
-            .to_string();
-        let p = build_prompt(&[seg(0.0, "第一句")], &cfg, &[(120.0, 135.0)], DetectPass::Main);
+                .to_string(),
+            ..Default::default()
+        };
+        let p = build_prompt(&[seg(0.0, "第一句")], &cfg, Some(&prompts), &[(120.0, 135.0)], DetectPass::Main);
         let hot_pos = p.find("观众弹幕爆发时刻").expect("爆发块不能丢");
         let seg_pos = p.find("第一句").expect("字幕应在 prompt 里");
         assert!(hot_pos < seg_pos, "老模板也要把爆发块放在字幕之前: {p}");
@@ -1814,7 +1836,7 @@ mod tests {
     #[test]
     fn prompt_omits_hot_block_when_empty() {
         let cfg = DetectionConfig::default();
-        let p = build_prompt(&[seg(0.0, "第一句")], &cfg, &[], DetectPass::Main);
+        let p = build_prompt(&[seg(0.0, "第一句")], &cfg, None, &[], DetectPass::Main);
         assert!(!p.contains("观众弹幕爆发时刻"));
         assert!(!p.contains("{hot_windows}"), "占位符必须被替换掉");
     }
@@ -1953,7 +1975,7 @@ mod tests {
             .map(|i| seg(i as f64 * 10.0, &format!("第 {i} 句")))
             .collect();
 
-        let events = process_window_inner(&client, &segs, &DetectionConfig::default(), &[], 0, DetectPass::Main)
+        let events = process_window_inner(&client, &segs, &DetectionConfig::default(), None, &[], 0, DetectPass::Main)
             .await
             .unwrap();
 
@@ -1974,7 +1996,7 @@ mod tests {
         let client = yekitrim_llm::LlmClient::raw("k", &base, "m").with_max_tokens(4096);
         let segs: Vec<TranscriptSegment> = (0..4).map(|i| seg(i as f64 * 10.0, "短句")).collect();
 
-        let err = process_window_inner(&client, &segs, &DetectionConfig::default(), &[], 0, DetectPass::Main)
+        let err = process_window_inner(&client, &segs, &DetectionConfig::default(), None, &[], 0, DetectPass::Main)
             .await
             .unwrap_err();
 

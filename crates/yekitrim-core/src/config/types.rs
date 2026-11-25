@@ -1030,32 +1030,22 @@ impl Default for ScatteredConfig {
     }
 }
 
+/// 检测段（`[detection]`）—— **只剩与 LLM 无关的部分**。
+///
+/// ⚠️ S4（2026-11-25）：提示词三件（`system_prompt` / `prompt_template` / `reference_titles`）、
+/// 评分权重 `llm_score_weight`、段级并发 `max_concurrent` **已经搬进 `llm.toml` 的
+/// `[llm.links.detect.prompt]` / `[llm.links.detect.run]`**（"LLM 怎么跑"只在一个文件里找）。
+/// 读它们请用 `Config.llm` 的 `prompt_for(Detect)` / `run_for(Detect)` —— 别再往这里加回来。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DetectionConfig {
     #[serde(default = "default_danmaku_window_secs")]
     pub danmaku_window_secs: f64,
     #[serde(default)]
-    pub system_prompt: String,
-    #[serde(default)]
-    pub prompt_template: String,
-    #[serde(default)]
     pub vtuber_name: String,
-    /// 参考标题示例（检测 + 封面标题生成共用；每项一条，可含 emoji）
-    #[serde(default)]
-    pub reference_titles: Vec<String>,
-    /// 标题+摘要 LLM 传播潜力评分在最终热度里的权重。
-    ///
-    /// 评分阶段只把 `label` + `summary` 发给 LLM（不带转录/时间/类型），
-    /// 按预测点击率、有趣程度、爆点强度综合给 0~100 分；最终热度：
-    /// `popularity = (1 - w) * 弹幕/字幕热度 + w * LLM评分`。
-    /// `0` = 关闭该标准（也不再发这次 LLM 请求）。
-    #[serde(default = "default_llm_score_weight")]
-    pub llm_score_weight: f64,
-    /// 事件检测并发窗口数。**留空 = 跟随 `.yekitrim/llm.toml` 的 `[llm] max_concurrent`**；
-    /// 填了才以本段为准（一般是排查限流时才需要单独压这里）。
-    #[serde(default)]
-    pub max_concurrent: Option<usize>,
     /// **分散事件合并**（第二趟低标准检测 + 合并）。默认关 —— 见 `ScatteredConfig`。
+    ///
+    /// ⚠️ 它的 `system_prompt` / `prompt_template` 留在这一层：那是**第二趟检测自己的**文本，
+    /// 与"喂给 LLM 的检测提示词"不是同一件事（S4 只搬了主检测那一份）。
     #[serde(default)]
     pub scattered: ScatteredConfig,
 }
@@ -1063,20 +1053,12 @@ pub struct DetectionConfig {
 fn default_danmaku_window_secs() -> f64 {
     10.0
 }
-fn default_llm_score_weight() -> f64 {
-    0.3
-}
 
 impl Default for DetectionConfig {
     fn default() -> Self {
         Self {
             danmaku_window_secs: default_danmaku_window_secs(),
-            system_prompt: String::new(),
-            prompt_template: String::new(),
             vtuber_name: String::new(),
-            reference_titles: Vec::new(),
-            llm_score_weight: default_llm_score_weight(),
-            max_concurrent: None,
             scattered: ScatteredConfig::default(),
         }
     }
@@ -1624,21 +1606,17 @@ impl Default for SfxConfig {
     }
 }
 
+/// 字幕订正段（`[correct]`）—— S4 之后**只剩提示词与热词**。
+///
+/// ⚠️ `thinking` / `window_size` / `max_concurrent` 已搬进 `llm.toml` 的
+/// `[llm.links.correct]`（`thinking=true` 迁成 `reasoning = "high"`）与
+/// `[llm.links.correct.run]`。窗口的默认值只有一个来源：`yekitrim_llm::tasks::CORRECT.default_window`。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CorrectConfig {
     #[serde(default)]
     pub system_prompt: String,
     #[serde(default)]
     pub prompt: String,
-    /// 是否启用思考模式（LLM 先推理再输出），默认 false
-    #[serde(default)]
-    pub thinking: bool,
-    /// Agent 窗口大小（每次处理条数），默认 25
-    #[serde(default = "default_correct_window_size")]
-    pub window_size: usize,
-    /// 订正并发数。**留空 = 跟随 `.yekitrim/llm.toml` 的 `[llm] max_concurrent`**。
-    #[serde(default)]
-    pub max_concurrent: Option<usize>,
     /// 自定义热词（主播名/游戏/歌曲/梗等），优先修正为这些词
     #[serde(default)]
     pub hotwords: Vec<String>,
@@ -1649,16 +1627,9 @@ impl Default for CorrectConfig {
         Self {
             system_prompt: String::new(),
             prompt: String::new(),
-            thinking: false,
-            window_size: default_correct_window_size(),
-            max_concurrent: None,
             hotwords: Vec::new(),
         }
     }
-}
-
-fn default_correct_window_size() -> usize {
-    25
 }
 
 #[cfg(test)]
@@ -1803,7 +1774,7 @@ mod llm_link_tests {
         let pa: yekitrim_llm::LlmParams = (&c).into();
         assert_eq!(pa.api_key, "ka", "key 用 active 那份的");
         assert_eq!(pa.model, "deepseek-v4-pro");
-        assert_eq!(pa.reasoning, yekitrim_llm::ReasoningLevel::High);
+        assert_eq!(pa.reasoning, Some(yekitrim_llm::ReasoningLevel::High));
         assert_eq!(pa.caps.context_window, Some(12345), "provider 模型目录的上下文要生效");
         assert_eq!(pa.caps.max_output_ceiling, Some(999));
         assert!(pa.caps.input.image, "provider 模型目录的 input 要生效");
@@ -1815,7 +1786,7 @@ mod llm_link_tests {
         assert_eq!(pb.api_key, "kb");
         assert_eq!(pb.max_tokens, Some(42));
         assert!((pb.temperature - 0.9).abs() < 1e-9);
-        assert_eq!(pb.reasoning, yekitrim_llm::ReasoningLevel::Off, "b 没配 reasoning");
+        assert_eq!(pb.reasoning, None, "b 没配 reasoning ⇒ 不表态（None），别再拿 Off 冒充");
 
         // ④ active 指向不存在的 id ⇒ **读配置要活着**（落回 legacy），写接口那边才拦
         c.active = Some("nope".into());
@@ -2301,10 +2272,9 @@ impl From<&LlmConfig> for yekitrim_llm::LlmParams {
             temperature: p.temperature.filter(|t| t.is_finite()).unwrap_or_default(),
             // 省略 = 不发（v1 那个"永远会发出去的默认值"由迁移落成显式键，见 version.rs）
             max_tokens: p.max_tokens,
-            reasoning: reasoning.unwrap_or_default(),
+            reasoning,
             // 预算：省略 = None ⇒ 传输层按档位映射表给默认（见 dialect::budget_for）
             thinking_budget: p.thinking_budget.filter(|n| *n > 0),
-            reasoning_explicit: reasoning.is_some(),
             top_p: p.top_p.filter(|v| v.is_finite()),
             // extra_params.response_format 仍是老工程的表达（原样保留）；这里是新界面的一等公民键。
             json_mode: p.json_mode.unwrap_or(false),

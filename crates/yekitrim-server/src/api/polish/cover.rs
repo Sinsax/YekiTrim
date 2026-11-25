@@ -410,12 +410,20 @@ pub(crate) async fn polish_cover_title(
         return Err(err(StatusCode::BAD_REQUEST, "clip.srt 暂无字幕，无法生成标题"));
     }
     let context = cover_title_event_context(&cfg, &transcript.segments);
-    // ⚠️ **参考标题必须按 owner 读**（2026-10-19 用户问「LLM 真的用了设置里的参考标题吗」）：
-    // 设置页写的是 `users/<uid>/.yekitrim/config.toml`，而无 owner 的 `load_global_config()`
-    // 读顶层旧文件 —— 和封面那条 llm.toml 是同一个坑（那里也是 100% 复现）。
-    let cfg_owner = crate::auth::owner_of(&user);
-    let global_cfg = blocking(move || Ok(yekitrim_core::config::load_config_for(cfg_owner))).await?;
-    let reference_titles = yekitrim_core::config::resolve_reference_titles(&global_cfg.detection);
+    // ⚠️ **必须按账号读**（2026-10-19 用户报「用的和设置里的 API 服务不一致」）：
+    // `load_llm_config()` 读的是**顶层** `<数据>/.yekitrim/llm.toml`（单人时代的旧位置），
+    // 而设置页（`GET/PUT /api/config/llm`）与精修链路读写的都是
+    // `users/<uid>/.yekitrim/llm.toml` ⇒ 用错那一支就会拿一份**早就没人写**的旧配置
+    // （日志里 base_url/model 与设置页对不上，且 100% 复现）。
+    // 读配置是同步 IO ⇒ 走 blocking 池（`api/AGENTS.md` 的同步 IO 纪律）。
+    let owner = crate::auth::owner_of(&user);
+    let llm = blocking(move || Ok(yekitrim_core::config::load_llm_config_for(owner))).await?;
+    // 参考标题（S4 起住 llm.toml 的 [llm.links.detect.prompt]）：
+    // ⚠️ 必须**按 owner 读 llm.toml** —— 无 owner 的 `load_llm_config()` 读顶层旧文件，
+    // 那是同一个坑的旧位置（2026-10-19 用户问「LLM 真的用了设置里的参考标题吗」）。
+    let reference_titles = yekitrim_core::config::resolve_reference_titles(
+        llm.prompt_for(yekitrim_core::config::LlmLink::Detect),
+    );
     let reference_text = if !reference_titles.is_empty() {
         reference_titles.join("\n")
     } else {
@@ -427,15 +435,6 @@ pub(crate) async fn polish_cover_title(
             cfg.cover.title_lines.join(" / ")
         }
     };
-
-    // ⚠️ **必须按账号读**（2026-10-19 用户报「用的和设置里的 API 服务不一致」）：
-    // `load_llm_config()` 读的是**顶层** `<数据>/.yekitrim/llm.toml`（单人时代的旧位置），
-    // 而设置页（`GET/PUT /api/config/llm`）与精修链路读写的都是
-    // `users/<uid>/.yekitrim/llm.toml` ⇒ 用错那一支就会拿一份**早就没人写**的旧配置
-    // （日志里 base_url/model 与设置页对不上，且 100% 复现）。
-    // 读配置是同步 IO ⇒ 走 blocking 池（`api/AGENTS.md` 的同步 IO 纪律）。
-    let owner = crate::auth::owner_of(&user);
-    let llm = blocking(move || Ok(yekitrim_core::config::load_llm_config_for(owner))).await?;
     // ⚠️ 判定走 provider-aware 的入口：多配置下顶层 `api_key` **恒空** ——
     // 读顶层会让封面文案**恒报"LLM 未配置"**（用户明明在 provider 里填了密钥）。
     // 这里**本来就是 400**，保持报错；只是文案要指到用户能点的那个位置。

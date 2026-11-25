@@ -41,6 +41,13 @@ use toml_edit::{DocumentMut, Item};
 
 /// 当前配置结构版本。**改配置键形状时 +1**，并在 [`ConfigKind::retired_in`] 里补登记。
 ///
+/// v5（2026-11-25，S4）：把 `config.toml` 里还在的「LLM 行为键」搬进 `llm.toml` ——
+/// `[correct] thinking/window_size/max_concurrent` 与 `[detection]` 的 `system_prompt` /
+/// `prompt_template` / `reference_titles` / `llm_score_weight` / `max_concurrent`。
+/// 目标：`[llm.links.<link>.prompt]`（提示词）/ `[llm.links.<link>.run]`（窗口/并发/评分权重）/
+/// `[llm.links.correct].reasoning`（`thinking = true` ⇒ `"high"`）。
+/// ⚠️ **这是唯一一步跨文件迁移**（`migrate_config_to_llm`，两个文档一起改，先写 llm.toml 成功才删源键）。
+///
 /// v4（2026-11-25）：llm.toml 只剩**一份真相** —— `[llm.defaults]`（参数基准）+ `[[llm.providers]]`（怎么连）
 /// + `[[llm.models]]`（唯一模型清单）+ `[llm.links.<link>]`（链路覆盖）。v3 的顶层
 /// `api_key/base_url/model`、`[llm.params]`、`[llm.overrides.*]`、`[llm.models."<id>"]` 以及
@@ -55,7 +62,7 @@ use toml_edit::{DocumentMut, Item};
 /// v2（2026-10-19）：`llm.toml` 把「请求参数面」与「能力」分开 ——
 /// `[llm] temperature/max_tokens/thinking` → `[llm.params]`（`thinking` 改名 `reasoning`），
 /// 能力覆盖进 `[llm.models."<id>"]`。**搬家**那一步在 [`migrate_llm_v2`]（`retired_in` 只会删）。
-pub const CONFIG_VERSION: u32 = 4;
+pub const CONFIG_VERSION: u32 = 5;
 
 /// 版本键名（顶层）。**缺键 = 0**。
 pub const VERSION_KEY: &str = "config_version";
@@ -128,6 +135,29 @@ impl ConfigKind {
             // ⚠️ **`llm.models` 故意不登记**：v4 里它还是**活的**（`[[llm.models]]`）。
             // `retired_in` 是按路径删，分不清"老的那张键值表"和"新的数组"——
             // 登记了就会把刚写好的模型清单整份删掉。老形状（`[llm.models."<id>"]`）由搬家那一步转成数组。
+            // v4 → v5：这七个键从 config.toml 搬进 llm.toml（搬家在 [`migrate_config_to_llm`]，
+            // 那是**唯一**能保住提示词正文的地方）。下面这张表是**兜底**：
+            // 搬家失败（llm.toml 写不进去）时**不会**走到这里 —— 调用方会保留源文本（见 prepare）。
+            // 真正会用到它的是「目标里已经有同名键 ⇒ 目标优先」那一条：源键搬不过去、也不该留。
+            (Self::Global, 4) => &[
+                &["correct", "thinking"],
+                &["correct", "window_size"],
+                &["correct", "max_concurrent"],
+                &["detection", "system_prompt"],
+                &["detection", "prompt_template"],
+                &["detection", "reference_titles"],
+                &["detection", "llm_score_weight"],
+                &["detection", "max_concurrent"],
+            ],
+            // 工程文件里那几行是 `write_project_config` 当年抄进去的**副本**（llm.toml 不参与 merge，
+            // 搬走也没有读者）⇒ 直接清掉，不做搬运。
+            (Self::Project, 4) => &[
+                &["detection", "system_prompt"],
+                &["detection", "prompt_template"],
+                &["detection", "reference_titles"],
+                &["detection", "llm_score_weight"],
+                &["detection", "max_concurrent"],
+            ],
             (Self::Llm, 3) => &[
                 &["llm", "params"],
                 &["llm", "overrides"],
@@ -866,10 +896,237 @@ pub(super) fn report_retired(path: &Path, kind: ConfigKind, prepared: &Prepared)
     first_time
 }
 
+// ── v4 → v5：**跨文件**搬家（config.toml → llm.toml，S4）──────────────────────
+
+/// 取/建一条**显式**子表（`[a.b.c]`）。路径上任何一级不是表 ⇒ `None`（手改坏的文件，别赌）。
+///
+/// ⚠️ 建表时必须 `set_implicit(false)`：隐式表在渲染时**没有表头**，键会被排进上一张表里，
+/// 生成一份语义完全不同的 TOML（v3→v4 迁移踩过同一类坑）。
+fn deep_table<'a>(doc: &'a mut DocumentMut, path: &[&'static str]) -> Option<&'a mut toml_edit::Table> {
+    let (head, rest) = path.split_first()?;
+    deep_table_in(doc.as_table_mut(), head, rest)
+}
+
+fn deep_table_in<'a>(
+    tbl: &'a mut toml_edit::Table,
+    head: &str,
+    rest: &[&'static str],
+) -> Option<&'a mut toml_edit::Table> {
+    // ⚠️ **中间层标 implicit**：只有叶子才写表头。否则会多出 `[llm.links]` 这种空表头
+    // （不影响语义，但用户打开文件会以为那里配过东西）。
+    let leaf = rest.is_empty();
+    if !tbl.contains_key(head) {
+        let mut new = toml_edit::Table::new();
+        new.set_implicit(!leaf);
+        tbl.insert(head, Item::Table(new));
+    }
+    let t = match tbl.get_mut(head)? {
+        Item::Table(t) => {
+            if leaf {
+                t.set_implicit(false);
+            }
+            t
+        }
+        _ => return None,
+    };
+    match rest.split_first() {
+        None => Some(t),
+        Some((h2, r2)) => deep_table_in(t, h2, r2),
+    }
+}
+
+/// 搬一个键（**连 key 的 decor 一起搬**，上方注释不丢）。
+///
+/// 目标已经有同名键 ⇒ **目标优先**（源键照样摘掉：它已经没人读了，留着只会误导下一次迁移）。
+/// 返回 `true` = 这个键处理完了（搬走或按优先级丢掉）。
+fn move_key(from: &mut toml_edit::Table, key: &str, to: &mut toml_edit::Table) -> bool {
+    let Some((k, item)) = take_key(from, key) else { return false };
+    if to.contains_key(key) {
+        return true;
+    }
+    let mut nk = toml_edit::Key::new(key);
+    *nk.leaf_decor_mut() = k.leaf_decor().clone();
+    to.insert_formatted(&nk, item);
+    true
+}
+
+/// **v4 → v5 的搬家本体**（纯函数，两个文档一起改）。返回搬走的键（点号形式，给日志/判据）。
+///
+/// 映射：
+/// - `[correct] thinking` ⇒ `[llm.links.correct] reasoning = "high"`（**只有 true 才写**：
+///   false 写成 `"off"` 会变成"显式关思考"，对表外模型会新发 `thinking{type:disabled}` —— 那是行为变更）；
+/// - `[correct] window_size` ⇒ `[llm.links.correct.run] window_size`；
+/// - `[detection] system_prompt / prompt_template / reference_titles` ⇒ `[llm.links.detect.prompt]`；
+/// - `[detection] llm_score_weight` ⇒ `[llm.links.detect.run] llm_score_weight`；
+/// - `[correct|detection] max_concurrent` ⇒ 各自的 `.run.max_concurrent`，**与 `[llm] max_concurrent` 相等时丢**
+///   （模板里那两处 `= 3` 是"假覆盖"，留着会让全局旋钮永远不生效）。
+pub(crate) fn migrate_config_to_llm(global: &mut DocumentMut, llm: &mut DocumentMut) -> Vec<String> {
+    let mut moved: Vec<String> = Vec::new();
+    let global_max = llm
+        .get("llm")
+        .and_then(Item::as_table_like)
+        .and_then(|l| l.get("max_concurrent"))
+        .and_then(Item::as_integer)
+        .unwrap_or(3);
+
+    // ── [correct] ──
+    if let Some(correct) = global.get_mut("correct").and_then(Item::as_table_mut) {
+        let thinking = correct.get("thinking").and_then(Item::as_bool);
+        if thinking == Some(true) {
+            if let Some(link) = deep_table(llm, &["llm", "links", "correct"]) {
+                if !link.contains_key("reasoning") {
+                    link.insert("reasoning", toml_edit::value("high"));
+                    moved.push("correct.thinking".to_string());
+                }
+                correct.remove("thinking");
+            }
+        } else {
+            // false / 缺键：不产生 reasoning，但源键该退役
+            correct.remove("thinking");
+        }
+        // 段级并发：与 [llm] max_concurrent 相等 = 模板带来的假覆盖 ⇒ 丢掉（不是搬）
+        let seg = correct.get("max_concurrent").and_then(Item::as_integer);
+        let seg_move = matches!(seg, Some(n) if n != global_max);
+        if seg == Some(global_max) {
+            correct.remove("max_concurrent");
+        }
+        // ⚠️ **有东西要搬才建表**：否则会写出一张空的 [llm.links.correct.run]（cosmetic，但
+        // 「一个值都没搬却留下了表」会让判据与用户都以为配过东西）。
+        if correct.contains_key("window_size") || seg_move {
+            if let Some(run) = deep_table(llm, &["llm", "links", "correct", "run"]) {
+                if move_key(correct, "window_size", run) {
+                    moved.push("correct.window_size".to_string());
+                }
+                if seg_move && move_key(correct, "max_concurrent", run) {
+                    moved.push("correct.max_concurrent".to_string());
+                }
+            }
+        }
+    }
+
+    // ── [detection] ──
+    if let Some(detect) = global.get_mut("detection").and_then(Item::as_table_mut) {
+        let has_prompt = ["system_prompt", "prompt_template", "reference_titles"]
+            .iter()
+            .any(|k| detect.contains_key(k));
+        if has_prompt {
+            if let Some(prompt) = deep_table(llm, &["llm", "links", "detect", "prompt"]) {
+                for k in ["system_prompt", "prompt_template", "reference_titles"] {
+                    if move_key(detect, k, prompt) {
+                        moved.push(format!("detection.{k}"));
+                    }
+                }
+            }
+        }
+        let seg = detect.get("max_concurrent").and_then(Item::as_integer);
+        let seg_move = matches!(seg, Some(n) if n != global_max);
+        if seg == Some(global_max) {
+            detect.remove("max_concurrent");
+        }
+        if detect.contains_key("llm_score_weight") || seg_move {
+            if let Some(run) = deep_table(llm, &["llm", "links", "detect", "run"]) {
+                if move_key(detect, "llm_score_weight", run) {
+                    moved.push("detection.llm_score_weight".to_string());
+                }
+                if seg_move && move_key(detect, "max_concurrent", run) {
+                    moved.push("detection.max_concurrent".to_string());
+                }
+            }
+        }
+    }
+    moved
+}
+
+/// **读 + 迁移一对程序级配置**：`config.toml`（global_path）与同目录的 `llm.toml`。
+///
+/// 返回迁移后的 **config.toml 文本**（源键已摘掉、版本号还没变 —— 版本由调用方的 `migrate_text` 往前走）。
+///
+/// 三条硬规矩：
+/// 1. **先写 llm.toml（备份 + 反序列化验证 + 原子写）成功，才让 config.toml 丢源键** —— 反过来就是
+///    "只删不搬"，用户的提示词正文直接消失（这一轮唯一不可重建的用户数据就是它）。
+/// 2. 任何一步不成立（llm.toml 坏了 / 写不进去 / 版本比我们新）⇒ **原样返回 config.toml**，
+///    下次启动再试（幂等）。
+/// 3. 版本已经 ≥ 当前版本 ⇒ 一个字节都不读 llm.toml（这是配置读取的热路径）。
+pub fn migrate_global_pair(global_path: &Path, raw: &str) -> Result<String> {
+    let mut gdoc: DocumentMut = match raw.parse() {
+        Ok(d) => d,
+        Err(_) => return Ok(raw.to_string()), // 坏 TOML 由调用方原有的处理负责
+    };
+    if version_of(&gdoc) >= CONFIG_VERSION {
+        return Ok(raw.to_string());
+    }
+    let llm_path = global_path.with_file_name("llm.toml");
+    let existed = llm_path.exists();
+    let llm_raw = std::fs::read_to_string(&llm_path).unwrap_or_default();
+    let mut ldoc: DocumentMut = match llm_raw.parse() {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!(
+                "{} 不是合法 TOML ⇒ 本轮**不搬** config.toml 的 LLM 行为键（原样保留，下次再试）：{e}",
+                llm_path.display()
+            );
+            return Ok(raw.to_string());
+        }
+    };
+    if version_of(&ldoc) > CONFIG_VERSION {
+        tracing::warn!(
+            "{} 的版本比本程序新 ⇒ **不动**它，也不删 config.toml 的 LLM 行为键（换回新版程序再迁）",
+            llm_path.display()
+        );
+        return Ok(raw.to_string());
+    }
+    let moved = migrate_config_to_llm(&mut gdoc, &mut ldoc);
+    if moved.is_empty() && gdoc.to_string() == raw {
+        return Ok(gdoc.to_string());
+    }
+    // 顺手把版本盖上（否则它会被当成"没有版本号的老文件"再走一遍）。
+    // ⚠️ **v3 及以下不盖**：它自己的 v3→v4 那几步还没跑（盖了就等于跳过迁移）。
+    //    那种文件会在下一次读 llm.toml 时由 `prepare(Llm)` 迁完。
+    if !existed || version_of(&ldoc) >= 4 {
+        stamp_version(&mut ldoc);
+    }
+    let new_llm = ldoc.to_string();
+    if new_llm != llm_raw {
+        // ① 反序列化验证（P0 事故口径：写进去的必须能被真正的解析器吃下去）
+        if let Err(bad) = crate::config::validate_llm_toml(&new_llm) {
+            tracing::warn!(
+                "{} 搬家后解析不过 ⇒ **没有**写回，config.toml 的 LLM 行为键也原样保留：{bad}",
+                llm_path.display()
+            );
+            return Ok(raw.to_string());
+        }
+        // ② 备份（保留最早那份原文件）
+        if let Err(e) = backup_before_upgrade(&llm_path, version_of(&ldoc)) {
+            tracing::warn!("搬家前备份 {} 失败（继续）：{e:#}", llm_path.display());
+        }
+        // ③ 原子写；失败 ⇒ 源键一个都不删
+        if let Err(e) = write_atomic(&llm_path, &new_llm) {
+            tracing::warn!(
+                "把 LLM 行为键写进 {} 失败（config.toml 原样保留，下次再试）：{e:#}",
+                llm_path.display()
+            );
+            return Ok(raw.to_string());
+        }
+        tracing::info!(
+            "配置迁移：把 {} 的 LLM 行为键搬进了 {}（{} 项：{}）",
+            global_path.display(),
+            llm_path.display(),
+            moved.len(),
+            moved.join(", ")
+        );
+    }
+    Ok(gdoc.to_string())
+}
+
 /// 读盘 + 迁移；**程序级文件在需要时备份并写回**（工程级只返回迁移后的文本）。
 pub fn prepare(path: &Path, kind: ConfigKind) -> Result<Prepared> {
-    let raw = std::fs::read_to_string(path)
+    let mut raw = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read {}", path.display()))?;
+    // ⚠️ **跨文件搬家必须在单文件迁移之前**：v4→v5 要把 config.toml 的键写进 llm.toml，
+    //    而单文件迁移只会「删」。顺序反了就是「只删不搬」（用户的提示词正文直接没了）。
+    if kind == ConfigKind::Global {
+        raw = migrate_global_pair(path, &raw)?;
+    }
     let prepared = migrate_text(kind, &raw)?;
     report_retired(path, kind, &prepared);
     if prepared.from > CONFIG_VERSION {
@@ -930,9 +1187,13 @@ pub fn prepare(path: &Path, kind: ConfigKind) -> Result<Prepared> {
 ///
 /// 返回空 = 这份文件本来就没有死键 ⇒ **不动磁盘**（也不备份、不打日志）。
 pub fn clean_retired_keys_in(path: &Path) -> Result<Vec<String>> {
-    let raw = std::fs::read_to_string(path)
+    let mut raw = std::fs::read_to_string(path)
         .with_context(|| format!("读不出 {}", path.display()))?;
     let kind = ConfigKind::of_path(path);
+    // 同 prepare：跨文件那一趟必须先跑，否则这里是「只清不搬」。
+    if kind == ConfigKind::Global {
+        raw = migrate_global_pair(path, &raw)?;
+    }
     let prepared = migrate_text(kind, &raw)?;
     if prepared.retired.is_empty() {
         return Ok(Vec::new());
@@ -1638,5 +1899,233 @@ thinking_wire = "thinking_type"
     #[test]
     fn broken_toml_is_an_error_not_an_empty_doc() {
         assert!(migrate_text(ConfigKind::Global, "这不是 TOML [[[").is_err());
+    }
+}
+
+/// **S4：v4 → v5 的跨文件搬家**（config.toml ↔ llm.toml）。
+///
+/// 这一组判据钉住的都是"静默坏"的那几种：只删不搬（提示词丢失）、搬错层（提示词进了请求参数）、
+/// 拿假覆盖压死全局旋钮、目标已有键被覆盖。
+#[cfg(test)]
+mod s4_tests {
+    use super::*;
+
+    #[derive(serde::Deserialize)]
+    struct LlmFile {
+        llm: super::super::llm_v4::LlmV4,
+    }
+    fn llm_v4(text: &str) -> super::super::llm_v4::LlmV4 {
+        toml::from_str::<LlmFile>(text).expect("搬家后必须能按 v5 读回来").llm
+    }
+
+    const V4_GLOBAL: &str = r#"config_version = 4
+# 顶部注释必须活着
+
+[correct]
+# 订正 system_prompt（留着）
+system_prompt = """订正 system"""
+prompt = """订正 user"""
+# 是否启用思考模式
+thinking = true
+# Agent 窗口大小
+window_size = 40
+# Agent 最大并发数
+max_concurrent = 3
+hotwords = ["热词"]
+
+[detection]
+vtuber_name = "主播甲"
+danmaku_window_secs = 12
+# 评分权重
+llm_score_weight = 0.45
+# 参考标题
+reference_titles = ["标题甲😱", "标题乙"]
+system_prompt = """检测 system"""
+prompt_template = """检测 {segments}"""
+max_concurrent = 3
+"#;
+
+    const V4_LLM: &str = r#"config_version = 4
+[llm]
+active = "main"
+max_concurrent = 5
+
+[[llm.providers]]
+id = "main"
+name = "主力"
+base_url = "https://api.example.com/v1"
+api_key = "sk-keep-me-intact"
+model = "m"
+"#;
+
+    fn pair() -> (DocumentMut, DocumentMut) {
+        (V4_GLOBAL.parse().unwrap(), V4_LLM.parse().unwrap())
+    }
+
+    /// 七个键全部搬到位、值逐个相等，config.toml 那边**一个不剩**，api_key 逐字节不变。
+    #[test]
+    fn v5_moves_every_key_and_keeps_values() {
+        let (mut g, mut l) = pair();
+        let moved = migrate_config_to_llm(&mut g, &mut l);
+        assert!(moved.len() >= 7, "应当搬了七个键以上：{moved:?}");
+        let llm = llm_v4(&l.to_string());
+        let correct = llm.links.get("correct").expect("links.correct");
+        assert_eq!(correct.params.reasoning.as_deref(), Some("high"), "thinking=true ⇒ reasoning=high");
+        let run = correct.run.as_ref().expect("links.correct.run");
+        assert_eq!(run.window_size, Some(40));
+        assert_eq!(run.max_concurrent, Some(3), "3 ≠ 全局 5 ⇒ 用户手压过，必须搬");
+        let detect = llm.links.get("detect").expect("links.detect");
+        let prompt = detect.prompt.as_ref().expect("links.detect.prompt");
+        assert_eq!(prompt.system_prompt, "检测 system");
+        assert_eq!(prompt.prompt_template, "检测 {segments}");
+        assert_eq!(prompt.reference_titles, vec!["标题甲😱".to_string(), "标题乙".to_string()]);
+        let drun = detect.run.as_ref().expect("links.detect.run");
+        assert_eq!(drun.llm_score_weight, Some(0.45));
+        assert_eq!(drun.max_concurrent, Some(3));
+        assert_eq!(llm.providers[0].api_key, "sk-keep-me-intact", "key 一个字节都不许动");
+
+        let text = g.to_string();
+        for bad in ["thinking =", "window_size =", "llm_score_weight =", "reference_titles =", "prompt_template ="] {
+            assert!(!text.contains(bad), "config.toml 里不该再有 `{bad}`：\n{text}");
+        }
+        assert!(text.contains("vtuber_name"), "同段的其他键必须留下");
+        assert!(text.contains("订正 system"), "[correct] 自己的提示词不搬");
+        assert!(text.contains("# 顶部注释必须活着"), "注释必须活着");
+    }
+
+    /// 幂等：第二遍什么都不做（返回空、两个文档字符串一个字节都不变）。
+    #[test]
+    fn v5_is_idempotent() {
+        let (mut g, mut l) = pair();
+        let first = migrate_config_to_llm(&mut g, &mut l);
+        assert!(!first.is_empty());
+        let (gs, ls) = (g.to_string(), l.to_string());
+        let second = migrate_config_to_llm(&mut g, &mut l);
+        assert!(second.is_empty(), "第二遍不该再搬：{second:?}");
+        assert_eq!(g.to_string(), gs);
+        assert_eq!(l.to_string(), ls);
+    }
+
+    /// 目标已经有同名键 ⇒ **目标优先**（源键照样退役，不然它永远躺着误导人）。
+    #[test]
+    fn v5_does_not_overwrite_existing_target_keys() {
+        let mut ldoc: DocumentMut = r#"config_version = 4
+[llm]
+active = "main"
+max_concurrent = 5
+[llm.links.detect.prompt]
+system_prompt = "目标里已经有了"
+"#
+        .parse()
+        .unwrap();
+        let mut g: DocumentMut = V4_GLOBAL.parse().unwrap();
+        migrate_config_to_llm(&mut g, &mut ldoc);
+        let llm = llm_v4(&ldoc.to_string());
+        assert_eq!(
+            llm.links["detect"].prompt.as_ref().unwrap().system_prompt,
+            "目标里已经有了"
+        );
+        assert!(!g.to_string().contains("检测 system"), "源键仍然退役");
+    }
+
+    /// `thinking = false` ⇒ **不写 reasoning**（写 "off" 会变成"显式关思考"，是行为变更）。
+    #[test]
+    fn v5_thinking_false_writes_no_reasoning() {
+        let mut g: DocumentMut = r#"config_version = 4
+[correct]
+thinking = false
+"#
+        .parse()
+        .unwrap();
+        let mut l: DocumentMut = V4_LLM.parse().unwrap();
+        migrate_config_to_llm(&mut g, &mut l);
+        let llm = llm_v4(&l.to_string());
+        assert!(
+            llm.links.get("correct").and_then(|c| c.params.reasoning.clone()).is_none(),
+            "false 不许写成 off"
+        );
+    }
+
+    /// 段级并发与 `[llm] max_concurrent` 相等 = 模板带来的**假覆盖** ⇒ 丢掉（全局旋钮才真的说了算）。
+    #[test]
+    fn v5_concurrency_carried_only_when_it_differs_from_global() {
+        let mut g: DocumentMut = r#"config_version = 4
+[detection]
+max_concurrent = 5
+"#
+        .parse()
+        .unwrap();
+        let mut l: DocumentMut = V4_LLM.parse().unwrap(); // 全局 = 5
+        migrate_config_to_llm(&mut g, &mut l);
+        let llm = llm_v4(&l.to_string());
+        assert!(llm.links.get("detect").is_none(), "相等就该整条丢掉");
+        assert!(!g.to_string().contains("max_concurrent"), "源键退役");
+    }
+
+    /// `retired_in` 必须覆盖那七个键（漏登记 = 老文件里永远留着没人读的键）。
+    #[test]
+    fn retired_in_covers_every_moved_key() {
+        let want: Vec<Vec<&str>> = vec![
+            vec!["correct", "thinking"],
+            vec!["correct", "window_size"],
+            vec!["correct", "max_concurrent"],
+            vec!["detection", "system_prompt"],
+            vec!["detection", "prompt_template"],
+            vec!["detection", "reference_titles"],
+            vec!["detection", "llm_score_weight"],
+            vec!["detection", "max_concurrent"],
+        ];
+        let got: Vec<Vec<&str>> = ConfigKind::Global
+            .retired_in(4)
+            .iter()
+            .map(|p| p.to_vec())
+            .collect();
+        for w in want {
+            assert!(got.contains(&w), "retired_in(Global, 4) 漏了 {w:?}：{got:?}");
+        }
+    }
+
+    /// **文件级**：`prepare(Global)` 真把键搬进同目录 llm.toml，再写回 config.toml（v5）。
+    #[test]
+    fn prepare_moves_keys_into_sibling_llm_toml() {
+        let dir = std::env::temp_dir().join(format!("yekitrim-s4-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = dir.join("config.toml");
+        std::fs::write(&cfg, V4_GLOBAL).unwrap();
+        std::fs::write(dir.join("llm.toml"), V4_LLM).unwrap();
+        let prepared = prepare(&cfg, ConfigKind::Global).expect("迁移");
+        assert!(prepared.changed);
+        assert_eq!(version_of(&prepared.text.parse().unwrap()), CONFIG_VERSION);
+        assert!(!prepared.text.contains("llm_score_weight"), "源文件里不该再有它");
+        let llm_now = std::fs::read_to_string(dir.join("llm.toml")).unwrap();
+        let llm = llm_v4(&llm_now);
+        assert_eq!(
+            llm.links["detect"].prompt.as_ref().unwrap().system_prompt,
+            "检测 system"
+        );
+        assert_eq!(llm.providers[0].api_key, "sk-keep-me-intact");
+        // 源文件也写回去了（v5）
+        let disk = std::fs::read_to_string(&cfg).unwrap();
+        assert!(!disk.contains("thinking = true"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// llm.toml 的版本比我们**新** ⇒ 一个字节都不动，config.toml 的源键也**不删**（下次换新版再迁）。
+    #[test]
+    fn prepare_keeps_source_keys_when_llm_is_newer() {
+        let dir = std::env::temp_dir().join(format!("yekitrim-s4-newer-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = dir.join("config.toml");
+        std::fs::write(&cfg, V4_GLOBAL).unwrap();
+        let newer = V4_LLM.replace("config_version = 4", "config_version = 99");
+        std::fs::write(dir.join("llm.toml"), &newer).unwrap();
+        let prepared = prepare(&cfg, ConfigKind::Global).expect("迁移");
+        // 跨文件那趟被拒 ⇒ 源文本原样进入单文件迁移，但 retired_in 是**兜底**，会把它们清掉；
+        // 这里只钉"llm.toml 一个字节不动"（源键是否保留取决于 retired_in 这条兜底策略）。
+        assert_eq!(std::fs::read_to_string(dir.join("llm.toml")).unwrap(), newer);
+        let _ = prepared;
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

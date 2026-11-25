@@ -12,7 +12,7 @@ use serde_json::Value;
 use tokio::sync::{mpsc, Semaphore};
 use tokio::task::JoinSet;
 
-use crate::params::{LlmParams, ReasoningLevel};
+use crate::params::LlmParams;
 use crate::client::LlmClient;
 
 /// 取消探针：返回 true = 任务已被请求取消。
@@ -110,11 +110,6 @@ pub trait AgentTask<T: Send + Sync + Clone + 'static>: Send + Sync {
         crate::usage::UsageContext::new(self.name())
     }
 
-    /// 是否启用思考模式（LLM 先输出 reasoning 再输出结果）
-    fn thinking(&self) -> bool {
-        false
-    }
-
     /// 构建全局上下文（一次性提取，所有窗口共享）
     fn build_global_context(&self, _items: &[AgentItem]) -> String {
         String::new()
@@ -151,13 +146,10 @@ pub trait AgentTask<T: Send + Sync + Clone + 'static>: Send + Sync {
         let system_prompt = self.system_prompt();
         let user_prompt = self.user_prompt(global, &window_context, &window.items);
 
-        // `AgentTask::thinking()` 是**订正那条链路的老开关**（`[correct] thinking`）。
-        // LLM 层已经表态时（`reasoning_explicit` 来自 `[llm].thinking` 或
-        // `[llm.overrides.<link>].thinking`）以 LLM 层为准 —— 否则它会把解析结果顶掉。
-        let mut params = llm_cfg.clone();
-        if self.thinking() && !params.reasoning_explicit {
-            params.reasoning = ReasoningLevel::High;
-        }
+        // ⚠️ S4/F7：这里原来有一句 `if self.thinking() && !params.reasoning_explicit { params.reasoning = High }`
+        // —— 那是 `[correct] thinking` 这条老开关的双轨（与 `[llm.links.correct].reasoning` 打架）。
+        // 现在档位只有一个来源（配置里的 `reasoning: Option<...>`），"没表态"就是 `None`。
+        let params = llm_cfg.clone();
         let client = LlmClient::new(params)?
             .with_timeout(120)
             .with_usage_context(self.usage_context());

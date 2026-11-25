@@ -81,10 +81,21 @@ fn llm_config_path(config_path: &Path) -> PathBuf {
 }
 
 /// 默认程序配置内容（内建 prompt 注入）。
+///
+/// ⚠️ S4 起**检测**的提示词不再住 config.toml（住 llm.toml 的 [llm.links.detect.prompt]）——
+/// 那两个占位符搬到 llm_config_body() 里替换；【订正】的两个仍在这里。
 fn global_config_body() -> String {
     yekitrim_core::config::GLOBAL_CONFIG_TOML
         .replace(r#""{{CORRECT_SYSTEM_PROMPT}}""#, &toml_val(yekitrim_core::asr::correct::DEFAULT_SYSTEM_PROMPT))
         .replace(r#""{{CORRECT_USER_PROMPT}}""#, &toml_val(yekitrim_core::asr::correct::DEFAULT_USER_PROMPT))
+}
+
+/// 默认 LLM 配置内容（检测链路的内建 prompt 注入）。
+///
+/// ⚠️ **三处写 llm.toml 的地方都必须走它**（init_global_config / ensure_global_config 的新建与修复）：
+/// 漏一处，新装用户拿到的 system_prompt 就是字面量 {{DETECT_SYSTEM_PROMPT}} —— 静默，而且"看着配好了"。
+fn llm_config_body() -> String {
+    yekitrim_core::config::LLM_CONFIG_TOML
         .replace(r#""{{DETECT_SYSTEM_PROMPT}}""#, &toml_val(yekitrim_core::detection::DEFAULT_SYSTEM_PROMPT))
         .replace(r#""{{DETECT_USER_PROMPT}}""#, &toml_val(yekitrim_core::detection::DEFAULT_PROMPT))
 }
@@ -94,7 +105,7 @@ pub fn init_global_config(path: Option<&Path>) -> anyhow::Result<()> {
     let out = path.map(PathBuf::from).unwrap_or_else(global_config_path);
     if let Some(parent) = out.parent() { std::fs::create_dir_all(parent)?; }
     std::fs::write(&out, global_config_body())?;
-    std::fs::write(llm_config_path(&out), yekitrim_core::config::LLM_CONFIG_TOML)?;
+    std::fs::write(llm_config_path(&out), llm_config_body())?;
     std::fs::create_dir_all(yekitrim_core::path::sticker_dir())?;
     yekitrim_core::fonts::ensure_dir()?;
     // 自带字体是**内嵌**的（2026-10-02）：建完库就地装好，用户不需要任何额外操作
@@ -136,12 +147,12 @@ pub fn ensure_global_config() -> anyhow::Result<EnsureConfigResult> {
 
     if !llm_out.exists() {
         if let Some(parent) = llm_out.parent() { std::fs::create_dir_all(parent)?; }
-        std::fs::write(&llm_out, yekitrim_core::config::LLM_CONFIG_TOML)?;
+        std::fs::write(&llm_out, llm_config_body())?;
         result.created.push(llm_out.clone());
     } else if let Err(e) = parse_check(&llm_out) {
         let backup = llm_out.with_extension("toml.broken");
         std::fs::copy(&llm_out, &backup)?;
-        std::fs::write(&llm_out, yekitrim_core::config::LLM_CONFIG_TOML)?;
+        std::fs::write(&llm_out, llm_config_body())?;
         result.repaired.push((llm_out.clone(), backup, format!("{e:#}")));
     }
 

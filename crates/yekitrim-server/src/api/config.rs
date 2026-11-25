@@ -351,11 +351,54 @@ pub(super) async fn config_global_put(
     blocking(move || config_global_put_locked(&path, &body)).await
 }
 
+/// S4 之后**已经搬进 `llm.toml`** 的 config.toml 键：`(section, key)`。
+///
+/// ⚠️ 这是一条**写通道防线**，不是兼容层：程序配置页/老客户端再发这些键就 400 并指路，
+/// 否则 `patch_config_file` 的合并语义会把它们**静默写回**（文件已 v5、迁移不会再跑）。
+const RETIRED_LLM_KEYS: [(&str, &str); 8] = [
+    ("correct", "thinking"),
+    ("correct", "window_size"),
+    ("correct", "max_concurrent"),
+    ("detection", "system_prompt"),
+    ("detection", "prompt_template"),
+    ("detection", "reference_titles"),
+    ("detection", "llm_score_weight"),
+    ("detection", "max_concurrent"),
+];
+
+/// 看见退役键就 400（附指路：它们现在叫 `[llm.links.<link>.prompt/run]`）。
+fn reject_retired_llm_keys(patch: &serde_json::Value) -> Result<(), AppError> {
+    let mut bad: Vec<String> = Vec::new();
+    for (section, key) in RETIRED_LLM_KEYS {
+        if patch
+            .get(section)
+            .and_then(|s| s.get(key))
+            .is_some()
+        {
+            bad.push(format!("[{section}] {key}"));
+        }
+    }
+    if bad.is_empty() {
+        return Ok(());
+    }
+    Err(err(
+        StatusCode::BAD_REQUEST,
+        format!(
+            "这些键已经搬进 llm.toml（不再住 config.toml）：{} —— 请用 [llm.links.<link>.prompt]（提示词）/ \
+             [llm.links.<link>.run]（窗口 / 并发 / 评分权重），界面在「设置 → AI 模型」页",
+            bad.join(" / ")
+        ),
+    ))
+}
 pub(super) fn config_global_put_locked(path: &Path, body: &serde_json::Value) -> ApiResult {
     // ⚠️ **两条分支都必须"临时文件 → 真反序列化验 → rename"**（2026-11-14 后端 review B3）。
     // 以前 patch 直接改真文件、raw 直接 `fs::write`：语义坏值会让整份配置被忽略，
     // 而写一半崩掉（非原子）同样让文件截断。守卫与 llm.toml 那条同源。
     if let Some(patch) = body.get("patch") {
+        // ⚠️ S4：这几个键已经搬进 llm.toml（**没有人读**）。老客户端/老表单再发它们时，
+        // patch 的"合并"语义会把死键**写回** config.toml（文件已是 v5 ⇒ 迁移不会再跑）。
+        // 所以这里直接 400 + 指路 —— 静默写回比报错难查得多。
+        reject_retired_llm_keys(patch)?;
         let tmp = staged_copy(path)?;
         if let Err(e) = yekitrim_core::config::patch_config_file(&tmp, patch) {
             let _ = std::fs::remove_file(&tmp);

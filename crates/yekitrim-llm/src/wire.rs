@@ -47,17 +47,21 @@ pub fn apply(body: &mut Value, p: &LlmParams) {
 }
 
 /// 推理参数：**只发表里声明过的档位**；缺档 = 不支持 ⇒ 什么都不发。
+///
+/// ⚠️ `p.reasoning == None` = **没表态** ⇒ 一个字都不发（这是 F7 之后唯一的"不表态"表达方式：
+/// 以前靠 `reasoning_explicit` 这个布尔，与档位值分居两处，谁读错都会把链路默认顶掉）。
 fn apply_reasoning(body: &mut Value, p: &LlmParams) {
+    let Some(level) = p.reasoning else {
+        return;
+    };
     if !p.caps.reasoning_supported() {
-        // 表里没有这支模型（自建网关/新模型）：只在**显式表过态**时用最保守的老形态，
-        // 免得把老工程的 `[llm] thinking` 一升上来就静默失效。
-        if p.reasoning_explicit {
-            let kind = if p.reasoning == ReasoningLevel::Off { "disabled" } else { "enabled" };
-            body["thinking"] = json!({ "type": kind });
-        }
+        // 表里没有这支模型（自建网关/新模型）：表态过就用最保守的老形态
+        // （`thinking{type}` 是各家兼容层的事实标准），免得把老工程的档位一升上来就静默失效。
+        let kind = if level == ReasoningLevel::Off { "disabled" } else { "enabled" };
+        body["thinking"] = json!({ "type": kind });
         return;
     }
-    let Some(slot) = p.caps.wire_for(p.reasoning) else {
+    let Some(slot) = p.caps.wire_for(level) else {
         return; // 该档不支持 ⇒ 不发（不是发个错的）
     };
     match slot {
@@ -72,12 +76,13 @@ fn apply_reasoning(body: &mut Value, p: &LlmParams) {
 /// ⚠️ 这里**不认识任何一家 API**：怎么写全由 `dialect.apply` 决定（注册表在 [`crate::dialect`]）。
 /// 未知方言（`dialect::none()`）的 apply 是空函数 ⇒ 什么都不发。
 fn emit(body: &mut Value, p: &LlmParams, value: &str) {
+    let Some(level) = p.reasoning else { return };
     if let Some(map) = body.as_object_mut() {
         // 预算：用户配了就用它，没配按**档位映射表**（那张表只在 dialect::budget_for 一处）
         let budget = p
             .thinking_budget
-            .or_else(|| crate::dialect::budget_for(p.reasoning));
-        (p.caps.dialect.apply)(map, p.reasoning, value, budget);
+            .or_else(|| crate::dialect::budget_for(level));
+        (p.caps.dialect.apply)(map, level, value, budget);
     }
 }
 
@@ -105,7 +110,7 @@ mod tests {
     fn 表里没有的档位一个都不发() {
         let p = params(&[(ReasoningLevel::High, Some("high"))], dlg("openai_effort", "max_tokens"));
         let mut body = json!({});
-        apply(&mut body, &LlmParams { reasoning: ReasoningLevel::Low, ..p });
+        apply(&mut body, &LlmParams { reasoning: Some(ReasoningLevel::Low), ..p });
         assert!(body.get("reasoning_effort").is_none(), "Low 不在表里就不许发：{body}");
     }
 
@@ -113,7 +118,7 @@ mod tests {
     fn null_档位表示支持但不发送() {
         let p = params(&[(ReasoningLevel::Off, None)], dlg("thinking_type", "max_tokens"));
         let mut body = json!({});
-        apply(&mut body, &LlmParams { reasoning: ReasoningLevel::Off, ..p });
+        apply(&mut body, &LlmParams { reasoning: Some(ReasoningLevel::Off), ..p });
         assert!(body.get("thinking").is_none(), "off 的 wire 是 null（缺席）⇒ 不许写键：{body}");
     }
 
@@ -143,7 +148,7 @@ mod tests {
             ..params(&[(ReasoningLevel::High, Some("high"))], dlg("thinking_type", "max_tokens"))
         };
         let mut body = json!({});
-        apply(&mut body, &LlmParams { reasoning: ReasoningLevel::High, ..p });
+        apply(&mut body, &LlmParams { reasoning: Some(ReasoningLevel::High), ..p });
         assert_eq!(body["temperature"], 1.5, "extra 要盖掉结构化的温度（老行为）");
         assert_eq!(body["thinking"]["type"], "enabled", "reasoning 再盖掉 extra（老行为）");
     }
@@ -175,7 +180,7 @@ mod tests {
         let mut body = json!({});
         apply(
             &mut body,
-            &LlmParams { max_tokens: Some(4096), reasoning: ReasoningLevel::High, ..p },
+            &LlmParams { max_tokens: Some(4096), reasoning: Some(ReasoningLevel::High), ..p },
         );
         assert_eq!(body["test_reasoning"], "high", "新方言的推理写法直接生效（wire 不认识它）");
         assert_eq!(body["test_max_out"], 4096, "新方言的输出字段名直接生效");
@@ -190,12 +195,12 @@ mod tests {
         let mut body = json!({});
         apply(
             &mut body,
-            &LlmParams { reasoning: ReasoningLevel::High, thinking_budget: Some(2048), ..p.clone() },
+            &LlmParams { reasoning: Some(ReasoningLevel::High), thinking_budget: Some(2048), ..p.clone() },
         );
         assert_eq!(body["thinking"]["budget_tokens"], 2048, "配了就用配的那个数：{body}");
 
         let mut body2 = json!({});
-        apply(&mut body2, &LlmParams { reasoning: ReasoningLevel::High, ..p });
+        apply(&mut body2, &LlmParams { reasoning: Some(ReasoningLevel::High), ..p });
         assert_eq!(body2["thinking"]["budget_tokens"], 16384, "没配 ⇒ 按 high 的映射值：{body2}");
     }
 
@@ -203,7 +208,7 @@ mod tests {
     fn 未知方言降级成不发() {
         let p = params(&[(ReasoningLevel::High, Some("high"))], dialect::none());
         let mut body = json!({});
-        apply(&mut body, &LlmParams { reasoning: ReasoningLevel::High, ..p });
+        apply(&mut body, &LlmParams { reasoning: Some(ReasoningLevel::High), ..p });
         assert!(body.get("reasoning_effort").is_none());
         assert!(body.get("thinking").is_none());
         assert!(body.get("enable_thinking").is_none());

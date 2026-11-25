@@ -106,12 +106,88 @@ pub struct LlmLinkSetting {
     /// 请求参数覆盖（逐键；None = 跟随 [llm.defaults]）。落在子键上，不写就不出现。
     #[serde(flatten, default)]
     pub params: LlmParamsToml,
+    /// 这条链路的**提示词**（`[llm.links.<link>.prompt]`）—— **不是请求参数**，不进请求体。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<LlmPromptCfg>,
+    /// 这条链路的**本地行为参数**（`[llm.links.<link>.run]`）—— 窗口 / 并发 / 评分权重，不进请求体。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<LlmRunCfg>,
 }
 
 impl LlmLinkSetting {
-    /// 这一行是不是空的（既没选接口/模型，也没有任何参数覆盖）—— 空行不写回文件。
+    /// 这一行是不是空的（既没选接口/模型，也没有任何参数/提示词/行为覆盖）—— 空行不写回文件。
     pub fn is_empty_setting(&self) -> bool {
-        self.provider.trim().is_empty() && self.model.trim().is_empty() && self.params.is_empty()
+        self.provider.trim().is_empty()
+            && self.model.trim().is_empty()
+            && self.params.is_empty()
+            && self.prompt.as_ref().map(LlmPromptCfg::is_empty).unwrap_or(true)
+            && self.run.is_none()
+    }
+}
+
+/// 一条链路的**提示词**（`[llm.links.<link>.prompt]`）：喂给 LLM 的文本，**不是请求参数**。
+///
+/// ⚠️ **为什么单独一张子表**而不是平铺进 `[llm.links.<link>]`：那一层平铺的是「这一趟怎么发」
+/// （temperature / max_tokens / reasoning …），它们会被 `LlmParamsToml::merged_over` 与
+/// `From<&LinkedLlm> for LlmParams` 消费；提示词与 request body 无关，混进去会让
+/// "请求参数"这个词同时指两件不相干的事（S4 之前它还有过把 `out.links.clear()` 连带清空的坑）。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct LlmPromptCfg {
+    /// 检测 system_prompt（空 = 内建默认）。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub system_prompt: String,
+    /// 检测 user prompt 模板（空 = 内建默认；`{segments}` / `{reference_titles}` 会被替换）。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub prompt_template: String,
+    /// 参考标题（空 = 内建示例；也喂给封面标题生成）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reference_titles: Vec<String>,
+}
+
+impl LlmPromptCfg {
+    /// 三个键都空 = 没配（`[llm.links.detect.prompt]` 只写了个空表也当没写）。
+    pub fn is_empty(&self) -> bool {
+        self.system_prompt.trim().is_empty()
+            && self.prompt_template.trim().is_empty()
+            && self.reference_titles.iter().all(|s| s.trim().is_empty())
+    }
+}
+
+/// 一条链路的**本地行为参数**（`[llm.links.<link>.run]`）：不进请求体。
+///
+/// ⚠️ 这一层与 `params` 的分界是「会不会改变发出去的字节」：`window_size` 决定分几次调用、
+/// `max_concurrent` 决定同时几个、`llm_score_weight` 决定后处理怎么用那些分数 —— 三者都
+/// **只在本地生效**，写进 `params` 会被当成"厂商扩展参数"原样塞进请求体。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct LlmRunCfg {
+    /// Agent 每次处理多少条（订阅正链路）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_size: Option<usize>,
+    /// 这条链路的并发上限（留空 = 跟随 `[llm] max_concurrent`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_concurrent: Option<usize>,
+    /// 检测链路：LLM 标题/摘要评分在最终热度里的权重（0 = 关闭该标准、也不再发那次请求）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_score_weight: Option<f64>,
+}
+
+/// `run_for(link)` 解析出来的生效值（缺省已经填好，调用方直接用）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LlmRunResolved {
+    pub window_size: usize,
+    pub max_concurrent: usize,
+    pub llm_score_weight: f64,
+}
+
+impl Default for LlmRunResolved {
+    /// ⚠️ 窗口默认取 **`yekitrim_llm::tasks::CORRECT.default_window`**（S2 定的唯一来源），
+    /// 不在 config 层再写一份 `25` —— 那正是 S4 要消灭的"第二份默认值"。
+    fn default() -> Self {
+        Self {
+            window_size: yekitrim_llm::tasks::CORRECT.default_window.unwrap_or(25).max(1),
+            max_concurrent: 3,
+            llm_score_weight: 0.3,
+        }
     }
 }
 
@@ -172,6 +248,8 @@ impl Default for LlmLinkSetting {
             provider: String::new(),
             model: String::new(),
             params: LlmParamsToml::default(),
+            prompt: None,
+            run: None,
         }
     }
 }
@@ -254,6 +332,47 @@ impl LlmV4 {
         }
     }
 
+    /// 某链路的**提示词**（`[llm.links.<link>.prompt]`）：没写 / 三项全空 ⇒ `None` = 用内建默认。
+    ///
+    /// ⚠️ 这是提示词的**唯一解析入口**（与 `for_link` 之于请求参数同理）：别再在调用点自己
+    /// `links.get(...)` —— 那会让"哪一层优先"多出第二份实现。
+    pub fn prompt_for(&self, link: LlmLink) -> Option<&LlmPromptCfg> {
+        self.links
+            .get(link.key())
+            .and_then(|l| l.prompt.as_ref())
+            .filter(|p| !p.is_empty())
+    }
+
+    /// 某链路的**本地行为参数**（窗口 / 并发 / 评分权重），缺省已经填好。
+    ///
+    /// ⚠️ 必须在 `materialize()` **之前**取：物化会把 `links` 清空（避免下游重算两遍参数），
+    ///    所以 `LinkedLlm` 把这一份一起带走（见 `LinkedLlm::run`）。
+    pub fn run_for(&self, link: LlmLink) -> LlmRunResolved {
+        let d = LlmRunResolved::default();
+        let run = self.links.get(link.key()).and_then(|l| l.run.as_ref());
+        LlmRunResolved {
+            // 0/负数不表示"没配"，但那两个值会被夹成 1（与 [llm] 并发同一条口径）
+            window_size: run.and_then(|r| r.window_size).map(|n| n.max(1)).unwrap_or(d.window_size),
+            max_concurrent: run
+                .and_then(|r| r.max_concurrent)
+                .map(|n| n.max(1))
+                .unwrap_or_else(|| self.concurrency(None)),
+            llm_score_weight: run
+                .and_then(|r| r.llm_score_weight)
+                .filter(|w| w.is_finite())
+                .map(|w| w.clamp(0.0, 1.0))
+                .unwrap_or(d.llm_score_weight),
+        }
+    }
+
+    /// 某链路的并发上限（`run.max_concurrent` 优先，否则 `[llm] max_concurrent`，至少 1）。
+    ///
+    /// ⚠️ 这是**唯一**读法：三处调用点（检测 / 订正 / 精修）都走它，别再各自
+    /// `concurrency(section_override)`（S1 之后 `[correct] max_concurrent` 这类段级覆盖已经搬进 llm.toml）。
+    pub fn concurrency_for(&self, link: LlmLink) -> usize {
+        self.run_for(link).max_concurrent
+    }
+
     /// 清单里查某个模型的条目（按 接口 + id，id 大小写不敏感）。
     pub fn model_entry(&self, provider: &str, model: &str) -> Option<&LlmModelEntry> {
         let model = model.trim();
@@ -307,6 +426,16 @@ impl LlmV4 {
             }
             if !m.provider.trim().is_empty() && self.provider(&m.provider).is_none() {
                 out.push(format!("模型 {} 的 provider 认不出：{}", m.id, m.provider));
+            }
+        }
+        // 链路行为参数：0 不表示"没配"，会被夹成 1 —— 照实说一句（不拦保存，只提示）
+        for (key, link) in &self.links {
+            let Some(run) = &link.run else { continue };
+            if run.max_concurrent == Some(0) {
+                out.push(format!("[llm.links.{key}.run] max_concurrent = 0 会被当成 1（想跟随全局就删掉这一行）"));
+            }
+            if run.window_size == Some(0) {
+                out.push(format!("[llm.links.{key}.run] window_size = 0 会被当成 1"));
             }
         }
         out
@@ -443,6 +572,9 @@ pub fn from_v3(c: &LlmV3) -> Migrated {
                 provider: String::new(),
                 model: String::new(),
                 params: ov.clone(),
+                // v3 没有"链路提示词/行为"这两层（它们还在 config.toml 里，S4 的跨文件迁移负责搬）
+                prompt: None,
+                run: None,
             },
         );
     }
@@ -638,7 +770,8 @@ impl LlmV4 {
     /// 为什么这么绕：下游 From<&LlmV4> for LlmParams 只认「当前接口 + 一层参数面」。
     /// 与其在每个调用点各算一遍（那正是「忘记套链路参数」的来源），不如在这里一次解析干净。
     pub fn for_link(&self, link: LlmLink) -> LinkedLlm {
-        LinkedLlm(self.materialize(link))
+        // ⚠️ run 必须在 materialize **之前**取（它会清空 links）
+        LinkedLlm { cfg: self.materialize(link), run: self.run_for(link) }
     }
 
     /// 链路物化（内部实现）：接口/模型/参数一次解析干净。别直接调它 —— 用 for_link。
@@ -746,9 +879,8 @@ impl LlmV4 {
             model,
             temperature: p.temperature.filter(|t| t.is_finite()).unwrap_or_default(),
             max_tokens: p.max_tokens,
-            reasoning: reasoning.unwrap_or_default(),
+            reasoning,
             thinking_budget: p.thinking_budget.filter(|n| *n > 0),
-            reasoning_explicit: reasoning.is_some(),
             top_p: p.top_p.filter(|v| v.is_finite()),
             json_mode: p.json_mode.unwrap_or(false),
             extra_params: self.extra_params.as_ref().and_then(|t| serde_json::to_value(t).ok()),
@@ -763,31 +895,44 @@ impl LlmV4 {
 /// （LlmClient::new / Agent::new 吃 Into<LlmParams>，这里只为它实现转换）。
 /// 想改「这一趟发什么」就改 [llm.links.<link>] 或 [llm.defaults]，别在调用点手改参数。
 #[derive(Debug, Clone, PartialEq)]
-pub struct LinkedLlm(LlmV4);
+pub struct LinkedLlm {
+    /// 物化后的配置（接口 / 模型 / 参数都已解析干净，links 已清空）。
+    cfg: LlmV4,
+    /// 这条链路的**本地行为参数**（窗口 / 并发 / 评分权重）。
+    ///
+    /// ⚠️ 为什么放在这里而不是"再查一次 links"：`materialize()` 会 `out.links.clear()`
+    /// （参数已经并进 defaults，不能让下游重算两遍）。若调用点想再取窗口/并发，就只能
+    /// 拿着物化后的配置去查 —— 那会**永远查不到**，然后静默用默认值。
+    run: LlmRunResolved,
+}
 
 impl LinkedLlm {
     /// 物化后的配置本体（读连接信息 / 打日志用）。
     pub fn config(&self) -> &LlmV4 {
-        &self.0
+        &self.cfg
+    }
+    /// 这条链路的本地行为参数（窗口 / 并发 / 评分权重）。
+    pub fn run(&self) -> LlmRunResolved {
+        self.run
     }
 }
 
 impl std::ops::Deref for LinkedLlm {
     type Target = LlmV4;
     fn deref(&self) -> &LlmV4 {
-        &self.0
+        &self.cfg
     }
 }
 
 impl From<LinkedLlm> for yekitrim_llm::LlmParams {
     fn from(c: LinkedLlm) -> Self {
-        c.0.to_params()
+        c.cfg.to_params()
     }
 }
 
 impl From<&LinkedLlm> for yekitrim_llm::LlmParams {
     fn from(c: &LinkedLlm) -> Self {
-        c.0.to_params()
+        c.cfg.to_params()
     }
 }
 
@@ -848,6 +993,8 @@ mod runtime_tests {
             LlmLinkSetting {
                 provider: "cheap".into(),
                 model: "small-model-v2".into(),
+                prompt: None,
+                run: None,
                 params: LlmParamsToml { max_tokens: Some(512), ..Default::default() },
             },
         );
@@ -1037,6 +1184,14 @@ impl LlmV4 {
                 "api_key_set": p.map(|x| !x.key().is_empty()).unwrap_or(false),
             },
             "model": resolved.effective_model(),
+            // 本地行为参数（窗口 / 并发 / 评分权重）：不进请求体，但界面与日志要能解释"这一趟怎么跑"
+            "run": {
+                "window_size": self.run_for(link).window_size,
+                "max_concurrent": self.run_for(link).max_concurrent,
+                "llm_score_weight": self.run_for(link).llm_score_weight,
+            },
+            // 提示词覆盖与"参数覆盖"分开报：前者不改请求字节（D2 / L3 的灰字要用）
+            "prompt_overridden": self.prompt_for(link).is_some(),
             "params": {
                 "temperature": params.temperature,
                 "max_tokens": params.max_tokens,

@@ -59,7 +59,6 @@ fn effective_system_prompt(correct: &CorrectConfig) -> String {
 struct CorrectTask {
     danmaku: Vec<DanmakuEntry>,
     correct: CorrectConfig,
-    thinking: bool,
     /// 项目根目录，只用于用量记账归因。
     project: Option<String>,
 }
@@ -72,10 +71,6 @@ impl AgentTask<Vec<AgentOutput>> for CorrectTask {
 
     fn usage_context(&self) -> yekitrim_llm::usage::UsageContext {
         yekitrim_llm::usage::UsageContext::new(self.name()).project(self.project.clone())
-    }
-
-    fn thinking(&self) -> bool {
-        self.thinking
     }
 
     fn build_global_context(&self, items: &[AgentItem]) -> String {
@@ -245,16 +240,18 @@ pub async fn correct_transcript_with_checkpoint(
     let task = CorrectTask {
         danmaku: danmaku.to_vec(),
         correct: correct.clone(),
-        thinking: correct.thinking,
         project: project.map(crate::path::display),
     };
 
-    // 链路解析：订正走 `[llm.overrides.correct]`（Agent 的 llm 会传给默认的 `process_window` 建客户端）
-    // 库内 indicatif 进度条关掉：调用方（CLI/server）自带进度面，窗口进度经 progress_tx 桥接出去。
+    // 链路解析：订正走 `[llm.links.correct]`（Agent 的 llm 会传给默认的 `process_window` 建客户端）
+    // ⚠️ S4：窗口 / 并发从 `for_link` 的产物里取（`LinkedLlm::run()`）—— 它们已经从 config.toml 的
+    //    `[correct] window_size/max_concurrent` 搬进 `[llm.links.correct.run]`。别再读 `correct.*`。
     let llm = llm.for_link(crate::config::LlmLink::Correct);
+    let run = llm.run();
+    // 库内 indicatif 进度条关掉：调用方（CLI/server）自带进度面，窗口进度经 progress_tx 桥接出去。
     let agent = Agent::new(llm.clone())
-        .with_window_size(correct.window_size.max(1))
-        .with_max_concurrent(llm.concurrency(correct.max_concurrent))
+        .with_window_size(run.window_size)
+        .with_max_concurrent(run.max_concurrent)
         .without_internal_progress();
     // ⚠️ 探针必须真的交给 Agent：只在阶段边界查一次等于"用户点了停止、后台仍把窗口一个个跑完"。
     // 订正是分钟级链路（窗口多、每次调用几十秒），这条以前漏了 —— 与检测链路同一个坑。
@@ -299,7 +296,6 @@ mod tests {
         let task = CorrectTask {
             danmaku: vec![],
             correct: CorrectConfig::default(),
-            thinking: false,
             project: None,
         };
         let window = vec![
@@ -317,7 +313,6 @@ mod tests {
         let task = CorrectTask {
             danmaku: vec![],
             correct: CorrectConfig::default(),
-            thinking: false,
             project: None,
         };
         let window = vec![
@@ -339,7 +334,6 @@ mod tests {
         let task = CorrectTask {
             danmaku: vec![],
             correct: CorrectConfig::default(),
-            thinking: false,
             project: None,
         };
         let window = vec![AgentItem { index: 1, start: 0.0, end: 1.0, text: "你好".into() }];

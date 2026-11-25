@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use serde_json::Value;
 
-use crate::params::{LlmParams, ReasoningLevel};
+use crate::params::LlmParams;
 use crate::wire;
 
 
@@ -140,13 +140,6 @@ impl LlmClient {
     }
 
     /// 设置 thinking 参数（DeepSeek 等支持）。`Some("disabled")` 显式关闭深度思考。
-    pub fn with_thinking(mut self, mode: Option<&str>) -> Self {
-        self.params.reasoning = mode
-            .and_then(ReasoningLevel::from_thinking_flag)
-            .unwrap_or(ReasoningLevel::Off);
-        self.params.reasoning_explicit = mode.is_some();
-        self
-    }
 
     fn api_url(&self) -> String {
         let base = self.params.base_url.trim_end_matches('/');
