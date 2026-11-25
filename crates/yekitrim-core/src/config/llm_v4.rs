@@ -637,7 +637,12 @@ impl LlmV4 {
     ///
     /// 为什么这么绕：下游 From<&LlmV4> for LlmParams 只认「当前接口 + 一层参数面」。
     /// 与其在每个调用点各算一遍（那正是「忘记套链路参数」的来源），不如在这里一次解析干净。
-    pub fn for_link(&self, link: LlmLink) -> LlmV4 {
+    pub fn for_link(&self, link: LlmLink) -> LinkedLlm {
+        LinkedLlm(self.materialize(link))
+    }
+
+    /// 链路物化（内部实现）：接口/模型/参数一次解析干净。别直接调它 —— 用 for_link。
+    fn materialize(&self, link: LlmLink) -> LlmV4 {
         let mut out = self.clone();
         let provider_id = self.provider_for(link).map(|p| p.id.clone()).unwrap_or_default();
         let model = self.model_for(link);
@@ -752,9 +757,37 @@ impl From<&LlmV4> for yekitrim_llm::LlmParams {
     }
 }
 
-impl From<LlmV4> for yekitrim_llm::LlmParams {
-    fn from(c: LlmV4) -> Self {
-        (&c).into()
+/// 一条链路物化后的配置：LlmConfig::for_link(link) 的产物。
+///
+/// 存在的唯一理由：让「忘记套链路参数」**编译不过** —— 客户端构造只接受它
+/// （LlmClient::new / Agent::new 吃 Into<LlmParams>，这里只为它实现转换）。
+/// 想改「这一趟发什么」就改 [llm.links.<link>] 或 [llm.defaults]，别在调用点手改参数。
+#[derive(Debug, Clone, PartialEq)]
+pub struct LinkedLlm(LlmV4);
+
+impl LinkedLlm {
+    /// 物化后的配置本体（读连接信息 / 打日志用）。
+    pub fn config(&self) -> &LlmV4 {
+        &self.0
+    }
+}
+
+impl std::ops::Deref for LinkedLlm {
+    type Target = LlmV4;
+    fn deref(&self) -> &LlmV4 {
+        &self.0
+    }
+}
+
+impl From<LinkedLlm> for yekitrim_llm::LlmParams {
+    fn from(c: LinkedLlm) -> Self {
+        (&c.0).into()
+    }
+}
+
+impl From<&LinkedLlm> for yekitrim_llm::LlmParams {
+    fn from(c: &LinkedLlm) -> Self {
+        (&c.0).into()
     }
 }
 

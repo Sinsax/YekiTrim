@@ -1186,7 +1186,10 @@ pub(super) async fn llm_test(
     // 测连接只需要"这一套连接参数"：把解析结果落成**一份接口**再交给 test_llm。
     // ⚠️ 先 `for_link(Utility)` 把链路参数并进 defaults、并清掉 links —— 否则 test_llm 内部那次
     //    `for_link` 会按链路把接口/模型换成配置里那一份，测的就不是这次解析出来的连接了。
-    let mut plain = llm.for_link(yekitrim_core::config::LlmLink::Utility);
+    let mut plain = llm
+        .for_link(yekitrim_core::config::LlmLink::Utility)
+        .config()
+        .clone();
     plain.providers = vec![yekitrim_core::config::llm_v4::LlmProviderV4 {
         id: conn.provider.clone().unwrap_or_else(|| "test".to_string()),
         name: "测试连接".to_string(),

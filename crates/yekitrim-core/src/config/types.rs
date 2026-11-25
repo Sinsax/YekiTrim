@@ -1219,6 +1219,7 @@ pub type LlmOverride = LlmParamsToml;
 
 /// v4 形状的别名（Config.llm 就是它）。⚠️ 老的 LlmConfig（v3）只留给迁移与旧用例。
 pub use super::llm_v4::LlmV4 as LlmConfigV4;
+pub use super::llm_v4::LinkedLlm;
 
 impl LlmParamsToml {
     /// 一个键都没写（`[llm.providers.params]` 用它决定要不要落这个表）。
