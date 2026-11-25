@@ -1187,11 +1187,11 @@ pub async fn build_package_tags_for(
 /// ⚠️ 2026-10-20 事故：这里以前读的是 **legacy 顶层** `llm.api_key`，而多配置之后密钥在
 /// `providers[].api_key` 里、读侧也不回显 ⇒ 顶层**恒空** ⇒ 每个用户点「LLM 剪辑」都
 /// **静默空跑**（作业显示"完成"、零调用）。判定必须走 `LlmConfig::has_api_key()`
-/// （= `active_provider().provider_key()`，与 `resolve_llm_conn` / `From<&LlmConfig>` 同口径）。
+/// （= `active_provider().provider_key()`，与 `resolve_llm_conn` / `From<&yekitrim_core::config::LlmConfigV4>` 同口径）。
 ///
 /// **没有密钥 ⇒ 硬失败**（不再"返回成功"）：静默成功是本仓最恨的那类 bug ——
 /// 用户以为跑过了，实际一个 token 都没花。
-fn require_llm_key(cfg: &yekitrim_core::config::LlmConfig) -> anyhow::Result<()> {
+fn require_llm_key(cfg: &yekitrim_core::config::LlmConfigV4) -> anyhow::Result<()> {
     if cfg.has_api_key() {
         return Ok(());
     }
@@ -1206,7 +1206,7 @@ const PACKAGE_TAG_BATCH: usize = 120;
 
 /// 调用 LLM 为贴纸包内每个文件生成语义 tags，返回 `(文件名, tags)` 列表。
 async fn llm_generate_package_tags(
-    cfg: &yekitrim_core::config::LlmConfig,
+    cfg: &yekitrim_core::config::LlmConfigV4,
     files: &[String],
     progress: &dyn yekitrim_core::progress::ProgressReporter,
 ) -> anyhow::Result<Vec<(String, Vec<String>)>> {
@@ -1339,7 +1339,7 @@ pub async fn cmd_emoji_build(
         "  🤖 emoji 多维分类：{} 条 / 每批 {} 条（模型 {}）…",
         entries.len(),
         EMOJI_TAG_BATCH,
-        llm_cfg.model
+        llm_cfg.effective_model()
     );
     let linked = llm_cfg.for_link(yekitrim_core::config::LlmLink::Utility);
     let client = LlmClient::new(&linked)?
@@ -1663,14 +1663,6 @@ pub fn derive_emoji_tag(dim_union: &[String], legacy: &[String]) -> Vec<String> 
 mod llm_key_tests {
     use super::*;
 
-    #[derive(serde::Deserialize)]
-    struct FileLlm {
-        llm: yekitrim_core::config::LlmConfig,
-    }
-    fn parse(text: &str) -> yekitrim_core::config::LlmConfig {
-        toml::from_str::<FileLlm>(text).expect("夹具要能解析").llm
-    }
-
     /// **P0 2026-10-20**：多配置下"有没有密钥"必须看 **active provider**（顶层恒空）。
     ///
     /// 事故：`cmd_llm` 读 legacy 顶层 `api_key` ⇒ 恒空 ⇒ **静默 `return Ok(())`**
@@ -1680,13 +1672,12 @@ mod llm_key_tests {
     /// 变异自证：把判定改回只看顶层 `cfg.api_key` ⇒ ① 当场红。
     #[test]
     fn require_llm_key_is_provider_aware() {
-        // ① v3 形状：key 在 providers[0]，顶层没有（就是用户那份配置的现场）
-        let cfg = parse("[llm]\nactive = \"a\"\n\n[[llm.providers]]\nid = \"a\"\nname = \"甲\"\napi = \"openai-chat\"\nbase_url = \"https://a.example/v1\"\napi_key = \"k\"\nmodel = \"m\"\n");
-        assert_eq!(cfg.api_key, "", "顶层确实没有 key —— 这正是那个 bug 的现场");
-        assert!(cfg.has_api_key(), "判定要看 provider（顶层恒空）");
-        assert!(require_llm_key(&cfg).is_ok(), "① provider 里有 key ⇒ 不许报未配置（= 调用方真的往下走了）");
+        // ① key 在某份接口里（v4 没有顶层 api_key 这种东西）
+        let cfg = yekitrim_core::config::LlmConfigV4::single("https://a.example/v1", "m", "k");
+        assert!(cfg.has_api_key(), "判定要看接口里的 key");
+        assert!(require_llm_key(&cfg).is_ok(), "① 接口里有 key ⇒ 不许报未配置（= 调用方真的往下走了）");
 
-        // ② 两份都没有 ⇒ Err，文案能照着改、且不含 key 的样子
+        // ② 没有 key ⇒ Err，文案能照着改、且不含 key 的样子
         let mut none = cfg.clone();
         none.providers[0].api_key.clear();
         assert!(!none.has_api_key());
@@ -1696,23 +1687,24 @@ mod llm_key_tests {
         assert!(msg.contains("设置"), "要指到界面上能改的那个位置：{msg}");
         assert!(!msg.contains("sk-"), "文案里不许出现 key 的样子：{msg}");
 
-        // ③ legacy（没有 providers）⇒ 行为不变；模板占位 key 仍算"没配"
-        let legacy = parse("[llm]\napi_key = \"k\"\nmodel = \"m\"\n");
-        assert!(require_llm_key(&legacy).is_ok(), "老配置照常能跑");
-        let mut placeholder = legacy.clone();
-        placeholder.api_key = "sk-your-api-key-here".into();
-        assert!(!placeholder.has_api_key(), "模板里的占位 key = 没配（老行为）");
+        // ③ 模板里的占位 key 仍算「没配」（与 v3 同口径）
+        let placeholder =
+            yekitrim_core::config::LlmConfigV4::single("https://a.example/v1", "m", "sk-your-api-key-here");
+        assert!(!placeholder.has_api_key(), "模板占位 key = 没配");
         assert!(require_llm_key(&placeholder).is_err());
 
-        // ④ api_key_env 这条路也认（与 resolve_llm_conn / From 同口径）。
-        // ⚠️ 这里**不 set_var**：改进程级环境变量在多线程测试里是 UB 源（会偶发地带崩别的用例），
-        // 只用"变量不存在 ⇒ 空 key"这个**只读**方向验证分支被走到了。
-        let env_cfg = parse("[llm]\nactive = \"a\"\n[[llm.providers]]\nid = \"a\"\napi = \"openai-chat\"\napi_key_env = \"VT_T42_MISSING_VAR\"\nmodel = \"m\"\n");
+        // ④ api_key_env 这条路也认。⚠️ 这里不 set_var（多线程测试里的环境变量是 UB 源），
+        // 只验证「变量不存在 ⇒ 空 key」这个只读方向确实被走到了。
+        let mut env_cfg = yekitrim_core::config::LlmConfigV4::single("https://a.example/v1", "m", "");
+        env_cfg.providers[0].api_key_env = "VT_T42_MISSING_VAR".into();
         assert_eq!(env_cfg.effective_api_key(), "", "变量不存在 ⇒ 空 key（不 panic）");
         assert!(require_llm_key(&env_cfg).is_err(), "env 也没配 ⇒ 同样要报错");
-        assert_eq!(cfg.effective_model(), "m", "生效模型跟着 provider 走");
+
+        // ⑤ 生效值与接口一致
+        assert_eq!(cfg.effective_model(), "m", "生效模型跟着接口走");
         assert_eq!(cfg.effective_base_url(), "https://a.example/v1");
     }
+
 }
 #[cfg(test)]
 mod emoji_build_tests {
@@ -1869,7 +1861,7 @@ pub async fn cmd_stickers_scan(llm: bool) -> anyhow::Result<()> {
 const TAG_BATCH_SIZE: usize = 40;
 
 async fn llm_generate_tags(
-    cfg: &yekitrim_core::config::LlmConfig,
+    cfg: &yekitrim_core::config::LlmConfigV4,
     metas: &mut [crate::assets::sticker_index::StickerMeta],
     cancel: Option<yekitrim_llm::agent::CancelProbe>,
 ) -> anyhow::Result<()> {

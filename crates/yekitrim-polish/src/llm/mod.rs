@@ -16,7 +16,6 @@ use std::path::{Path, PathBuf};
 
 use crate::parse::srt::Subtitle;
 use crate::project::{Segment, Event};
-use yekitrim_core::config::LlmConfig;
 use yekitrim_core::danmaku::DanmakuEntry;
 use yekitrim_llm::LlmClient;
 
@@ -37,7 +36,7 @@ use status::SegmentGenStatus;
 /// —— 用 `sticker_dir_readable()` 会去翻单人库，于是多用户下"选不中自己传的贴纸包"。
 pub async fn run_llm_pipeline(
     owner: yekitrim_core::owner::Owner,
-    llm_cfg: &LlmConfig,
+    llm_cfg: &yekitrim_core::config::LlmConfigV4,
     subtitles: &[Subtitle],
     danmaku: &[DanmakuEntry],
     event_type: &str,
@@ -325,7 +324,7 @@ pub async fn run_llm_pipeline(
 /// —— `apply_outputs` 对空结果不覆盖，这里也不动 polish.toml（调用方只写成功的结果）。
 pub async fn regenerate_segment_events(
     owner: yekitrim_core::owner::Owner,
-    llm_cfg: &LlmConfig,
+    llm_cfg: &yekitrim_core::config::LlmConfigV4,
     subtitles: &[Subtitle],
     sticker_source: &[String],
     sfx_blacklist: &[String],
@@ -440,7 +439,7 @@ async fn run_sticker_choice_step(
     segments: &mut [Segment],
     subtitles: &[Subtitle],
     mute_ranges: &[crate::project::MuteRange],
-    llm_cfg: &LlmConfig,
+    llm_cfg: &yekitrim_core::config::LlmConfigV4,
     project: Option<&std::path::Path>,
     cancel: Option<yekitrim_llm::agent::CancelProbe>,
 ) -> anyhow::Result<()> {

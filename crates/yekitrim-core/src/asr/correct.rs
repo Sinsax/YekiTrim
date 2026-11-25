@@ -8,7 +8,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 
-use crate::config::{CorrectConfig, LlmConfig};
+use crate::config::{CorrectConfig};
 use crate::danmaku::DanmakuEntry;
 use yekitrim_llm::agent::{
     extract_json, items_to_json, Agent, AgentItem, AgentOutput, AgentProgress, AgentTask,
@@ -220,7 +220,7 @@ impl AgentTask<Vec<AgentOutput>> for CorrectTask {
 pub async fn correct_transcript_with_checkpoint(
     segments: &[TranscriptSegment],
     danmaku: &[DanmakuEntry],
-    llm: &LlmConfig,
+    llm: &crate::config::LlmConfigV4,
     correct: &CorrectConfig,
     project: Option<&Path>,
     checkpoint_path: Option<&Path>,
@@ -284,7 +284,7 @@ pub async fn correct_transcript_with_checkpoint(
 pub async fn correct_transcript(
     segments: &[TranscriptSegment],
     danmaku: &[DanmakuEntry],
-    llm: &LlmConfig,
+    llm: &crate::config::LlmConfigV4,
     correct: &CorrectConfig,
 ) -> Result<Vec<TranscriptSegment>> {
     correct_transcript_with_checkpoint(segments, danmaku, llm, correct, None, None, None, None).await
@@ -405,10 +405,8 @@ mod checkpoint_tests {
         let hits = Arc::new(AtomicUsize::new(0));
         let (_srv, base) = fake_correct_server(hits.clone()).await;
 
-        let mut llm = LlmConfig::default();
-        llm.base_url = base;
-        llm.api_key = "test-key".into();
-        llm.model = "test-model".into();
+        // v4：接口/模型/key 都在一份 provider 里（没有顶层 api_key 了）
+        let llm = crate::config::LlmConfigV4::single(&base, "test-model", "test-key");
         let correct = CorrectConfig::default();
         let segments = vec![
             TranscriptSegment { start: 0.0, end: 1.0, text: "你好".into(), confidence: 1.0 },

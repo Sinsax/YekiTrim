@@ -557,30 +557,22 @@ mod tests {
     /// 变异自证：把谓词改回只看 `cfg.llm.api_key` ⇒ 第一条当场红。
     #[test]
     fn should_run_llm_correct_is_provider_aware() {
-        fn cfg(provider_key: Option<&str>, legacy_key: &str, enabled: bool) -> Config {
+        /// ⚠️ v4 起**没有顶层 api_key** 了：只有「接口里有 key」与「没有接口/没 key」两种现场。
+        fn cfg(provider_key: Option<&str>, enabled: bool) -> Config {
             let mut c = Config::default();
             c.asr.llm_correct = Some(enabled);
-            c.llm.api_key = legacy_key.into();
             if let Some(k) = provider_key {
-                c.llm.active = Some("a".into());
-                c.llm.providers = vec![yekitrim_core::config::LlmProvider {
-                    id: "a".into(),
-                    api: "openai-chat".into(),
-                    api_key: k.into(),
-                    ..Default::default()
-                }];
+                c.llm = yekitrim_core::config::LlmConfigV4::single("https://a.example/v1", "m", k);
             }
             c
         }
-        // ① provider 有 key、顶层没有 ⇒ **要跑**（多配置下不许再判成没配）
-        assert!(should_run_llm_correct(&cfg(Some("k"), "", true), 2), "多配置下必须照常订正");
-        // ② 两份都没有 ⇒ 跳过（不是报错）
-        assert!(!should_run_llm_correct(&cfg(None, "", true), 2));
-        // ③ legacy 顶层有 ⇒ 照常跑（老配置行为不变）
-        assert!(should_run_llm_correct(&cfg(None, "k", true), 2));
-        // ④ 开关没开 / 已经过了检测阶段 ⇒ 跳过（既有语义不变）
-        assert!(!should_run_llm_correct(&cfg(Some("k"), "", false), 2));
-        assert!(!should_run_llm_correct(&cfg(Some("k"), "", true), STAGE_DETECT));
+        // ① 接口里有 key ⇒ **要跑**（多配置下不许再判成没配）
+        assert!(should_run_llm_correct(&cfg(Some("k"), true), 2), "配了 key 就必须照常订正");
+        // ② 没有 key ⇒ 跳过（不是报错）
+        assert!(!should_run_llm_correct(&cfg(None, true), 2));
+        // ③ 开关没开 / 已经过了检测阶段 ⇒ 跳过（既有语义不变）
+        assert!(!should_run_llm_correct(&cfg(Some("k"), false), 2));
+        assert!(!should_run_llm_correct(&cfg(Some("k"), true), STAGE_DETECT));
     }
 
     /// 造一个"刚剪出来"的片段目录（`clip.mp4` + `clip.json`，够 `cmd_init` 认出标题）。

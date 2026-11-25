@@ -419,28 +419,36 @@ fn open_in_file_manager(path: &std::path::Path) -> std::io::Result<()> {
 /// **`/api/health.llm` 在多配置下也必须是 true**（2026-10-20 那一族 bug：读顶层 api_key ⇒ 恒 false）。
 #[test]
 fn llm_ready_is_provider_aware() {
-    fn cfg_with(p: Option<&str>, legacy: &str) -> yekitrim_core::config::Config {
+    fn cfg_with(p: Option<&str>) -> yekitrim_core::config::Config {
         let mut c = yekitrim_core::config::Config::default();
-        c.llm.api_key = legacy.into();
         if let Some(key) = p {
-            c.llm.active = Some("a".into());
-            c.llm.providers = vec![yekitrim_core::config::LlmProvider {
-                id: "a".into(),
-                api: "openai-chat".into(),
-                api_key: key.into(),
-                ..Default::default()
-            }];
+            c.llm = yekitrim_core::config::LlmConfigV4::single("https://a.example/v1", "m", key);
         }
         c
     }
-    // provider 有 key、顶层没有 ⇒ true（这就是用户那份配置）
-    assert!(llm_ready(&cfg_with(Some("k"), "").llm), "多配置下不许再判成未配置");
-    // 两份都没有 ⇒ false
-    assert!(!llm_ready(&cfg_with(None, "").llm));
-    // legacy 顶层有 ⇒ true（老配置行为不变）
-    assert!(llm_ready(&cfg_with(None, "k").llm));
+    // 生效那份接口有 key ⇒ true（这就是用户那份配置）
+    assert!(llm_ready(&cfg_with(Some("k")).llm), "多配置下不许再判成未配置");
+    // 一份接口都没有 ⇒ false
+    assert!(!llm_ready(&cfg_with(None).llm));
     // 模板占位值仍算没配
-    assert!(!llm_ready(&cfg_with(None, "sk-your-api-key-here").llm));
+    assert!(!llm_ready(&cfg_with(Some("sk-your-api-key-here")).llm));
+    // ⚠️ **只看 active 那份**：v4 没有"任一份 provider 有 key 就算有"的顶层口径了
+    //    （真发请求的永远只是 active 那一份）
+    let mut two = cfg_with(None);
+    two.llm.active = "main".into();
+    two.llm.providers.push(yekitrim_core::config::llm_v4::LlmProviderV4 {
+        id: "main".into(), // ← active 这份没填 key
+        ..Default::default()
+    });
+    two.llm.providers.push(yekitrim_core::config::llm_v4::LlmProviderV4 {
+        id: "other".into(),
+        api_key: "k-other".into(),
+        ..Default::default()
+    });
+    assert!(
+        !llm_ready(&two.llm),
+        "active 那份没 key 就是没配（别的接口有也不算）"
+    );
 }
 
 /// `/api/health` 的能力位：**当前配置配没配 API 密钥**（纯谓词，便于钉住）。
@@ -448,7 +456,7 @@ fn llm_ready_is_provider_aware() {
 /// ⚠️ 入参是 **`LlmConfig` 而不是整份 `Config`**：health 里这一位**按账号**读
 /// （`load_llm_config_for(owner)`，见 [`health`]），拿不到 `Config`；判据仍然只有
 /// `has_api_key()` 这一个入口。
-fn llm_ready(llm: &yekitrim_core::config::LlmConfig) -> bool {
+fn llm_ready(llm: &yekitrim_core::config::LlmConfigV4) -> bool {
     llm.has_api_key()
 }
 

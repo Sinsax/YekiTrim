@@ -487,7 +487,7 @@ fn assign_rank_and_sort(events: &mut [Event]) {
 
 async fn process_with_llm(
     segments: &[TranscriptSegment],
-    llm: &crate::config::LlmConfig,
+    llm: &crate::config::LlmConfigV4,
     detect: &crate::config::DetectionConfig,
     hot_windows: &[(f64, f64)],
     output_dir: &std::path::Path,
@@ -580,7 +580,7 @@ async fn process_with_llm(
 /// - 返回 `(事件, 统计)`：统计里"丢在哪一道门"一清二楚，日志与验收都看它。
 async fn process_scattered_with_llm(
     segments: &[TranscriptSegment],
-    llm_config: &crate::config::LlmConfig,
+    llm_config: &crate::config::LlmConfigV4,
     detect_config: &crate::config::DetectionConfig,
     hot_windows: &[(f64, f64)],
     output_dir: &std::path::Path,

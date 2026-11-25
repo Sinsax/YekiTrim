@@ -9,7 +9,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use async_trait::async_trait;
 
-use crate::config::{DetectionConfig, LlmConfig};
+use crate::config::{DetectionConfig};
 use yekitrim_llm::agent::{Agent, AgentItem, AgentProgress, AgentTask, AgentWindow};
 use crate::types::{Event, EventSource, EventType, Timestamp, TranscriptSegment};
 
@@ -544,7 +544,7 @@ const SCORE_BATCH_SIZE: usize = 40;
 /// `weight <= 0` 或非有限值时直接返回全 `None`，不发请求。
 pub async fn score_events_with_llm(
     events: &[Event],
-    llm: &LlmConfig,
+    llm: &crate::config::LlmConfigV4,
     detect: &DetectionConfig,
     project: Option<&Path>,
     cancel: Option<yekitrim_llm::agent::CancelProbe>,
@@ -825,7 +825,7 @@ async fn forward_agent_progress(
 
 pub async fn call_with_progress(
     segments: &[TranscriptSegment],
-    llm: &LlmConfig,
+    llm: &crate::config::LlmConfigV4,
     detect: &DetectionConfig,
     hot_windows: &[(f64, f64)],
     project: Option<&Path>,
@@ -1405,7 +1405,7 @@ async fn attempt_call(
     }
 }
 
-pub async fn test_llm(llm: &LlmConfig, prompt: &str) -> Result<String> {
+pub async fn test_llm(llm: &crate::config::LlmConfigV4, prompt: &str) -> Result<String> {
     // ⚠️ 判定走 provider-aware 的入口（多配置下顶层 `api_key` 恒空）；这里**本来就是报错**，保持报错。
     if !llm.has_api_key() {
         anyhow::bail!(
@@ -1630,7 +1630,7 @@ mod tests {
             ranges: Vec::new(),
             topic: None,
         }];
-        let llm = LlmConfig::default();
+        let llm = crate::config::LlmConfigV4::default();
         let mut detect = DetectionConfig::default();
         detect.llm_score_weight = 0.0;
         let scores = score_events_with_llm(&events, &llm, &detect, None, None)
@@ -1660,10 +1660,9 @@ mod tests {
             ranges: Vec::new(),
             topic: None,
         }];
-        let mut llm = LlmConfig::default();
         // 给个非空 key + 非 0 权重，确保不会被"未配置/权重为 0"的早退挡住，
         // 真正走到探针那一步（它是比建客户端更早的那道门）。
-        llm.api_key = "sk-test".into();
+        let llm = crate::config::LlmConfigV4::single("https://example.invalid/v1", "m", "sk-test");
         let mut detect = DetectionConfig::default();
         detect.llm_score_weight = 0.3;
         let cancel: Option<yekitrim_llm::agent::CancelProbe> =
@@ -1999,12 +1998,15 @@ mod tests {
         .to_string();
         let (base, _hits, bodies) = fake_llm(vec![ok]).await;
 
-        let mut llm = LlmConfig::default();
-        llm.base_url = base;
-        llm.api_key = "k".into();
-        llm.model = "m".into();
-        llm.params.max_tokens = Some(16384);
-        llm.overrides.detect.max_tokens = Some(8192);
+        let mut llm = crate::config::LlmConfigV4::single(&base, "m", "k");
+        llm.defaults.max_tokens = Some(16384);
+        llm.links.insert(
+            "detect".into(),
+            crate::config::llm_v4::LlmLinkSetting {
+                params: crate::config::LlmParamsToml { max_tokens: Some(8192), ..Default::default() },
+                ..Default::default()
+            },
+        );
 
         let segs = vec![seg(0.0, "第一句"), seg(30.0, "第二句")];
         let events = call_with_progress(

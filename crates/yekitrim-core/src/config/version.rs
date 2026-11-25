@@ -542,7 +542,7 @@ fn migrate_llm_v4(doc: &mut DocumentMut) -> bool {
         match item {
             Item::ArrayOfTables(arr) => {
                 for model in arr {
-                    if let Some(entry) = llm_model_entry(Item::Table(model), "", &id) {
+                    if let Some(entry) = llm_model_entry(Item::Table(model), "", &id, "catalog") {
                         entries.push(entry);
                     }
                 }
@@ -550,7 +550,7 @@ fn migrate_llm_v4(doc: &mut DocumentMut) -> bool {
             // `models = [{ id = "m" }]`（设置页 patch 出来的内联数组）
             Item::Value(toml_edit::Value::Array(arr)) => {
                 for model in arr.iter() {
-                    if let Some(entry) = llm_model_entry(Item::Value(model.clone()), "", &id) {
+                    if let Some(entry) = llm_model_entry(Item::Value(model.clone()), "", &id, "catalog") {
                         entries.push(entry);
                     }
                 }
@@ -575,7 +575,7 @@ fn migrate_llm_v4(doc: &mut DocumentMut) -> bool {
                 let ids: Vec<String> = models.iter().map(|(k, _)| k.to_string()).collect();
                 for id in ids {
                     if let Some((_, body)) = take_key(&mut models, &id) {
-                        if let Some(entry) = llm_model_entry(body, &id, &legacy_provider) {
+                        if let Some(entry) = llm_model_entry(body, &id, &legacy_provider, "overrides") {
                             entries.push(entry);
                         }
                     }
@@ -677,7 +677,7 @@ fn merge_params_into(dst: &mut toml_edit::Table, src: Item) {
 ///
 /// id：源里自带就沿用那个值（连 decor），没有就用 id 参数；两处都没有 ⇒ 返回 None
 /// （没有 id 的条目在 v4 里没法被引用，落下去只会让 problems() 报警）。
-fn llm_model_entry(src: Item, id: &str, provider: &str) -> Option<toml_edit::Table> {
+fn llm_model_entry(src: Item, id: &str, provider: &str, bucket: &str) -> Option<toml_edit::Table> {
     let mut out = toml_edit::Table::new();
     let (mut table, existing_id) = match src {
         Item::Table(mut table) => {
@@ -706,11 +706,20 @@ fn llm_model_entry(src: Item, id: &str, provider: &str) -> Option<toml_edit::Tab
         }
     }
     out.insert("provider", toml_edit::value(provider));
+    // 能力键**统一塞进一个内联子表**（catalog 或 overrides）：
+    // 两套来源的形状不同（provider.models 的 reasoning 是 bool，[llm.models] 的 reasoning 是 档位→wire 映射），
+    // 平铺会在同名字段上撞车；LlmModelEntry 因此是两个 Option 子结构。
+    let mut nested = toml_edit::InlineTable::new();
     let keys: Vec<String> = table.iter().map(|(k, _)| k.to_string()).collect();
     for key in keys {
         if let Some((key, item)) = take_key(&mut table, &key) {
-            out.insert_formatted(&key, item);
+            if let Ok(v) = item.into_value() {
+                nested.insert(key.get(), v);
+            }
         }
+    }
+    if !nested.is_empty() {
+        out.insert(bucket, Item::Value(toml_edit::Value::InlineTable(nested)));
     }
     Some(out)
 }

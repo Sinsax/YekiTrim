@@ -11,7 +11,6 @@ use serde_json::Value;
 
 use crate::parse::srt::Subtitle;
 use crate::project::{Event, MuteRange, Segment};
-use yekitrim_core::config::LlmConfig;
 use yekitrim_llm::agent::{
     extract_json_array, AgentItem, AgentProgress, AgentTask, AgentWindow,
 };
@@ -283,7 +282,7 @@ pub async fn run_event_agent(
     sfx_blacklist: &[String],
     local_sticker_text: String,
     mute_ranges: &[MuteRange],
-    llm_cfg: &LlmConfig,
+    llm_cfg: &yekitrim_core::config::LlmConfigV4,
     project: Option<&Path>,
     checkpoint_path: Option<&Path>,
     cancel: Option<yekitrim_llm::agent::CancelProbe>,
@@ -403,7 +402,7 @@ pub struct StickerChoiceContext {
 /// 对同一 `(包名, tag)` 下的多个 sticker 事件，一次 LLM 调用为每个事件选一个文件。
 /// 返回 `(segment_index, event_index, 文件名 stem)` 列表。
 pub async fn choose_sticker_files_batch(
-    llm_cfg: &LlmConfig,
+    llm_cfg: &yekitrim_core::config::LlmConfigV4,
     project: Option<&std::path::Path>,
     package_name: &str,
     tag: &str,

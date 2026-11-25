@@ -77,7 +77,7 @@ pub const GLOBAL_CONFIG_TOML: &str = r#"# YekiTrim 全局默认配置 — 所有
 # 相同参数会被 yekitrim.toml 覆盖
 # ⚠️ config_version 是**配置结构版本**：程序读它决定要不要跑迁移。
 #    手工改配置时**别动这一行**（改了会让迁移跑错；见 config/version.rs）。
-config_version = 3
+config_version = 4
 
 [asr]
 # ASR 模式: "single"（SenseVoice 单模型）| "hybrid"（SenseVoice 打轴 + qwen3 填词）
@@ -342,80 +342,70 @@ multi_user = false
 ///
 /// ⚠️ 形状是 **v2**：**请求参数面**（`[llm.params]` + `[llm.overrides.<link>]`）与
 /// **能力面**（`[llm.models."<id>"]`）分开。老文件由 `version.rs` 的 v1→v2 搬过来，不用手改。
-/// 这里的 `config_version = 3` 必须与 [`super::version::CONFIG_VERSION`] 一致 ——
+/// 这里的 `config_version = 4` 必须与 [`super::version::CONFIG_VERSION`] 一致 ——
 /// 写小了的话新装的文件会被"升级"一次（多一个 .bak-v1），写大了则是本程序读不懂自己的模板。
-pub const LLM_CONFIG_TOML: &str = r#"# YekiTrim LLM 配置 — 独立于工程配置
-# 基于 OpenAI 兼容接口
+pub const LLM_CONFIG_TOML: &str = r#"# YekiTrim LLM 配置 — 独立于工程配置（v4：接口 / 模型清单 / 默认参数 / 链路覆盖）
 # ⚠️ 配置结构版本，别手改（见 config/version.rs）
-config_version = 3
+config_version = 4
 
 [llm]
-# API 基础地址
-base_url = ""
-# LLM API Key
-api_key = ""
-# 模型名称
-model = ""
+# 当前用哪一份接口（= 下面 [[llm.providers]] 的 id；留空 = 第一份）
+active = "main"
 # 并发请求数——事件检测 / 精修事件生成 / 字幕订正**共用这一个值**
-# ([detection]/[correct] 各自的 max_concurrent 留空即跟随这里)。
-# 实测中转站允许并发且接近线性，批处理时间基本按它反比缩短；触发 429 就调小。
+#（[detection]/[correct] 各自的 max_concurrent 留空即跟随这里）
 max_concurrent = 3
 # 额外请求参数：**逃逸口**，整表原样进请求体、优先级最低（结构化参数之后才盖）。
-# seed 确保稳定输出；thinking enabled 启用思考模式、disabled 关闭；response_format=json_object
-# 让模型不写解释性前言（需中转/服务端支持，不支持就删掉那一项）。
-extra_params = { seed = 42, thinking = { type = "enabled" }, response_format = { type = "json_object" } }
+# ⚠️ 已知参数请用下面的结构化键（temperature / max_tokens / reasoning / top_p / json_mode），
+#    这里只放 provider 私有、上面表达不了的键（如 vendor 扩展）。
+# extra_params = { chat_template_kwargs = { enable_thinking = true } }
 
-# ── 请求参数面（**省略 = 不发送**；下面的链路没覆盖就跟随这里）──
-[llm.params]
-# 温度参数 (0=确定性输出，建议保持0)；**删掉这一行 = 不发 temperature**（交给服务端默认）
+# ── 请求参数：唯一基准（**省略 = 不发送**）──────────────────────────────
+[llm.defaults]
+# 温度（0 = 确定性输出）；**删掉这一行 = 不发 temperature**（交给服务端默认）
 temperature = 0
-# 最大 Token 数：**没在下面 [llm.overrides.*] 里单独配的链路**用它。
-# 这只是「跑飞的上限」——模型自己会停；检测窗口实测输出 1.9k~4.1k（思考占大头）。
+# 输出上限：没被 [llm.links.*] 覆盖的链路用它。这只是「跑飞的上限」，模型自己会停。
 max_tokens = 16384
-# 推理档位：off|minimal|low|medium|high|xhigh|max（省略 = 不表态，由上面的 extra_params 决定）
+# 推理档位：off|minimal|low|medium|high|xhigh|max（省略 = 不表态）
 # reasoning = "high"
-# **预算型方言**的 token 数（thinking_budget / reasoning_max_tokens / thinking_token_budget
-# 这三种"要一个数"的方言用，怎么发由模型能力面的方言决定）；省略 = 按档位给默认
-# （minimal 1024 / low 4096 / medium 8192 / high 16384 / xhigh 32768 / max 65536）
+# 预算型方言的 token 数（怎么发由模型能力面的方言决定）；省略 = 按档位给默认
 # thinking_budget = 16384
 # top_p = 1.0
-# 要求 JSON 输出（结构化键，优先级高于 extra_params.response_format）
 # json_mode = true
 
-# ── 按链路覆盖（**同一套请求参数面**；缺一项 = 跟随 [llm.params]）──
-# 各链路要的输出长度天差地别，别用同一个上限互相迁就。想「恢复跟随全局」就把那一行删掉
-# （设置页把输入框清空也会删掉它）。
-# 可选键：temperature / max_tokens / reasoning / thinking_budget / top_p / json_mode。
-[llm.overrides.detect]
-# 事件检测窗口 + 标题摘要热度评分：实测输出 1.9k~4.1k token，8k 留 2× 余量
-max_tokens = 8192
-[llm.overrides.polish]
-# 精修 LLM 剪辑（分段 + 逐段事件）：输出比检测长。
-# reasoning 不写 = 关闭思考（分段/逐段事件的既定默认）；要开就在这写 reasoning = "high"
-max_tokens = 32768
-# [llm.overrides.title]
-# 标题生成（封面文案）：短输出、一次一发；**默认关思考**（与它原来挂在零散单发上时一致）
-# max_tokens = 512
-[llm.overrides.correct]
-# 字幕订正：输出量随输入走（⚠️ 设置页「按链路覆盖」里**不显示它**，但这一节照旧生效）
-max_tokens = 8192
-# [llm.overrides.utility]
-# 零散单发（贴纸包/扫描标签、封面文案、连通测试）默认跟随 [llm.params]；要单独限就取消注释
-# max_tokens = 8192
+# ── 接口：只描述「怎么连」──────────────────────────────────────────
+[[llm.providers]]
+id = "main"
+name = "主力接口"
+# 协议 id（可选：openai-chat）；留空 = 默认那条
+protocol = "openai-chat"
+base_url = ""
+# 明文 key 与「从环境变量读」二选一；**明文永不出接口**（设置页只显示已设置/未设置）
+api_key = ""
+# api_key_env = "MY_LLM_KEY"
+# 这份接口的默认模型（[llm.links.*].model 没写时用它）
+model = ""
 
-# ── 模型能力（**内置表没有的模型**在这里手填；只覆盖写了的字段）──
-# 内置表收了 17 家 / 181 支模型，命中时这里一个字都不用写。
-# [llm.models."my-gateway-model"]
-# 推理参数怎么发：取值 = llm crate **方言注册表的 id**（那是"别家的协议词汇"，清单**不在本文件**）。
-# 设置页「模型能力覆盖」有下拉可选（清单由 llm crate 现算，永不腐坏）；**别在任何注释里抄一份 id 清单**。
-# thinking_wire = "thinking_type"
-# 输出上限写哪个字段名（同上；不写 = max_tokens）
-# max_output_wire = "max_tokens"
-# 这个模型收不收 temperature：supported | unsupported
-# temperature = "unsupported"
-# 档位 → wire 拼写；**空串 = 支持但不发送**
-# reasoning = { off = "", high = "high" }
-"#;
+# ── 模型清单：有哪些模型、属谁、能力如何（唯一真相）──────────────────
+# ⚠️ 内置能力表只做「建议值」；这里写了的才说了算。(provider, id) 唯一。
+# [[llm.models]]
+# id = "example-model"
+# provider = "main"
+# label = "显示名（可空）"
+# overrides = { thinking_wire = "openai_effort", max_output_wire = "max_tokens" }
+
+# ── 按链路覆盖：这条链路用哪个接口 / 哪个模型 / 怎么发 ─────────────────
+# 留空 = 跟随 [llm] active 与那份接口的默认模型；参数缺一项 = 跟随 [llm.defaults]。
+[llm.links.detect]
+max_tokens = 8192
+[llm.links.polish]
+max_tokens = 32768
+[llm.links.correct]
+max_tokens = 8192
+# [llm.links.title]
+# 换一条链路用便宜模型示例：
+# provider = "cheap"
+# model = "small-model"
+# [llm.links.utility]"#;
 
 /// 生成 yekitrim.toml 项目配置文件（`yekitrim init`）。
 ///
@@ -1141,13 +1131,13 @@ pub fn validate_llm_toml(text: &str) -> Result<(), String> {
 /// `Owner` 由 `YEKITRIM_OWNER` 继承（server 进程里是 `Local` = 当前管理员）。
 /// **别再退回顶层 `<数据>/.yekitrim/llm.toml`** —— 那份是单人时代的旧位置，
 /// 设置页早就不写了，读它 = 管线的 `cfg.llm` 永远没有 key（检测静默退化成"一个整段"）。
-pub fn load_llm_config() -> LlmConfig {
+pub fn load_llm_config() -> LlmConfigV4 {
     load_llm_config_for(crate::owner::Owner::from_env())
 }
 
 #[derive(Deserialize)]
 struct LlmFile {
-    llm: LlmConfig,
+    llm: LlmConfigV4,
 }
 
 pub fn load_config() -> Result<Config> {
@@ -1249,16 +1239,16 @@ pub fn load_config_for(owner: crate::owner::Owner) -> Config {
 ///
 /// ⚠️ 这个文件里有**明文 api_key**。按用户分之后，每个账号只读到自己那份 ——
 /// 这是相对"全局一份、所有人共用同一个 key"的**安全净改善**。
-pub fn load_llm_config_for(owner: crate::owner::Owner) -> LlmConfig {
+pub fn load_llm_config_for(owner: crate::owner::Owner) -> LlmConfigV4 {
     let path = crate::owner::state_dir(owner).join("llm.toml");
     if !path.exists() {
-        return LlmConfig::default();
+        return LlmConfigV4::default();
     }
     let content = match version::prepare(&path, ConfigKind::Llm) {
         Ok(p) => p.text,
         Err(e) => {
             tracing::warn!("读取 {} 失败: {}，使用默认 LLM 配置", path.display(), e);
-            return LlmConfig::default();
+            return LlmConfigV4::default();
         }
     };
     match toml::from_str::<LlmFile>(&content) {
@@ -1267,7 +1257,7 @@ pub fn load_llm_config_for(owner: crate::owner::Owner) -> LlmConfig {
             // ⚠️ **脱敏**：同上（错误文本会带出错行的原文）
             let why = redact_secrets(&e.to_string());
             tracing::warn!("解析 {} 失败: {}，使用默认 LLM 配置", path.display(), why);
-            LlmConfig::default()
+            LlmConfigV4::default()
         }
     }
 }
@@ -2116,26 +2106,29 @@ max_tokens = 32768
     fn llm_config_template_parses_with_link_overrides() {
         #[derive(serde::Deserialize)]
         struct File {
-            llm: types::LlmConfig,
+            llm: types::LlmConfigV4,
         }
         let f: File = toml::from_str(LLM_CONFIG_TOML).expect("LLM_CONFIG_TOML 必须是合法 TOML");
         assert_eq!(
-            f.llm.for_link(types::LlmLink::Detect).params.max_tokens,
+            f.llm.for_link(types::LlmLink::Detect).defaults.max_tokens,
             Some(8192),
             "检测链路应带自己的上限"
         );
-        assert_eq!(f.llm.for_link(types::LlmLink::Polish).params.max_tokens, Some(32768));
-        assert_eq!(f.llm.for_link(types::LlmLink::Correct).params.max_tokens, Some(8192));
-        // utility 没写覆盖 → 跟随 [llm.params]
+        assert_eq!(f.llm.for_link(types::LlmLink::Polish).defaults.max_tokens, Some(32768));
+        assert_eq!(f.llm.for_link(types::LlmLink::Correct).defaults.max_tokens, Some(8192));
+        // utility 没写覆盖 → 跟随 [llm.defaults]
         assert_eq!(
-            f.llm.for_link(types::LlmLink::Utility).params.max_tokens,
-            f.llm.params.max_tokens
+            f.llm.for_link(types::LlmLink::Utility).defaults.max_tokens,
+            f.llm.defaults.max_tokens
         );
         // 精修/零散单发的默认关思考由链路默认给出
         assert_eq!(
-            f.llm.for_link(types::LlmLink::Polish).params.reasoning.as_deref(),
+            f.llm.for_link(types::LlmLink::Polish).defaults.reasoning.as_deref(),
             Some("off")
         );
+        // 模板必须自带一份接口 + 一个 active（v4 硬要求：没有接口就是非法配置）
+        assert_eq!(f.llm.active, "main");
+        assert!(f.llm.problems().is_empty(), "模板本身不该有配置问题: {:?}", f.llm.problems());
     }
 
 /// `global_config_parse_error` 是设置页的**写入门闸**，必须指向真实文件、且只在真坏时报。
@@ -2453,7 +2446,7 @@ mod project_template_tests {
         }
 
         // ② 模拟"已有全局 config.toml"（里面是真凭证）⇒ 同样剥干净，且活段照旧
-        let global = r#"config_version = 3
+        let global = r#"config_version = 4
 [asr]
 mode = "hybrid"
 [detection]
@@ -2658,8 +2651,8 @@ mod config_migration_tests {
     /// - 账号那份的 6 条参考标题是真值 ⇒ 不能被顶层的 `[]` 打回空。
     #[test]
     fn platform_sections_follow_top_level_content_sections_follow_account() {
-        let top = "config_version = 3\n[ingest]\nwebhook_enabled = true\n[ingest.recorder]\nkind = \"bililive-tools\"\nroot = \"/v\"\n[detection]\nreference_titles = []\n[asr]\nmode = \"hybrid\"\n";
-        let account = "config_version = 3\n[detection]\nreference_titles = [\"标题A\", \"标题B\"]\n[asr]\nmodel = \"sensevoice\"\n";
+        let top = "config_version = 4\n[ingest]\nwebhook_enabled = true\n[ingest.recorder]\nkind = \"bililive-tools\"\nroot = \"/v\"\n[detection]\nreference_titles = []\n[asr]\nmode = \"hybrid\"\n";
+        let account = "config_version = 4\n[detection]\nreference_titles = [\"标题A\", \"标题B\"]\n[asr]\nmodel = \"sensevoice\"\n";
         let merged = merge_top_level_into(top, Some(account)).unwrap();
         let v: toml::Value = toml::from_str(&merged).unwrap();
         // 平台段：顶层赢（账号那份根本没见过这些键）
@@ -2677,7 +2670,7 @@ mod config_migration_tests {
     /// 目标不存在 ⇒ 整份搬（连注释一起），一个字节都不该丢。
     #[test]
     fn missing_target_is_a_verbatim_copy() {
-        let src = "# 注释要保住\nconfig_version = 3\n[ingest]\nwebhook_enabled = true\n";
+        let src = "# 注释要保住\nconfig_version = 4\n[ingest]\nwebhook_enabled = true\n";
         assert_eq!(merge_top_level_into(src, None).unwrap(), src);
     }
 

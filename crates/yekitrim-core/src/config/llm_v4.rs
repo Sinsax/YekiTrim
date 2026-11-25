@@ -3,6 +3,7 @@
 //! v3 的 LlmConfig 是两份真相并存（顶层 api_key/base_url/model + [llm.params] / [llm.models] 一套，
 //! [[llm.providers]] + [llm.overrides] 另一套，靠 active 回落链切换）。v4 只有一份：
 //!
+//! ```text
 //!     [llm]
 //!     active = "main"        # 当前用哪一份接口（永远有值）
 //!     max_concurrent = 3
@@ -10,6 +11,7 @@
 //!     [[llm.providers]]      # 「怎么连」：id/name/api/base_url/api_key/api_key_env/model
 //!     [[llm.models]]         # 「有哪些模型、属谁、能力如何」（唯一清单）
 //!     [llm.links.detect]     # 「这条链路怎么发」：provider?/model?/参数覆盖
+//! ```
 //!
 //! 本文件现在是 L1 的第一片：只放新形状与纯迁移函数（from_v3），不动运行时读取路径。
 //! 等 LlmConfig 换成这套字段之后，from_v3 就是 version.rs 里 v3→v4 那一步的实现。
@@ -20,6 +22,9 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use super::types::{LlmLink, LlmModel, LlmOverride, LlmParamsToml, ModelOverrideToml};
+
+/// 模板里那个占位 key（等于没配）。
+pub const PLACEHOLDER_API_KEY: &str = "sk-your-api-key-here";
 
 /// v4 的链路清单（顺序 = UI 表格的行序；correct 隐藏但键仍在）。
 pub const LINK_KEYS: [&str; 5] = ["detect", "polish", "correct", "title", "utility"];
@@ -645,6 +650,50 @@ impl LlmV4 {
         out
     }
 
+    /// 当前接口的明文 key（空串 = 没配）。server 的 draft/测试通道与精修命令的"配没配"判定读它。
+    pub fn effective_api_key(&self) -> String {
+        self.active_provider().map(|p| p.key()).unwrap_or_default()
+    }
+
+    /// 当前接口的 base_url（空串 = 没配）。
+    pub fn effective_base_url(&self) -> String {
+        self.active_provider().map(|p| p.base_url.clone()).unwrap_or_default()
+    }
+
+    /// 当前接口的默认模型。
+    pub fn effective_model(&self) -> String {
+        self.active_provider().map(|p| p.model.clone()).unwrap_or_default()
+    }
+
+    /// 造一份「一条接口 + 一个模型」的最小配置（测试夹具与迁移默认值共用）。
+    pub fn single(base_url: &str, model: &str, api_key: &str) -> LlmV4 {
+        let mut c = LlmV4::default();
+        c.active = "default".to_string();
+        c.providers.push(LlmProviderV4 {
+            id: "default".to_string(),
+            name: "默认接口".to_string(),
+            protocol: String::new(),
+            base_url: base_url.to_string(),
+            api_key: api_key.to_string(),
+            api_key_env: String::new(),
+            model: model.to_string(),
+        });
+        c
+    }
+
+    /// 当前接口配没配 key（显式 api_key 或 api_key_env 指向的变量非空）。
+    ///
+    /// ⚠️ 多接口下没有「顶层 api_key」这种东西了：判定必须走 active 那份 ——
+    /// 读顶层会把每个用户都判成「没配」而静默退化成默认事件（2026-10-20 那一族 bug）。
+    pub fn has_api_key(&self) -> bool {
+        self.active_provider().map(|p| !p.key().is_empty()).unwrap_or(false)
+    }
+
+    /// 旧名字（server 的两处调用沿用它）：转调 problems()。
+    pub fn provider_problems(&self) -> Vec<String> {
+        self.problems()
+    }
+
     /// 该接口 + 该模型的能力面：内置表打底 → 清单里的目录形状 → 清单里的手填覆盖。
     pub fn effective_caps(&self, provider: &str, model: &str) -> yekitrim_llm::ModelCaps {
         let base_url = self.provider(provider).map(|p| p.base_url.clone()).unwrap_or_default();
@@ -701,11 +750,21 @@ impl From<&LlmV4> for yekitrim_llm::LlmParams {
     }
 }
 
+impl From<LlmV4> for yekitrim_llm::LlmParams {
+    fn from(c: LlmV4) -> Self {
+        (&c).into()
+    }
+}
+
 impl LlmProviderV4 {
     /// 明文 key 优先，其次环境变量；都没有 ⇒ 空串（构造客户端时才会报错）。
+    ///
+    /// ⚠️ 模板里那个占位 key 等于没配（与 v3 的 PLACEHOLDER_API_KEY 同口径）——
+    /// 否则「照模板填一半」会被判成已配置，出片时才炸在 401。
     pub fn key(&self) -> String {
-        if !self.api_key.trim().is_empty() {
-            return self.api_key.clone();
+        let explicit = self.api_key.trim();
+        if !explicit.is_empty() && explicit != PLACEHOLDER_API_KEY {
+            return explicit.to_string();
         }
         let var = self.api_key_env.trim();
         if var.is_empty() {

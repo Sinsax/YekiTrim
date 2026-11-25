@@ -201,7 +201,7 @@ pub struct Config {
     #[serde(default)]
     pub correct: CorrectConfig,
     #[serde(default, skip)]
-    pub llm: LlmConfig,
+    pub llm: super::llm_v4::LlmV4,
     #[serde(default)]
     pub detection: DetectionConfig,
     #[serde(default)]
@@ -1216,6 +1216,9 @@ pub struct LlmParamsToml {
 
 /// 单条链路的覆盖：**与 `[llm.params]` 同一套字段**（缺席 = 跟随全局）。
 pub type LlmOverride = LlmParamsToml;
+
+/// v4 形状的别名（Config.llm 就是它）。⚠️ 老的 LlmConfig（v3）只留给迁移与旧用例。
+pub use super::llm_v4::LlmV4 as LlmConfigV4;
 
 impl LlmParamsToml {
     /// 一个键都没写（`[llm.providers.params]` 用它决定要不要落这个表）。
