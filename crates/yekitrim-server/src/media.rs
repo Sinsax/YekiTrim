@@ -267,9 +267,18 @@ pub(crate) async fn serve_file_cond(
     if let Some(enc) = compressible_mime(mime).filter(|_| accepts_gzip(accept_encoding)) {
         match tokio::fs::read(path).await {
             Ok(raw) => {
-                let gz = gzip_bytes(&raw);
+                // ⚠️ gzip 是同步 CPU 活（几 MB 字体压一遍要几十 ms），别留在 async worker 上 ——
+                // 任务跑起来时并发请求一多，worker 被这类 CPU 活占满，整个服务都慢（2026-11-25 排查）。
+                let raw_len = raw.len();
+                // ⚠️ 只回传压缩后的字节：raw 已经 move 进去了，再回传一份是白拷贝（也留下过
+                // 一个「接了却没人用」的绑定）。join 失败 ⇒ 空 Vec，由下面那条 !gz.is_empty()
+                // 挡回「原样发送」分支 —— 以前写的是 gz.len() < raw_len，失败时会发空压缩体
+                // （0 < raw_len 恒真），那是一个只在 panic 时才现形的 200 空响应。
+                let gz = tokio::task::spawn_blocking(move || gzip_bytes(&raw))
+                    .await
+                    .unwrap_or_default();
                 // 压不小就别压（小文件/已压过的内容）：体积更小才用压缩后的那份。
-                if gz.len() < raw.len() {
+                if !gz.is_empty() && gz.len() < raw_len {
                     return builder
                         .header(header::CONTENT_ENCODING, enc)
                         .header(header::CONTENT_LENGTH, gz.len())
