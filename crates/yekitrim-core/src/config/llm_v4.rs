@@ -1012,3 +1012,82 @@ mod caps_source_tests {
         assert_eq!(after.dialect.id, "openai_effort", "清单是表外模型的唯一来源");
     }
 }
+
+impl LlmV4 {
+    /// 一条链路的**生效快照**（给 /api/config/llm/effective 与 L3 的链路表格填灰字实值）。
+    ///
+    /// 为什么放在配置层：生效值是 for_link 解析出来的那三件事（接口 / 模型 / 参数），
+    /// 前端自己算一遍就是把同一个规则抄第二份 —— 那正是 L1 之前「界面显示的与真发的不一致」的来源。
+    pub fn link_snapshot(&self, link: LlmLink) -> serde_json::Value {
+        let resolved = self.for_link(link);
+        let p = resolved.active_provider();
+        let params = &resolved.defaults;
+        serde_json::json!({
+            "link": link.key(),
+            "label": link.label_zh(),
+            "overridden": {
+                "provider": self.links.get(link.key()).map(|l| !l.provider.trim().is_empty()).unwrap_or(false),
+                "model": self.links.get(link.key()).map(|l| !l.model.trim().is_empty()).unwrap_or(false),
+                "params": self.links.get(link.key()).map(|l| !l.params.is_empty()).unwrap_or(false),
+            },
+            "provider": {
+                "id": p.map(|x| x.id.clone()).unwrap_or_default(),
+                "name": p.map(|x| x.name.clone()).unwrap_or_default(),
+                "base_url": p.map(|x| x.base_url.clone()).unwrap_or_default(),
+                "api_key_set": p.map(|x| !x.key().is_empty()).unwrap_or(false),
+            },
+            "model": resolved.effective_model(),
+            "params": {
+                "temperature": params.temperature,
+                "max_tokens": params.max_tokens,
+                "reasoning": params.reasoning,
+                "thinking_budget": params.thinking_budget,
+                "top_p": params.top_p,
+                "json_mode": params.json_mode,
+            },
+            "max_concurrent": self.concurrency(None),
+        })
+    }
+}
+
+#[cfg(test)]
+mod link_snapshot_tests {
+    use super::*;
+
+    /// 快照 = for_link 的解析结果（前端不再自己算）。
+    #[test]
+    fn snapshot_reports_the_effective_values_and_override_flags() {
+        let mut c = LlmV4::single("https://api.example.com/v1", "big-model", "k");
+        c.defaults.max_tokens = Some(4096);
+        // detect 覆盖模型与上限；polish 什么都不写（跟随默认）
+        c.links.insert(
+            "detect".into(),
+            LlmLinkSetting {
+                model: "small-model".into(),
+                params: LlmParamsToml { max_tokens: Some(512), ..Default::default() },
+                ..Default::default()
+            },
+        );
+        let d = c.link_snapshot(LlmLink::Detect);
+        assert_eq!(d["model"], "small-model", "链路选了模型 ⇒ 快照报它");
+        assert_eq!(d["params"]["max_tokens"], 512);
+        assert_eq!(d["overridden"]["model"], true);
+        assert_eq!(d["overridden"]["provider"], false, "没写接口 ⇒ 跟随 active");
+        assert_eq!(d["provider"]["id"], "default");
+        assert_eq!(d["provider"]["api_key_set"], true, "key 只报有没有，不报值");
+        assert!(d.get("api_key").is_none(), "快照里不许出现明文 key");
+
+        let p = c.link_snapshot(LlmLink::Polish);
+        assert_eq!(p["model"], "big-model", "没写 ⇒ 跟随接口默认模型");
+        assert_eq!(p["params"]["max_tokens"], 4096, "没写 ⇒ 跟随 defaults");
+        assert_eq!(p["overridden"]["model"], false);
+    }
+
+    /// 并发与链路无关（全局一个旋钮），但快照要如实报出来。
+    #[test]
+    fn snapshot_carries_the_global_concurrency() {
+        let mut c = LlmV4::single("https://api.example.com/v1", "m", "k");
+        c.max_concurrent = 7;
+        assert_eq!(c.link_snapshot(LlmLink::Utility)["max_concurrent"], 7);
+    }
+}
