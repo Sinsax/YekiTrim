@@ -1307,7 +1307,7 @@ pub struct ModelOverrideToml {
 
 /// 按链路的覆盖表（`[llm.overrides]`）。未知键忽略，与其余配置类型一致 ——
 /// 一个拼错的键不该让整份 llm.toml 被打回默认值。
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct LlmOverrides {
     #[serde(default)]
     pub detect: LlmOverride,
@@ -2119,7 +2119,7 @@ fn model_override_by<'a>(c: &'a LlmConfig, model: &str) -> Option<&'a ModelOverr
 }
 
 /// 把手填能力盖到内置表查出来的 caps 上（**只覆盖写了的字段**）。
-fn apply_model_override(caps: &mut yekitrim_llm::ModelCaps, ov: &ModelOverrideToml) {
+pub(crate) fn apply_model_override(caps: &mut yekitrim_llm::ModelCaps, ov: &ModelOverrideToml) {
     use yekitrim_llm::params::Support;
     // 推理写法 / 输出字段名：**任一改了就按 (写法, 字段名) 重新查一条方言**
     // （"怎么发"只由 llm crate 的注册表决定，这里不写任何 wire 字面量）。
@@ -2218,7 +2218,7 @@ impl LlmConfig {
 ///
 /// 顺序：内置表 → **provider 的模型目录**（这里）→ [llm.models."<id>"] 老覆盖（最后、优先级最高）。
 /// 后者留着的理由：它是用户明确的"我要覆盖这个模型"，而且与 provider 无关（换 provider 也照用）。
-fn apply_provider_model(caps: &mut yekitrim_llm::ModelCaps, m: &LlmModel) {
+pub(crate) fn apply_provider_model(caps: &mut yekitrim_llm::ModelCaps, m: &LlmModel) {
     if let Some(n) = m.context_window {
         caps.context_window = Some(n);
     }

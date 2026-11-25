@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::types::{LlmConfig, LlmLink, LlmModel, LlmOverride, LlmParamsToml, ModelOverrideToml};
+use super::types::{LlmLink, LlmModel, LlmOverride, LlmParamsToml, ModelOverrideToml};
 
 /// v4 的链路清单（顺序 = UI 表格的行序；correct 隐藏但键仍在）。
 pub const LINK_KEYS: [&str; 5] = ["detect", "polish", "correct", "title", "utility"];
@@ -322,7 +322,7 @@ pub struct Migrated {
     pub dropped: Vec<String>,
 }
 
-pub fn from_v3(c: &LlmConfig) -> Migrated {
+pub fn from_v3(c: &LlmV3) -> Migrated {
     let mut dropped = Vec::new();
     let active_id = c
         .active
@@ -457,8 +457,8 @@ pub fn from_v3(c: &LlmConfig) -> Migrated {
 mod tests {
     use super::*;
 
-    fn legacy() -> LlmConfig {
-        let mut c = LlmConfig::default();
+    fn legacy() -> LlmV3 {
+        let mut c = LlmV3::default();
         c.api_key = "sk-legacy-0123456789".to_string();
         c.base_url = "https://api.example.com/v1".to_string();
         c.model = "example-chat".to_string();
@@ -538,13 +538,13 @@ mod tests {
     /// 多接口：非生效那份的 params 表达不了 ⇒ 必须进 dropped（别静默丢）。
     #[test]
     fn inactive_provider_params_are_reported_not_silently_dropped() {
-        let mut c = LlmConfig::default();
+        let mut c = LlmV3::default();
         c.active = Some("a".into());
-        let mut a = super::super::types::LlmProvider::default();
+        let mut a = LlmProviderV3::default();
         a.id = "a".into();
         a.base_url = "https://a.example.com".into();
         a.model = "m-a".into();
-        let mut b = super::super::types::LlmProvider::default();
+        let mut b = LlmProviderV3::default();
         b.id = "b".into();
         b.base_url = "https://b.example.com".into();
         b.model = "m-b".into();
@@ -557,5 +557,291 @@ mod tests {
             "非生效接口的 params 必须报出来: {:?}",
             m.dropped
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// v3 形状（只给迁移用）：字段与 v3 的 LlmConfig 逐个相同，读的是老文件。
+// ---------------------------------------------------------------------------
+
+use super::types::{LlmOverrides, ModelOverrideToml as _MO};
+
+/// v3 的一份接口（[[llm.providers]]，带 params / models）。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct LlmProviderV3 {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub api: String,
+    #[serde(default)]
+    pub base_url: String,
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default)]
+    pub api_key_env: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub params: LlmParamsToml,
+    #[serde(default)]
+    pub models: Vec<LlmModel>,
+}
+
+/// v3 的顶层形状（只有迁移读它）。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct LlmV3 {
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default)]
+    pub base_url: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub max_concurrent: usize,
+    #[serde(default)]
+    pub params: LlmParamsToml,
+    #[serde(default)]
+    pub models: BTreeMap<String, _MO>,
+    #[serde(default)]
+    pub extra_params: Option<toml::Table>,
+    #[serde(default)]
+    pub overrides: LlmOverrides,
+    #[serde(default)]
+    pub active: Option<String>,
+    #[serde(default)]
+    pub providers: Vec<LlmProviderV3>,
+}
+
+// ---------------------------------------------------------------------------
+// LlmV4 的运行时语义（接线之后 LlmConfig 就是它）
+// ---------------------------------------------------------------------------
+
+impl LlmV4 {
+    /// 并发数的唯一解析入口：段自己的覆盖优先，否则 [llm] max_concurrent，至少 1。
+    pub fn concurrency(&self, section_override: Option<usize>) -> usize {
+        section_override.unwrap_or(self.max_concurrent).max(1)
+    }
+
+    /// 把某链路落成一份可直接执行的配置：接口 = 该链路选中的那份、defaults = 生效参数、
+    /// 那份接口的 model = 该链路的模型。
+    ///
+    /// 为什么这么绕：下游 From<&LlmV4> for LlmParams 只认「当前接口 + 一层参数面」。
+    /// 与其在每个调用点各算一遍（那正是「忘记套链路参数」的来源），不如在这里一次解析干净。
+    pub fn for_link(&self, link: LlmLink) -> LlmV4 {
+        let mut out = self.clone();
+        let provider_id = self.provider_for(link).map(|p| p.id.clone()).unwrap_or_default();
+        let model = self.model_for(link);
+        out.active = provider_id.clone();
+        if let Some(p) = out.providers.iter_mut().find(|p| p.id == provider_id) {
+            if !model.trim().is_empty() {
+                p.model = model;
+            }
+        }
+        out.defaults = self.params_for(link);
+        // 链路覆盖已经并进 defaults，别再让下游重算一遍（否则会叠两遍）。
+        out.links.clear();
+        out
+    }
+
+    /// 该接口 + 该模型的能力面：内置表打底 → 清单里的目录形状 → 清单里的手填覆盖。
+    pub fn effective_caps(&self, provider: &str, model: &str) -> yekitrim_llm::ModelCaps {
+        let base_url = self.provider(provider).map(|p| p.base_url.clone()).unwrap_or_default();
+        let mut caps = yekitrim_llm::catalog::caps_for(&base_url, model);
+        if let Some(entry) = self.model_entry(provider, model) {
+            if let Some(cat) = &entry.catalog {
+                super::types::apply_provider_model(&mut caps, cat);
+            }
+            if let Some(ov) = &entry.overrides {
+                super::types::apply_model_override(&mut caps, ov);
+            }
+        }
+        caps
+    }
+}
+
+impl From<&LlmV4> for yekitrim_llm::LlmParams {
+    fn from(c: &LlmV4) -> Self {
+        use yekitrim_llm::params::Support;
+        let provider = c.active_provider();
+        let (api_key, base_url, model) = match provider {
+            Some(p) => (p.key(), p.base_url.clone(), p.model.clone()),
+            None => (String::new(), String::new(), String::new()),
+        };
+        let mut caps = c.effective_caps(
+            provider.map(|p| p.id.as_str()).unwrap_or_default(),
+            &model,
+        );
+        let p = &c.defaults;
+        let reasoning = p
+            .reasoning
+            .as_deref()
+            .and_then(yekitrim_llm::ReasoningLevel::from_thinking_flag);
+        // ⚠️ 「省略 temperature = 不发」只能借 caps 这一个出口表达（LlmParams.temperature 不是 Option）。
+        // S2/F6 会把这条改成 Option，届时这里整段删掉。
+        if p.temperature.is_none() {
+            caps.temperature = Support::Unsupported;
+        }
+        Self {
+            api_key,
+            base_url,
+            model,
+            temperature: p.temperature.filter(|t| t.is_finite()).unwrap_or_default(),
+            max_tokens: p.max_tokens,
+            reasoning: reasoning.unwrap_or_default(),
+            thinking_budget: p.thinking_budget.filter(|n| *n > 0),
+            reasoning_explicit: reasoning.is_some(),
+            top_p: p.top_p.filter(|v| v.is_finite()),
+            json_mode: p.json_mode.unwrap_or(false),
+            extra_params: c.extra_params.as_ref().and_then(|t| serde_json::to_value(t).ok()),
+            max_concurrent: c.concurrency(None),
+            caps,
+        }
+    }
+}
+
+impl LlmProviderV4 {
+    /// 明文 key 优先，其次环境变量；都没有 ⇒ 空串（构造客户端时才会报错）。
+    pub fn key(&self) -> String {
+        if !self.api_key.trim().is_empty() {
+            return self.api_key.clone();
+        }
+        let var = self.api_key_env.trim();
+        if var.is_empty() {
+            return String::new();
+        }
+        std::env::var(var).unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod runtime_tests {
+    use super::*;
+
+    fn two_providers() -> LlmV4 {
+        let mut c = LlmV4::default();
+        c.max_concurrent = 3;
+        c.providers.push(LlmProviderV4 {
+            id: "main".into(),
+            name: "主力".into(),
+            protocol: String::new(),
+            base_url: "https://api.example.com/v1".into(),
+            api_key: "sk-main".into(),
+            api_key_env: String::new(),
+            model: "big-model".into(),
+        });
+        c.providers.push(LlmProviderV4 {
+            id: "cheap".into(),
+            name: "便宜".into(),
+            protocol: String::new(),
+            base_url: "https://api.example.com/v1".into(),
+            api_key: "sk-cheap".into(),
+            api_key_env: String::new(),
+            model: "small-model".into(),
+        });
+        c.active = "main".into();
+        c
+    }
+
+    /// 链路写了 provider + model ⇒ for_link 把它落成"当前接口就是它、模型就是那个"。
+    #[test]
+    fn for_link_materializes_provider_model_and_params() {
+        let mut c = two_providers();
+        c.defaults.max_tokens = Some(4096);
+        c.links.insert(
+            "detect".into(),
+            LlmLinkSetting {
+                provider: "cheap".into(),
+                model: "small-model-v2".into(),
+                params: LlmParamsToml { max_tokens: Some(512), ..Default::default() },
+            },
+        );
+        let d = c.for_link(LlmLink::Detect);
+        assert_eq!(d.active, "cheap", "接口按链路选");
+        let p = d.active_provider().expect("有接口");
+        assert_eq!(p.model, "small-model-v2", "模型按链路选");
+        assert_eq!(d.defaults.max_tokens, Some(512), "链路覆盖并进 defaults");
+        assert!(d.links.is_empty(), "已经并进 defaults，不许留着让下游重算");
+        // 没写覆盖的链路跟随 active
+        let pol = c.for_link(LlmLink::Polish);
+        assert_eq!(pol.active, "main");
+        assert_eq!(pol.active_provider().unwrap().model, "big-model");
+        assert_eq!(pol.defaults.max_tokens, Some(4096), "跟随 defaults");
+    }
+
+    /// 并发：段覆盖 > 全局，且至少 1。
+    #[test]
+    fn concurrency_prefers_section_then_global_with_floor_one() {
+        let mut c = two_providers();
+        assert_eq!(c.concurrency(None), 3);
+        assert_eq!(c.concurrency(Some(7)), 7);
+        assert_eq!(c.concurrency(Some(0)), 1, "0 不许放行（会变成不限并发）");
+        c.max_concurrent = 0;
+        assert_eq!(c.concurrency(None), 1);
+    }
+
+    /// From<&LlmV4>：key/地址/模型来自接口，参数来自 defaults，能力来自清单。
+    #[test]
+    fn llm_params_are_built_from_provider_defaults_and_model_list() {
+        let mut c = LlmV4::default();
+        c.providers.push(LlmProviderV4 {
+            id: "main".into(),
+            name: String::new(),
+            protocol: String::new(),
+            base_url: "https://api.deepseek.com/v1".into(),
+            api_key: String::new(),
+            api_key_env: String::new(),
+            model: "deepseek-v4-pro".into(),
+        });
+        c.providers[0].api_key = "sk-from-provider".into();
+        c.active = "main".into();
+        c.defaults.temperature = Some(0.2);
+        c.defaults.max_tokens = Some(2048);
+        c.defaults.json_mode = Some(true);
+        // 能力：表里认识 deepseek ⇒ thinking_type；清单里再把它换成 openai_effort
+        let before: yekitrim_llm::LlmParams = (&c).into();
+        assert_eq!(before.api_key, "sk-from-provider");
+        assert_eq!(before.model, "deepseek-v4-pro");
+        assert!((before.temperature - 0.2).abs() < 1e-9);
+        assert_eq!(before.max_tokens, Some(2048));
+        assert!(before.json_mode);
+        assert_eq!(before.caps.dialect.id, "thinking_type");
+        c.models.push(LlmModelEntry {
+            id: "deepseek-v4-pro".into(),
+            provider: "main".into(),
+            label: String::new(),
+            catalog: None,
+            overrides: Some(ModelOverrideToml {
+                thinking_wire: Some("openai_effort".into()),
+                ..Default::default()
+            }),
+        });
+        let after: yekitrim_llm::LlmParams = (&c).into();
+        assert_eq!(after.caps.dialect.id, "openai_effort", "清单里的覆盖必须真的进 caps");
+    }
+
+    /// 「省略温度 = 不发」仍借 caps 表达（S2/F6 之前的老口径，先钉住，改的时候会看到它翻面）。
+    #[test]
+    fn missing_temperature_still_means_do_not_send() {
+        let mut c = two_providers();
+        c.defaults.temperature = None;
+        let p: yekitrim_llm::LlmParams = (&c).into();
+        assert_eq!(p.caps.temperature, yekitrim_llm::params::Support::Unsupported);
+    }
+
+    /// problems：清单 (provider,id) 重复、provider 认不出、没有接口 —— 都要能报出来。
+    #[test]
+    fn problems_flag_duplicate_models_and_unknown_provider() {
+        let mut c = two_providers();
+        assert!(c.problems().is_empty(), "干净的配置不该有问题");
+        c.models.push(LlmModelEntry { id: "m1".into(), provider: "main".into(), ..Default::default() });
+        c.models.push(LlmModelEntry { id: "M1".into(), provider: "main".into(), ..Default::default() });
+        c.models.push(LlmModelEntry { id: "m2".into(), provider: "ghost".into(), ..Default::default() });
+        let p = c.problems();
+        assert!(p.iter().any(|s| s.contains("重复")), "大小写不同的同 id 也算重复: {p:?}");
+        assert!(p.iter().any(|s| s.contains("ghost")), "认不出的 provider 要报: {p:?}");
+        let empty = LlmV4::default();
+        assert!(empty.problems().iter().any(|s| s.contains("没有任何接口")));
     }
 }
