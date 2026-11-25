@@ -80,7 +80,7 @@ pub async fn run_llm_pipeline(
 
     let client = std::sync::Arc::new(
         LlmClient::new(llm_cfg)?
-            .with_usage_context(usage("精修分段")),
+            .with_usage_context(usage(yekitrim_llm::tasks::POLISH_SEGMENT.label)),
     );
 
     // Step 1: 分段 + 段情绪密度（全局单次调用，预算感知采样）
@@ -182,7 +182,7 @@ pub async fn run_llm_pipeline(
     let dm_texts: Vec<String> = danmaku.iter().map(|d| d.text.clone()).collect();
     // 单开一个带自身归因的客户端：与分段那一路在用量表里分开统计
     let kw_client = LlmClient::new(llm_cfg)?
-        .with_usage_context(usage("精修关键词"));
+        .with_usage_context(usage(yekitrim_llm::tasks::POLISH_KEYWORDS.label));
     let (dm_filter, hl_words) = match keywords::extract_keywords(&kw_client, &sub_texts, &dm_texts).await {
         Ok(k) => { println!("  ✓ Keywords extracted"); k }
         Err(e) => { println!("  ⚠ Keywords failed: {}. Using defaults.", e); (vec!["OBS".into(), "游戏".into()], vec!["OBS".into()]) }

@@ -467,7 +467,7 @@ pub(crate) async fn polish_cover_title(
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("LLM 配置错误: {e}")))?
         .with_timeout(60)
         .with_usage_context(
-            yekitrim_llm::usage::UsageContext::new("封面文案")
+            yekitrim_llm::usage::UsageContext::new(yekitrim_llm::tasks::COVER_TITLE.label)
                 .project(Some(yekitrim_core::path::display(std::path::Path::new(&dir)))),
         );
 

@@ -422,7 +422,7 @@ pub async fn choose_sticker_files_batch(
     let client = LlmClient::new(llm_cfg)?
         .with_timeout(120)
         .with_usage_context(
-            yekitrim_llm::usage::UsageContext::new("精修贴纸挑选")
+            yekitrim_llm::usage::UsageContext::new(yekitrim_llm::tasks::POLISH_STICKER_PICK.label)
                 .project(project.map(yekitrim_core::path::display)),
         );
 

@@ -1216,7 +1216,7 @@ async fn llm_generate_package_tags(
     // 链路解析：零散单发链路（见 [llm.overrides.utility]）；thinking 的默认关思考由它给出
     let linked = cfg.for_link(yekitrim_core::config::LlmLink::Utility);
     let client = LlmClient::new(&linked)?
-        .with_usage_context(yekitrim_llm::usage::UsageContext::new("贴纸包标签"));
+        .with_usage_context(yekitrim_llm::usage::UsageContext::new(yekitrim_llm::tasks::STICKER_PACK_TAGS.label));
     let system = "你是贴纸语义标签助手。分析贴纸文件名，输出一个精简的语义 tag 索引。要求：\
         \n- 输出 JSON 对象，key 为语义 tag（情绪/动作/场景词），value 为该 tag 下的文件列表\
         \n- tag 数量控制在 10~20 个，必须是常见情绪/动作词（如 笑、哭、生气、害怕、开心、害羞、呆、紧张、惊讶、得意 等）\
@@ -1343,7 +1343,7 @@ pub async fn cmd_emoji_build(
     );
     let linked = llm_cfg.for_link(yekitrim_core::config::LlmLink::Utility);
     let client = LlmClient::new(&linked)?
-        .with_usage_context(yekitrim_llm::usage::UsageContext::new("emoji 多维分类"));
+        .with_usage_context(yekitrim_llm::usage::UsageContext::new(yekitrim_llm::tasks::EMOJI_CLASSIFY.label));
 
     let system = emoji_classify_system_prompt();
     let mut report = EmojiBuildReport { total: entries.len(), ..Default::default() };
@@ -1871,7 +1871,7 @@ async fn llm_generate_tags(
     // 于是这条链路既不受 [llm] 也不受链路覆盖约束，改成与其它调用点同一条路。
     let linked = cfg.for_link(yekitrim_core::config::LlmLink::Utility);
     let client = LlmClient::new(&linked)?
-        .with_usage_context(yekitrim_llm::usage::UsageContext::new("贴纸扫描标签"));
+        .with_usage_context(yekitrim_llm::usage::UsageContext::new(yekitrim_llm::tasks::STICKER_SCAN_TAGS.label));
     let system = "你是贴纸标签生成助手。为每个贴纸生成 3-6 个英文 tags（情绪/动作/场景词，供英文 keyword 匹配，如 love happy laugh shock game）。";
 
     let mut tagged = 0;

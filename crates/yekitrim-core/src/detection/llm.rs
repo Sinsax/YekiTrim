@@ -573,7 +573,7 @@ pub async fn score_events_with_llm(
         yekitrim_llm::LlmClient::new(&llm)?
             .with_timeout(120)
             .with_usage_context(
-                yekitrim_llm::usage::UsageContext::new("事件热度LLM评分").project(usage_project),
+                yekitrim_llm::usage::UsageContext::new(yekitrim_llm::tasks::DETECT_HOT_SCORE.label).project(usage_project),
             ),
     );
     let max_concurrent = llm.concurrency(detect.max_concurrent).max(1);
@@ -1418,7 +1418,7 @@ pub async fn test_llm(llm: &crate::config::LlmConfigV4, prompt: &str) -> Result<
     ]);
     let client = yekitrim_llm::LlmClient::new(llm.for_link(crate::config::LlmLink::Utility))?
         .with_timeout(180)
-        .with_usage_context(yekitrim_llm::usage::UsageContext::new("LLM 测试"));
+        .with_usage_context(yekitrim_llm::usage::UsageContext::new(yekitrim_llm::tasks::LLM_TEST.label));
     client.send(messages).await.map(|v| v.to_string())
 }
 

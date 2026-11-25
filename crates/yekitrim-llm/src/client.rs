@@ -378,7 +378,7 @@ mod tests {
         let rec = recorder();
         let client = LlmClient::raw("k", &base, "m1")
             .with_usage_sink(rec.clone())
-            .with_usage_context(crate::usage::UsageContext::new("测试链路").project(Some("F:/proj")));
+            .with_usage_context(crate::usage::UsageContext::new(crate::tasks::CONNECTION_TEST.label).project(Some("F:/proj")));
 
         assert_eq!(client.chat("sys", "user").await.unwrap(), "hi");
 
