@@ -146,3 +146,16 @@ GET  /api/health                 = cover_static {compiled:true, ready:true}   �
 外加两处 `include_str!`（预览 HTML 与一条契约测试）。删它=先把这 12 条判据按 D-1 重新划线（保留数值面、删掉模板独有那一列、
 每条附变异自证），再删 `cmd_preview` 与 `render/server.rs` 的监听/模板壳（字体那族保留）。
 这就是计划要求「第 1、2 步稳定一个版本后再删」的原因：**它是唯一一份被当作参照的逐帧实现**，删掉后没有第二个视角兜漂移。
+## 第十轮：T20a 第一批（clippy 机器可修项）196 → 129
+
+`cargo clippy --workspace --all-targets --fix` 把机器可判定的建议一次落地（**41 个文件 / +152 −171**）：
+`unnecessary_sort_by`、`needless_borrow`、`needless_as_bytes`、`redundant_closure`、`useless_format`、
+`unneeded_return`、`filter_next_back`→`rfind`、`clamp`、`map_or` 简化、`single_match`→`if let`、
+`items_after_test_module`（测试模块挪到文件末尾，测试条数不变：2 → 2）等。
+
+**刻意回退一处**：`core/src/config/types.rs` 的 `derivable_impls` —— 把 `impl Default` 换成 `#[derive(Default)]`
+不是等价替换：配置卡五步协议要求**手写 `Default` impl**（加字段时必须有意识地决定默认值，派生会静默取 `Default::default()`）。
+整个文件回到 HEAD，这几条 lint 记进 T20a 的「不修」名单。
+
+验证：`cargo test --workspace --no-fail-fast` 全绿（26 个结果块 ok）；`cargo check` **0 warning**；两条结构门禁绿。
+剩余 129 条按 T20a 的分批计划继续（文档格式 / 结构类需要人判断，别一次性机械改）。
