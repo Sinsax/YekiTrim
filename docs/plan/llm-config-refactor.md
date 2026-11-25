@@ -187,3 +187,121 @@ max_output_tokens = 8192
 - 换协议/加新 provider 协议（`protocol` 已有注册表 `PROTOCOLS`，不在这次重构里动）；
 - LLM 用量统计（`LlmUsage.vue` / `llm_usage` 表）的表单化改造；
 - 检测/精修页面里的"用哪个模型"入口（等 L1 定了模型归属再谈，可能收敛到一处）。
+## 8. 修订：2026-11-25 用户口径（D1–D6）与由此产生的设计增量
+
+> 本节覆盖前文的对应条目；前文保留作背景与证据。**仍未定的是「provider.params 砍不砍」（见 §8.5）**。
+
+### 8.0 拍板结论
+
+| 编号 | 结论 | 对设计的影响 |
+|---|---|---|
+| **D1** | **要**按链路选不同模型/接口；并且**必须新增一个「模型列表」**，否则无从分配 | §8.1 新增顶层 `[[llm.models]]`；`providers` 不再挂 models |
+| **D2** | 提示词**留在 AI 模型页**，但要**显示在「高级」之外**，作为**独立的默认折叠块** | §8.2 IA 调整为五块（提示词与「高级配置」平级） |
+| **D3** | （待定）provider.params 冲突的详细解释见 §8.5 | 影响 §3.1 的参数层数 |
+| **D4** | `extra_params` **保留但要拆分**成结构化设置（如 `reasoning_effort` / `thinking.type`），不再靠手写 JSON | §8.3 说明「哪些已经结构化、哪些要补、extra_params 退化成什么」 |
+| **D5** | 密钥存储**按当前做法**（明文 `llm.toml` + 可选 `api_key_env`） | §3.4 的"密文只显示已设置"改为**不做** |
+| **D6** | **不需要兼容**老形状 | §8.4 迁移策略：v2 为唯一写形状，一次性迁移，不做"老文件一个字节不改"（R4 取消） |
+
+### 8.1 增量一：**模型列表**（D1 的前置）
+
+现在的模型散在三处（legacy `[llm.models]` 表、`provider.models` 目录、各处的"获取模型"弹层），**没有一张能用来"分配"的清单**。新增顶层：
+
+```toml
+# 模型清单：一份真相。链路/接口都只引用它的 id。
+[[llm.models]]
+id = "deepseek-chat"        # 发给 API 的模型 id（也是清单主键）
+provider = "main"           # 归属哪份接口（`[[llm.providers]].id`）
+label = "DeepSeek V3"       # 显示名（可空，空则用 id）
+# 能力面：catalog 提案 + 探针结果 + 手改，三者合并后**落在这里**
+input = ["text"]
+max_output_tokens = 8192
+thinking_wire = "thinking_type"   # 与 yekitrim_llm::dialect 的 DIALECTS 同集合
+```
+
+- `[[llm.providers]]` **不再有 `models` 字段**（避免两份清单）——它只描述"怎么连"（id/name/protocol/base_url/key）。
+- `[llm.links.<link>]` 用 `model = "<id>"` 引用；`provider` 可省略（由模型的 `provider` 反查）。
+- **来源**：`GET /api/llm/models`（按接口列）只用来"导入候选"；`GET /api/config/llm/catalog` 提供能力建议值；
+  用户点"加入清单"才落盘 —— 清单**只装用户真的打算用的模型**（当前是每点一次就写进文件，越攒越多）。
+- UI 里它是一张**表**（id / 显示名 / 接口 / 能力摘要 / 用量或引用它的链路），链路表格的"模型"列从这里选。
+
+### 8.2 增量二：提示词的位置（D2）
+
+页面改为**五块**，从上到下：
+
+1. **当前接口**（常显）
+2. **默认参数**（常显，含并发数）
+3. **按链路覆盖**（表格）
+4. **模型列表**（折叠，默认收起；但**在「高级配置」之外**，与它平级）
+5. **提示词**（**折叠、默认收起、独立块**）：参考标题 / `system_prompt` / `prompt_template`，
+   标题行必须写明"写入 `config.toml` 的 `[detection]`"，并有**自己的保存按钮**（不再与"保存接口"共用一个）。
+
+「高级配置」里只剩：协议/端点细节、`extra_params`（高级 JSON）、按接口的能力手改。
+
+### 8.3 增量三：`extra_params` 拆分（D4）
+
+**先说清现状**（避免重复劳动）：**推理那两个例子已经结构化了**，只是 UI 没讲明白：
+
+- `[llm.params].reasoning`（档位 `off|minimal|low|medium|high|xhigh|max`）由 `yekitrim_llm::dialect` **按模型**翻译成 wire：
+  `reasoning_effort`（OpenAI o 系）/ `thinking: {type: enabled}`（DeepSeek、Anthropic 兼容层）/ `enable_thinking`（Qwen）/
+  `thinking_budget`（Anthropic、Gemini 变体）/ `chat_template_kwargs`（vLLM/SGLang）…（`dialect.rs` 的 DIALECTS 表）；
+- `[llm.params].thinking_budget` 是预算型方言的 token 数（不写就按档位映射表给默认，`budget_for`）。
+
+所以 D4 的真实工作 = **把"还有哪些只能手写 JSON"的补成结构化 + 把 extra_params 降级**：
+
+**新增结构化字段**（`LlmParamsToml` 里目前没有、但常用）：
+`stop: Vec<String>` · `seed: Option<i64>` · `presence_penalty: Option<f64>` · `frequency_penalty: Option<f64>` ·
+`top_k: Option<u32>`（方言相关，不做就留 extra_params）· `service_tier`（OpenAI，可选）。
+其中 `response_format` 已经有等价物 `json_mode`，不再重复加。
+
+**`extra_params` 退化后的定位**：
+- 只用于"上面没有的、provider 私有的"键（如 `chat_template_kwargs`、`repetition_penalty`、厂商扩展）；
+- 优先级**最低**（现状不变：结构化项之后）；
+- UI：折叠 + `JSON` 校验（现在就一个裸 textarea）+ **冲突检查**：如果里面出现已知键（`temperature` / `max_tokens` /
+  `reasoning_effort` / `thinking` / `response_format`），保存时**拒绝并指路**"请用上面的结构化设置" ——
+  否则"手写 thinking"与"档位"会互相打架（现在只有一句注释说"省略时 extra_params.thinking 说了算"）。
+
+### 8.4 增量四：迁移策略（D6：不需要兼容）
+
+- **v2 是唯一写形状**；老文件在**第一次加载/保存**时做一次性迁移（也可 `yekitrim config migrate` 显式触发）：
+  顶层 `api_key/base_url/model` → `providers[0]`；`[llm.params]` → `[llm.defaults]`；`[llm.overrides.*]` → `[llm.links.*]`；
+  `[llm.models]`（含 provider.models）→ 顶层 `[[llm.models]]`；`extra_params` 原样保留。
+- **不再保留"老形状读得动、一个字节不改"那套 R4 兼容**（D6）。但**迁移必须幂等 + 不丢 key**，写盘前 `.bak-v3`。
+- 读取时若仍看到 legacy 键（迁移没跑到）⇒ **warn + 自动迁移**，不再静默按回落链解析；
+  `config_version` 3 → 4，旧键登记 `retired_in`（`config/version.rs`）。
+
+### 8.5 待定：`provider.params` 到底砍不砍（D3 的详细解释）
+
+**现在的规则**（`config/types.rs::effective_params`，约 1439 行）：
+> `active` 那份 provider 的 `params` **非空**就用它，**否则整体回落**顶层 `[llm.params]`。
+
+注意关键词是**整体**：它**不是逐键深合并**，而是一把开关。于是有四种会让人配错的现场：
+
+| 现场 | 结果 | 为什么危险 |
+|---|---|---|
+| 老文件有 `[llm.params] temperature=0.7, max_tokens=4096`；新加一份 provider 只填了 `temperature=0.3` | 生效值 = **只** temperature=0.3，`max_tokens` **变成没配** | 一个正常编辑动作就**悄悄丢了**输出上限；不再发 `max_tokens` 后由 provider 决定上限，费用/延迟/截断行为都变，而界面不会说 |
+| 两份 provider 各写一份 params | 切 `active` = 整体换一套 | 用户以为是"同一套参数、按接口微调"，实际是**两套独立配置**，某一套漏了 `json_mode` ⇒ 检测链路突然不走 JSON ⇒ 解析失败率上升 |
+| 链路覆盖只写了 `temperature` | 其余键来自 `effective_params`（可能已经是"缺 max_tokens"的那份） | 故障点与真正的原因隔了两层，日志里只看到"没发 max_tokens" |
+| 界面文案 | 「全局默认（当前接口的参数）」 | 一句三元表达式：同一格在不同模式下写进**两个不同的 TOML 位置**（provider 模式写 `[[llm.providers]].params`，legacy 写 `[llm.params]`），用户无法知道自己改的是哪份 |
+
+**三个选项**：
+
+| 选项 | 做法 | 优点 | 缺点 |
+|---|---|---|---|
+| **A（建议）** | **砍掉 `provider.params`**：请求参数只有两级 —— `[llm.defaults]`（逐键基准）+ `[llm.links.*]`（逐键覆盖） | 概念最少；"每接口微调"用链路覆盖表达（一个链路本来就绑一个接口+模型）；不会出现"整体遮蔽丢键" | 如果将来要"同一接口在不同链路用不同参数"，得靠链路覆盖（本来也是这么写） |
+| B | 保留但改成**逐键合并**（provider.params 的 `Some` 才覆盖 defaults） | 保住"接口级默认"；不会丢键 | 仍然是两层同名概念；UI 要解释"这格子来自哪层"；与链路覆盖叠成三层优先级 |
+| C | 保持现状（整体遮蔽），只在 UI 加警告 | 零改动 | "不直观"的根源之一原样保留 |
+
+**我的建议是 A**。理由：请求参数描述的是"这次调用怎么发"，与"连哪一家"无关；而链路覆盖已经能表达"这条链路想怎么发"，
+再在接口上放一份参数，就只是给"同一件事"提供第二个入口。
+
+### 8.6 分期（按 D1–D6 修订）
+
+| 期 | 内容 |
+|---|---|
+| **L1** | v2 模型：`providers` / `llm.defaults` / `llm.links.*`（含 `provider`+`model`）/ **顶层 `[[llm.models]]`** / `extra_params` 保留；`config_version` 4 + 一次性迁移（幂等、`.bak-v3`、key 不丢）；**D6：删掉 legacy 回落链** |
+| **L2** | 端点：`/api/config/llm/effective`（每链路生效值）、`/api/llm/test` 支持草稿、`PUT /api/config/llm` 只收 v2（旧键 400 指路）、`GET /api/config` 带 `llm_schema_version` |
+| **L3** | WebUI 五块 IA（接口 / 默认参数 / 链路表格 / **模型列表** / **提示词独立折叠**）；模型选择只保留一处（从模型列表选）；extra_params 折叠 + JSON 校验 + 已知键冲突拒绝 |
+| **L4** | 删 `llmProviderMode` 分支与 `LlmQuickSetup` 重复弹层；文档/卡/data-cap 同步 |
+
+L1 里**唯一有行为风险**的是「链路绑 provider+model」—— 要在 `for_link()` 处解析并让 `LlmClient` 真的用那条模型，
+用「两条链路不同 model，日志里 `model=` 各不相同」的用例钉住。
