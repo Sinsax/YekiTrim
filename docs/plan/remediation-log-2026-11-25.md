@@ -173,3 +173,21 @@ GET  /api/health                 = cover_static {compiled:true, ready:true}   �
 数字链条：196（初始）→ 129（第一批机器可修项）→ **113（去重口径，也是预算）**。剩余按类别：
 23 field-reassign-with-default / 15 文档列表缩进 / 11 部分序比较取反 / 10 type-complexity /
 7 文档注释后空行 / 9 too-many-arguments（三类合计）/ 其余零星。
+## 第十二轮：计划书「验收清单」实跑结果（2026-11-25）
+
+把计划末尾那张验收清单逐条真跑了一遍（这就是整轮的收尾证据）：
+
+| 条目 | 命令 | 实测 |
+|---|---|---|
+| 结构 | `python3 scripts/check_module_map.py` | **38 模块 / 7 项全过**，最坏链 54,998/57,344 B |
+| 边界 | `python3 scripts/check_module_boundaries.py` | **21 条规则 / 732 文件 / 0 违规** |
+| 门禁执行 | `node scripts/gate.mjs --all` | **通过 194 / 跳过 46 / 失败 0 / EXIT=0**（baseline 0 条命中） |
+| 契约差集 | `node scripts/check-api-contract.mjs` | 前端 **98** 条字面量全部命中；140 条路由 |
+| clippy 预算 | `node scripts/check-clippy-budget.mjs` | **113 / 预算 113** ✅ |
+| Rust 编译 | `cargo check --workspace --all-targets` | **0 warning** |
+| 封面 feature | `cargo check -p yekitrim-server --features cover-takumi` | 通过 |
+| 全量测试 | `cargo test --workspace --no-fail-fast` | 全绿（见下） |
+| 前端构建 | `npm --prefix webui run build` | 成功，`dist/.built-from` = `src_fnv1a64 = 710fafe4b0463c24` |
+
+与计划原表的差异**只有一条**：`cargo clippy -- -D warnings` 现在还不行（113 条），
+已按 T20a 用「只降不升预算」顶着，清到 0 再换成 `-D warnings`。
