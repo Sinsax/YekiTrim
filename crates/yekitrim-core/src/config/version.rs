@@ -17,6 +17,9 @@
 //! - **程序级**（`.yekitrim/` 下的 `config.toml` / `llm.toml` / `server.toml`）：一个目录各一份，
 //!   升级后**写回**，写前先备份成 `<名>.bak-v<旧版本>` ⇒ "升一次就永远升好了"。
 //! - **工程级**（每个工程一份 `yekitrim.toml` / `polish.toml`）：**只在内存里升级，不碰磁盘**。
+//!
+//! 已发生的迁移（v6 起）：`v5 → v6` 把全局 `[llm] extra_params` 搬到当前生效模型的清单条目上
+//! （见 `migrate_llm_extra_params_to_models`）。
 //!   工程可能几百个、还可能在网络盘上，批量改写文件的风险远大于收益；而"读时能读懂老文件"
 //!   这件事本身就已经给到了向后兼容。要真的改盘就显式来（以后可以加 `yekitrim config migrate`）。
 //!
@@ -62,7 +65,10 @@ use toml_edit::{DocumentMut, Item};
 /// v2（2026-10-19）：`llm.toml` 把「请求参数面」与「能力」分开 ——
 /// `[llm] temperature/max_tokens/thinking` → `[llm.params]`（`thinking` 改名 `reasoning`），
 /// 能力覆盖进 `[llm.models."<id>"]`。**搬家**那一步在 [`migrate_llm_v2`]（`retired_in` 只会删）。
-pub const CONFIG_VERSION: u32 = 5;
+/// v6（2026-11-26）：取消**全局** [llm] extra_params —— 逃逸口只按模型存在
+/// （[[llm.models]].extra_params）。老文件里那一行由 migrate_llm_extra_params_to_models
+/// **搬到当前生效模型上**（不是丢掉）：请求体逐字节不变，只是换了存放位置。
+pub const CONFIG_VERSION: u32 = 6;
 
 /// 版本键名（顶层）。**缺键 = 0**。
 pub const VERSION_KEY: &str = "config_version";
@@ -158,6 +164,10 @@ impl ConfigKind {
                 &["detection", "llm_score_weight"],
                 &["detection", "max_concurrent"],
             ],
+            // v5 → v6：全局 extra_params 取消（搬到模型清单那一步在
+            // migrate_llm_extra_params_to_models）。这里只收拾"搬不动"的残留
+            // （值不是表 / 没有模型可挂）—— 正常文件走到这一步已经没这个键了。
+            (Self::Llm, 5) => &[&["llm", "extra_params"]],
             (Self::Llm, 3) => &[
                 &["llm", "params"],
                 &["llm", "overrides"],
@@ -209,8 +219,12 @@ fn migrate_step(doc: &mut DocumentMut, kind: ConfigKind, step: u32) {
     }
     if kind == ConfigKind::Llm && step == 3 {
         // 返回值是"这一步有没有改动"（给判据用：同一份文本迁两次，第二次必须是 false）。
-        // 版本号的推进由 [`migrate_text`] 统一负责，这一步只管搬东西。
+        // 版本号的推进由 migrate_text 统一负责，这一步只管搬东西。
         let _ = migrate_llm_v4(doc);
+    }
+    if kind == ConfigKind::Llm && step == 5 {
+        // v5 → v6：全局逃逸口搬进"当前生效模型"的清单条目（见函数注释）。
+        let _ = migrate_llm_extra_params_to_models(doc);
     }
 }
 
@@ -412,11 +426,52 @@ fn migrate_llm_v2(doc: &mut DocumentMut) {
 ///
 /// ⚠️ 为什么不用 `toml::to_string`：那会把注释全丢掉，而 llm.toml 的说明全写在注释里。
 /// 这里逐键搬，连 `Key` 的 leaf decor 与 `Table` 的 decor 都跟着走。
+/// 把 `providers = [{...}]` / `models = [{...}]` 这种**内联数组**升成 `[[llm.providers]]` 数组表。
+///
+/// 为什么要这一步：设置页的 patch 通道写数组时是内联形式（合法 TOML，serde 也读得动），
+/// 但**文本级迁移**的每一步都按 `Item::ArrayOfTables` 取 —— 不先升形状，后面所有搬迁都会
+/// 静默跳过（实测：用户的 `providers = [{...}]` 让"顶层 model 补进空 provider"整段失效，
+/// 升级后模型名就没了）。
+///
+/// 只处理"全是内联表"的数组；混了标量的（手改坏）保持原样，交给后续/retired 处理。
+fn promote_inline_tables_to_array_of_tables(llm: &mut toml_edit::Table, key: &str) -> bool {
+    let Some(arr) = llm
+        .get(key)
+        .and_then(Item::as_value)
+        .and_then(|v| v.as_array())
+    else {
+        return false;
+    };
+    if arr.is_empty() || !arr.iter().all(|v| v.as_inline_table().is_some()) {
+        return false;
+    }
+    let mut aot = toml_edit::ArrayOfTables::new();
+    for value in arr.iter() {
+        let Some(inline) = value.as_inline_table() else { continue };
+        let mut table = toml_edit::Table::new();
+        for (k, v) in inline.iter() {
+            table.insert(k, Item::Value(v.clone()));
+        }
+        aot.push(table);
+    }
+    llm.insert(key, Item::ArrayOfTables(aot));
+    true
+}
+
 fn migrate_llm_v4(doc: &mut DocumentMut) -> bool {
     let Some(llm) = doc.get_mut("llm").and_then(Item::as_table_mut) else {
         return false;
     };
     let mut changed = false;
+
+    // ⚠️ 先把内联数组升成数组表（见函数注释）：设置页 patch 出来的就是内联形式，
+    // 不升形状，后面的 ①④⑥ 与 v5→v6 的搬迁会按 ArrayOfTables 取不到而**整段跳过**。
+    if promote_inline_tables_to_array_of_tables(llm, "providers") {
+        changed = true;
+    }
+    if promote_inline_tables_to_array_of_tables(llm, "models") {
+        changed = true;
+    }
 
     // ── ① 一份接口都没有 ⇒ 用顶层三件造一条（v4 不允许"没有接口"）──
     // ⚠️ 与 v2 → v3 那一步不同，这里**空值也造**：v4 的形状硬要求至少一份接口，
@@ -441,6 +496,60 @@ fn migrate_llm_v4(doc: &mut DocumentMut) -> bool {
         }
         llm.insert("providers", Item::ArrayOfTables(arr));
         changed = true;
+    } else if llm
+        .get("providers")
+        .and_then(Item::as_array_of_tables)
+        .map(|a| !a.is_empty())
+        .unwrap_or(false)
+    {
+        // ⚠️ **半迁移文件**（实测存在：providers 已写进来，但顶层 api_key/base_url/model 还留着）：
+        // v3 的语义是「provider 有就用它的」，所以顶层三件在 provider 里**缺/空**时仍然生效。
+        // 如果直接交给 retired_in 删掉，用户升级后会发现"模型名/地址没了"（静默丢配置）。
+        // 这里只**补空**：生效那份的某个键为空/缺失且顶层有值 ⇒ 搬进去；非空的一律不动。
+        let active_id = llm.get("active").and_then(Item::as_str).unwrap_or("").trim().to_string();
+        let fill: Vec<&'static str> = {
+            let arr = llm
+                .get("providers")
+                .and_then(Item::as_array_of_tables)
+                .expect("上面查过：providers 非空");
+            let idx = if active_id.is_empty() {
+                0
+            } else {
+                arr.iter()
+                    .position(|p| p.get("id").and_then(Item::as_str).map(str::trim) == Some(active_id.as_str()))
+                    .unwrap_or(0)
+            };
+            let prov = arr.get(idx).expect("下标来自同一张表");
+            ["api_key", "base_url", "model"]
+                .into_iter()
+                .filter(|k| {
+                    prov.get(*k)
+                        .and_then(Item::as_str)
+                        .map(|s| s.trim().is_empty())
+                        .unwrap_or(true)
+                })
+                .filter(|k| llm.get(*k).is_some())
+                .collect()
+        };
+        if !fill.is_empty() {
+            let moved: Vec<(toml_edit::Key, Item)> =
+                fill.iter().filter_map(|k| take_key(llm, k)).collect();
+            if let Some(arr) = llm.get_mut("providers").and_then(Item::as_array_of_tables_mut) {
+                let idx = if active_id.is_empty() {
+                    0
+                } else {
+                    arr.iter()
+                        .position(|p| p.get("id").and_then(Item::as_str).map(str::trim) == Some(active_id.as_str()))
+                        .unwrap_or(0)
+                };
+                if let Some(p) = arr.get_mut(idx) {
+                    for (key, item) in moved {
+                        p.insert_formatted(&key, item);
+                        changed = true;
+                    }
+                }
+            }
+        }
     }
 
     // ── ② params → defaults（改名，表头注释跟着走）──
@@ -635,6 +744,170 @@ fn migrate_llm_v4(doc: &mut DocumentMut) -> bool {
         changed = true;
     }
     changed
+}
+
+/// `Item` → `Value` 的递归转换（表 / 数组表 → 内联表 / 数组）。
+///
+/// v6 迁移要把 `[llm.extra_params]`（可能是**表**，还带 `[llm.extra_params.thinking]` 这种子表）
+/// 搬进 `[[llm.models]].extra_params`（内联形式）。只取 `as_value()` 会把子表整个漏掉 ——
+/// 实测用户的 `response_format` / `thinking` 就是这么丢的。
+fn item_to_value(item: &Item) -> Option<toml_edit::Value> {
+    match item {
+        Item::Value(v) => Some(v.clone()),
+        Item::Table(t) => {
+            let mut out = toml_edit::InlineTable::new();
+            for (k, v) in t.iter() {
+                if let Some(val) = item_to_value(v) {
+                    out.insert(k, val);
+                }
+            }
+            Some(toml_edit::Value::InlineTable(out))
+        }
+        Item::ArrayOfTables(a) => {
+            let mut arr = toml_edit::Array::new();
+            for t in a.iter() {
+                if let Some(v) = item_to_value(&Item::Table(t.clone())) {
+                    arr.push(v);
+                }
+            }
+            Some(toml_edit::Value::Array(arr))
+        }
+        Item::None => None,
+    }
+}
+
+/// **v5 → v6**（llm.toml）：全局 `[llm] extra_params` → **当前生效模型**的 `[[llm.models]].extra_params`。
+///
+/// 用户口径（2026-11-26）：逃逸口只按模型存在，不再有全局那份。为了**不改变任何一条真实请求**，
+/// 老文件里的全局表不是丢掉，而是挂到「active 接口 + 它的默认模型」那一条清单上；
+/// 老文件常常没有 `[[llm.models]]`（v3 以前只有 provider.models），那就补一条。
+///
+/// 搬不动的情形（值不是表 / 没有模型可挂）留给 `retired_in(5)` 兜底删掉 —— 那种文件本来也没有
+/// 可以发这笔参数的模型。
+fn migrate_llm_extra_params_to_models(doc: &mut DocumentMut) -> bool {
+    let Some(llm) = doc.get_mut("llm").and_then(Item::as_table_mut) else {
+        return false;
+    };
+    let Some((key, item)) = take_key(llm, "extra_params") else {
+        return false;
+    };
+    // 统一的搬运形状：内联表（模板写的就是这个）；老写法 [llm.extra_params] 也认
+    let inline = match item {
+        Item::Value(toml_edit::Value::InlineTable(t)) => t,
+        Item::Table(t) => {
+            let mut out = toml_edit::InlineTable::new();
+            for (k, v) in t.iter() {
+                if let Some(val) = item_to_value(v) {
+                    out.insert(k, val);
+                }
+            }
+            out
+        }
+        other => {
+            // 不是表（手改坏）：放回去，交给 retired 那趟按"删"处理
+            llm.insert_formatted(&key, other);
+            return false;
+        }
+    };
+    if inline.is_empty() {
+        return true;
+    }
+
+    // 先把"生效接口 + 它的默认模型"取成字符串（后面要可变地拿 models，借用不能跨过去）
+    let active = llm.get("active").and_then(Item::as_str).unwrap_or("").trim().to_string();
+    let (provider_id, model_id) = {
+        let providers = llm.get("providers").and_then(Item::as_array_of_tables);
+        let provider = providers.and_then(|arr| {
+            let want = active.as_str();
+            let hit = if want.is_empty() {
+                None
+            } else {
+                arr.iter()
+                    .find(|t| t.get("id").and_then(Item::as_str).map(str::trim) == Some(want))
+            };
+            hit.or_else(|| arr.iter().next())
+        });
+        (
+            provider
+                .and_then(|p| p.get("id").and_then(Item::as_str))
+                .unwrap_or("")
+                .trim()
+                .to_string(),
+            provider
+                .and_then(|p| p.get("model").and_then(Item::as_str))
+                .unwrap_or("")
+                .trim()
+                .to_string(),
+        )
+    };
+
+    // ⚠️ 先判形状：`models` 不是 `[[llm.models]]`（例如设置页 patch 出来的内联数组）就**不动它**，
+    //    把全局那份放回去 —— 由 retired 那趟删掉并**照实报**（别静默丢值）。
+    if !llm.get("models").map(Item::is_array_of_tables).unwrap_or(true) {
+        llm.insert("extra_params", Item::Value(toml_edit::Value::InlineTable(inline)));
+        return false;
+    }
+
+    // 作用域要收窄：`arr` 借着 `llm`，出了这个块才能再往 `[llm]` 里放回 extra_params
+    let attached = {
+        let models = llm
+            .entry("models")
+            .or_insert_with(|| Item::ArrayOfTables(toml_edit::ArrayOfTables::new()));
+        let arr = models
+            .as_array_of_tables_mut()
+            .expect("上面查过：models 要么不存在、要么就是 [[llm.models]]");
+
+        if model_id.is_empty() {
+            // 没有"默认模型"可挂：挂到每一条已有模型上（保住每一条链路的请求）
+            let mut touched = false;
+            for t in arr.iter_mut() {
+                if t.get("extra_params").is_none() {
+                    t.insert(
+                        "extra_params",
+                        Item::Value(toml_edit::Value::InlineTable(inline.clone())),
+                    );
+                    touched = true;
+                }
+            }
+            touched
+        } else if let Some(t) = arr.iter_mut().find(|t| {
+            t.get("id")
+                .and_then(Item::as_str)
+                .map(|s| s.eq_ignore_ascii_case(&model_id))
+                .unwrap_or(false)
+                && t.get("provider")
+                    .and_then(Item::as_str)
+                    .map(|s| s.trim() == provider_id)
+                    .unwrap_or(provider_id.is_empty())
+        }) {
+            // 已经手写过模型级 extra_params ⇒ 它优先，不覆盖
+            if t.get("extra_params").is_none() {
+                t.insert(
+                    "extra_params",
+                    Item::Value(toml_edit::Value::InlineTable(inline.clone())),
+                );
+            }
+            true
+        } else {
+            let mut entry = toml_edit::Table::new();
+            entry.insert("id", toml_edit::value(model_id));
+            if !provider_id.is_empty() {
+                entry.insert("provider", toml_edit::value(provider_id));
+            }
+            entry.insert(
+                "extra_params",
+                Item::Value(toml_edit::Value::InlineTable(inline.clone())),
+            );
+            arr.push(entry);
+            true
+        }
+    };
+    if !attached {
+        // 没有任何模型可挂：放回去让 retired 删并**报一句**（用户至少能在日志里看到）
+        llm.insert("extra_params", Item::Value(toml_edit::Value::InlineTable(inline)));
+        return false;
+    }
+    true
 }
 
 /// 当前生效的**接口**（下标 + id）：`active` 命中就用它，否则第一份（与 v4 的 `active_provider` 同口径）。
@@ -1552,7 +1825,8 @@ max_tokens = 8192
         assert!(text.contains("reasoning = \"high\""), "enabled 该变成 high：\n{text}");
         assert!(text.contains("reasoning = \"off\""), "链路覆盖的 disabled 该变成 off：\n{text}");
         assert!(!text.contains("thinking ="), "老键不许还留在文件里：\n{text}");
-        assert!(text.contains("extra_params = { seed = 42 }"), "逃逸口原位不动：\n{text}");
+        // 2026-11-26（v6）：全局 extra_params 取消 —— 这份夹具没有 model，没有模型可挂 ⇒ 清掉
+        assert!(!text.contains("extra_params"), "v6 之后全局逃逸口不许留在文件里：\n{text}");
         assert!(text.contains("max_tokens = 8192"), "链路覆盖的值要保留：\n{text}");
 
         let llm = llm_v4(text);
@@ -1846,6 +2120,118 @@ thinking_wire = "thinking_type"
         let mut doc: DocumentMut = once.parse().unwrap();
         assert!(!migrate_llm_v4(&mut doc), "v4 形状再过一遍必须返回 false（有没有改动的判据）");
         assert_eq!(doc.to_string(), once, "返回 false 的那次不许动一个字节");
+    }
+
+    /// **v5 → v6**：全局 `extra_params` 搬到「生效接口 + 它的默认模型」那条清单上；
+    /// 请求体不变、老键不留在文件里、迁移幂等。
+    #[test]
+    fn v6_moves_global_extra_params_onto_the_active_model() {
+        const OLD: &str = r#"config_version = 5
+
+[llm]
+active = "main"
+extra_params = { repetition_penalty = 1.05, seed = 1 }
+
+[[llm.providers]]
+id = "main"
+model = "deepseek-chat"
+
+[[llm.models]]
+id = "deepseek-chat"
+provider = "main"
+"#;
+        let p = migrate_text(ConfigKind::Llm, OLD).unwrap();
+        assert_eq!(p.from, 5);
+        // 老键不许留在 [llm] 上
+        let doc: DocumentMut = p.text.parse().unwrap();
+        assert!(
+            doc.get("llm").and_then(Item::as_table).map(|t| !t.contains_key("extra_params")).unwrap_or(false),
+            "全局 extra_params 要搬走：\n{}",
+            p.text
+        );
+        // 搬到模型条目上
+        let llm = llm_v4(&p.text);
+        let entry = llm.models.iter().find(|m| m.id == "deepseek-chat").expect("模型条目");
+        let extra = entry.extra_params.as_ref().expect("额外参数搬到了模型级");
+        assert_eq!(extra.get("seed").and_then(|v| v.as_integer()), Some(1));
+        assert!((extra.get("repetition_penalty").and_then(|v| v.as_float()).unwrap_or_default() - 1.05).abs() < 1e-9);
+
+        // 幂等：第二次一个字节都不许动
+        let again = migrate_text(ConfigKind::Llm, &p.text).unwrap();
+        assert!(!again.changed, "已经是最新版本");
+        assert_eq!(again.text, p.text);
+    }
+
+    /// **内联数组 + 顶层遗留**（实测用户的 llm.toml 就是这个形状）：
+    /// v3 迁移必须先把 `providers = [{...}]` 升成数组表，再把顶层 model 补进空 provider，
+    /// 最后 v6 把全局 extra_params 挂到该模型上 —— 一个都不许丢。
+    #[test]
+    fn inline_providers_are_promoted_and_legacy_model_is_rescued() {
+        const OLD: &str = r#"config_version = 3
+
+[llm]
+api_key = "k-top"
+base_url = "http://top/v1"
+model = "deepseek-v4.1-flash"
+active = ""
+providers = [{ id = "p1", api_key = "k-prov", base_url = "http://p1/v1", model = "", name = "newapi", protocol = "openai-chat" }]
+
+[llm.extra_params]
+seed = 42
+thinking = { type = "enabled" }
+
+[llm.extra_params.response_format]
+type = "json_object"
+"#;
+        let p = migrate_text(ConfigKind::Llm, OLD).unwrap();
+        let llm = llm_v4(&p.text);
+        let prov = llm.provider("p1").expect("provider p1");
+        assert_eq!(prov.model, "deepseek-v4.1-flash", "顶层 model 要补进空 provider");
+        assert_eq!(prov.api_key, "k-prov", "provider 的 key 不许被顶层覆盖");
+        let entry = llm
+            .models
+            .iter()
+            .find(|m| m.id == "deepseek-v4.1-flash")
+            .expect("v6 要为生效模型建一条清单");
+        let extra = entry.extra_params.as_ref().expect("全局 extra_params 要挂到模型上");
+        assert_eq!(extra.get("seed").and_then(|v| v.as_integer()), Some(42));
+        assert_eq!(
+            extra.get("thinking").and_then(|v| v.get("type")).and_then(|v| v.as_str()),
+            Some("enabled"),
+            "嵌套内联表要一起搬"
+        );
+        assert_eq!(
+            extra.get("response_format").and_then(|v| v.get("type")).and_then(|v| v.as_str()),
+            Some("json_object"),
+            "子表形式（[llm.extra_params.response_format]）也要搬"
+        );
+    }
+
+    /// **半迁移文件**（providers 已在、顶层三件还在）：v4 迁移只补「provider 里空着」的字段，
+    /// 非空的不覆盖 —— 否则用户的模型名 / 地址会在升级时静默消失（实测现场就是这么丢的）。
+    #[test]
+    fn v4_fills_blank_provider_fields_from_legacy_top_level() {
+        const OLD: &str = r#"config_version = 3
+
+[llm]
+api_key = "k-top"
+base_url = "http://x/v1"
+model = "deepseek-v4.1-flash"
+active = ""
+
+[[llm.providers]]
+id = "p1"
+api_key = "k-prov"
+base_url = ""
+model = ""
+"#;
+        let p = migrate_text(ConfigKind::Llm, OLD).unwrap();
+        let llm = llm_v4(&p.text);
+        let prov = llm.provider("p1").expect("provider p1");
+        assert_eq!(prov.model, "deepseek-v4.1-flash", "空的 model 要从顶层补进来");
+        assert_eq!(prov.base_url, "http://x/v1", "空的 base_url 要从顶层补进来");
+        assert_eq!(prov.api_key, "k-prov", "provider 里非空的值不许被覆盖");
+        assert!(!p.text.contains("k-top"), "搬走的顶层键要清掉：\n{}", p.text);
     }
 
     /// **注释不丢**：`[llm]` 上方那段仍在原处；`[llm.overrides.detect]` 那两段跟着搬到 links；

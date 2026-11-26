@@ -2,7 +2,8 @@
 //
 // 每一条都对应一次"构建通过、两条门禁全绿、而界面已经坏了"：
 //
-//  ①（L3 改写）**「按链路覆盖」是一张 7 列表格**（链路/接口/模型/温度/输出上限/推理/状态），
+//  ①（L3 改写，2026-11-26 加「测试」列）**「按链路覆盖」是一张 8 列表格**
+//     （链路/接口/模型/温度/输出上限/推理/测试/状态），
 //     且**窄屏横滚**（`min-width:640px`）而不是把格子压扁。
 //     历史：L3 之前它是 `.llm-cols` 两栏网格 —— 用户口径"各占 50%"，而两栏里并排的滑块会被压到
 //     **59px**（1280px 下只剩 41px，刻度根本看不见）。现在一列一义，滑条不再进表格格子，所以
@@ -112,6 +113,7 @@ const read = async (p) => {
 const settings = await read('webui/src/views/SettingsView.vue')
 // L3 起的五块 IA：①② 两条判据钉在链路表格组件上（它才是"点开才编辑"的实现处）
 const llmLinkTable = await read('webui/src/components/llm/LlmLinkTable.vue')
+const llmModelList = await read('webui/src/components/llm/LlmModelList.vue')
 const overview = await read('webui/src/components/HomeClipsOverview.vue')
 const workbench = await read('webui/src/views/WorkbenchView.vue')
 const modelList = await read('webui/src/components/ModelList.vue')
@@ -132,14 +134,16 @@ const translator = await read('tools/polish-to-dhampir.mjs')
 /** 每条：label + 判据 + **怎么改坏它**（用于自证判据不是空转的）。 */
 const RULES = [
   {
-    // L3：链路覆盖从"两栏网格"改成"7 列表格"（一列一义）。判据 = 表头七列都在 + 窄屏横滚兜底。
-    label: '「按链路覆盖」是 7 列表格且窄屏横滚（一列一义，不压扁）',
+    // L3：链路覆盖从"两栏网格"改成"8 列表格"（一列一义）。判据 = 表头各列都在 + 窄屏横滚兜底。
+    // ⚠️ 2026-11-26 加「测试」列：每行要能按**自己的**接口+模型验一次（只测默认模型不够）。
+    label: '「按链路覆盖」是 8 列表格且窄屏横滚（一列一义，不压扁）',
     why: '两栏网格里并排的滑块会被压到 59px（1280px 下 41px）——改表格后必须给 min-width，让它横滚而不是压扁',
     hit: (s) =>
       /class="lt-tbl"/.test(s)
       && /min-width:\s*640px/.test(s)
       && /<th class="lt-c-link">链路<\/th>/.test(s)
       && /<th class="lt-c-reason">推理<\/th>/.test(s)
+      && /<th class="lt-c-test">测试<\/th>/.test(s)
       && /<th class="lt-c-state">状态<\/th>/.test(s),
     break: (s) => s.replace('min-width:640px', 'min-width:0')
   },
@@ -182,13 +186,15 @@ const RULES = [
     break: (s) => s.replace("{ key: 'danmaku', label: '弹幕'", "{ key: 'x', label: '弹幕'")
   },
   {
-    label: 'extra_params 的 rows ≥ 10（高度翻倍）',
-    why: '用户口径"高度翻2倍，不然根本看不清有什么内容"；原来是 rows=5',
+    // 2026-11-26：全局 extra_params 取消 ⇒ 编辑框搬进「每个模型」的展开区（LlmModelList）。
+    // 用户原口径仍是"太矮就根本看不清有什么内容"，这里钉模型级那个 JSON 框的高度。
+    label: '模型级 extra_params 的编辑框 rows ≥ 6（能看清内容）',
+    why: '逃逸口只按模型存在（用户口径）；JSON 正文太矮等于看不清，改回 3 行就该翻面',
     hit: (s) => {
-      const m = s.match(/class="mono llm-extra"[^>]*rows="(\d+)"/s)
-      return m ? Number(m[1]) >= 10 : false
+      const m = s.match(/class="mono ml-extra"[^>]*rows="(\d+)"/s)
+      return m ? Number(m[1]) >= 6 : false
     },
-    break: (s) => s.replace('rows="10" placeholder="留空 = 不带额外参数"', 'rows="5" placeholder="留空 = 不带额外参数"')
+    break: (s) => s.replace('class="mono ml-extra" rows="6"', 'class="mono ml-extra" rows="3"')
   },
   {
     label: 'ModelList 的下载按钮按 canDownload 门控（下载是 admin-only）',
@@ -218,12 +224,12 @@ console.log('\n① 布局不变式（每条都做变异自证）')
 for (const r of RULES) {
   const sources = {
     label: r.label,
-    hit: r.hit(settings) || r.hit(overview) || r.hit(modelList) || r.hit(llmLinkTable)
+    hit: r.hit(settings) || r.hit(overview) || r.hit(modelList) || r.hit(llmLinkTable) || r.hit(llmModelList)
   }
   check(r.label, sources.hit, true)
 
   // 变异自证：改坏**命中的那份**源码，判据必须翻面
-  const all = [settings, overview, workbench, modelList, llmLinkTable]
+  const all = [settings, overview, workbench, modelList, llmLinkTable, llmModelList]
   const idx = all.findIndex((s) => r.hit(s))
   const broken = r.break(all[idx])
   const stillHits = broken !== all[idx] && (r.hit(broken) || (idx !== 0 && r.hit(settings)))

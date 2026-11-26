@@ -22,15 +22,27 @@
     <!-- 内容列：所有分页共用 .settings-block（min(760px,100%)、左对齐）—— 别在每页各写一份 max-width -->
     <div class="settings-block" data-cap="settings.config">
     <div class="section-title row spread">
-      <span>程序配置 config.toml</span>
+      <span>程序配置</span>
       <span class="row">
         <button class="btn" @click="toggleSource">
           <Icon name="edit" :size="13" /> {{ editSource ? '返回表单' : '编辑源文件' }}
         </button>
-        <button class="btn btn-primary" @click="saveGlobal" :disabled="!loaded">
-          <Icon name="save" :size="13" /> {{ editSource ? '保存源文件' : '保存配置' }}
-        </button>
       </span>
+    </div>
+
+    <!-- 保存条（sticky）：自动保存的状态 + 手动按钮都在这儿。
+         ⚠️ 表单改动**防抖 1.2s 自动保存**（见 AUTO_SAVE_MS）；源文件模式只能手动存。 -->
+    <div class="llm-savebar" :class="{ dirty: globalDirty }" data-config-savebar>
+      <span v-if="autoSave.state === 'saving'" class="llm-saved">自动保存中…</span>
+      <span v-else-if="autoSave.state === 'err'" class="llm-save-err" :title="autoSave.error">自动保存失败</span>
+      <span v-else-if="globalDirty" class="llm-dirty" title="停手 1.2 秒后自动保存"><i></i>有改动 · 稍后自动保存</span>
+      <span v-else-if="autoSave.state === 'ok' && autoSave.at" class="llm-saved">已自动保存 · {{ autoSave.at }}</span>
+      <span v-else class="llm-saved">{{ savedAt ? '已保存 · ' + savedAt : '没有改动' }}</span>
+      <span class="llm-savebar-spacer"></span>
+      <span v-if="editSource" class="llm-saved">源文件模式：手动保存</span>
+      <button type="button" class="btn btn-primary flex-none" :disabled="!loaded || globalSaving" @click="saveGlobal()">
+        <Icon name="save" :size="13" /> {{ globalSaving ? '保存中…' : (editSource ? '保存源文件' : '保存配置') }}
+      </button>
     </div>
     <div v-if="configError" class="error-banner">
       <Icon name="alert" :size="15" />
@@ -170,7 +182,10 @@
 
     <!-- LLM 配置：写入 .yekitrim/llm.toml -->
     <template v-else-if="section === 'llm'">
-    <div class="settings-block">
+    <!-- ⚠️ 这一页列多（链路表 7 列）⇒ 用 settings-wide 放宽内容列；760px 下表格必然横滚
+         （表格 718 + 每格 padding ≈ 800），而横滚的表格在设置页里第一次见就是"不好用"。
+         别的子页仍用默认 760（见 .settings-block 的口径）。 -->
+    <div class="settings-block settings-wide">
     <!-- /api/config 读失败：表单里是**默认值**，而「保存」只是变灰、没有任何说明 ——
          这一页必须和程序配置页一样把原因摆出来（读不到就别让用户以为界面自己变了）。 -->
     <div v-if="loadFailed" class="error-banner" data-llm-load-error>
@@ -182,6 +197,17 @@
       <button class="mini-btn flex-none" @click="loadConfig">重试</button>
     </div>
     <!-- ⚠️ 保存失败**常驻**显示（P0：后端 400 曾被 toast 一闪吞掉，用户以为存上了）；回读不一致也在这里 -->
+    <!-- 新旧不匹配：界面是新形状、服务端还是旧二进制 ⇒ 保存必被 400 拒。提前说清并拦写入。 -->
+    <div v-if="llmLegacyBackend" class="error-banner" data-llm-legacy-backend>
+      <Icon name="alert" :size="15" />
+      <div>
+        <b>服务端版本过旧，界面与服务端不匹配</b>
+        <div class="muted small mt-4">
+          界面读到的 llm 配置还是旧形状（models 是键值表）。请重启或重新构建服务端后再保存：
+          现在保存会被服务端拒绝。数据本身没坏 —— 只是形状对不上。
+        </div>
+      </div>
+    </div>
     <div v-if="llmSaveError" class="error-banner" data-llm-save-error>
       <Icon name="alert" :size="15" />
       <div>
@@ -197,20 +223,17 @@
       </div>
     </div>
     <div class="section-title row spread">
-      <span>LLM 配置 llm.toml</span>
-      <span class="row">
-        <!-- ⚠️ 「测试这个接口」在 ① 里（**不落盘也能测**：草稿进 POST /api/llm/test 的 body）；
-             这里只留「保存 LLM」，且它**只写 llm.toml** —— 提示词有自己的按钮（⑤）。 -->
-        <button class="btn" @click="saveLlm()" :disabled="!loaded">
-          <Icon name="save" :size="13" /> 保存 LLM
-        </button>
-      </span>
+      <span>LLM 配置</span>
+      <span class="muted small">接口与模型定「用谁」· 链路定「哪个任务用哪支」</span>
     </div>
 
     <!-- ═══ LLM 配置：两个子页（2026-11-26 用户口径：模型配置 / 链路配置 分开）═══
-         模型配置 = 当前接口 + 模型清单（+ 接口管理 / extra_params）；
-         链路配置 = 默认参数 + 检测评分权重 + 按链路覆盖 + 提示词。
-         ⚠️ 「保存 LLM」只写 llm.toml；⑤ 提示词有**自己的**保存按钮（它写 [llm.links.detect.prompt]）。 -->
+         模型配置 = **左右结构**（左：接口清单 + 新建；右：该接口的连接信息 + 它的模型清单 + 取候选/添加）
+                     （额外请求参数**按模型**，在模型行的展开区里改；没有全局那份）
+         链路配置 = **哪个任务用哪支（链路表，第一屏）** + 默认参数 + 检测评分权重 + 提示词。
+         ⚠️ 「保存 LLM」只写 llm.toml；⑤ 提示词有**自己的**保存按钮（它写 [llm.links.detect.prompt]）。
+         ⚠️ 两枚按钮共用页头的 sticky 保存条，但**各自有基线**（baseLlm / basePrompts）——
+            「保存 LLM」会重读整份配置，必须先捞出提示词草稿再放回，否则会静默回滚。 -->
     <div class="llm-tabs" role="tablist" aria-label="LLM 配置子页">
       <button v-for="t in LLM_TABS" :key="t.key" type="button" role="tab" class="llm-tab"
               :class="{ on: llmTab === t.key }" :aria-selected="llmTab === t.key ? 'true' : 'false'"
@@ -219,81 +242,122 @@
       </button>
     </div>
 
+    <!-- 保存条（sticky）：这一页很长，保存按钮原来只在页头 —— 滚到链路表/提示词就看不见，
+         于是"改了到底存没存"全靠记忆（2026-11-26 交互整改）。
+         ⚠️ 它不写盘，只读下面那两个 dirty 判定；保存仍走 saveLlm / savePrompts。 -->
+    <div class="llm-savebar" :class="{ dirty: llmDirty || promptDirty }" data-llm-savebar>
+      <!-- 一行只放**最该知道的那件事**：错 → 保存中 → 未保存 → 刚存过。
+           失败/回读不一致先进保存条：横幅在页头，滚到下面点保存时它在视野外。 -->
+      <span v-if="modelExtraInvalid.length" class="llm-save-err" :title="modelExtraInvalidTitle">额外参数 JSON 有误</span>
+      <span v-else-if="llmSaveError" class="llm-save-err" :title="llmSaveError" data-savebar-err
+            @click="jumpToSaveError">保存失败 · 点此看详情</span>
+      <span v-else-if="autoSave.state === 'err'" class="llm-save-err" :title="autoSave.error">自动保存失败</span>
+      <span v-else-if="autoSave.state === 'saving'" class="llm-saved">自动保存中…</span>
+      <span v-else-if="llmDirty || promptDirty" class="llm-dirty" :title="llmDirtyTitle"><i></i>{{ llmDirtyText }}</span>
+      <span v-else-if="autoSave.state === 'ok' && autoSave.at" class="llm-saved">已自动保存 · {{ autoSave.at }}</span>
+      <span v-else-if="llmSaveWarn" class="llm-save-warn" :title="llmSaveWarn" @click="jumpToSaveError">已提交但回读不一致</span>
+      <span v-else class="llm-saved">{{ savedAt ? '已保存 · ' + savedAt : '没有改动' }}</span>
+      <span class="llm-savebar-spacer"></span>
+      <button v-if="promptDirty" type="button" class="mini-btn flex-none"
+              :disabled="!loaded || promptSaving" @click="savePrompts()">
+        {{ promptSaving ? '保存中…' : '保存提示词' }}
+      </button>
+      <button type="button" class="btn btn-primary flex-none" :disabled="!loaded || llmSaving" @click="saveLlm()">
+        <Icon name="save" :size="13" /> {{ llmSaving ? '保存中…' : '保存 LLM' }}
+      </button>
+    </div>
+
     <!-- ── 子页一：模型配置 ─────────────────────────────────────────── -->
     <template v-if="llmTab === 'models'">
 
-    <!-- ① 当前接口：常显（下拉 + 名称 + 地址 + 密钥 + 模型 + 能力 chip + 测试） -->
-    <div class="card" data-cap="settings.llm-quick">
-      <div class="form-section-title">当前接口<span class="t-sub">连哪一家 · 用哪支模型 · 先测再存</span></div>
-      <LlmEndpointCard
-        :loaded="loaded"
-        :providers="form.llm.providers"
-        :active-id="form.llm.active"
-        :model-options="endpointModelOptions"
-        :caps="caps"
-        :caps-text="capsText"
-        :caps-error="capsError"
-        @update:active-id="form.llm.active = $event"
-      />
+    <!-- **左右结构**（2026-11-26 用户口径）：左 = 接口清单，右 = 这一份接口的连接信息 + 它的模型清单。
+         ⚠️ 别再把「加模型」塞回折叠块 —— 原话："每一次添加模型都要翻找很不合理"。
+         两栏都在首屏，加接口在左下、加模型在右上，各自"在对应的位置"。 -->
+    <div class="llm-split">
+      <div class="llm-split-left" data-cap="settings.llm-quick">
+        <LlmProviderList :providers="form.llm.providers" :models="form.llm.models"
+                         :editing-id="editingProviderId" :active-id="form.llm.active"
+                         @select="selectProvider" @add="addProvider" />
+      </div>
+
+      <div class="llm-split-right">
+        <!-- 右上半：这一份接口怎么连（地址 / 密钥 / 默认模型 / 协议 / 测试） -->
+        <!-- 接口连接**可折叠**（2026-11-26 用户口径）：默认展开，收起后只剩标题 + 正在编辑哪一份，
+             给模型清单腾出整屏；状态记在 localStorage（刷新/切页回来保持）。 -->
+        <details class="card llm-conn" :open="connOpen" @toggle="onConnToggle">
+          <summary class="llm-conn-head">
+            <span class="form-section-title">接口连接
+              <span class="t-sub">地址 · 密钥 · 默认模型 · 先测再存</span></span>
+            <span class="llm-conn-spacer"></span>
+            <span class="llm-conn-who">
+              {{ editingProvider ? (editingProvider.name || editingProvider.id) : '还没有接口' }}
+              <span v-if="editingProvider && editingProvider.id === form.llm.active" class="llm-conn-use">当前使用</span>
+            </span>
+          </summary>
+          <LlmEndpointCard
+            :loaded="loaded"
+            :providers="form.llm.providers"
+            :provider-id="editingProviderId"
+            :active-id="form.llm.active"
+            :protocols="protocols"
+            :protocols-source="protocolsSource"
+            :model-options="endpointModelOptions"
+            :caps="caps"
+            :caps-text="capsText"
+            :caps-error="capsError"
+            @set-active="setActiveProvider"
+            @pick-model="onPickModel"
+            @probe="onProbeCaps"
+            @remove="removeProvider"
+          />
+        </details>
+
+        <!-- 右下半：这一份接口的模型清单（取候选 / 手填 / 能力手填都在这一块里） -->
+        <div class="card" data-cap="settings.llm-models">
+          <LlmModelList :models="form.llm.models" :provider-id="editingProviderId"
+                        :base-url="effBaseUrl" :api-key="curApiKeyDraft"
+                        :dialects="dialects" @probe="onProbeCaps" />
+        </div>
+
+      </div>
     </div>
 
-    <!-- ④ 模型列表：**独立折叠、与「高级配置」平级**（D1 的清单是常用面，不是高级项） -->
-    <details class="form-adv">
-      <summary data-cap="settings.llm-models">模型列表（{{ form.llm.models.length }} 支）</summary>
-      <div class="card">
-        <LlmModelList :models="form.llm.models" :providers="form.llm.providers"
-                      :active-id="form.llm.active" :base-url="effBaseUrl" :api-key="curApiKeyDraft"
-                      :dialects="dialects" @probe="onProbeCaps" />
-      </div>
-    </details>
-
-    <!-- 高级：接口管理（增删 / 改名 / 换协议）· extra_params 逃逸口。
-         详细表单默认折叠 —— 隐藏 ≠ 删除；「源文件」那块仍不在这页（用户：没必要有）。 -->
-    <details class="form-adv">
-      <summary data-cap="settings.llm-advanced">高级配置（接口管理 / extra_params）</summary>
-      <div class="card">
-        <div class="form-section">
-          <div class="form-section-title">接口管理
-            <span class="t-sub">增删 / 改名 / 换协议；地址与密钥在「当前接口」里改</span></div>
-          <LlmProviders :providers="form.llm.providers" :active-id="form.llm.active"
-                        :protocols="protocols" :protocols-source="protocolsSource"
-                        @update:active-id="form.llm.active = $event"
-                        @add="addProvider" @remove="removeProvider" />
-        </div>
-        <div class="form-section">
-          <div class="form-section-title">额外请求参数
-            <span class="t-sub">原样进请求体 · 优先级最低 · 已知键一律拒绝</span></div>
-          <textarea v-model="form.llm.extra_params" class="mono llm-extra" spellcheck="false"
-                    rows="10" placeholder="留空 = 不带额外参数"></textarea>
-          <div class="muted small mt-4">
-            只用于这里没有的、provider 私有的键（如 chat_template_kwargs）；temperature / max_tokens /
-            response_format 请用上面的结构化设置。
-          </div>
-        </div>
-      </div>
-    </details>
-
     </template>
-
     <!-- ── 子页二：链路配置 ─────────────────────────────────────────── -->
     <template v-else>
 
-    <!-- ② 默认参数：所有链路的基准（并发数在第一屏，它是批处理速度的第一杠杆） -->
+    <!-- ③ 按链路覆盖：行 = 链路，列 = 接口/模型/温度/输出上限/推理/状态。
+         ⚠️ 顺序：**它必须在第一屏**（2026-11-26）—— 这一页 90% 的动作用在这里（哪个任务用哪支），
+         而「默认参数」是"没人改就一直不用管"的那一档；把它摆在前面的结果是核心动作被推到第二屏。 -->
     <div class="card">
-      <div class="form-section-title">默认参数<span class="t-sub">所有链路的基准；每条链路可在下面单独覆盖</span></div>
+      <div class="form-section-title">哪个任务用哪支
+        <span class="t-sub">点一格才可编辑；没覆盖的格子按上面的「当前接口」走</span></div>
+      <LlmLinkTable :links="llmLinks" :rows="form.llm.links" :effective="effective"
+                    :providers="form.llm.providers" :model-options="allModelOptions"
+                    :probe-models="form.llm.probeModels"
+                    :active-id="form.llm.active" :levels="linkLevels" :levels-by-model="levelsByModel"
+                    @pick-model="onPickModel" />
+      <div v-if="effectiveError" class="muted small mt-4 caps-err" :title="effectiveError">
+        生效值读取失败（灰字留空）—— 覆盖功能仍然可用
+      </div>
+    </div>
+
+    <!-- ② 默认参数：所有链路的基准（并发数也在这里，它是批处理速度的第一杠杆） -->
+    <div class="card">
+      <div class="form-section-title">默认参数<span class="t-sub">上面没单独覆盖的单元格就用这里；一处改动对所有任务生效</span></div>
       <div class="form-grid">
         <LlmParamFields class="span-all" :caps="caps" :target="form.llm.defaults" id-prefix="llm-def"
                         :fields="['temperature', 'max_tokens', 'reasoning', 'json_mode']"
                         :json-mode="jsonModeOn" @update:jsonMode="setJsonMode" />
         <SliderField v-model="form.llm.max_concurrent" class="span-2" label="并发请求数"
-                     :min="1" :max="32" :step="1" hint="对所有 LLM 调用生效（进程级旋钮）" />
+                     :min="1" :max="32" :step="1" hint="对所有任务生效；调高更快，但更容易撞限流" />
       </div>
     </div>
 
     <!-- 检测链路的行为参数（不进请求体）：评分权重原来在程序配置页，S4 起住这里 -->
     <div class="card">
       <div class="form-section-title">检测评分权重
-        <span class="t-sub">[llm.links.detect.run] · 不进请求体</span></div>
+        <span class="t-sub">只影响检测那一步的排序，不进请求</span></div>
       <div class="form-grid">
         <SliderField v-model="form.llm.detectRun.llm_score_weight" class="span-2"
                      label="LLM 评分权重" :min="0" :max="1" :step="0.05"
@@ -301,25 +365,12 @@
       </div>
     </div>
 
-    <!-- ③ 按链路覆盖：行 = 链路，列 = 接口/模型/温度/输出上限/推理/状态。
-         未覆盖的格子显示**后端算的**生效值（/api/config/llm/effective），点开才可编辑。 -->
-    <div class="card">
-      <div class="form-section-title">按链路覆盖
-        <span class="t-sub">行 = 链路；未覆盖的格子是灰字实值</span></div>
-      <LlmLinkTable :links="llmLinks" :rows="form.llm.links" :effective="effective"
-                    :providers="form.llm.providers" :model-options="allModelOptions"
-                    :levels="linkLevels" />
-      <div v-if="effectiveError" class="muted small mt-4 caps-err" :title="effectiveError">
-        生效值读取失败（灰字留空）—— 覆盖功能仍然可用
-      </div>
-    </div>
-
     <!-- ⑤ 提示词：折叠 + **自己的保存按钮**（写 llm.toml 的 [llm.links.detect.prompt]） -->
     <details class="form-adv">
-      <summary data-cap="settings.llm-prompts">提示词（写入 llm.toml 的 [llm.links.detect.prompt]）</summary>
+      <summary data-cap="settings.llm-prompts" title="写入 llm.toml 的 [llm.links.detect.prompt]">提示词（检测用）</summary>
       <div class="card">
         <div class="form-section-title">提示词
-          <span class="t-sub">写 llm.toml 的 [llm.links.detect.prompt] · 与「保存 LLM」互不影响</span></div>
+          <span class="t-sub" title="写入 llm.toml 的 [llm.links.detect.prompt]">检测那一步怎么挑亮点 · 与「保存 LLM」互不影响</span></div>
         <div class="prompt-pair">
           <div>
             <label title="每行一条，可含 emoji；清空保存则运行时用内建示例">参考标题</label>
@@ -447,7 +498,7 @@ import LlmEndpointCard from '../components/llm/LlmEndpointCard.vue'
 import LlmLinkTable from '../components/llm/LlmLinkTable.vue'
 import LlmModelList from '../components/llm/LlmModelList.vue'
 import LlmParamFields from '../components/llm/LlmParamFields.vue'
-import LlmProviders from '../components/llm/LlmProviders.vue'
+import LlmProviderList from '../components/llm/LlmProviderList.vue'
 import InviteManager from '../components/InviteManager.vue'
 import UserQuotaManager from '../components/UserQuotaManager.vue'
 import RecorderConfig from '../components/RecorderConfig.vue'
@@ -476,6 +527,10 @@ const capsSource = ref('')
 /** `GET /api/llm/models` 真探到的能力（model id → 归一化 caps）—— 「能获取当然最好」：它能覆盖内置表。
  *  只有**探针那条路**会带 caps（表命中零网络，服务端不带）。按 model id 存，切回来还在。 */
 const probeCaps = reactive({})
+/** 探针带回的**原始** caps（model id → 服务端给的那份 JSON）。
+ *  ⚠️ 别用 `probeCaps` 去写 `[[llm.models]].catalog`：那是**归一后**的形状（temperature 已经变成
+ *  'supported'/'unknown' 这类字符串），再喂给 `normalizeCaps` 会被误读成"支持"。落盘一律用原始那份。 */
+const probeCapsRaw = {}
 /** 能力读失败的原因 —— **不许静默**：拿不到能力就说出来，别让用户以为"这个模型本来就没这些旋钮" */
 const capsError = ref('')
 const referenceTitlesText = ref('')
@@ -540,6 +595,8 @@ const { open: logsOpen, toggle: toggleLogs } = useDisclosure('settings.logs', fa
 const editSource = ref(false)
 // 只有成功读到 /api/config 才允许保存：否则表单里的内建默认值会覆盖真实配置
 const loaded = ref(false)
+/** 服务端 llm_config 还是 v4 之前的形状（旧二进制）—— 界面据它拦保存并说明原因 */
+const llmLegacyBackend = ref(false)
 /** 读失败（与「正在读」分开）：LLM 页据此出常驻错误条，而不是让「保存」默默变灰 */
 const loadFailed = ref(false)
 const configLoadError = ref('')
@@ -572,7 +629,7 @@ const form = reactive({
     output_dir: './output',
     overwrite: false,
   },
-  // **v4 形状**（L1 定案；L3 界面接的就是它）：active / max_concurrent / defaults / extra_params /
+  // **v4 形状**（L1 定案；L3 界面接的就是它）：active / max_concurrent / defaults /
   // providers[] / models[] / links{}。⚠️ 别把 v3 的顶层 api_key / base_url / model / params / overrides
   // 写回来 —— 后端 v4 里那些键**已经没人读**（写了就是静默不生效）。
   llm: {
@@ -584,8 +641,7 @@ const form = reactive({
     defaults: { temperature: 0, max_tokens: 65536, reasoning: '', json_mode: false },
     /** 载入时那份 defaults —— 保存时**只发改过的键**（没改的不发 = 后端保留原值与注释） */
     defaultsOrig: { temperature: 0, max_tokens: 65536, reasoning: '', json_mode: false },
-    /** extra_params 的文本形态（JSON）。空串 = 显式发 null = 删键（合并语义下"不发"删不掉） */
-    extra_params: '',
+
     /** [[llm.providers]]：只描述"怎么连"；api_key **只写不读**（服务端只回 api_key_set） */
     providers: [],
     /** [[llm.models]]：唯一模型清单（(provider, id) 唯一）；链路与接口只引用它的 id */
@@ -629,8 +685,8 @@ const LLM_LINK_HINT = { title: '封面文案', utility: '贴纸包·扫描标签
  * ⚠️ 新增块时先想清楚它属于哪一页：**请求参数/提示词 → 链路**，**接口/密钥/模型清单 → 模型**。
  */
 const LLM_TABS = [
-  { key: 'models', label: '模型配置', sub: '接口 · 密钥 · 模型清单' },
-  { key: 'links', label: '链路配置', sub: '默认参数 · 按链路覆盖 · 提示词' }
+  { key: 'models', label: '模型配置', sub: '接口 · 密钥 · 默认模型' },
+  { key: 'links', label: '链路配置', sub: '哪个任务用哪支 · 参数 · 提示词' }
 ]
 const LLM_TAB_KEY = 'yekitrim.settings.llmTab'
 /** 读回上次停在哪个子页（读不到/认不出 ⇒ 模型配置） */
@@ -643,6 +699,16 @@ const llmTab = ref(readLlmTab())
 function setLlmTab(key) {
   llmTab.value = key === 'links' ? 'links' : 'models'
   try { localStorage.setItem(LLM_TAB_KEY, llmTab.value) } catch (e) { /* 隐私模式：记住与否不影响功能 */ }
+}
+/** 「接口连接」是否展开（用户 2026-11-26：可折叠）—— 默认展开，状态记在 localStorage */
+const CONN_OPEN_KEY = 'yekitrim.settings.llmConnOpen'
+function readConnOpen() {
+  try { return localStorage.getItem(CONN_OPEN_KEY) !== '0' } catch (e) { return true }
+}
+const connOpen = ref(readConnOpen())
+function onConnToggle(e) {
+  connOpen.value = !!(e && e.target && e.target.open)
+  try { localStorage.setItem(CONN_OPEN_KEY, connOpen.value ? '1' : '0') } catch (e) { /* 隐私模式 */ }
 }
 /* ⚠️ 原来这里有一张"链路默认 thinking"表（default_thinking 的镜像）——
    v4 之后它没有读者了：链路不写 reasoning 就是**不表态**，由 [llm.defaults] 与方言决定。
@@ -665,14 +731,33 @@ const capsTitle = computed(() => capsError.value
   + '[[llm.models]].overrides（④ 模型列表里的「手填能力」）覆盖两者')
 
 // ---- v4：当前接口 / 参数基准 / 链路表 ----
-/** 当前生效的接口：active 命中就用它，空/认不出 ⇒ 第一份（与后端 `active_provider()` 同一条口径） */
-const activeProvider = computed(() => form.llm.providers.find((p) => p.id === form.llm.active)
+/**
+ * **正在编辑**哪一份接口（本地状态，不落盘、不进 dirty）。
+ *
+ * ⚠️ 2026-11-26 起与"哪一份生效"解耦：左栏点一行只切编辑对象，`[llm] active` 只由右栏的
+ *    「设为当前使用」改。以前两者是同一个值 ⇒ 新建/编辑第二份接口会顺手把全局换掉。
+ */
+const editingProviderId = ref('')
+const editingProvider = computed(() => form.llm.providers.find((p) => p.id === editingProviderId.value)
   || form.llm.providers[0] || null)
-/** 能力（内置目录 / 探针）按**当前接口的** (base_url, model) 取 */
-const effBaseUrl = computed(() => String((activeProvider.value && activeProvider.value.base_url) || ''))
-const effModel = computed(() => String((activeProvider.value && activeProvider.value.model) || ''))
-/** ① 的密钥草稿：只写不读 —— 表单里永远是空的，填了才发（保存后由回读清掉） */
-const curApiKeyDraft = computed(() => String((activeProvider.value && activeProvider.value.api_key) || ''))
+/** 保证编辑对象一定指向存在的那一份（载入 / 回读 / 删除之后都要调） */
+function ensureEditingProvider() {
+  const list = form.llm.providers
+  if (!list.length) { editingProviderId.value = ''; return }
+  if (!list.some((p) => p.id === editingProviderId.value)) {
+    editingProviderId.value = (list.find((p) => p.id === form.llm.active) || list[0]).id
+  }
+}
+function selectProvider(id) { editingProviderId.value = String(id || '') }
+/** 设为当前使用：**只有这一处**改 active（左栏的「用」徽标读它） */
+function setActiveProvider(id) { form.llm.active = String(id || '') }
+// 载入 / 保存会整份换 form.llm：编辑对象跟着重新落位（那一份不存在了才换）
+watch(() => form.llm.providers.map((p) => p.id).join('|'), ensureEditingProvider)
+/** 能力（内置目录 / 探针）按**正在编辑那份接口的** (base_url, model) 取 */
+const effBaseUrl = computed(() => String((editingProvider.value && editingProvider.value.base_url) || ''))
+const effModel = computed(() => String((editingProvider.value && editingProvider.value.model) || ''))
+/** 右栏的密钥草稿：只写不读 —— 表单里永远是空的，填了才发（保存后由回读清掉） */
+const curApiKeyDraft = computed(() => String((editingProvider.value && editingProvider.value.api_key) || ''))
 
 // API **协议**清单（请求怎么发）：后端 `/config/llm/protocols`；没有就内置只读清单并标注「内置」。
 const protocols = ref([])
@@ -724,14 +809,41 @@ async function loadCaps() {
  */
 function onProbeCaps(payload) {
   let changed = false
+  const probed = []
   for (const m of ((payload && payload.models) || [])) {
     if (!m || !m.id) continue
     const id = String(m.id)
-    if (m.caps) { probeCaps[id] = normalizeCaps({ caps: m.caps }); changed = true }
+    if (m.caps) { probeCaps[id] = normalizeCaps({ caps: m.caps }); probeCapsRaw[id] = m.caps; changed = true }
     // 这次探针**没给**能力 ⇒ 清掉旧的那份（别缓存住上一次的，否则"探针没有"会被旧值骗过去）
-    else if (probeCaps[id]) { delete probeCaps[id]; changed = true }
+    else if (probeCaps[id]) { delete probeCaps[id]; delete probeCapsRaw[id]; changed = true }
+    probed.push({ id, label: String(m.name || ''), provider: String((payload && payload.providerId) || '') })
   }
+  // ⚠️ 探到的模型要**带回 ① 的候选**：以前 probeModels 只初始化、从不赋值 ⇒
+  //    「获取模型」之后 ① 的下拉里还是空的，用户得先去 ④ 逐支「加入」再回 ① 选。
+  if (probed.length) form.llm.probeModels = probed
   if (changed) loadCaps()
+}
+
+/**
+ * ① 里选中一支模型之后：清单里没有就**顺手写进去**（一次点击完成"加入 + 选用"）。
+ *
+ * ⚠️ 只在**用户真的点选**时发生（组件 emit 的 pick-model），不挂在 model 的 watch 上 ——
+ *    否则一进页面就会因为"当前模型不在清单里"把配置改脏。
+ */
+function onPickModel(payload) {
+  const p = payload || {}
+  const id = String(p.model || '').trim()
+  const pid = String(p.providerId || form.llm.active || '').trim()
+  if (!id || !pid) return
+  if (form.llm.models.some((m) => String(m.id || '').trim() === id && String(m.provider || '') === pid)) return
+  const raw = probeCapsRaw[id]
+  form.llm.models.push({
+    id,
+    provider: pid,
+    label: '',
+    catalog: raw && typeof raw === 'object' ? JSON.parse(JSON.stringify(raw)) : null,
+    overrides: null
+  })
 }
 
 // base_url / model 一变就重取能力（等 400ms 再发，别边打字边打接口）
@@ -755,13 +867,16 @@ const llmLinks = computed(() => form.llm.overrideLinks.map((key) => ({
   hint: LLM_LINK_HINT[key] || ''
 })))
 
-/** ① 的模型候选：属于当前接口的清单行（一条都没有就全给）+ 刚探测到、还没加入清单的 */
+/** ① 的模型候选：**只属于当前接口**的清单行 + 刚探测到、还没加入清单的（inList=false） */
 const endpointModelOptions = computed(() => {
-  const mine = form.llm.models.filter((m) => m.id && m.provider === form.llm.active)
-  const list = (mine.length ? mine : form.llm.models.filter((m) => m.id))
-    .map((m) => ({ id: m.id, label: m.label || m.id }))
+  // ⚠️ **只给这个接口名下的**：以前"本接口一支都没有"时会退成**全清单**，于是 A 家的模型能被
+  //    选成 B 家的默认模型（后端不校验，跑起来就是 404 model not found）。
+  const list = form.llm.models
+    .filter((m) => m.id && String(m.provider || '') === editingProviderId.value)
+    .map((m) => ({ id: m.id, label: m.label || m.id, inList: true }))
   for (const p of form.llm.probeModels) {
-    if (p.id && !list.some((x) => x.id === p.id)) list.push({ id: p.id, label: p.label || p.id })
+    if (!p.id || String(p.provider || '') !== editingProviderId.value) continue
+    if (!list.some((x) => x.id === p.id)) list.push({ id: p.id, label: p.label || p.id, inList: false })
   }
   return list
 })
@@ -770,6 +885,22 @@ const allModelOptions = computed(() => form.llm.models.filter((m) => m.id)
   .map((m) => ({ id: m.id, provider: m.provider, label: m.label || m.id })))
 /** ③ 推理下拉的档位候选：当前模型能力面的那份（空 = 只画「跟默认」） */
 const linkLevels = computed(() => (caps.value && Array.isArray(caps.value.levels) ? caps.value.levels : []))
+/** model id → 档位数组：链路表**按行**取。
+ *  ⚠️ 以前全表共用 `linkLevels`（= 当前接口那支模型的档位）⇒ 检测用 A、精修改 B 时，
+ *     B 那行的候选是 A 的（选出来就是一串不会被发送的档位）。候选只从清单 catalog / 探针来。 */
+const levelsByModel = computed(() => {
+  const out = {}
+  for (const m of form.llm.models) {
+    const id = String(m.id || '').trim()
+    if (!id) continue
+    const c = normalizeCaps(m.catalog || null)
+    if (c && Array.isArray(c.levels) && c.levels.length) out[id] = c.levels
+  }
+  for (const [id, c] of Object.entries(probeCaps)) {
+    if (c && Array.isArray(c.levels) && c.levels.length) out[id] = c.levels
+  }
+  return out
+})
 
 /** 只夹范围、不吸附 step（SliderField 的手填也是这个口径）；非数字回落 fallback。 */
 function clampNum(v, min, max, fallback) {
@@ -817,7 +948,7 @@ function buildGlobalPatch() {
  *
  *  ⚠️ 以前它是个"视图"：勾选要同时改 `[llm.params] json_mode` 与 `extra_params.response_format`
  *  两处，否则界面显示与实际请求不一致。v4 之后 json_mode 就是一等的 bool 键，**不用再改 extra_params**
- *  —— 反过来：extra_params 里若还手写着 response_format，保存时会被已知键冲突判据拒绝（见 parseExtraParams）。
+ *  —— 反过来：模型级 extra_params 里若还手写着 response_format，保存时会被已知键冲突判据拒绝（extra.js）。
  */
 const jsonModeOn = computed(() => form.llm.defaults.json_mode === true)
 function setJsonMode(on) { form.llm.defaults.json_mode = !!on }
@@ -839,30 +970,6 @@ function changedParams(v, orig) {
   if (r !== (o.reasoning || '')) out.reasoning = r === '' ? null : r
   if (typeof now.json_mode === 'boolean' && now.json_mode !== o.json_mode) out.json_mode = now.json_mode ? true : null
   return out
-}
-
-/** extra_params 里**已知的**结构化键：出现即拒绝（D4）—— 否则"手写 thinking"与"档位"会互相打架。 */
-const KNOWN_EXTRA_KEYS = [
-  'temperature', 'max_tokens', 'max_completion_tokens', 'top_p', 'reasoning',
-  'reasoning_effort', 'thinking', 'thinking_budget', 'response_format'
-]
-
-/**
- * extra_params → 要写进 patch 的值：**空串 = null（删键）**，非空 = JSON 对象。
- * 清空必须显式发 null：合并语义下"没提到这个键"= 保持原值，用户会看到"清空后又回来了"。
- */
-function parseExtraParams(raw) {
-  const t = String(raw || '').trim()
-  if (!t) return null
-  let obj
-  try { obj = JSON.parse(t) } catch (e) { throw new Error('extra_params 不是合法 JSON，请检查格式') }
-  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) throw new Error('extra_params 必须是 JSON 对象')
-  const bad = Object.keys(obj).filter((k) => KNOWN_EXTRA_KEYS.includes(k))
-  if (bad.length) {
-    throw new Error('extra_params 里有已知键：' + bad.join(' / ')
-      + ' —— 这些请用上面的结构化设置（温度 / 输出上限 / 推理档位 / 要求 JSON），否则两处会互相打架')
-  }
-  return obj
 }
 
 /**
@@ -913,6 +1020,9 @@ function buildModels(f) {
     if (String(m.label || '').trim()) row.label = String(m.label).trim()
     if (m.catalog && typeof m.catalog === 'object') row.catalog = m.catalog
     if (m.overrides && typeof m.overrides === 'object' && Object.keys(m.overrides).length) row.overrides = m.overrides
+    if (m.extra_params && typeof m.extra_params === 'object' && Object.keys(m.extra_params).length) {
+      row.extra_params = m.extra_params
+    }
     return row
   }).filter((m) => m.id)
 }
@@ -945,7 +1055,6 @@ function buildLlmPatch() {
     active: String(f.active || ''),
     max_concurrent: Math.max(1, Math.round(Number(f.max_concurrent) || 3)),
     defaults: changedParams(f.defaults, f.defaultsOrig),
-    extra_params: parseExtraParams(f.extra_params),
     links: buildLinks(f)
   }
   // ⚠️ **数组是整份替换**（合并语义只对对象递归）⇒ 没改就**不发**：
@@ -966,6 +1075,10 @@ function buildLlmPatch() {
  */
 function applyLlmConfig(d) {
   const l = (d && d.llm_config) || {}
+  // ⚠️ 服务端形状守卫（2026-11-26）：v4 之前 llm_config.models 是 **map**、也没有 override_links。
+  //    新界面 + 旧后端 = 保存被 400 拒绝，而错误藏在一条 TOML 报错里（"expected a map"）。
+  //    这里提前认出来：界面照实说明 + 拦住写入（别让用户拿一个看不懂的 400 猜）。
+  llmLegacyBackend.value = (l.models != null && !Array.isArray(l.models)) || !Array.isArray(l.override_links)
   const def = l.defaults || {}
   const gTemp = def.temperature ?? 0
   const gMax = def.max_tokens ?? 65536
@@ -983,9 +1096,6 @@ function applyLlmConfig(d) {
       reasoning: normalizeLevel(ov.reasoning)
     }
   }
-  const extra = (l.extra_params && Object.keys(l.extra_params).length)
-    ? JSON.stringify(l.extra_params, null, 2)
-    : ''
   // 检测链路的提示词与评分权重（S4 起住 llm.toml；[detection] 里那两个键已经没有了）
   const dp = (l.links && l.links.detect && l.links.detect.prompt) || {}
   const dprompt = {
@@ -1010,7 +1120,6 @@ function applyLlmConfig(d) {
       reasoning: normalizeLevel(def.reasoning),
       json_mode: def.json_mode === true
     },
-    extra_params: extra,
     detectPrompt: { ...dprompt, reference_titles: [...dprompt.reference_titles] },
     detectPromptOrig: { ...dprompt, reference_titles: [...dprompt.reference_titles] },
     detectRun: { llm_score_weight: drun.llm_score_weight ?? 0.3 },
@@ -1031,7 +1140,9 @@ function applyLlmConfig(d) {
       provider: String(m.provider || ''),
       label: m.label || '',
       catalog: (m.catalog && typeof m.catalog === 'object') ? JSON.parse(JSON.stringify(m.catalog)) : null,
-      overrides: (m.overrides && typeof m.overrides === 'object') ? JSON.parse(JSON.stringify(m.overrides)) : null
+      overrides: (m.overrides && typeof m.overrides === 'object') ? JSON.parse(JSON.stringify(m.overrides)) : null,
+      // 每个模型自己的额外请求参数（2026-11-26）；空 = 不写这个键
+      extra_params: (m.extra_params && typeof m.extra_params === 'object') ? JSON.parse(JSON.stringify(m.extra_params)) : null
     })),
     links: rows,
     overrideLinks: linkList,
@@ -1073,8 +1184,13 @@ async function refreshEffective() {
   if (failed.length) effectiveError.value = '这些链路没取到生效值：' + failed.join(' / ')
 }
 
-// ---- 高级：接口增删（④ 与 ③ 的引用要跟着清）----
-/** 新建一份接口：先把 active 切过去，否则"新建了却看不到"（① 只渲染当前那一份） */
+// ---- 接口增删（左栏 + 右栏底部；③ 的引用要跟着清）----
+/**
+ * 新建一份接口：**只切到编辑，不动 active**（2026-11-26）。
+ *
+ * ⚠️ 以前这里顺手 `form.llm.active = id` —— "加个备用接口"会把所有没单独指定的任务一起换过去，
+ *    保存后才发现检测/标题都跑到新接口上。现在"用哪一份"只能由右栏「设为当前使用」显式决定。
+ */
 function addProvider() {
   const used = new Set(form.llm.providers.map((p) => String(p.id || '')))
   let n = form.llm.providers.length + 1
@@ -1084,20 +1200,36 @@ function addProvider() {
     id, name: '新接口 ' + n, protocol: 'openai-chat', base_url: '',
     api_key: '', api_key_env: '', api_key_set: false, model: ''
   })
-  form.llm.active = id
+  editingProviderId.value = id
 }
 /**
  * 删一份接口：**连带**摘掉它名下的模型与指向它的链路覆盖。
  * ⚠️ 不摘的话保存会被写通道拦下（"模型 X 的 provider 认不出"），而且是**整份 400**。
+ * ⚠️ 必须二次确认：一个垃圾桶点击能连带改掉三类数据（模型 / 链路 / active），
+ *    而"删错了"在保存前没有任何痕迹（以前没有确认，实测容易误点）。
  */
-function removeProvider(id) {
+async function removeProvider(id) {
   const pid = String(id || '')
+  const one = form.llm.providers.find((p) => p.id === pid)
+  const nModels = form.llm.models.filter((m) => m.provider === pid).length
+  const nLinks = Object.values(form.llm.links || {}).filter((r) => r && r.provider === pid).length
+  const extra = []
+  if (nModels) extra.push('摘掉 ' + nModels + ' 支模型')
+  if (nLinks) extra.push('清掉 ' + nLinks + ' 条链路的接口指定')
+  if (form.llm.active === pid) extra.push('并换用另一份接口')
+  const ok = await confirmDialog(
+    '删除接口「' + ((one && one.name) || pid) + '」？' + (extra.length ? '会' + extra.join('、') + '。' : '')
+    + '保存后生效。',
+    { title: '删除接口', danger: true }
+  )
+  if (!ok) return
   form.llm.providers = form.llm.providers.filter((p) => p.id !== pid)
   form.llm.models = form.llm.models.filter((m) => m.provider !== pid)
   for (const row of Object.values(form.llm.links || {})) {
     if (row.provider === pid) row.provider = ''
   }
   if (form.llm.active === pid) form.llm.active = (form.llm.providers[0] && form.llm.providers[0].id) || ''
+  ensureEditingProvider()
 }
 
 // ---- 方言注册表（④ 的「推理写法」下拉）----
@@ -1148,6 +1280,7 @@ async function loadConfig() {
     })
     // LLM 那一半**先**装（提示词 / 参考标题现在住 llm.toml —— 下面那行要用它）
     applyLlmConfig(d)
+    ensureEditingProvider()
     // ⚠️ S4：参考标题在 llm.toml 的 [llm.links.detect.prompt] ⇒ 必须在 applyLlmConfig 之后读
     referenceTitlesText.value = (form.llm.detectPrompt.reference_titles || []).join('\n')
     // **留空 ⇒ 把内建默认值填进去**（用户口径，见 `referenceTitlesDefault` 的注释）：
@@ -1187,12 +1320,62 @@ async function loadConfig() {
 // ⚠️ **三份基线**（不是一份）：L3 起「保存 LLM」与「保存提示词」是两个独立动作，
 //    一份基线会让"存了 LLM"顺手把提示词的未保存改动也标成已保存（或反之）。
 //    三块的判定各自只覆盖自己会丢的输入：
-//      · baseLlm     = form.llm（接口 / 参数 / 链路 / 模型清单 / extra_params）
+//      · baseLlm     = form.llm（接口 / 参数 / 链路 / 模型清单（含每模型额外参数））
 //      · basePrompts = ⑤ 提示词那三件的文本（参考标题在 form 外）
 //      · baseGlobal  = 程序配置页那几块 + 源码编辑器的 raw（提示词那三键**除外**：它们归 basePrompts）
-let baseLlm = ''
-let basePrompts = ''
-let baseGlobal = ''
+const baseLlm = ref('')
+const basePrompts = ref('')
+const baseGlobal = ref('')
+/** LLM 那半边的状态串：**剔掉提示词**（它归 basePrompts）。
+ *
+ *  ⚠️ 以前 baseLlm 拍的是整份 `form.llm`，而 form.llm 里就含着 detectPrompt ⇒ 改一个字提示词
+ *     两处一起变脏；更糟的是「保存 LLM」会 reloadLlm → applyLlmConfig 把整份 form.llm 换掉，
+ *     于是**还没保存的提示词被静默回滚**（用户以为存上了）。拆开后才能各自判定、各自保护。 */
+function llmStateJSON() {
+  // 剔掉三类"不是用户改动"的东西：
+  //  · detectPrompt（提示词归 basePrompts）、*Orig（载入快照）
+  //  · probeModels（「取候选」的临时候选，从来不落盘 —— 留着它会出现"点了取候选就变脏"）
+  const { detectPrompt, detectPromptOrig, defaultsOrig, providersOrig, modelsOrig, probeModels, ...rest } = form.llm
+  return JSON.stringify(rest)
+}
+/** 换接口就丢掉上一份的候选（否则 A 家探到的模型会被当成 B 家的候选） */
+watch(() => form.llm.active, () => { form.llm.probeModels = [] })
+const llmDirty = computed(() => loaded.value && llmStateJSON() !== baseLlm.value)
+/** 哪些模型的「额外参数」不是合法 JSON（非空 ⇒ 不许保存：宁可这次不落盘，也别把坏值写进 llm.toml） */
+const modelExtraInvalid = computed(() => (form.llm.models || [])
+  .filter((m) => m && m._extraErr)
+  .map((m) => String(m.id || '(未命名)')))
+const modelExtraInvalidTitle = computed(() => modelExtraInvalid.value.length
+  ? '这些模型的「额外参数」不是合法 JSON：' + modelExtraInvalid.value.join(' / ')
+  : '')
+const promptDirty = computed(() => loaded.value && promptStateJSON() !== basePrompts.value)
+/** 保存条上的一句话（≤20 字）；细节进 title */
+const llmDirtyText = computed(() => {
+  if (llmDirty.value && promptDirty.value) return '接口/模型与提示词未保存'
+  if (llmDirty.value) return '接口/模型有改动未保存'
+  if (promptDirty.value) return '提示词有改动未保存'
+  return ''
+})
+const llmDirtyTitle = computed(() => {
+  const bits = []
+  if (llmDirty.value) bits.push('接口 / 密钥 / 模型清单 / 参数 / 链路覆盖 / 模型额外参数')
+  if (promptDirty.value) bits.push('提示词（参考标题 / system_prompt / prompt_template）')
+  return '未保存：' + bits.join('；') + ' —— 点右边的按钮落盘'
+})
+/** 保存失败/回读不一致时，从保存条跳到页头那条横幅（详情在那边；保存条只给一句话） */
+function jumpToSaveError() {
+  const el = document.querySelector('[data-llm-save-error]')
+  if (el && el.scrollIntoView) el.scrollIntoView({ block: 'center', behavior: 'smooth' })
+}
+/** 本地时钟 HH:MM（保存反馈用） */
+function clockHHMM() {
+  const d = new Date()
+  const p = (n) => String(n).padStart(2, '0')
+  return p(d.getHours()) + ':' + p(d.getMinutes())
+}
+/** 上次保存成功的时间；刷新页面后从「没有改动」重新开始 */
+const savedAt = ref('')
+function markSaved() { savedAt.value = clockHHMM() }
 /** ⑤ 提示词那三件的状态串（唯一口径；快照与判定都用它） */
 function promptStateJSON() {
   return JSON.stringify({
@@ -1213,16 +1396,98 @@ function globalStateJSON() {
   })
 }
 function snapshotFormBaseline() {
-  baseLlm = JSON.stringify(form.llm)
-  basePrompts = promptStateJSON()
-  baseGlobal = globalStateJSON()
+  baseLlm.value = llmStateJSON()
+  basePrompts.value = promptStateJSON()
+  baseGlobal.value = globalStateJSON()
 }
+/** 程序配置页那几块脏了没（自动保存按它判断） */
+const globalDirty = computed(() => loaded.value && globalStateJSON() !== baseGlobal.value)
 const formDirty = computed(() => {
   if (!loaded.value) return false
-  return JSON.stringify(form.llm) !== baseLlm
-    || promptStateJSON() !== basePrompts
-    || globalStateJSON() !== baseGlobal
+  return llmDirty.value || promptDirty.value || globalDirty.value
 })
+
+// ---- 自动保存（2026-11-26 用户口径：改完就存 + 防抖；手动按钮保留）----
+/**
+ * 防抖：**停手 1.2s 才发请求**。拖滑块 / 连续敲字期间一个字节都不落盘。
+ * ⚠️ 别再调小到 0：每敲一个字 PUT 一次会让 llm.toml 的注释与顺序被反复重写，也让"我刚才存了什么"不可追溯。
+ */
+const AUTO_SAVE_MS = 1200
+/** 自动保存状态：idle | saving | ok | err（保存条据此给反馈） */
+const autoSave = reactive({ state: 'idle', at: '', error: '' })
+let autoTimer = null
+let autoRunning = false
+let autoQueued = false
+
+function scheduleAutoSave() {
+  if (!loaded.value) return
+  if (editSource.value) return   // 源文件模式是手写 TOML，中间态必然非法 —— 只手动保存
+  clearTimeout(autoTimer)
+  autoTimer = setTimeout(() => { autoTimer = null; runAutoSave() }, AUTO_SAVE_MS)
+}
+
+/** 跑一轮自动保存：按子页决定存哪几块（提示词先存，免得 llm 那份 patch 带着旧的参考标题）。 */
+async function runAutoSave() {
+  if (autoRunning) { autoQueued = true; return }
+  // 手动保存正在飞：等它落地再排下一轮（别把"正在保存"当成自动保存失败）
+  if (promptSaving.value || llmSaving.value || globalSaving.value) {
+    autoTimer = setTimeout(() => { autoTimer = null; runAutoSave() }, 500)
+    return
+  }
+  // 新旧不匹配：自动保存也停（否则每 1.2s 撞一次 400）
+  if (llmLegacyBackend.value) {
+    autoSave.state = 'err'
+    autoSave.error = '服务端版本过旧，已暂停自动保存'
+    return
+  }
+  if (modelExtraInvalid.value.length) {
+    autoSave.state = 'err'
+    autoSave.error = modelExtraInvalidTitle.value
+    return
+  }
+  const jobs = []
+  if (props.section === 'llm') {
+    if (promptDirty.value) jobs.push(() => savePrompts({ quiet: true, auto: true }))
+    if (llmDirty.value) jobs.push(() => saveLlm({ quiet: true, auto: true }))
+  } else if (props.section === 'config' && globalDirty.value) {
+    jobs.push(() => saveGlobal({ quiet: true, auto: true }))
+  }
+  if (!jobs.length) { autoSave.state = 'idle'; return }
+  autoRunning = true
+  autoSave.state = 'saving'
+  autoSave.error = ''
+  try {
+    for (const job of jobs) {
+      const r = await job()
+      if (r && r.ok === false) throw new Error(r.error || '保存失败')
+    }
+    autoSave.state = 'ok'
+    autoSave.at = clockHHMM()
+    markSaved()
+  } catch (e) {
+    autoSave.state = 'err'
+    autoSave.error = (e && e.message) || String(e)
+  } finally {
+    autoRunning = false
+    if (autoQueued) { autoQueued = false; scheduleAutoSave() }
+  }
+}
+
+// 三块脏标记任一变化就排一次自动保存；全部落回干净时把状态收回 idle
+watch([llmDirty, promptDirty, globalDirty], () => {
+  if (!loaded.value) return
+  if (!llmDirty.value && !promptDirty.value && !globalDirty.value) {
+    if (autoSave.state !== 'ok') autoSave.state = 'idle'
+    return
+  }
+  if (modelExtraInvalid.value.length) {
+    autoSave.state = 'err'
+    autoSave.error = modelExtraInvalidTitle.value
+    return
+  }
+  scheduleAutoSave()
+})
+onBeforeUnmount(() => { if (autoTimer) clearTimeout(autoTimer) })
 onBeforeRouteLeave(async () => {
   if (!formDirty.value) return true
   // ⚠️ confirmDialog 只认 { title, danger }（stores/dialog.js），按钮文案是默认的「确认/取消」。
@@ -1253,20 +1518,53 @@ function syncReferenceTitlesFromText() {
     .filter(Boolean)
 }
 
-async function saveGlobal() {
-  if (!loaded.value) { toast('配置未加载成功，已禁止保存', 'err'); return }
+/** 「保存配置」的在飞闸（自动保存与手动按钮可能同时到） */
+const globalSaving = ref(false)
+/**
+ * 保存程序配置。
+ *
+ * @param {{ quiet?: boolean, auto?: boolean }} [opts]
+ *   quiet = 不弹 toast；auto = **自动保存模式**：不整份重读（重读会把正在编辑的输入框换掉）。
+ * @returns {Promise<{ok:boolean, error?:string}>}
+ */
+async function saveGlobal(opts = {}) {
+  const quiet = opts && opts.quiet === true
+  const auto = opts && opts.auto === true
+  if (!loaded.value) {
+    const msg = '配置未加载成功，已禁止保存'
+    if (!quiet) toast(msg, 'err')
+    return { ok: false, error: msg }
+  }
+  if (globalSaving.value) return { ok: false, error: '正在保存' }
+  globalSaving.value = true
   try {
     syncReferenceTitlesFromText()
     if (editSource.value) {
       await api('/api/config/global', { method: 'PUT', body: JSON.stringify({ raw: globalRaw.value }) })
-      toast('config.toml 已保存')
+      if (!quiet) toast('config.toml 已保存')
     } else {
       await api('/api/config/global', { method: 'PUT', body: JSON.stringify({ patch: buildGlobalPatch() }) })
-      toast('程序配置已保存（其余未在表单中的配置保持不变）')
+      if (!quiet) toast('程序配置已保存（其余未在表单中的配置保持不变）')
+    }
+    if (auto) {
+      // ⚠️ 自动保存**不重读**：loadConfig() 会把整份表单换成服务端版本 —— 用户正在敲的输入框
+      //    （焦点 / 光标 / 滚动位置）会当场重置。只把基线推到"刚存下的这份"。
+      await nextTick()
+      baseGlobal.value = globalStateJSON()
+      basePrompts.value = promptStateJSON()
+      markSaved()
+      return { ok: true }
     }
     await loadConfig()
     editSource.value = false
-  } catch (e) { toast(e.message, 'err') }
+    return { ok: true }
+  } catch (e) {
+    const msg = (e && e.message) || String(e)
+    if (!quiet) toast(msg, 'err')
+    return { ok: false, error: msg }
+  } finally {
+    globalSaving.value = false
+  }
 }
 
 /** 保存失败的原因（**常驻**显示在页面顶部，不是一闪就没的 toast —— P0：400 被吞过，用户以为存上了） */
@@ -1307,9 +1605,10 @@ async function verifyLlmSaved(expect) {
 async function reloadLlm() {
   const d = await api('/api/config')
   applyLlmConfig(d)
+  ensureEditingProvider()
   await refreshEffective()
   await nextTick()
-  baseLlm = JSON.stringify(form.llm)
+  baseLlm.value = llmStateJSON()
 }
 
 /**
@@ -1319,9 +1618,13 @@ async function reloadLlm() {
  *   错误横幅 `llmSaveError` 与回读校验 `llmSaveWarn` 照旧（**不许静默**）。
  * @returns {Promise<{ok: boolean, error?: string}>} 调用方要先保存成功才做下一步，所以必须回结果。
  *
- * ⚠️ **只写 llm.toml**：提示词在「⑤ 提示词」有自己的保存按钮（它写 config.toml 的 [detection]）。
- *    历史病根：这个按钮曾同时写两个文件 —— 用户改提示词后点这里"看着成功"，实际只落了一个文件。
+ * ⚠️ **只写 llm.toml**：提示词在「⑤ 提示词」有自己的保存按钮（写的也是 llm.toml 的
+ *    [llm.links.detect.prompt]，但那是**另一个动作**，别合并成一颗按钮）。
+ *    ⚠️ 反过来这条也要守：本函数会 reloadLlm（整份重读），**必须先把提示词草稿捞出来再放回去** ——
+ *    否则用户在 ⑤ 改了一半、回上面点「保存 LLM」，草稿就被静默回滚（2026-11-26 修）。
  */
+/** 「保存 LLM」的在飞闸：防连点（同一个 PUT 发两次）*/
+const llmSaving = ref(false)
 async function saveLlm(opts = {}) {
   const quiet = opts && opts.quiet === true
   if (!loaded.value) {
@@ -1329,8 +1632,24 @@ async function saveLlm(opts = {}) {
     if (!quiet) toast(msg, 'err')
     return { ok: false, error: msg }
   }
+  if (llmSaving.value) return { ok: false, error: '正在保存' }
+  if (llmLegacyBackend.value) {
+    const msg = '服务端版本过旧（llm 配置还是旧形状），已阻止保存 —— 请重启/重新构建服务端'
+    llmSaveError.value = '保存失败：' + msg
+    if (!quiet) toast(msg, 'err')
+    return { ok: false, error: msg }
+  }
+  if (modelExtraInvalid.value.length) {
+    const msg = '这些模型的「额外参数」不是合法 JSON：' + modelExtraInvalid.value.join(' / ')
+    llmSaveError.value = '保存失败：' + msg
+    if (!quiet) toast(msg, 'err')
+    return { ok: false, error: msg }
+  }
+  llmSaving.value = true
   llmSaveError.value = ''
   llmSaveWarn.value = ''
+  // 提示词草稿：重读会覆盖 form.llm.detectPrompt，先原样留一份（它不属于这次 patch）
+  const promptDraft = promptDirty.value ? JSON.parse(JSON.stringify(form.llm.detectPrompt)) : null
   try {
     const patch = buildLlmPatch()
     // 期望落盘条数按**表单**算（patch 里可能没带数组 —— 没改就不发）
@@ -1340,8 +1659,20 @@ async function saveLlm(opts = {}) {
       ids: form.llm.providers.map((p) => p.id)
     }
     await putLlm(patch)
+    if (opts && opts.auto === true) {
+      // 自动保存：**不重读**（重读会把用户正在编辑的整份表单换掉）。
+      // 只把"载入快照"补上 —— 否则下一次保存会以为数组改过，把 [[llm.providers]] 压成内联数组。
+      await nextTick()
+      form.llm.providersOrig = JSON.stringify(buildProviders(form.llm))
+      form.llm.modelsOrig = JSON.stringify(buildModels(form.llm))
+      baseLlm.value = llmStateJSON()
+      markSaved()
+      return { ok: true }
+    }
     await reloadLlm()
+    if (promptDraft) form.llm.detectPrompt = promptDraft
     await verifyLlmSaved(expect)
+    if (!promptDraft) markSaved()
     if (!quiet) toast(llmSaveWarn.value ? 'LLM 配置已保存（但回读不一致，见顶部提示）' : 'LLM 配置已保存')
     return { ok: true }
   } catch (e) {
@@ -1350,20 +1681,27 @@ async function saveLlm(opts = {}) {
     llmSaveError.value = '保存失败：' + msg
     if (!quiet) toast(e.message, 'err')
     return { ok: false, error: msg }
+  } finally {
+    llmSaving.value = false
   }
 }
 
 /** ⑤ 提示词自己的保存态（与「保存 LLM」不是一件事，别合并） */
 const promptSaving = ref(false)
 /**
- * 保存提示词：**只写 config.toml 的 [detection]** 三键（参考标题 / system_prompt / prompt_template）。
+ * 保存提示词：写 llm.toml 的 `[llm.links.detect.prompt]` 三件（参考标题 / system_prompt / prompt_template）。
  *
- * ⚠️ 与 saveLlm 完全独立（用户口径：独立保存按钮 + 明确标注写哪个文件）。
+ * ⚠️ 与 saveLlm 完全独立（用户口径：独立保存按钮 + 明确标注写哪一份）。
  * ⚠️ 保存后**不整份 reload**（那会冲掉还没保存的 LLM 编辑）：只把本块的基线换新。
  */
-async function savePrompts() {
-  if (!loaded.value) { toast('配置未加载成功，已禁止保存', 'err'); return }
-  if (promptSaving.value) return
+async function savePrompts(opts = {}) {
+  const quiet = opts && opts.quiet === true
+  if (!loaded.value) {
+    const msg = '配置未加载成功，已禁止保存'
+    if (!quiet) toast(msg, 'err')
+    return { ok: false, error: msg }
+  }
+  if (promptSaving.value) return { ok: false, error: '正在保存' }
   promptSaving.value = true
   try {
     syncReferenceTitlesFromText()
@@ -1378,13 +1716,16 @@ async function savePrompts() {
     const empty = !prompt.system_prompt.trim() && !prompt.prompt_template.trim() && !prompt.reference_titles.length
     await putLlm({ llm: { links: { detect: { prompt: empty ? null : prompt } } } })
     form.llm.detectPromptOrig = JSON.parse(JSON.stringify(p))
-    basePrompts = promptStateJSON()
-    baseLlm = JSON.stringify(form.llm)
-    toast('提示词已保存（llm.toml 的 [llm.links.detect.prompt]）')
+    basePrompts.value = promptStateJSON()
+    baseLlm.value = llmStateJSON()
+    markSaved()
+    if (!quiet) toast('提示词已保存（llm.toml 的 [llm.links.detect.prompt]）')
+    return { ok: true }
   } catch (e) {
     const msg = (e && e.message) || String(e)
     llmSaveError.value = '提示词保存失败：' + msg
-    toast(e.message, 'err')
+    if (!quiet) toast(e.message, 'err')
+    return { ok: false, error: msg }
   } finally {
     promptSaving.value = false
   }
@@ -1394,7 +1735,7 @@ onMounted(async () => {
   // /api/config 只有程序配置与 LLM 两个子页用（含源码编辑器）；模型列表只有「账号与模型」用。
   // 其余子页的组件自带接口，别白拉一遍。
   if (props.section === 'config' || props.section === 'llm') loadConfig()
-  // API 协议清单只服务「接口管理」的协议下拉（失败退内置清单，界面上标注）
+  // API 协议清单只服务右栏「接口连接」的协议下拉（失败退内置清单，界面上标注来源）
   // 方言清单只服务「模型列表 → 推理写法」的候选（失败就空下拉，不影响任何生效值）
   if (props.section === 'llm') { loadProtocols(); loadDialects() }
   // 每个子页都要：标签条靠它过滤掉本地模式 / 单人下不显示的项（store 有缓存，只有首次真发请求）。
@@ -1431,8 +1772,7 @@ onMounted(async () => {
 /* 表单密度：字段是一行「标签·滑块·数字框」，行高本来就矮，留白按行距给（8px 上下 / 12px 左右）。
    下面的 section/prompt 间距都跟着这条口径收，别再单独放大某一处。 */
 /* 表单密度：字段是一行「标签·滑块·数字框」，行高本来就矮，留白按行距给。
-   extra_params 与「源文件」并排（各 50%）：JSON 正文不需要更宽，再宽也是换行看不清。 */
-textarea.llm-extra { min-height:230px; resize:vertical; font-size:12px; line-height:1.6; }
+   （全局额外参数的编辑框已随 2026-11-26 口径删除：逃逸口只按模型存在。） */
 /* ⚠️ 原来的 .llm-cols（两栏 50/50 的链路覆盖网格）随 L3 的**链路表格**退场 ——
    表格 7 列各有语义，压成两栏只会把灰字截成省略号；窄屏改为**横滚**（LlmLinkTable 自带）。
    判据随之换成 check-layout-invariants.mjs ①②'（表格列定义 + 点开才编辑）。 */
@@ -1440,6 +1780,43 @@ textarea.llm-extra { min-height:230px; resize:vertical; font-size:12px; line-hei
 /* **所有分页共用的内容列**（程序配置 / LLM / 账号 / 系统集成 / 用量与日志）：
    min(760px,100%) + 左对齐 ⇒ 切标签时左边缘不跳；container-type 让下面的 @container 量的是**内容列**而不是视口。 */
 .settings-block { max-width:min(760px, 100%); container-type:inline-size; }
+/* ⚠️ **例外只给 LLM 配置页**（它的链路表有 7 列，728px 装不下会横滚）。别的子页别加这个类 ——
+   "每页各写一份 max-width"正是这一轮收敛掉的东西；要放宽就在这里显式登记一次。 */
+.settings-block.settings-wide { max-width:min(1040px, 100%); }
+/* 模型配置 = **左右结构**：左栏接口清单（固定 232px）+ 右栏连接信息/模型清单。
+   窄了（<=820px）折成一栏，顺序仍是"接口 → 连接 → 模型"。 */
+.llm-split { display:grid; grid-template-columns:232px minmax(0,1fr); gap:12px; align-items:start; }
+.llm-split-left { min-width:0; padding:8px; border-radius:var(--r-md); background:var(--card);
+  border:1px solid var(--line); box-shadow:var(--e-1); }
+.llm-split-right { display:flex; flex-direction:column; gap:12px; min-width:0; }
+@container (max-width: 820px) {
+  .llm-split { grid-template-columns:1fr; }
+}
+/* 保存条：粘在页头下方 —— 这一页很长（模型清单 / 链路表 / 提示词），保存按钮滚下去就看不见，
+   而"我改了到底存没存"是这一页最常被问到的事 */
+.llm-savebar { position:sticky; top:8px; z-index:6;
+  display:flex; align-items:center; gap:8px; flex-wrap:wrap; min-width:0;
+  margin:0 0 10px; padding:6px 10px; border-radius:var(--r-sm);
+  border:1px solid var(--line); background:var(--card); box-shadow:var(--e-1); }
+.llm-savebar.dirty { border-color:var(--main-glow); }
+.llm-dirty { display:inline-flex; align-items:center; gap:6px; font-size:11.5px; font-weight:600;
+  color:var(--pink-text); min-width:0; }
+.llm-dirty i { width:7px; height:7px; border-radius:50%; background:var(--pink-text); flex:none; }
+.llm-saved { font-size:11.5px; color:var(--ink-faint); }
+.llm-save-err { font-size:11.5px; font-weight:700; color:var(--pink-text); cursor:pointer; }
+.llm-save-warn { font-size:11.5px; font-weight:600; color:var(--ink-dim); cursor:pointer; }
+.llm-savebar-spacer { flex:1 1 auto; min-width:8px; }
+/* 接口连接：可折叠；收起时标题行仍要说清"正在编辑哪一份 / 是不是当前使用" */
+.llm-conn > summary { list-style:none; }
+.llm-conn > summary::-webkit-details-marker { display:none; }
+.llm-conn-head { display:flex; align-items:baseline; gap:8px; min-width:0; cursor:pointer; }
+.llm-conn-head::before { content:"▸"; flex:none; color:var(--ink-faint); font-size:11px; }
+.llm-conn[open] .llm-conn-head::before { content:"▾"; }
+.llm-conn[open] .llm-conn-head { margin-bottom:10px; }
+.llm-conn-spacer { flex:1 1 auto; min-width:8px; }
+.llm-conn-who { font-size:11.5px; color:var(--ink-dim); display:inline-flex; align-items:center; gap:6px; }
+.llm-conn-use { font-size:9.5px; line-height:1; padding:3px 5px; border-radius:999px;
+  background:var(--main-soft); color:var(--pink-text); font-weight:600; }
 /* 能力读取失败：照实说（红色常驻，不是一闪就没的 toast） */
 .caps-err { color:var(--pink-text); }
 .form-section { padding:8px 0; border-bottom:1px dashed var(--line-soft); }
@@ -1507,7 +1884,7 @@ button:disabled { opacity:.45; cursor:not-allowed; }
   .two-up { grid-template-columns:1fr; }
 }
 @media (max-width: 900px) {
-  textarea.llm-extra { min-height:160px; }
+
   .span-2 { grid-column:1 / -1; }
   .prompt-pair, .prompt-with-side { grid-template-columns:1fr; }
 }

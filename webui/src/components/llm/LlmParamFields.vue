@@ -172,7 +172,7 @@ function toggleInherit(inherit) {
     <SliderField v-if="show('max_tokens')" v-model="target.max_tokens" label="输出上限"
                  :min="256" :max="maxOut" :step="256" :hint="maxOutHint" />
 
-    <!-- 要求 JSON 输出：写的是全局 extra_params.response_format（不是每条链路自己的键） -->
+    <!-- 要求 JSON 输出：写的是 [llm.defaults] json_mode（不是每条链路自己的键，也不是 extra_params） -->
     <label v-if="show('json_mode')" class="lpf-check" :title="jsonTitle">
       <input type="checkbox" :checked="jsonMode" :disabled="jsonUnsupported"
              @change="emit('update:jsonMode', $event.target.checked)">

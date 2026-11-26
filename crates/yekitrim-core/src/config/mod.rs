@@ -83,7 +83,7 @@ pub const GLOBAL_CONFIG_TOML: &str = r#"# YekiTrim 全局默认配置 — 所有
 # 相同参数会被 yekitrim.toml 覆盖
 # ⚠️ config_version 是**配置结构版本**：程序读它决定要不要跑迁移。
 #    手工改配置时**别动这一行**（改了会让迁移跑错；见 config/version.rs）。
-config_version = 5
+config_version = 6
 
 [asr]
 # ASR 模式: "single"（SenseVoice 单模型）| "hybrid"（SenseVoice 打轴 + qwen3 填词）
@@ -338,7 +338,7 @@ multi_user = false
 /// 写小了的话新装的文件会被"升级"一次（多一个 .bak-v1），写大了则是本程序读不懂自己的模板。
 pub const LLM_CONFIG_TOML: &str = r#"# YekiTrim LLM 配置 — 独立于工程配置（v5：接口 / 模型清单 / 默认参数 / 链路覆盖 + 链路提示词与行为）
 # ⚠️ 配置结构版本，别手改（见 config/version.rs）
-config_version = 5
+config_version = 6
 
 [llm]
 # 当前用哪一份接口（= 下面 [[llm.providers]] 的 id；留空 = 第一份）
@@ -346,10 +346,7 @@ active = "main"
 # 并发请求数——事件检测 / 精修事件生成 / 字幕订正**共用这一个值**
 #（各链路要单独压，用 [llm.links.<link>.run] max_concurrent）
 max_concurrent = 3
-# 额外请求参数：**逃逸口**，整表原样进请求体、优先级最低（结构化参数之后才盖）。
-# ⚠️ 已知参数请用下面的结构化键（temperature / max_tokens / reasoning / top_p / json_mode），
-#    这里只放 provider 私有、上面表达不了的键（如 vendor 扩展）。
-# extra_params = { repetition_penalty = 1.05 }
+# ⚠️ 额外请求参数**按模型**写在 [[llm.models]].extra_params（2026-11-26 起取消全局那份）。
 
 # ── 请求参数：唯一基准（**省略 = 不发送**）──────────────────────────────
 [llm.defaults]
@@ -384,6 +381,8 @@ model = ""
 # provider = "main"
 # label = "显示名（可空）"
 # overrides = { thinking_wire = "openai_effort", max_output_wire = "max_tokens" }
+# 这一支模型专用的额外请求参数（整表原样进请求体；只放上面表达不了的私有键）
+# extra_params = { repetition_penalty = 1.05, seed = 42 }
 
 # ── 按链路覆盖：这条链路用哪个接口 / 哪个模型 / 怎么发 ─────────────────
 # 留空 = 跟随 [llm] active 与那份接口的默认模型；参数缺一项 = 跟随 [llm.defaults]。

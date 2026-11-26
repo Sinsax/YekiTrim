@@ -51,7 +51,7 @@ output_dir = "./output"
 overwrite = false
 ```
 
-⚠️ `llm.toml` 里 `extra_params` 那行样例 2026-11-14 已与 `LLM_CONFIG_TOML` 模板对齐（旧文档写 `disabled` 且没有 `response_format`）—— 文档与模板不一致时**以模板为准**。
+⚠️ `llm.toml` 的 `extra_params` 样例 2026-11-26 已**取消全局那份**：逃逸口只按模型写在 `[[llm.models]].extra_params`。文档与模板不一致时**以模板为准**。
 
 **`.yekitrim/config.toml` / `.yekitrim/llm.toml`** — 程序配置与 LLM 配置：**字段与注释的权威是 `config/mod.rs` 的两个模板常量**，逐字样例见 §1.2 / §1.3（`[asr]` 的 14 个键、`[correct]`、`[detection]`、`[cutting]`、`[sfx]`；llm 的 `[llm]` / `[llm.defaults]` / `[[llm.providers]]` / `[[llm.models]]` / `[llm.links.<link>]` + 它的 `.prompt` / `.run` 子表）。⚠️ S4 起 **config.toml 里没有任何 LLM 行为键**（提示词 / 窗口 / 并发 / 评分权重都在 llm.toml）。
 
@@ -118,7 +118,7 @@ overwrite = false
 
 - config/llm_v4.rs：**v4 的唯一形状**（LlmV4 / LlmProviderV4 / LlmModelEntry / LlmLinkSetting）
   + **纯迁移函数** from_v3(&LlmConfig) -> Migrated（不碰磁盘；dropped 里装「表达不了」的东西，调用方必须打 warn）。
-- 形状：[llm] active/max_concurrent/extra_params + [llm.defaults]（唯一参数基准）+ [[llm.providers]]（只描述怎么连）
+- 形状：[llm] active/max_concurrent + [llm.defaults]（唯一参数基准）+ [[llm.providers]]（只描述怎么连）
   + [[llm.models]]（唯一模型清单，(provider, id) 唯一）+ [llm.links.<link>]（接口/模型/参数覆盖）。
 - ⚠️ **决策 A**：provider.params 已废弃 —— v3 的 effective_params() 是「整体遮蔽」（接口写了一个键就整份顶掉顶层），
   那是「改一个字段悄悄丢 max_tokens」的根源；v4 只有 defaults + 链路覆盖两层。迁移照搬 v3 的生效值（整体取用），
@@ -127,6 +127,12 @@ overwrite = false
 - **v5 增量（S4）**：`[llm.links.<link>.prompt]`（检测的 system_prompt / prompt_template / reference_titles）
   与 `[llm.links.<link>.run]`（window_size / max_concurrent / llm_score_weight）—— 两者都**不进请求体**；
   解析入口只有 `prompt_for()` / `run_for()`（`LinkedLlm::run()` 把 run 一起带出来：`materialize()` 会清空 links）。
+- **2026-11-26 增量（config_version 5 → 6）**：`[[llm.models]].extra_params` = **每支模型自己的逃逸口**；
+  **全局 `[llm].extra_params` 已取消**。老文件那一行由 `migrate_llm_extra_params_to_models` 搬到
+  「active 接口 + 它的默认模型」的清单条目上（没有清单就补一条）—— 请求体逐字节不变；搬不动的由
+  `retired_in(5)` 兜底删。解析唯一入口仍是 `LlmV4::to_params()`（只看模型级）。
+  判据：`config::llm_v4::caps_source_tests::model_extra_params_go_into_request` 与
+  `config::version::tests::v6_moves_global_extra_params_onto_the_active_model`。
 - 当前状态：**接线完成（L1→L3 + S4）** —— `Config.llm` 就是 `LlmV4`；v3 的顶层三件 / `[llm.params]` / `[llm.overrides]` /
   `[llm.models."<id>"]` 与 v3 的类型（`LlmConfig` / `LlmProvider` / `LlmOverrides`）**已删除**，只剩迁移用的
   `llm_v4::LlmV3`；`[[llm.models]]` 的能力键是**嵌套内联表**（`catalog` / `overrides`）—— 两套来源形状不同，平铺会撞名。

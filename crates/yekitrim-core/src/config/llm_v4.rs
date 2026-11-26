@@ -80,6 +80,12 @@ pub struct LlmModelEntry {
     /// 来自 [llm.models."<id>"]（表外手填覆盖形状）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub overrides: Option<ModelOverrideToml>,
+    /// **这一支模型专用**的额外请求参数（整表原样进请求体，优先级最低）。
+    ///
+    /// 与 `[llm].extra_params` 的关系：全局那份打底，这里出现的同名键**逐个盖掉**它。
+    /// 语义上这是"每个模型都能特殊调整"的唯一入口 —— 全局那份只为老配置兼容而保留。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_params: Option<toml::Table>,
 }
 
 impl LlmModelEntry {
@@ -202,9 +208,8 @@ pub struct LlmV4 {
     /// 请求参数的唯一基准。
     #[serde(default)]
     pub defaults: LlmParamsToml,
-    /// 老逃逸口：整表原样进请求体，优先级最低（D4 之后只装「未知键」）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub extra_params: Option<toml::Table>,
+    // ⚠️ 2026-11-26：**全局 extra_params 已取消**（用户口径：只按模型）。
+    //    老文件里那行由 config_version 6 的迁移清掉（version.rs 的 retired_in）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub providers: Vec<LlmProviderV4>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -237,6 +242,7 @@ impl Default for LlmModelEntry {
             label: String::new(),
             catalog: None,
             overrides: None,
+            extra_params: None,
         }
     }
 }
@@ -262,7 +268,6 @@ impl Default for LlmV4 {
             active: String::new(),
             max_concurrent: default_max_concurrent(),
             defaults: LlmParamsToml::default(),
-            extra_params: None,
             providers: Vec::new(),
             models: Vec::new(),
             links: BTreeMap::new(),
@@ -534,6 +539,7 @@ pub fn from_v3(c: &LlmV3) -> Migrated {
                 label: m.name.clone(),
                 catalog: Some(m.clone()),
                 overrides: None,
+                extra_params: None,
             });
         }
     }
@@ -549,6 +555,7 @@ pub fn from_v3(c: &LlmV3) -> Migrated {
                 label: String::new(),
                 catalog: None,
                 overrides: Some(ov.clone()),
+                extra_params: None,
             }),
         }
     }
@@ -579,12 +586,19 @@ pub fn from_v3(c: &LlmV3) -> Migrated {
         );
     }
 
+    // 全局 extra_params 已取消（v6，2026-11-26）：老文件里那一行由迁移清掉。
+    // ⚠️ 别静默丢 —— 进 dropped，调用方会打 warn 告诉用户"写到 [[llm.models]].extra_params"。
+    if c.extra_params.is_some() {
+        dropped.push(
+            "[llm] extra_params 已取消（改到 [[llm.models]].extra_params，按模型生效）".to_string(),
+        );
+    }
+
     Migrated {
         config: LlmV4 {
             active: effective_id,
             max_concurrent: c.max_concurrent.max(1),
             defaults,
-            extra_params: c.extra_params.clone(),
             providers,
             models,
             links,
@@ -903,6 +917,12 @@ impl LlmV4 {
         if p.temperature.is_none() {
             caps.temperature = Support::Unsupported;
         }
+        // 额外请求参数：**只按模型**（2026-11-26 取消全局那份）。
+        // 同一份配置里因此才能"给 A 模型加 repetition_penalty、B 模型不加"。
+        let provider_id = provider.map(|p| p.id.as_str()).unwrap_or_default();
+        let extra = self
+            .model_entry(provider_id, &model)
+            .and_then(|e| e.extra_params.as_ref());
         yekitrim_llm::LlmParams {
             api_key,
             base_url,
@@ -913,7 +933,7 @@ impl LlmV4 {
             thinking_budget: p.thinking_budget.filter(|n| *n > 0),
             top_p: p.top_p.filter(|v| v.is_finite()),
             json_mode: p.json_mode.unwrap_or(false),
-            extra_params: self.extra_params.as_ref().and_then(|t| serde_json::to_value(t).ok()),
+            extra_params: extra.and_then(|t| serde_json::to_value(t).ok()),
             caps,
         }
     }
@@ -1087,6 +1107,7 @@ mod runtime_tests {
                 thinking_wire: Some("openai_effort".into()),
                 ..Default::default()
             }),
+            extra_params: None,
         });
         let after: yekitrim_llm::LlmParams = c.to_params();
         assert_eq!(after.caps.dialect.id, "openai_effort", "清单里的覆盖必须真的进 caps");
@@ -1148,6 +1169,24 @@ mod caps_source_tests {
         }));
         let caps2 = with_list.effective_caps("default", "deepseek-v4-pro");
         assert_eq!(caps2.dialect.id, "openai_effort", "清单里写了的必须盖过内置表");
+    }
+
+    /// **额外请求参数只按模型**（2026-11-26 用户口径：不需要全局那份）：
+    /// 写在哪支模型上就只在用那支模型时发；没写就一个键都不发。
+    #[test]
+    fn model_extra_params_go_into_request() {
+        let c = with_model_entry(Some(LlmModelEntry {
+            extra_params: Some(toml::from_str("repetition_penalty = 1.05\nseed = 42").unwrap()),
+            ..Default::default()
+        }));
+        let p: yekitrim_llm::LlmParams = c.to_params();
+        let extra = p.extra_params.expect("模型级额外参数要进请求体");
+        assert_eq!(extra["repetition_penalty"], serde_json::json!(1.05));
+        assert_eq!(extra["seed"], serde_json::json!(42));
+
+        // 没有模型级配置 ⇒ 不发（全局那份已经取消，别再偷偷兜底）
+        let plain: yekitrim_llm::LlmParams = with_model_entry(None).to_params();
+        assert!(plain.extra_params.is_none(), "取消全局之后，没配就不该有额外参数");
     }
 
     /// **清单没写的字段仍然由内置表补齐**（建议值的价值就在这：用户只改他关心的那一项）。

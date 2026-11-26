@@ -103,6 +103,8 @@ model = ""
 max_concurrent = 3
 # ⚠️ 下面这行样例 2026-11-14 已与 LLM_CONFIG_TOML 模板对齐（旧文档写 disabled 且没有 response_format）
 extra_params = { seed = 42, thinking = { type = "enabled" }, response_format = { type = "json_object" } }   # 逃逸口，优先级最低
+# ⚠️ 2026-11-26 起**取消全局 extra_params**：逃逸口只按模型存在（[[llm.models]].extra_params）。
+# 老文件里这一行会在 config_version 6 的迁移里**搬到当前生效模型**上（请求体不变）。
 
 # **请求参数面**（省略 = 不发送）；链路没覆盖就跟随这里
 [llm.params]

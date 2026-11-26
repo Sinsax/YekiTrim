@@ -392,18 +392,6 @@
       "firstScreen": true
     },
     {
-      "id": "settings.llm-advanced",
-      "phase": "P3",
-      "surface": "settings",
-      "label": "LLM 配置 · 高级（接口管理 / extra_params）",
-      "files": [
-        "webui/src/views/SettingsView.vue"
-      ],
-      "anchor": "data-cap=\"settings.llm-advanced\"",
-      "advancedOnly": true,
-      "firstScreen": false
-    },
-    {
       "id": "settings.integrations",
       "phase": "P3",
       "surface": "settings",
@@ -467,7 +455,7 @@
       "id": "settings.llm-prompts",
       "phase": "P3",
       "surface": "settings",
-      "label": "提示词（写 config.toml 的 [detection]）",
+      "label": "提示词（检测用，写 llm.toml 的 [llm.links.detect.prompt]）",
       "files": [
         "webui/src/views/SettingsView.vue"
       ],
@@ -477,6 +465,12 @@
     }
   ],
   "retired": [
+    {
+      "id": "settings.llm-advanced",
+      "date": "2026-11-26",
+      "reason": "全局 extra_params 取消（用户口径：逃逸口只按模型存在）—— 高级块里没有别的内容，整块删掉",
+      "replacedBy": "settings.llm-models"
+    },
     {
       "id": "components.steps",
       "date": "2026-11",

@@ -83,5 +83,7 @@ export async function testConnection(draft = {}) {
     const v = String(draft[k] || '').trim()
     if (v) body[k] = v
   }
-  return api('/api/llm/test', { method: 'POST', body: JSON.stringify(body), label: 'LLM 连通测试' })
+  // ⚠️ 短超时：连通测试是"点一下等结果"的动作，默认 10 分钟会让按钮看起来冻住
+  //    （链路表的「全部测试」还会逐行串起来等）。30s 足够一个最小请求往返。
+  return api('/api/llm/test', { method: 'POST', body: JSON.stringify(body), label: 'LLM 连通测试', timeout: 30000 })
 }
