@@ -75,12 +75,6 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocDown))
 const rowOf = (key) => props.rows[key] || (props.rows[key] = {})
 const snapOf = (key) => props.effective[key] || null
 
-/** 覆盖行里写的接口 id → 显示名（下拉里长什么样，这一格就长什么样） */
-function providerName(key) {
-  const id = String(rowOf(key).provider || '')
-  const hit = (props.providers || []).find((p) => String(p.id || '') === id)
-  return hit ? (hit.name || hit.id) : (id || '—')
-}
 /** 灰字：接口 = 生效那一段的名字（没取到快照就空） */
 function effProvider(key) {
   const s = snapOf(key)
@@ -113,33 +107,9 @@ function inherited(key, col) {
   return v === null || v === undefined || v === ''
 }
 
-/** 这一行可选的模型：**只给该接口名下的**（已登记的 + 这个接口刚探到的候选）。
- *  ⚠️ 不再回落"全清单" —— A 家的模型选给 B 家就是 model not found（后端 problems() 也不查这条）。 */
-function modelOptionsFor(key) {
-  const pid = effProviderId(key)
-  const all = Array.isArray(props.modelOptions) ? props.modelOptions : []
-  const out = all.filter((m) => String(m.provider || '') === pid)
-    .map((m) => ({ id: m.id, label: m.label || '', inList: true }))
-  const seen = new Set(out.map((x) => x.id))
-  for (const p of (props.probeModels || [])) {
-    if (!p || !p.id || String(p.provider || '') !== pid || seen.has(p.id)) continue
-    out.push({ id: p.id, label: p.label || '', inList: false })
-    seen.add(p.id)
-  }
-  return out
-}
 /** 这一行现在**实际会用**的模型（行覆盖 > 生效值）*/
 function rowModel(key) {
   return String(rowOf(key).model || '').trim() || effModel(key)
-}
-/** 选中/手打一支模型后通知父层：清单里没有就就地写进去（省掉"回模型配置页加一遍"） */
-function onPickRow(key, m) {
-  if (!m || !m.id) return
-  emit('pick-model', { providerId: effProviderId(key), model: String(m.id), inList: m.inList === true })
-}
-function onCommitRow(key, v) {
-  if (!v) return
-  emit('pick-model', { providerId: effProviderId(key), model: String(v), inList: false })
 }
 
 /* ── 测试：按**这一行**的接口 + 模型发一次最小请求 ──────────────────────────
@@ -176,15 +146,6 @@ async function testAll() {
     testingAll.value = false
   }
 }
-/** 行里指定的模型**不属于**这个接口：显式说出来（后端 problems() 不校验这条，错配只在跑任务时 404） */
-function modelMismatch(key) {
-  const id = String(rowOf(key).model || '').trim()
-  if (!id) return ''
-  const pid = effProviderId(key)
-  const hit = (props.modelOptions || []).find((m) => String(m.id || '') === id)
-  if (!hit) return ''
-  return String(hit.provider || '') === pid ? '' : '这支模型属于另一家接口'
-}
 /** 这一行的推理档位：**按该行生效模型**的能力（取不到才回落全局那份） */
 function levelsFor(key) {
   // 先把"这一行自己写的模型"算进来：改了模型但还没保存时，档位候选也该跟着换成新模型的
@@ -199,18 +160,48 @@ function setParam(key, col, raw) {
   rowOf(key)[col] = s === '' ? null : Number(s)
 }
 
+/** 这份接口下可选的模型：清单里的 + 该接口刚探到的候选（未加入的带标记） */
+function modelsOf(pid) {
+  const id = String(pid || '')
+  const all = Array.isArray(props.modelOptions) ? props.modelOptions : []
+  const out = all.filter((m) => String(m.provider || '') === id).map((m) => ({ id: m.id, label: m.label || '', inList: true }))
+  const seen = new Set(out.map((x) => x.id))
+  for (const p of (props.probeModels || [])) {
+    if (!p || !p.id || String(p.provider || '') !== id || seen.has(p.id)) continue
+    out.push({ id: p.id, label: p.label || '', inList: false })
+    seen.add(p.id)
+  }
+  return out
+}
+/** 当前选定值 = `接口|模型`；没覆盖就是空串（跟随默认） */
+function selKey(key) {
+  const r = rowOf(key)
+  const pid = String(r.provider || '').trim()
+  const mid = String(r.model || '').trim()
+  return pid && mid ? pid + '|' + mid : ''
+}
+/** 选一支 = 同时写 provider 与 model —— 两者由界面保证一致（后端 problems() 不再需要查这条） */
+function pickModel(key, val) {
+  const v = String(val || '')
+  const row = rowOf(key)
+  if (!v) { row.provider = ''; row.model = ''; return }
+  const cut = v.indexOf('|')
+  row.provider = v.slice(0, cut)
+  row.model = v.slice(cut + 1)
+}
+
 /** 已覆盖了几项（状态列） */
 function overriddenCount(key) {
   const r = rowOf(key)
   let n = 0
-  for (const col of ['provider', 'model', 'temperature', 'max_tokens', 'reasoning']) {
+  for (const col of ['model', 'temperature', 'max_tokens', 'reasoning']) {
     if (!inherited(key, col)) n++
   }
   return n
 }
 /** 状态列文案：只报**几项**（≤20 字）；改了哪几项进 title —— 每格本来就挂了「改」标记，
  *  再在这里复述一遍就是同一件事说三遍。 */
-const COLS_ZH = { provider: '接口', model: '模型', temperature: '温度', max_tokens: '上限', reasoning: '推理' }
+const COLS_ZH = { model: '模型', temperature: '温度', max_tokens: '上限', reasoning: '推理' }
 function statusText(key) {
   const n = overriddenCount(key)
   return n ? '已改 ' + n + ' 项' : '跟随默认'
@@ -240,8 +231,7 @@ const levelZh = (v) => LEVEL_ZH[v] || v
         <thead>
           <tr>
             <th class="lt-c-link">链路</th>
-            <th class="lt-c-prov">接口</th>
-            <th class="lt-c-model">模型</th>
+            <th class="lt-c-model">用哪支</th>
             <th class="lt-c-num">温度</th>
             <th class="lt-c-num">输出上限</th>
             <th class="lt-c-reason">推理</th>
@@ -256,48 +246,21 @@ const levelZh = (v) => LEVEL_ZH[v] || v
               <span v-if="l.hint" class="lt-sub">{{ l.hint }}</span>
             </td>
 
-            <!-- 接口 -->
-            <td class="lt-c-prov">
-              <span v-if="!isEditing(l.key, 'provider')" class="lt-cell"
-                    title="点一下改成可编辑（不点 = 跟随当前接口）" @click="open(l.key, 'provider')">
-                <!-- 有覆盖就显示**你改的值**（title 里给已保存的生效值）—— 温度/上限两格一直是这个口径，
-                     接口与模型以前只显示生效值 ⇒ 改完看不出来自己改了什么 -->
-                <span class="lt-grey" :title="inherited(l.key, 'provider') ? effProvider(l.key) : ('生效值：' + (effProvider(l.key) || '—'))">
-                  {{ inherited(l.key, 'provider') ? (effProvider(l.key) || '—') : providerName(l.key) }}
-                </span>
-                <span v-if="!inherited(l.key, 'provider')" class="lt-mark" title="这条链路单独指定了接口">改</span>
-              </span>
-              <span v-else class="lt-edit">
-                <select :value="rowOf(l.key).provider || ''" title="选「跟随当前接口」= 删掉这个键"
-                        @change="rowOf(l.key).provider = $event.target.value">
-                  <option value="">跟随当前接口</option>
-                  <option v-for="p in providers" :key="p.id" :value="p.id">{{ p.name || p.id }}</option>
-                </select>
-                <button class="lt-mini" title="撤掉覆盖（发 null = 删键）"
-                        @click="rowOf(l.key).provider = ''; close(l.key, 'provider')">清除覆盖</button>
-              </span>
-            </td>
-
-            <!-- 模型 -->
+            <!-- 用哪支（2026-11-27 合并）：**一个下拉 = 接口 + 模型**。
+                 选中的那一项自带"它在哪份接口下"，所以「接口 A + 模型 B」这种非法组合在界面上不存在
+                 （后端 problems() 不查这条，以前全靠前端标黄兜）。 -->
             <td class="lt-c-model">
-              <span v-if="!isEditing(l.key, 'model')" class="lt-cell"
-                    title="点一下改成可编辑（不点 = 跟随该接口的默认模型）" @click="open(l.key, 'model')">
-                <span class="lt-grey" :title="inherited(l.key, 'model') ? effModel(l.key) : ('生效值：' + (effModel(l.key) || '—'))">
-                  {{ inherited(l.key, 'model') ? (effModel(l.key) || '—') : rowOf(l.key).model }}
-                </span>
-                <span v-if="!inherited(l.key, 'model')" class="lt-mark" title="这条链路单独指定了模型">改</span>
-                <span v-if="modelMismatch(l.key)" class="lt-bad" :title="modelMismatch(l.key) + '：请求会打到 ' +
-                      (effProvider(l.key) || '当前接口') + '，多半是 model not found'">!</span>
-              </span>
-              <span v-else class="lt-edit">
-                <LlmModelCombobox :model-value="rowOf(l.key).model || ''" :options="modelOptionsFor(l.key)"
-                                  placeholder="选一支模型 / 手打 id" :aria-label="'模型（' + l.label + '）'"
-                                  @update:model-value="rowOf(l.key).model = $event"
-                                  @pick="onPickRow(l.key, $event)" @commit="onCommitRow(l.key, $event)" />
-                <button class="lt-mini" title="撤掉覆盖（发 null = 删键）"
-                        @click="rowOf(l.key).model = ''; close(l.key, 'model')">清除覆盖</button>
-              </span>
-              <div v-if="modelMismatch(l.key)" class="lt-warn">{{ modelMismatch(l.key) }}</div>
+              <select class="lt-sel" :value="selKey(l.key)" :aria-label="'模型（' + l.label + '）'"
+                      title="这条任务用哪支；「跟随默认」= 不写覆盖（删键）"
+                      @change="pickModel(l.key, $event.target.value)">
+                <option value="">跟随默认{{ effModel(l.key) ? '（' + effModel(l.key) + '）' : '' }}</option>
+                <optgroup v-for="p in providers" :key="p.id" :label="p.name || p.id">
+                  <option v-for="m in modelsOf(p.id)" :key="p.id + '/' + m.id" :value="p.id + '|' + m.id">
+                    {{ m.id }}{{ m.inList ? '' : '（未加入清单）' }}
+                  </option>
+                </optgroup>
+              </select>
+              <span v-if="!inherited(l.key, 'model')" class="lt-mark" title="这条任务单独指定了模型">改</span>
             </td>
 
             <!-- 温度 -->
@@ -381,14 +344,17 @@ const levelZh = (v) => LEVEL_ZH[v] || v
 .lt-hint { overflow-wrap:anywhere; }
 /* 表格在窄屏**横滚**而不是硬挤：7 列各有语义，压窄只会把灰字截成省略号 */
 .lt-scroll { overflow-x:auto; min-width:0; }
-.lt-tbl { width:100%; border-collapse:collapse; font-size:12px; min-width:640px; }
+.lt-tbl { width:100%; border-collapse:collapse; font-size:12px; min-width:600px; }
 .lt-tbl th { text-align:left; font-weight:600; font-size:11px; color:var(--ink-dim);
   padding:4px 6px; border-bottom:1px solid var(--line-soft); white-space:nowrap; }
 .lt-tbl td { padding:3px 6px; border-bottom:1px dashed var(--line-soft); vertical-align:middle; }
 .lt-tbl tr:last-child td { border-bottom:none; }
 .lt-c-link { width:96px; }
-.lt-c-prov { width:130px; }
-.lt-c-model { width:180px; }
+.lt-c-model { width:236px; }
+/* 合并后的「用哪支」下拉：分组名 = 接口，选项 = 模型（见模板注释） */
+.lt-sel { width:100%; min-width:0; font-size:12px; padding:3px 6px; border-radius:var(--r-sm);
+  border:1px solid var(--line); background:var(--card); color:var(--ink); }
+.lt-sel:focus { outline:2px solid var(--main-glow); outline-offset:1px; border-color:var(--main-glow); }
 .lt-c-num { width:104px; }
 .lt-c-reason { width:104px; }
 .lt-c-test { width:118px; white-space:nowrap; }

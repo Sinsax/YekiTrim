@@ -134,18 +134,33 @@ const translator = await read('tools/polish-to-dhampir.mjs')
 /** 每条：label + 判据 + **怎么改坏它**（用于自证判据不是空转的）。 */
 const RULES = [
   {
-    // L3：链路覆盖从"两栏网格"改成"8 列表格"（一列一义）。判据 = 表头各列都在 + 窄屏横滚兜底。
+    // L3：链路覆盖从"两栏网格"改成表格（一列一义）。判据 = 表头各列都在 + 窄屏横滚兜底。
     // ⚠️ 2026-11-26 加「测试」列：每行要能按**自己的**接口+模型验一次（只测默认模型不够）。
-    label: '「按链路覆盖」是 8 列表格且窄屏横滚（一列一义，不压扁）',
+    // ⚠️ 2026-11-27 接口 + 模型合并成「用哪支」一列 ⇒ 8 列变 7 列；**接口列必须消失**
+    //    （负向判据：它一回来就说明又分成两个下拉选了）。
+    label: '「按链路覆盖」是 7 列表格且窄屏横滚（接口与模型已合并成一列）',
     why: '两栏网格里并排的滑块会被压到 59px（1280px 下 41px）——改表格后必须给 min-width，让它横滚而不是压扁',
     hit: (s) =>
       /class="lt-tbl"/.test(s)
-      && /min-width:\s*640px/.test(s)
+      && /min-width:\s*600px/.test(s)
       && /<th class="lt-c-link">链路<\/th>/.test(s)
+      && /<th class="lt-c-model">用哪支<\/th>/.test(s)
       && /<th class="lt-c-reason">推理<\/th>/.test(s)
       && /<th class="lt-c-test">测试<\/th>/.test(s)
-      && /<th class="lt-c-state">状态<\/th>/.test(s),
-    break: (s) => s.replace('min-width:640px', 'min-width:0')
+      && /<th class="lt-c-state">状态<\/th>/.test(s)
+      && !/lt-c-prov/.test(s),
+    break: (s) => s.replace('min-width:600px', 'min-width:0')
+  },
+  {
+    // 2026-11-27：三个独立字段（provider / model / 链路）会被配成非法组合，
+    // 而 problems() 不查"这支模型属不属于这个接口" ⇒ 把配对下沉到选项值里，界面上选不出错配。
+    label: '「用哪支」一个下拉：选项值 = `接口|模型`（配对由界面保证）',
+    why: '接口与模型分成两个下拉时，A 家的模型能选给 B 家（后端不校验，跑起来才 404）',
+    hit: (s) =>
+      /function pickModel\(/.test(s)
+      && /<optgroup/.test(s)
+      && /:value="p\.id \+ '\|' \+ m\.id"/.test(s),
+    break: (s) => s.replace(`:value="p.id + '|' + m.id"`, ':value="m.id"')
   },
   {
     // L3：用户口径"点开才可编辑"—— 灰字态与编辑态必须是两条分支，且入口是 @click="open(...)"。

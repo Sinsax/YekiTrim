@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>方案 C · 模型 × 任务矩阵 — YekiTrim LLM 配置参考稿</title>
+<link rel="stylesheet" href="assets/demo.css">
+<style>
+/* ==== C 专属 ==== */
+.ctrl{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:var(--r-full);overflow:hidden;background:var(--card)}
+.seg button{padding:5px 13px;font-size:12px;color:var(--ink-dim);border-right:1px solid var(--line)}
+.seg button:last-child{border-right:none}
+.seg button.on{background:var(--main-soft);color:var(--main-deep);font-weight:700}
+.mx{width:100%;border-collapse:separate;border-spacing:0;font-size:12.5px}
+.mx th{padding:9px 10px;font-size:11px;color:var(--ink-faint);font-weight:600;border-bottom:1px solid var(--line);text-align:center;white-space:nowrap}
+.mx th:first-child{text-align:left;min-width:230px}
+.mx th .ov{display:block;font-size:9.5px;color:var(--main-deep);font-weight:700;margin-top:2px}
+.mx td{padding:7px 10px;border-bottom:1px solid var(--line-soft);text-align:center}
+.mx td:first-child{text-align:left}
+.mx tbody tr:hover td{background:var(--bg-soft)}
+.mx tr.follow td{background:var(--bg-soft)}
+.mx tr.follow:hover td{background:var(--main-soft)}
+.mh{display:flex;align-items:center;gap:8px}
+.mh .nm{font-family:var(--mono);font-size:11.5px}
+.mh .who{font-size:10.5px;color:var(--ink-faint)}
+.cell{width:26px;height:26px;border-radius:8px;border:1.5px solid var(--line);background:var(--card);display:inline-flex;align-items:center;justify-content:center;transition:.14s;color:var(--main);opacity:.22;font-size:12px;line-height:1}
+.cell.on,.cell.onna,.cell.na{opacity:1}
+.cell.na{color:transparent;opacity:.55}
+.cell:hover{border-color:var(--pink-light);background:var(--main-soft);opacity:.85}
+.cell.on{background:var(--main);border-color:var(--main);color:#fff;box-shadow:0 3px 10px rgba(232,104,56,.35)}
+.cell.na{cursor:not-allowed;border-style:dashed;color:var(--line);background:transparent}
+.cell.na:hover{border-color:var(--line);background:transparent}
+.cell.onna{background:var(--tan-soft);border-color:var(--tan);color:var(--tan-deep)}
+.mx td.usebar{text-align:right;padding-right:14px}
+.mx td.usebar .n{font-variant-numeric:tabular-nums;font-weight:700}
+.mx td.usebar .lbl{font-size:10.5px;color:var(--ink-faint);margin-left:3px}
+.foot{display:flex;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap}
+.stat{display:flex;gap:8px;flex-wrap:wrap}
+.stat .b{border:1px solid var(--line);border-radius:var(--r-sm);padding:6px 11px;font-size:11.5px;color:var(--ink-dim);background:var(--bg-soft)}
+.stat .b b{color:var(--ink);font-variant-numeric:tabular-nums}
+.legend{display:flex;gap:14px;font-size:11px;color:var(--ink-faint);margin-top:10px;flex-wrap:wrap}
+.legend span{display:inline-flex;align-items:center;gap:5px}
+.legend i{width:14px;height:14px;border-radius:5px;display:inline-block;border:1.5px solid var(--line)}
+.legend i.on{background:var(--main);border-color:var(--main)}
+.legend i.na{border-style:dashed}
+</style>
+</head>
+<body>
+<div class="topbar"><div class="in">
+  <div class="crumb"><span>设置</span><i>/</i><b>LLM 配置</b><i>/</i><span>方案 C · 模型 × 任务矩阵</span></div>
+  <div class="spacer"></div>
+  <a class="btn sm ghost" href="index.html">← 四套方案对比</a>
+  <button class="iconbtn" onclick="toggleTheme()" title="切换亮/暗色"><span data-theme-label>暗色</span></button>
+</div></div>
+
+<div class="wrap"><div class="layout">
+  <nav class="side">
+    <div class="hd">设置</div>
+    <a href="#"><span class="ic">⚙</span>程序配置</a>
+    <a href="#" class="on"><span class="ic">✦</span>LLM 配置</a>
+    <a href="#"><span class="ic">⇄</span>接入</a>
+    <a href="#"><span class="ic">◍</span>系统</a>
+  </nav>
+
+  <main>
+    <!-- 接口连接：压成一条，随时可展开 -->
+    <div class="card" style="padding:11px 14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <span class="small faint">接口</span>
+      <span class="chip main tiny"><span class="dot"></span>main · DeepSeek · 412ms</span>
+      <span class="chip err tiny"><span class="dot"></span>cheap · 硅基流动 · 401</span>
+      <span class="chip ok tiny"><span class="dot"></span>local · Ollama · 88ms</span>
+      <span class="spacer"></span>
+      <button class="btn sm" data-fold="#conn" data-label-closed="地址与密钥" data-label-open="收起">地址与密钥</button>
+    </div>
+    <div id="conn" class="fold" style="margin-top:8px">
+      <div class="card" style="padding:12px 14px">
+        <table class="tbl">
+          <thead><tr><th>接口</th><th>地址</th><th>密钥</th><th>默认模型</th></tr></thead>
+          <tbody>
+            <tr><td><b>main</b> DeepSeek</td><td class="mono tiny">api.deepseek.com</td><td><span class="chip ok tiny">已设置</span></td><td class="mono tiny">deepseek-chat</td></tr>
+            <tr><td><b>cheap</b> 硅基流动</td><td class="mono tiny">api.siliconflow.cn</td><td><span class="chip err tiny">无效</span></td><td class="mono tiny">Qwen2.5-72B</td></tr>
+            <tr><td><b>local</b> Ollama</td><td class="mono tiny">127.0.0.1:11434</td><td><span class="chip tiny">免密钥</span></td><td class="mono tiny">qwen2.5:14b</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="sechead">
+      <span class="secno">1</span><h2>谁用哪支</h2>
+      <span class="sub">一格一次点击 = 那条任务改用这支模型；再点一次取消 = 回到「跟随默认」</span>
+    </div>
+
+    <div class="ctrl">
+      <div class="seg" onclick="pickSeg(event)">
+        <button class="on">全部接口</button><button>仅 main</button><button>仅本地</button>
+      </div>
+      <label class="sw"><input type="checkbox" checked><span class="track"></span>隐藏不可用</label>
+      <span class="spacer"></span>
+      <button class="btn sm" data-fake-test>测试全部被点亮的行</button>
+    </div>
+
+    <div class="card" style="padding:6px 4px 4px">
+      <table class="mx" id="mx">
+        <thead>
+          <tr>
+            <th>模型 / 接口</th>
+            <th data-col="detect">检测<span class="ov" data-ov="detect"></span></th>
+            <th data-col="polish">精修<span class="ov" data-ov="polish"></span></th>
+            <th data-col="correct">订正<span class="ov" data-ov="correct"></span></th>
+            <th data-col="title">标题<span class="ov" data-ov="title"></span></th>
+            <th data-col="utility">工具<span class="ov" data-ov="utility"></span></th>
+            <th style="text-align:right;padding-right:14px">被引用</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="follow" data-row="follow">
+            <td><div class="mh"><span class="chip line tiny">—</span><span class="nm">不指定 · 跟随默认</span><span class="who">= main / deepseek-chat</span></div></td>
+            <td><button class="cell" data-col="detect" data-model="follow">○</button></td>
+            <td><button class="cell" data-col="polish" data-model="follow">○</button></td>
+            <td><button class="cell" data-col="correct" data-model="follow">○</button></td>
+            <td><button class="cell" data-col="title" data-model="follow">○</button></td>
+            <td><button class="cell" data-col="utility" data-model="follow">○</button></td>
+            <td class="usebar"><span class="n" data-count="follow">0</span><span class="lbl">条</span></td>
+          </tr>
+          <tr data-row="ds-chat">
+            <td><div class="mh"><span class="chip main tiny">main</span><span class="nm">deepseek-chat</span><span class="who">文本 · 8K · JSON</span></div></td>
+            <td><button class="cell" data-col="detect" data-model="ds-chat">●</button></td>
+            <td><button class="cell" data-col="polish" data-model="ds-chat">●</button></td>
+            <td><button class="cell" data-col="correct" data-model="ds-chat">●</button></td>
+            <td><button class="cell" data-col="title" data-model="ds-chat">●</button></td>
+            <td><button class="cell" data-col="utility" data-model="ds-chat">●</button></td>
+            <td class="usebar"><span class="n" data-count="ds-chat">0</span><span class="lbl">条</span></td>
+          </tr>
+          <tr data-row="ds-reason">
+            <td><div class="mh"><span class="chip main tiny">main</span><span class="nm">deepseek-reasoner</span><span class="who">推理 · 64K</span></div></td>
+            <td><button class="cell" data-col="detect" data-model="ds-reason">●</button></td>
+            <td><button class="cell" data-col="polish" data-model="ds-reason">●</button></td>
+            <td><button class="cell na" data-col="correct" data-model="ds-reason" title="该模型不支持 JSON 模式">—</button></td>
+            <td><button class="cell" data-col="title" data-model="ds-reason">●</button></td>
+            <td><button class="cell" data-col="utility" data-model="ds-reason">●</button></td>
+            <td class="usebar"><span class="n" data-count="ds-reason">0</span><span class="lbl">条</span></td>
+          </tr>
+          <tr data-row="qwen72">
+            <td><div class="mh"><span class="chip err tiny">cheap</span><span class="nm">Qwen/Qwen2.5-72B</span><span class="who" style="color:var(--red-deep)">密钥 401 · 先修</span></div></td>
+            <td><button class="cell onna" data-col="detect" data-model="qwen72">●</button></td>
+            <td><button class="cell" data-col="polish" data-model="qwen72">●</button></td>
+            <td><button class="cell" data-col="correct" data-model="qwen72">●</button></td>
+            <td><button class="cell" data-col="title" data-model="qwen72">●</button></td>
+            <td><button class="cell" data-col="utility" data-model="qwen72">●</button></td>
+            <td class="usebar"><span class="n" data-count="qwen72">0</span><span class="lbl">条</span></td>
+          </tr>
+          <tr data-row="qwen14">
+            <td><div class="mh"><span class="chip ok tiny">local</span><span class="nm">qwen2.5:14b</span><span class="who">文本 · 本地 88ms</span></div></td>
+            <td><button class="cell" data-col="detect" data-model="qwen14">●</button></td>
+            <td><button class="cell" data-col="polish" data-model="qwen14">●</button></td>
+            <td><button class="cell" data-col="correct" data-model="qwen14">●</button></td>
+            <td><button class="cell" data-col="title" data-model="qwen14">●</button></td>
+            <td><button class="cell on" data-col="utility" data-model="qwen14">●</button></td>
+            <td class="usebar"><span class="n" data-count="qwen14">0</span><span class="lbl">条</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="legend">
+      <span><i class="on"></i>已指定</span>
+      <span><i></i>可选</span>
+      <span><i class="na"></i>该任务用不了这支（能力不符）</span>
+      <span><i style="background:var(--tan-soft);border-color:var(--tan)"></i>已指定，但接口现在不通</span>
+    </div>
+
+    <div class="foot">
+      <div class="stat">
+        <div class="b">5 条任务 · <b id="ovCount">1</b> 条改了默认</div>
+        <div class="b">4 支模型 · <b id="unused">0</b> 支没人用</div>
+        <div class="b">检测走本地 ≈ 省 <b>100%</b> 调用费</div>
+      </div>
+      <span class="spacer"></span>
+      <button class="btn primary">保存分配</button>
+    </div>
+
+    <div class="note warn" style="margin-top:12px">
+      <span><b>检测这一列指着一条 401 的接口</b> —— 矩阵能看见引用，但看不见"这条请求会不会失败"。点 <u>cheap</u> 修密钥，或把这格改到 main。</span>
+    </div>
+
+    <div class="brief">
+      <div class="cols">
+        <div>
+          <h4>这套在解决什么</h4>
+          <ul>
+            <li>「哪支模型被几条任务用」一眼可见 —— 删模型/换密钥前就知道会打掉谁（引用可见性）。</li>
+            <li>单次点击完成分配，不需要"选接口 → 再选模型"两段式。</li>
+            <li>能力不符的格子直接标灰：不会配出一条跑不通的链路。</li>
+          </ul>
+        </div>
+        <div>
+          <h4>代价 / 什么时候别用</h4>
+          <ul>
+            <li>矩阵随模型数增长：20 支模型 × 5 任务 = 100 格，扫视成本高于方案 A 的五张卡。</li>
+            <li>参数（温度/上限/推理）塞不进格子，还得另开一处 —— 表格只解决"用谁"，解决不了"怎么发"。</li>
+            <li>接口连接信息只能压成一条，改密钥要多跳一层。</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <a class="backlink" href="index.html">← 回到四套方案对比</a>
+  </main>
+</div></div>
+
+<script src="assets/demo.js"></script>
+<script>
+// 矩阵单选：每列只能亮一格；点已亮的取消 ⇒ 回到「跟随默认」
+function refresh(){
+  var cols = ['detect','polish','correct','title','utility'];
+  var counts = {};
+  document.querySelectorAll('#mx tbody tr').forEach(function(tr){
+    counts[tr.dataset.row] = 0;
+    tr.querySelectorAll('.cell.on,.cell.onna').forEach(function(c){ counts[tr.dataset.row]++; });
+  });
+  Object.keys(counts).forEach(function(k){
+    var el = document.querySelector('[data-count="'+k+'"]');
+    if (el) el.textContent = counts[k];
+  });
+  var overridden = 0, unused = 0;
+  cols.forEach(function(col){
+    var on = document.querySelector('.cell.on[data-col="'+col+'"], .cell.onna[data-col="'+col+'"]');
+    var m = on ? on.dataset.model : 'follow';
+    var ov = document.querySelector('[data-ov="'+col+'"]');
+    if (ov) ov.textContent = m === 'follow' ? '' : '已覆盖';
+    if (m !== 'follow') overridden++;
+  });
+  document.querySelectorAll('#mx tbody tr').forEach(function(tr){
+    if (tr.dataset.row !== 'follow' && counts[tr.dataset.row] === 0) unused++;
+  });
+  var a = document.getElementById('ovCount'), b = document.getElementById('unused');
+  if (a) a.textContent = overridden;
+  if (b) b.textContent = unused;
+}
+document.getElementById('mx').addEventListener('click', function(e){
+  var cell = e.target.closest('.cell');
+  if (!cell || cell.classList.contains('na')) return;
+  var col = cell.dataset.col;
+  var wasOn = cell.classList.contains('on') || cell.classList.contains('onna');
+  document.querySelectorAll('.cell[data-col="'+col+'"]').forEach(function(c){
+    if (!c.classList.contains('na')) { c.classList.remove('on'); c.classList.remove('onna'); }
+  });
+  if (!wasOn) { cell.classList.add(cell.dataset.model === 'qwen72' ? 'onna' : 'on'); }
+  refresh();
+});
+function pickSeg(e){
+  var b = e.target.closest('button');
+  if (!b) return;
+  e.currentTarget.querySelectorAll('button').forEach(function(x){ x.classList.remove('on'); });
+  b.classList.add('on');
+}
+refresh();
+</script>
+</body>
+</html>

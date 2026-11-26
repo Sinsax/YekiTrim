@@ -139,6 +139,10 @@ overwrite = false
 
 ### LLM 按链路覆盖（2026-09 / v4 起是 `[llm.links.<link>]`）
 
+- ⚠️ **链路模型归属**（2026-11-27，M2）：`[llm.links.<l>].model` 指向的模型**在清单里、却属于另一家接口**时，
+  `LlmV4::problems()` 会报一条（"…属于接口 A，而这条链路用的是 B"）。以前这条规则只活在前端链路表里
+  （`modelMismatch` 标黄），CLI 与手改 toml 的人拿不到提示。⚠️ **清单里没有这个 id 不报** —— 手打 / 自建网关是合法的。
+  生效面：源文件模式（`check_provider_raw`）**硬拦 400**；普通 patch 的探测体只带 providers，**零回归**。
 - **一个入口**：`LlmV4::for_link(LlmLink)` —— 两级参数（`[llm.defaults]` 打底 + `[llm.links.<link>]` 逐键覆盖）的**唯一实现**（逐字段见 `LlmParamsToml::merged_over`），产物是 `LinkedLlm`（编译期拦住"忘记套链路参数"）。
   这里只记配置形态：链路那一层平铺的是**请求参数**（`temperature` / `max_tokens` / `reasoning` / `top_p` / `json_mode`，未知键忽略），
   另有 `provider` / `model`（引用接口与模型清单）与两张**不进请求体**的子表 `.prompt` / `.run`。

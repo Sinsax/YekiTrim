@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>方案 A · 任务优先（链路第一视角）— YekiTrim LLM 配置参考稿</title>
+<link rel="stylesheet" href="assets/demo.css">
+<style>
+/* ==== A 专属 ==== */
+.resbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.resbar .pill{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:var(--r-full);padding:4px 10px;font-size:12px;background:var(--bg-soft)}
+.resbar .pill.on{border-color:var(--pink-light);background:var(--main-soft);color:var(--main-deep);font-weight:700}
+.resbar .pill .dot{color:var(--green-deep)}
+.resbar .pill.bad .dot{color:var(--red-deep)}
+.task{border:1px solid var(--line);border-radius:var(--r);background:var(--card);box-shadow:var(--e-1);margin-bottom:10px;overflow:hidden;transition:.15s}
+.task:hover{box-shadow:var(--e-2)}
+.task.open{border-color:var(--pink-light);box-shadow:var(--e-2)}
+.task-hd{display:flex;align-items:center;gap:12px;padding:12px 14px;cursor:pointer;user-select:none}
+.task-hd .nm{font-weight:700;font-size:13px;min-width:60px}
+.task-hd .use{font-size:11.5px;color:var(--ink-faint)}
+.task-hd .assign{display:flex;align-items:center;gap:6px;font-size:12.5px;white-space:nowrap}
+.task-hd .assign code{background:var(--bg-soft);border:1px solid var(--line);border-radius:6px;padding:1px 6px;font-size:11.5px}
+.task-hd .assign .arr{color:var(--ink-faint)}
+.task-hd .state{margin-left:auto}
+.task-body{display:none;border-top:1px solid var(--line-soft);padding:12px 14px;background:var(--bg-soft)}
+.task.open .task-body{display:block}
+.tb-grid{display:grid;grid-template-columns:1.1fr 1.4fr .7fr .8fr .9fr;gap:10px;align-items:end}
+@media(max-width:820px){.tb-grid{grid-template-columns:1fr 1fr}}
+.tb-grid label{display:block;font-size:11px;color:var(--ink-faint);margin-bottom:4px}
+.tb-grid .sel,.tb-grid .inp{background:var(--card)}
+.inherit{margin-top:10px;font-size:11.5px;color:var(--ink-faint);display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.inherit .v{color:var(--ink-dim)}
+.defband{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}
+@media(max-width:820px){.defband{grid-template-columns:1fr 1fr}}
+.defband .cell{background:var(--bg-soft);border:1px solid var(--line-soft);border-radius:var(--r-sm);padding:8px 10px}
+.defband .cell .k{font-size:11px;color:var(--ink-faint)}
+.defband .cell .v{font-size:13px;font-weight:700;font-variant-numeric:tabular-nums}
+</style>
+</head>
+<body>
+<div class="topbar"><div class="in">
+  <div class="crumb"><span>设置</span><i>/</i><b>LLM 配置</b><i>/</i><span>方案 A · 任务优先</span></div>
+  <div class="spacer"></div>
+  <a class="btn sm ghost" href="index.html">← 四套方案对比</a>
+  <button class="iconbtn" onclick="toggleTheme()" title="切换亮/暗色"><span data-theme-label>暗色</span></button>
+</div></div>
+
+<div class="wrap"><div class="layout">
+  <nav class="side">
+    <div class="hd">设置</div>
+    <a href="#"><span class="ic">⚙</span>程序配置</a>
+    <a href="#" class="on"><span class="ic">✦</span>LLM 配置</a>
+    <a href="#"><span class="ic">⇄</span>接入</a>
+    <a href="#"><span class="ic">◍</span>系统</a>
+  </nav>
+
+  <main>
+    <!-- ① 资源带：接口退成"仓库"，常显但只占一条 -->
+    <div class="card" style="padding:12px 14px">
+      <div class="resbar">
+        <span class="small faint" style="min-width:56px">接口池</span>
+        <span class="pill on"><span class="dot"></span>main · DeepSeek <span class="chip main tiny">默认</span></span>
+        <span class="pill bad" title="401 · invalid api key"><span class="dot"></span>cheap · 硅基流动</span>
+        <span class="pill"><span class="dot"></span>local · Ollama</span>
+        <button class="btn sm" data-fold="#resbox" data-label-closed="管理接口与密钥" data-label-open="收起接口与密钥">管理接口与密钥</button>
+        <span class="spacer"></span>
+        <span class="tiny faint">改了立刻自动保存</span>
+      </div>
+      <div id="resbox" class="fold" style="display:none;margin-top:12px">
+        <table class="tbl">
+          <thead><tr><th>接口</th><th>协议</th><th>地址</th><th>密钥</th><th>默认模型</th><th>状态</th></tr></thead>
+          <tbody>
+            <tr><td><b>main</b> · DeepSeek</td><td class="mono tiny">openai-chat</td><td class="mono tiny">api.deepseek.com</td><td><span class="chip ok tiny">已设置</span></td><td class="mono tiny">deepseek-chat</td><td><span class="chip ok tiny">412ms</span></td></tr>
+            <tr><td><b>cheap</b> · 硅基流动</td><td class="mono tiny">openai-chat</td><td class="mono tiny">api.siliconflow.cn</td><td><span class="chip err tiny">401</span></td><td class="mono tiny">Qwen2.5-72B</td><td><span class="chip err tiny">密钥无效</span></td></tr>
+            <tr><td><b>local</b> · Ollama</td><td class="mono tiny">ollama</td><td class="mono tiny">127.0.0.1:11434</td><td><span class="chip tiny">免密钥</span></td><td class="mono tiny">qwen2.5:14b</td><td><span class="chip ok tiny">88ms</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ② 谁干什么活：五张任务卡，这是首屏主体 -->
+    <div class="sechead">
+      <span class="secno">1</span><h2>谁干什么活</h2>
+      <span class="sub">点一行改这一条链路；没改的跟随「默认参数」</span>
+      <span class="spacer"></span>
+      <button class="btn sm" data-fake-test>测试全部链路</button>
+    </div>
+
+    <!-- 检测：被覆盖 -->
+    <div class="task open" data-task>
+      <div class="task-hd" onclick="this.parentNode.classList.toggle('open')">
+        <span class="nm">检测</span>
+        <span class="use">挑亮点 · 每条录播一次</span>
+        <span class="assign"><code>cheap</code><span class="arr">→</span><code>Qwen2.5-72B</code></span>
+        <span class="state"><span class="chip warn">已覆盖温度 0.3</span></span>
+      </div>
+      <div class="task-body">
+        <div class="tb-grid">
+          <div><label>接口</label><select class="sel"><option>cheap · 硅基流动</option><option>main · DeepSeek</option><option>local · Ollama</option></select></div>
+          <div><label>模型</label><select class="sel"><option>Qwen/Qwen2.5-72B-Instruct</option><option>Qwen/Qwen2.5-32B-Instruct</option><option>deepseek-chat</option></select></div>
+          <div><label>温度</label><input class="inp" value="0.3"></div>
+          <div><label>输出上限</label><input class="inp" value="4096"></div>
+          <div><label>推理档</label><select class="sel"><option>跟随默认（中）</option><option>高</option><option>关</option></select></div>
+        </div>
+        <div class="inherit">
+          <span>继承：</span><span class="v">输出上限 4096 · 推理 中 · JSON 开</span>
+          <span>·</span><span>覆盖：</span><span class="v">温度 0.3</span>
+          <button class="btn sm ghost" style="margin-left:auto">清除本行覆盖</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 精修：全跟随 -->
+    <div class="task" data-task>
+      <div class="task-hd" onclick="this.parentNode.classList.toggle('open')">
+        <span class="nm">精修</span>
+        <span class="use">剪辑 / 字幕 · 每片段一次</span>
+        <span class="assign"><span class="muted">跟随默认</span><span class="arr">→</span><code>main → deepseek-chat</code></span>
+        <span class="state"><span class="chip line">全部继承</span></span>
+      </div>
+      <div class="task-body">
+        <div class="tb-grid">
+          <div><label>接口</label><select class="sel"><option>跟随默认（main · DeepSeek）</option><option>cheap · 硅基流动</option><option>local · Ollama</option></select></div>
+          <div><label>模型</label><select class="sel"><option>跟随默认（deepseek-chat）</option><option>deepseek-reasoner</option></select></div>
+          <div><label>温度</label><input class="inp" placeholder="0.7"></div>
+          <div><label>输出上限</label><input class="inp" placeholder="4096"></div>
+          <div><label>推理档</label><select class="sel"><option>跟随默认（中）</option><option>高</option></select></div>
+        </div>
+        <div class="inherit"><span>这一行什么都没覆盖 —— 改「默认参数」它会一起变。</span></div>
+      </div>
+    </div>
+
+    <div class="task" data-task>
+      <div class="task-hd" onclick="this.parentNode.classList.toggle('open')">
+        <span class="nm">订正</span>
+        <span class="use">字幕同音纠错 · 逐窗口</span>
+        <span class="assign"><span class="muted">跟随默认</span><span class="arr">→</span><code>main → deepseek-chat</code></span>
+        <span class="state"><span class="chip line">全部继承</span></span>
+      </div>
+      <div class="task-body"><div class="inherit"><span>这一行什么都没覆盖 —— 改「默认参数」它会一起变。</span></div></div>
+    </div>
+
+    <div class="task" data-task>
+      <div class="task-hd" onclick="this.parentNode.classList.toggle('open')">
+        <span class="nm">标题</span>
+        <span class="use">起标题 · 每片段一次</span>
+        <span class="assign"><span class="muted">跟随默认</span><span class="arr">→</span><code>main → deepseek-chat</code></span>
+        <span class="state"><span class="chip line">全部继承</span></span>
+      </div>
+      <div class="task-body"><div class="inherit"><span>这一行什么都没覆盖 —— 改「默认参数」它会一起变。</span></div></div>
+    </div>
+
+    <div class="task" data-task>
+      <div class="task-hd" onclick="this.parentNode.classList.toggle('open')">
+        <span class="nm">工具</span>
+        <span class="use">杂项短请求 · 低优先级</span>
+        <span class="assign"><code>local</code><span class="arr">→</span><code>qwen2.5:14b</code></span>
+        <span class="state"><span class="chip blue">本地优先</span></span>
+      </div>
+      <div class="task-body"><div class="inherit"><span>继承：默认参数全部 · 接口换成本地。</span></div></div>
+    </div>
+
+    <!-- ③ 默认参数：一条横带 -->
+    <div class="sechead">
+      <span class="secno">2</span><h2>默认参数</h2>
+      <span class="sub">上面没覆盖的单元格都用这里 · 一处改动对所有链路生效</span>
+    </div>
+    <div class="card" style="padding:12px 14px">
+      <div class="defband">
+        <div class="cell"><div class="k">温度</div><div class="v">0.7</div></div>
+        <div class="cell"><div class="k">输出上限</div><div class="v">4096</div></div>
+        <div class="cell"><div class="k">推理档</div><div class="v">中</div></div>
+        <div class="cell"><div class="k">JSON 模式</div><div class="v">开</div></div>
+        <div class="cell"><div class="k">并发请求</div><div class="v">3</div></div>
+      </div>
+    </div>
+
+    <!-- ④ 次级动作：模型池 / 提示词 / 高级 -->
+    <div class="sechead"><span class="secno">3</span><h2>其余</h2><span class="sub">日常不用进来</span></div>
+    <div class="card" style="padding:0">
+      <div style="padding:12px 14px;border-bottom:1px solid var(--line-soft);display:flex;align-items:center;gap:10px">
+        <b>模型池</b><span class="chip tiny">4 支</span>
+        <span class="small faint">被引用的加「在用」标；没人用的收在末尾</span>
+        <span class="spacer"></span><button class="btn sm" data-fold="#pool" data-label-closed="展开" data-label-open="收起">展开</button>
+      </div>
+      <div id="pool" class="fold" style="display:none;padding:12px 14px">
+        <table class="tbl">
+          <thead><tr><th>模型</th><th>接口</th><th>能力</th><th>在用</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">deepseek-chat</td><td>main</td><td><span class="chip tiny">文本</span><span class="chip tiny">8K</span></td><td>精修 / 订正 / 标题</td></tr>
+            <tr><td class="mono">deepseek-reasoner</td><td>main</td><td><span class="chip tiny">推理</span><span class="chip tiny">64K</span></td><td class="faint">未使用</td></tr>
+            <tr><td class="mono">Qwen/Qwen2.5-72B-Instruct</td><td>cheap</td><td><span class="chip tiny">文本</span></td><td>检测</td></tr>
+            <tr><td class="mono">qwen2.5:14b</td><td>local</td><td><span class="chip tiny">文本</span></td><td>工具</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div style="padding:12px 14px;border-bottom:1px solid var(--line-soft);display:flex;align-items:center;gap:10px">
+        <b>提示词</b><span class="small faint">参考标题 / system / 模板 · 只影响检测</span>
+        <span class="spacer"></span><button class="btn sm" data-fold="#prompts" data-label-closed="展开" data-label-open="收起">展开</button>
+      </div>
+      <div id="prompts" class="fold" style="display:none;padding:12px 14px">
+        <div class="note info"><span>写的是 <code>llm.toml</code> 的 <code>[llm.links.detect.prompt]</code>，与上面「保存」互不影响 —— 它有自己的一枚按钮。</span></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px">
+          <div><label class="tiny faint">参考标题（每行一条）</label><textarea class="inp" rows="5">这主播居然…</textarea></div>
+          <div><label class="tiny faint">system_prompt</label><textarea class="inp" rows="5"></textarea></div>
+        </div>
+      </div>
+      <div style="padding:12px 14px;display:flex;align-items:center;gap:10px">
+        <b>高级</b><span class="small faint">extra_params · 协议细节 · 能力手填</span>
+        <span class="spacer"></span><span class="chip warn tiny">仅排查时用</span>
+      </div>
+    </div>
+
+    <div class="brief">
+      <div class="cols">
+        <div>
+          <h4>这套在解决什么</h4>
+          <ul>
+            <li>用户真正的问题是「哪个任务用哪支」，而接口/密钥是<b>几个月才碰一次</b>的资源 —— 首屏据此排。</li>
+            <li>「继承」被显式画出来：灰字 = 跟随，深色 = 覆盖，不再靠脑补优先级。</li>
+            <li>一个动作只改一处：点行 → 改这一条链路，不会顺手动到全局。</li>
+          </ul>
+        </div>
+        <div>
+          <h4>代价 / 什么时候别用</h4>
+          <ul>
+            <li>只有一支接口的人，首屏那五张卡全是同一个答案 —— 信息密度大于需求（见方案 B）。</li>
+            <li>「哪支模型被几条链路引用」看不出来（见方案 C 的引用列）。</li>
+            <li>接口级故障（密钥失效）不在首屏，只在「已覆盖」chip 的颜色上泄露。</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <a class="backlink" href="index.html">← 回到四套方案对比</a>
+  </main>
+</div></div>
+
+<div class="fab"><button class="btn sm" onclick="toggleTheme()">亮 / 暗</button><a class="btn sm" href="index.html">对比</a></div>
+<script src="assets/demo.js"></script>
+</body>
+</html>

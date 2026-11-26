@@ -20,13 +20,14 @@
 - 页面级空态/下一步/首启检查：`AppEmptyState.vue` / `NextStepBar.vue` / `SetupChecklist.vue`。
 - `SetupChecklist` = 首页环境与模型的**唯一**状态卡（v8 并入原「运行状况」卡）：「运行环境」行 = ffmpeg/ffprobe/**出片底座** chips（`/api/health`，缺项指路 → `dhampir/bin/`）+「字幕模型」行内嵌 `ModelList`（下载仅 admin）；三源齐刷，`doctorError` 照实报（读失败 ≠ 缺失）。详见 §⑧.2。
   ⚠️ **待处理项必须行里逐项可见** —— 旧运行状况卡"报 1 项待处理、展开却全绿"的病根就是底座缺失没有展示位（用户实测）；页头汇总 chip 随之删除（同一件事不说三遍）。口径见 `docs/web-ui-design.md` 附录 E。
-- LLM 组件（2026-11-26 起是**左右结构**）：`LlmProviderList`（左栏接口清单，底部「+ 新建接口」）·
-  `LlmEndpointCard`（右栏上半：协议/地址/密钥/默认模型 combobox/取候选/测试/设为当前/删除）·
-  `LlmModelList`（右栏下半：**某一个接口**的模型清单 + 取候选/手填/能力手填/**每模型额外参数**）·
-  `LlmLinkTable`（链路表，灰字点开才编辑）· `LlmParamFields`（参数控件）·
-  `LlmModelCombobox`（模型下拉，**右栏默认模型 + 链路行模型共用**：聚焦列全部 / 未加入标记 / 手打即入清单）。
-  ⚠️ **加模型必须在右栏模型卡里完成**（用户原话："每一次添加模型都要翻找很不合理"）—— 别再把清单塞回 `<details>`。
-  ⚠️ 左栏点一行只切 **editingId**，不改 `[llm] active`；删除接口走右栏底部（`confirmDialog` + 连带影响）。
+- LLM 组件（2026-11-27 起 **左右列表 + 设置弹窗**）：
+  `LlmProviderList`（左栏接口清单，底部「+ 新建接口」）·
+  `LlmEndpointCard`（协议/地址/密钥/默认模型 combobox/取候选/测试/设为当前/删除 —— **装在 `AppModal` 里**，由右栏「接口设置」打开）·
+  `LlmModelList`（**某一个接口**的模型清单 + 取候选/手填/能力手填/**每模型额外参数**，每个组各挂一份）·
+  `LlmLinkTable`（链路表：**接口与模型合并成「用哪支」一列**，选项值 = `接口|模型`；参数格仍灰字点开才编辑）·
+  `LlmParamFields`（参数控件）· `LlmModelCombobox`（单接口模型下拉，连接卡的默认模型用）。
+  ⚠️ **加模型在右栏 `LlmModelList` 里完成**（用户原话："每一次添加模型都要翻找很不合理"）—— 别把清单塞回 `<details>`，也不许再加抽屉。
+  ⚠️ **接口设置是弹窗**（`AppModal` + `useOverlay`）：左栏只切 `editingId`，**不改** `[llm] active`；删除接口在弹窗里（`confirmDialog` + 连带影响），删完必须关窗。
   - **额外请求参数按模型**（2026-11-26）：编辑框在模型行的「能力手填」展开区里；JSON 校验/序列化只有一份
     —— `components/llm/extra.js`（`parseExtraObject`/`stringifyExtra`，已知键 + null 一律拒）。
     `_extraText`/`_extraErr` 是**瞬态**字段（不进 `buildModels`）；`_extraErr` 非空时 `saveLlm` 拒绝保存。
@@ -34,8 +35,9 @@
     只按输入框现值过滤等于"只能看到当前那一支"，用户永远发现不了别的模型。选中"未加入"的 emit `pick-model`，
     父层写进清单（`onPickModel`）。`probe` 事件把候选与能力一起交给父层 —— 右栏两个「取候选」共用 `onProbeCaps`。
     测试结果**行内**给延迟/失败短因（整句进 `title`）。
-  - `LlmLinkTable`：**点开必须有退路**（Esc / 点空白处收起，不改值；按钮只留「清除覆盖」= 删键）；
-    模型候选按**本行生效接口**过滤（`modelOptionsFor`），选了别家的当场标黄（`modelMismatch`，后端 `problems()` 不查这条）；
+  - `LlmLinkTable`：**参数格点开必须有退路**（Esc / 点空白处收起，不改值；按钮只留「清除覆盖」= 删键）；
+    **「用哪支」是一个下拉**（`<optgroup>` 按接口分组，值 = `接口|模型`）—— 选中的一项自带归属，
+    所以 `modelMismatch` / `modelOptionsFor` 那套"当场标黄"**已删**（缺陷在结构上不存在；规则搬到 Rust `LlmV4::problems()`，2026-11-27）；
     推理档位按**本行生效模型**取（`levelsByModel`），别再全表共用当前接口那份 `caps.levels`。
 - 新控件带 `data-cap`；高级项用 `useDisclosure`/`<details>` 默认折叠，隐藏 ≠ 删除。
 

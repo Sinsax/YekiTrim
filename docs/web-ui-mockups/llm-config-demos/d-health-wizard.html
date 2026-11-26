@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>方案 D · 健康看板 + 分步向导 — YekiTrim LLM 配置参考稿</title>
+<link rel="stylesheet" href="assets/demo.css">
+<style>
+/* ==== D 专属 ==== */
+.tabs{display:inline-flex;gap:4px;background:var(--bg-soft);border:1px solid var(--line);border-radius:var(--r-full);padding:3px;margin-bottom:14px}
+.tabs button{padding:6px 16px;border-radius:var(--r-full);font-size:12.5px;color:var(--ink-dim)}
+.tabs button.on{background:var(--card);color:var(--ink);font-weight:700;box-shadow:var(--e-1)}
+.view{display:none}.view.on{display:block}
+.diag{display:flex;gap:12px;align-items:flex-start}
+.diag .ic{width:26px;height:26px;border-radius:50%;background:var(--amber-soft);color:var(--amber-deep);display:flex;align-items:center;justify-content:center;flex:none;font-weight:700}
+.diag .acts{display:flex;gap:8px;margin-left:auto;flex:none}
+.pcards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:12px}
+@media(max-width:900px){.pcards{grid-template-columns:1fr}}
+.pcard{background:var(--card);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--e-1);padding:14px;display:flex;flex-direction:column;gap:8px;transition:.15s}
+.pcard:hover{box-shadow:var(--e-2);transform:translateY(-2px)}
+.pcard.bad{border-color:var(--red)}
+.pcard .hd{display:flex;align-items:center;gap:8px}
+.pcard .hd b{font-size:13px}
+.pcard .url{font-family:var(--mono);font-size:10.5px;color:var(--ink-faint);word-break:break-all}
+.pcard .mn{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--ink-dim)}
+.pcard .mn .v{font-variant-numeric:tabular-nums;font-weight:700;color:var(--ink)}
+.pcard .ft{display:flex;gap:6px;margin-top:auto;padding-top:8px;border-top:1px solid var(--line-soft)}
+.pcard .ft .btn{flex:1}
+.led{width:8px;height:8px;border-radius:50%;display:inline-block;flex:none}
+.led.g{background:var(--green);box-shadow:0 0 0 3px var(--green-soft)}
+.led.r{background:var(--red);box-shadow:0 0 0 3px var(--red-soft)}
+.led.y{background:var(--amber);box-shadow:0 0 0 3px var(--amber-soft)}
+.impact{margin-top:12px}
+.impact table{width:100%;border-collapse:collapse;font-size:12px}
+.impact th{font-size:10.5px;color:var(--ink-faint);text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+.impact td{padding:6px 8px;border-bottom:1px solid var(--line-soft)}
+/* 向导 */
+.wiz{display:flex;gap:0;margin-bottom:18px;flex-wrap:wrap}
+.wiz .s{display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:var(--r-full);font-size:12px;color:var(--ink-faint);cursor:pointer;transition:.15s}
+.wiz .s:hover{background:var(--bg-soft)}
+.wiz .s .n{width:20px;height:20px;border-radius:50%;border:1.5px solid var(--line);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex:none}
+.wiz .s.on{background:var(--main-soft);color:var(--main-deep);font-weight:700}
+.wiz .s.on .n{border-color:var(--main);background:var(--main);color:#fff}
+.wiz .s.done .n{border-color:var(--green);background:var(--green-soft);color:var(--green-deep)}
+.wiz .dash{width:16px;height:1px;background:var(--line);align-self:center}
+.step{display:none}.step.on{display:block}
+.proto{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+@media(max-width:760px){.proto{grid-template-columns:1fr}}
+.proto .o{border:1.5px solid var(--line);border-radius:var(--r-sm);padding:12px;cursor:pointer;transition:.15s}
+.proto .o:hover{border-color:var(--pink-light);background:var(--main-soft)}
+.proto .o.on{border-color:var(--main);background:var(--main-soft);box-shadow:var(--e-1)}
+.proto .o b{font-size:12.5px;display:block}
+.proto .o span{font-size:11px;color:var(--ink-faint)}
+.wiznav{display:flex;gap:10px;margin-top:16px;padding-top:14px;border-top:1px solid var(--line-soft)}
+.pick{display:flex;flex-direction:column;gap:6px}
+.pick label{display:flex;align-items:center;gap:9px;padding:9px 12px;border:1px solid var(--line);border-radius:var(--r-sm);font-size:12.5px;cursor:pointer}
+.pick label:hover{border-color:var(--pink-light);background:var(--bg-soft)}
+.pick label input{accent-color:var(--main)}
+.pick .mono{font-size:11.5px}
+</style>
+</head>
+<body>
+<div class="topbar"><div class="in">
+  <div class="crumb"><span>设置</span><i>/</i><b>LLM 配置</b><i>/</i><span>方案 D · 健康看板 + 向导</span></div>
+  <div class="spacer"></div>
+  <a class="btn sm ghost" href="index.html">← 四套方案对比</a>
+  <button class="iconbtn" onclick="toggleTheme()" title="切换亮/暗色"><span data-theme-label>暗色</span></button>
+</div></div>
+
+<div class="wrap"><div class="layout">
+  <nav class="side">
+    <div class="hd">设置</div>
+    <a href="#"><span class="ic">⚙</span>程序配置</a>
+    <a href="#" class="on"><span class="ic">✦</span>LLM 配置</a>
+    <a href="#"><span class="ic">⇄</span>接入</a>
+    <a href="#" ><span class="ic">◍</span>系统</a>
+  </nav>
+
+  <main>
+    <div class="tabs">
+      <button class="on" onclick="show('board',this)">健康看板</button>
+      <button onclick="show('wizard',this)">重新配置（向导）</button>
+    </div>
+
+    <!-- ========== 视图一：健康看板 ========== -->
+    <div class="view on" id="board">
+      <div class="card">
+        <div class="diag">
+          <div class="ic">!</div>
+          <div>
+            <b>1 个接口不通，影响 2 条任务</b>
+            <div class="small muted" style="margin-top:2px">
+              <code>cheap · 硅基流动</code> 返回 401（密钥无效）· 检测与订正正在用它 —— 这两条会失败而不是降级。
+            </div>
+          </div>
+          <div class="acts">
+            <button class="btn sm">去修密钥</button>
+            <button class="btn sm primary">两条链路切到 main</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="pcards">
+        <div class="pcard">
+          <div class="hd"><span class="led g"></span><b>main · DeepSeek</b><span class="chip main tiny">默认</span></div>
+          <div class="url">https://api.deepseek.com · openai-chat</div>
+          <div class="mn"><span>延迟</span><span class="v">412ms</span><span>·</span><span>密钥 已设置（llm.toml）</span></div>
+          <div class="mn"><span>被 3 条任务使用</span><span class="chip tiny">精修</span><span class="chip tiny">标题</span><span class="chip tiny">工具</span></div>
+          <div class="ft"><button class="btn sm" data-fake-test>再测一次</button><button class="btn sm ghost">改配置</button></div>
+        </div>
+
+        <div class="pcard bad">
+          <div class="hd"><span class="led r"></span><b>cheap · 硅基流动</b><span class="chip err tiny">401</span></div>
+          <div class="url">https://api.siliconflow.cn · openai-chat</div>
+          <div class="mn"><span>延迟</span><span class="v">—</span><span>·</span><span style="color:var(--red-deep)">invalid api key</span></div>
+          <div class="mn"><span>被 2 条任务使用</span><span class="chip warn tiny">检测</span><span class="chip warn tiny">订正</span></div>
+          <div class="ft"><button class="btn sm primary">换密钥</button><button class="btn sm ghost">停用</button></div>
+        </div>
+
+        <div class="pcard">
+          <div class="hd"><span class="led y"></span><b>local · Ollama</b><span class="chip tiny">未使用</span></div>
+          <div class="url">http://127.0.0.1:11434 · ollama</div>
+          <div class="mn"><span>延迟</span><span class="v">88ms</span><span>·</span><span>免密钥</span></div>
+          <div class="mn"><span>没有任务在用 —— 拿它跑检测可省全部调用费</span></div>
+          <div class="ft"><button class="btn sm">设为默认</button><button class="btn sm ghost">删除</button></div>
+        </div>
+      </div>
+
+      <div class="sechead"><span class="secno">2</span><h2>任务影响</h2><span class="sub">每行一句话：谁在用、通不通</span></div>
+      <div class="card impact" style="padding:4px 8px">
+        <table>
+          <thead><tr><th>任务</th><th>接口 → 模型</th><th>参数</th><th>状态</th></tr></thead>
+          <tbody>
+            <tr><td>检测 · 挑亮点</td><td class="mono tiny">cheap → Qwen2.5-72B</td><td class="tiny muted">覆盖 温度 0.3</td><td><span class="chip err tiny">会失败</span></td></tr>
+            <tr><td>精修 · 剪辑</td><td class="mono tiny">main → deepseek-chat</td><td class="tiny muted">全继承</td><td><span class="chip ok tiny">正常</span></td></tr>
+            <tr><td>订正 · 同音纠错</td><td class="mono tiny">cheap → Qwen2.5-72B</td><td class="tiny muted">全继承</td><td><span class="chip err tiny">会失败</span></td></tr>
+            <tr><td>标题 · 起名</td><td class="mono tiny">main → deepseek-chat</td><td class="tiny muted">全继承</td><td><span class="chip ok tiny">正常</span></td></tr>
+            <tr><td>工具 · 杂项</td><td class="mono tiny">local → qwen2.5:14b</td><td class="tiny muted">全继承</td><td><span class="chip ok tiny">正常</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="note info" style="margin-top:12px"><span>看板只回答一件事：<b>哪里坏了、坏了影响谁</b>。改参数仍然回任务行里改 —— 这里不做第二套编辑器。</span></div>
+    </div>
+
+    <!-- ========== 视图二：向导 ========== -->
+    <div class="view" id="wizard">
+      <div class="card" style="padding:16px 18px">
+        <div class="wiz">
+          <div class="s done" onclick="step(1)"><span class="n">✓</span>选协议</div><div class="dash"></div>
+          <div class="s on" onclick="step(2)"><span class="n">2</span>填连接</div><div class="dash"></div>
+          <div class="s" onclick="step(3)"><span class="n">3</span>挑模型</div><div class="dash"></div>
+          <div class="s" onclick="step(4)"><span class="n">4</span>分配任务</div>
+        </div>
+
+        <!-- 步骤 1 -->
+        <div class="step" id="step1">
+          <div class="sechead" style="margin-top:0"><h2>这家接口怎么说话？</h2><span class="sub">选错了会在第 3 步探测失败 —— 不落盘也能退回来</span></div>
+          <div class="proto">
+            <div class="o on"><b>OpenAI 兼容</b><span>DeepSeek / 硅基流动 / vLLM / one-api</span></div>
+            <div class="o"><b>Anthropic</b><span>Claude 原生 messages</span></div>
+            <div class="o"><b>Ollama</b><span>本地 /api/chat</span></div>
+            <div class="o"><b>Gemini</b><span>generateContent</span></div>
+            <div class="o"><b>自定义</b><span>手填路径与请求体</span></div>
+            <div class="o" style="opacity:.55"><b>Azure OpenAI</b><span>需要 deployment 名</span></div>
+          </div>
+        </div>
+
+        <!-- 步骤 2 -->
+        <div class="step on" id="step2">
+          <div class="sechead" style="margin-top:0"><h2>连上它</h2><span class="sub">地址与密钥；填完当场就能测，不用先存</span></div>
+          <div class="row" style="display:grid;grid-template-columns:80px minmax(0,1fr);gap:12px;align-items:center;padding:9px 0">
+            <span class="tiny faint" style="text-align:right">名称</span>
+            <input class="inp" value="main · DeepSeek" style="max-width:280px">
+          </div>
+          <div style="display:grid;grid-template-columns:80px minmax(0,1fr);gap:12px;align-items:center;padding:9px 0">
+            <span class="tiny faint" style="text-align:right">地址</span>
+            <div style="display:flex;gap:8px"><input class="inp" value="https://api.deepseek.com"><span class="chip ok tiny">可达</span></div>
+          </div>
+          <div style="display:grid;grid-template-columns:80px minmax(0,1fr);gap:12px;align-items:center;padding:9px 0">
+            <span class="tiny faint" style="text-align:right">密钥</span>
+            <div style="display:flex;gap:8px"><input class="inp" type="password" value="sk-1234567890abcdef"><button class="btn sm" data-fake-test>测试</button><span class="chip ok tiny">412ms</span></div>
+          </div>
+          <div class="note info" style="margin-top:10px"><span>这一步测的是 <b>草稿</b>：填了没保存也能测通，避免"先落盘再发现 key 错了"。</span></div>
+        </div>
+
+        <!-- 步骤 3 -->
+        <div class="step" id="step3">
+          <div class="sechead" style="margin-top:0"><h2>挑要用的模型</h2><span class="sub">只勾你真打算用的；勾了才进模型池</span></div>
+          <div class="pick">
+            <label><input type="checkbox" checked><span class="mono">deepseek-chat</span><span class="chip tiny">文本</span><span class="chip tiny">输出 8K</span><span class="muted small">DeepSeek V3 · 便宜快</span></label>
+            <label><input type="checkbox"><span class="mono">deepseek-reasoner</span><span class="chip tiny">推理</span><span class="chip tiny">64K</span><span class="muted small">贵、慢、更会挑</span></label>
+            <label><input type="checkbox" checked><span class="mono">deepseek-coder</span><span class="chip tiny">文本</span><span class="muted small">工具链路可能用得上</span></label>
+          </div>
+          <div class="note warn" style="margin-top:10px"><span>探测报了 <b>3 支</b>，内置目录另有 2 支未出现在 /models 里 —— 可以手打模型 id 补进去。</span></div>
+        </div>
+
+        <!-- 步骤 4 -->
+        <div class="step" id="step4">
+          <div class="sechead" style="margin-top:0"><h2>哪些任务用它</h2><span class="sub">拿不准就全选 —— 之后随时能分开</span></div>
+          <div class="pick">
+            <label><input type="checkbox" checked>检测 · 挑亮点 <span class="muted small">每条录播一次</span></label>
+            <label><input type="checkbox" checked>精修 · 剪辑 / 字幕 <span class="muted small">每片段一次，最贵</span></label>
+            <label><input type="checkbox" checked>订正 · 同音纠错 <span class="muted small">逐窗口</span></label>
+            <label><input type="checkbox" checked>标题 · 起名 <span class="muted small">每片段一次</span></label>
+            <label><input type="checkbox">工具 · 杂项 <span class="muted small">保持现状（本地）</span></label>
+          </div>
+        </div>
+
+        <div class="wiznav">
+          <button class="btn" onclick="step(0)">上一步</button>
+          <span class="spacer"></span>
+          <span class="tiny faint" style="align-self:center">第 <b id="stepNo">2</b> / 4 步</span>
+          <button class="btn primary" onclick="step(9)">下一步</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="brief">
+      <div class="cols">
+        <div>
+          <h4>这套在解决什么</h4>
+          <ul>
+            <li>配置的<b>失败</b>大多不是"配错参数"，而是"某家不能用了" —— 首屏直接给体检结论与影响面。</li>
+            <li>新用户走四步就能从零到能用，不用先理解"链路 / 覆盖 / 生效值"这些词。</li>
+            <li>修复动作与诊断结论挨着（"两条链路切到 main"就在横幅上），不用自己找地方改。</li>
+          </ul>
+        </div>
+        <div>
+          <h4>代价 / 什么时候别用</h4>
+          <ul>
+            <li>看板是<b>只读</b>的，日常改参数仍要进另一个视角 —— 两个视角就要维护两套入口。</li>
+            <li>体检是"探一下"，要服务端支持草稿测试与逐接口状态，否则看板只能是假的。</li>
+            <li>向导只服务首次；跑熟之后它会一直躺在 tab 里没人点。</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <a class="backlink" href="index.html">← 回到四套方案对比</a>
+  </main>
+</div></div>
+
+<script src="assets/demo.js"></script>
+<script>
+function show(id, btn){
+  document.querySelectorAll('.view').forEach(function(v){ v.classList.remove('on'); });
+  document.getElementById(id).classList.add('on');
+  document.querySelectorAll('.tabs button').forEach(function(b){ b.classList.remove('on'); });
+  btn.classList.add('on');
+}
+var cur = 2;
+function step(n){
+  if (n === 0) n = Math.max(1, cur - 1);
+  if (n === 9) n = Math.min(4, cur + 1);
+  if (n < 1 || n > 4) return;
+  cur = n;
+  document.querySelectorAll('.step').forEach(function(s){ s.classList.remove('on'); });
+  var el = document.getElementById('step' + n);
+  if (el) el.classList.add('on');
+  document.querySelectorAll('.wiz .s').forEach(function(s, i){
+    s.classList.remove('on'); s.classList.remove('done');
+    if (i + 1 === n) s.classList.add('on');
+    else if (i + 1 < n) s.classList.add('done');
+    var num = s.querySelector('.n');
+    num.textContent = (i + 1 < n) ? '✓' : String(i + 1);
+  });
+  var no = document.getElementById('stepNo');
+  if (no) no.textContent = n;
+}
+</script>
+</body>
+</html>

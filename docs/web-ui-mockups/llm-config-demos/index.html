@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LLM 配置 · 四套交互方案对比 — YekiTrim 参考稿</title>
+<link rel="stylesheet" href="assets/demo.css">
+<style>
+.wrap{max-width:1120px;padding-top:36px}
+.hero{text-align:center;margin-bottom:30px}
+.hero .badge{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--ink-faint);border:1px solid var(--line);border-radius:var(--r-full);padding:3px 12px;background:var(--card);margin-bottom:14px}
+.hero h1{font-size:25px;letter-spacing:-.2px}
+.hero h1 em{font-style:normal;color:var(--main-deep)}
+.hero p{color:var(--ink-dim);font-size:13px;margin-top:8px}
+.hero .meta{font-size:11.5px;color:var(--ink-faint);margin-top:10px}
+.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:36px}
+@media(max-width:920px){.cards{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:560px){.cards{grid-template-columns:1fr}}
+.dcard{background:var(--card);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--e-1);padding:16px;display:flex;flex-direction:column;gap:9px;transition:.18s}
+.dcard:hover{box-shadow:var(--e-2);transform:translateY(-3px)}
+.dcard .tag{align-self:flex-start;font-size:10.5px;padding:2px 10px;border-radius:var(--r-full);font-weight:700;background:var(--main-soft);color:var(--main-deep)}
+.dcard h2{font-size:14px}
+.dcard .desc{font-size:11.5px;color:var(--ink-dim);flex:1;line-height:1.6}
+.dcard .who{font-size:11px;color:var(--ink-faint)}
+.dcard .go{display:block;text-align:center;padding:7px;border-radius:var(--r-full);background:var(--action-bg);color:var(--on-action);font-weight:700;font-size:12.5px;margin-top:2px}
+.dcard .go:hover{background:var(--action-bg-deep)}
+
+/* 线框 */
+.wire{background:var(--bg-soft);border:1.5px solid var(--line);border-radius:var(--r-sm);height:104px;padding:7px;display:flex;flex-direction:column;gap:4px;overflow:hidden}
+.wire .bar{height:7px;border-radius:3px;background:var(--card);border:1px solid var(--line)}
+.wire .row{display:flex;gap:4px;align-items:center;height:13px}
+.wire .row .k{width:26px;height:8px;border-radius:3px;background:var(--card);border:1px solid var(--line);flex:none}
+.wire .row .v{flex:1;height:8px;border-radius:3px;background:var(--card);border:1px solid var(--line)}
+.wire .row .v.hot{background:var(--main-soft);border-color:var(--pink-light)}
+.wire .row .c{width:16px;height:8px;border-radius:4px;background:var(--main-soft);border:1px solid var(--pink-light);flex:none}
+.wire .grid{display:grid;grid-template-columns:repeat(5,1fr);gap:3px;flex:1}
+.wire .grid i{background:var(--card);border:1px solid var(--line);border-radius:2px}
+.wire .grid i.on{background:var(--main);border-color:var(--main)}
+.wire .hdr{display:flex;gap:4px}
+.wire .hdr .dm{width:8px;height:8px;border-radius:50%;border:1.5px solid var(--line);align-self:center}
+.wire .hdr .dm.done{background:var(--green-soft);border-color:var(--green)}
+.wire .hdr .dm.now{background:var(--main);border-color:var(--main)}
+.wire .banner{height:14px;border-radius:3px;background:var(--amber-soft);border:1px solid var(--tan)}
+.wire .cols3{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;flex:1}
+.wire .cols3 i{background:var(--card);border:1px solid var(--line);border-radius:2px}
+.wire .cols3 i.bad{border-color:var(--red)}
+
+.next{display:flex;align-items:center;gap:12px;background:var(--card);border:1.5px solid var(--main);border-radius:var(--r);box-shadow:var(--e-2);padding:14px 16px;margin:-8px 0 28px;transition:.18s}
+.next:hover{transform:translateY(-2px);box-shadow:var(--e-3)}
+.next .k{font-size:10.5px;font-weight:700;background:var(--main);color:var(--on-main);border-radius:var(--r-full);padding:2px 9px;flex:none}
+.next .t{font-size:12.5px;color:var(--ink-dim);flex:1}
+.next .t b{color:var(--ink)}
+.next .go{font-size:12.5px;font-weight:700;color:var(--main-deep);flex:none}
+h2.sect{font-size:14px;margin:0 0 10px;display:flex;align-items:baseline;gap:10px}
+h2.sect .sub{font-size:11.5px;color:var(--ink-faint);font-weight:400}
+.tbl{background:var(--card);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;box-shadow:var(--e-1)}
+.tbl th{background:var(--bg-soft);color:var(--ink-dim);font-size:11.5px;padding:10px 12px}
+.tbl td{font-size:12px;padding:10px 12px}
+.tbl td:first-child{font-weight:700;white-space:nowrap;color:var(--ink)}
+.tbl td b.good{color:var(--green-deep)} .tbl td b.bad{color:var(--red-deep)} .tbl td b.mid{color:var(--amber-deep)}
+.pick{margin-top:26px;display:grid;grid-template-columns:1.35fr 1fr;gap:14px}
+@media(max-width:820px){.pick{grid-template-columns:1fr}}
+.pcard{background:var(--card);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--e-1);padding:16px 18px}
+.pcard h3{font-size:13px;margin-bottom:8px;display:flex;align-items:center;gap:7px}
+.pcard ol,.pcard ul{margin-left:17px;font-size:12px;color:var(--ink-dim);line-height:1.85}
+.pcard li b{color:var(--ink)}
+.foot{margin-top:26px;font-size:11.5px;color:var(--ink-faint);text-align:center}
+kbd{font-family:var(--mono);font-size:10.5px;background:var(--bg-soft);border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;padding:1px 5px}
+</style>
+</head>
+<body>
+<div class="topbar"><div class="in">
+  <div class="crumb"><span>docs</span><i>/</i><span>web-ui-mockups</span><i>/</i><b>LLM 配置四套交互方案</b></div>
+  <div class="spacer"></div>
+  <button class="iconbtn" onclick="toggleTheme()" title="切换亮/暗色"><span data-theme-label>暗色</span></button>
+</div></div>
+
+<div class="wrap">
+  <div class="hero">
+    <div class="badge">参考稿 · 静态 HTML · 无依赖 · 假数据</div>
+    <h1>设置里的 <em>LLM 配置</em>，四种交互逻辑</h1>
+    <p>同一份数据模型（providers / models / links / defaults），四种"从哪儿开始动手"的组织方式。<br>下方四套是<b>素材</b>，定稿方向见上面那条。</p>
+    <div class="meta">配色逐值取自 <code>webui/src/styles/tokens.css</code>（哥特双主题）· 每页右上角可切亮/暗</div>
+  </div>
+
+  <a class="next" href="model-first.html">
+    <span class="k">已整合</span>
+    <span class="t"><b>模型优先 · 单页三块</b> —— 接口收成模型的属性、任务只选模型；没配好落「模型配置」、配好了落「链路配置」，全部就地展开（无抽屉）。</span>
+    <span class="go">打开整合方案 →</span>
+  </a>
+
+  <div class="cards">
+    <!-- A -->
+    <div class="dcard">
+      <span class="tag">A</span>
+      <div class="wire">
+        <div class="bar"></div>
+        <div class="row"><span class="k"></span><span class="v hot"></span><span class="c"></span></div>
+        <div class="row"><span class="k"></span><span class="v"></span><span class="c"></span></div>
+        <div class="row"><span class="k"></span><span class="v"></span><span class="c"></span></div>
+        <div class="row"><span class="k"></span><span class="v"></span><span class="c"></span></div>
+        <div class="row"><span class="k"></span><span class="v"></span><span class="c"></span></div>
+      </div>
+      <h2>任务优先</h2>
+      <div class="desc">首屏五张「谁干什么活」卡，接口与密钥退成一条资源带。继承关系显式画出来。</div>
+      <div class="who">适合：已有多家接口、真的会按任务分配</div>
+      <a class="go" href="a-task-first.html">打开方案 A</a>
+    </div>
+    <!-- B -->
+    <div class="dcard">
+      <span class="tag" style="background:var(--green-soft);color:var(--green-deep)">B</span>
+      <div class="wire">
+        <div class="hdr"><span class="dm done"></span><span class="bar" style="width:20px;height:3px"></span><span class="dm done"></span><span class="bar" style="width:20px;height:3px"></span><span class="dm now"></span></div>
+        <div class="bar" style="height:34px"></div>
+        <div class="row"><span class="v"></span><span class="c"></span></div>
+        <div class="bar" style="flex:1"></div>
+      </div>
+      <h2>极简优先</h2>
+      <div class="desc">一条主路径跑到能用；「按任务分模型」等五件事整体退到「高级设置」。</div>
+      <div class="who">适合：单接口 / 新用户 / 不想读文档</div>
+      <a class="go" href="b-simple-first.html">打开方案 B</a>
+    </div>
+    <!-- C -->
+    <div class="dcard">
+      <span class="tag" style="background:var(--blue-soft);color:var(--blue-deep)">C</span>
+      <div class="wire">
+        <div class="bar"></div>
+        <div class="grid">
+          <i></i><i class="on"></i><i></i><i></i><i></i>
+          <i class="on"></i><i></i><i></i><i class="on"></i><i></i>
+          <i></i><i></i><i></i><i></i><i class="on"></i>
+          <i></i><i class="on"></i><i></i><i></i><i></i>
+        </div>
+      </div>
+      <h2>模型 × 任务矩阵</h2>
+      <div class="desc">行是模型、列是任务，点一格就分配。右侧「被引用 N 条」一眼看出删谁会打掉谁。</div>
+      <div class="who">适合：模型多、要控成本与引用关系</div>
+      <a class="go" href="c-model-matrix.html">打开方案 C</a>
+    </div>
+    <!-- D -->
+    <div class="dcard">
+      <span class="tag" style="background:var(--amber-soft);color:var(--amber-deep)">D</span>
+      <div class="wire">
+        <div class="banner"></div>
+        <div class="cols3"><i></i><i class="bad"></i><i></i></div>
+        <div class="row"><span class="v"></span></div>
+      </div>
+      <h2>健康看板 + 向导</h2>
+      <div class="desc">首屏是体检结论与影响面（哪家 401、影响哪两条任务），首次配置走四步向导。</div>
+      <div class="who">适合：接口会挂、需要"先看病再开药"</div>
+      <a class="go" href="d-health-wizard.html">打开方案 D</a>
+    </div>
+  </div>
+
+  <h2 class="sect">横向对比<span class="sub">同一份数据，只比"交互代价"</span></h2>
+  <div class="tbl">
+    <table class="tbl">
+      <thead>
+        <tr>
+          <th>维度</th><th>A 任务优先</th><th>B 极简优先</th><th>C 矩阵</th><th>D 健康看板</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>首屏回答什么</td><td>哪个任务用哪支</td><td>怎么先跑起来</td><td>谁在用谁、用了几次</td><td>哪里坏了、影响谁</td></tr>
+        <tr><td>改「检测换模型」</td><td><b class="good">1 次点击展开 + 选</b></td><td>先进高级（2 步）</td><td><b class="good">1 次点击</b></td><td>去任务行改（2 步）</td></tr>
+        <tr><td>改密钥 / 加接口</td><td>资源带里（1 层）</td><td><b class="good">就在首屏</b></td><td>压成一条，再展开</td><td>接口卡上直接改</td></tr>
+        <tr><td>改参数（温度等）</td><td>任务行内联</td><td>高级里</td><td><b class="bad">没地方放</b></td><td>任务行内联</td></tr>
+        <tr><td>引用可见性</td><td>弱（靠 chip）</td><td><b class="bad">无</b></td><td><b class="good">强（计数列）</b></td><td>中（影响表）</td></tr>
+        <tr><td>多接口扩展性</td><td><b class="good">好</b></td><td><b class="bad">差</b></td><td>中（行数增长）</td><td>好</td></tr>
+        <tr><td>新用户冷启动</td><td>中</td><td><b class="good">最好</b></td><td>中</td><td><b class="good">好（向导）</b></td></tr>
+        <tr><td>故障时能不能自解释</td><td>弱</td><td>弱</td><td>中（标黄）</td><td><b class="good">强</b></td></tr>
+        <tr><td>相对现状的改动量</td><td><b class="good">小（重排 + 抽卡）</b></td><td>中（加模式切换）</td><td>大（新组件）</td><td>大（要逐接口状态接口）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="pick">
+    <div class="pcard">
+      <h3>建议的落地顺序（不是四选一）</h3>
+      <ol>
+        <li><b>B 当默认首屏</b> —— 只有一份接口时，「模型配置」子页直接是三行 + 测试；高级里才是分配。</li>
+        <li><b>A 当"链路配置"子页</b> —— 现在的链路表已经是这个语义，只是把表格行换成"任务卡 + 继承线"，改的是排版不是数据。</li>
+        <li><b>D 的横幅塞进两个子页顶部</b> —— 只在"有接口不通"时出现，一条横幅 + 一键切换，不新开视角。</li>
+        <li><b>C 先不做主视图</b> —— 它的引用计数可以先长在「模型池」列表里（"被 2 条任务使用"），等模型数真的过 10 再考虑矩阵。</li>
+      </ol>
+    </div>
+    <div class="pcard">
+      <h3>四套都必须守住的硬约束</h3>
+      <ul>
+        <li>编辑对象 ≠ 生效对象：左栏点一行只切 <code>editingId</code>，改 <code>active</code> 只有显式按钮。</li>
+        <li>停手 1.2s 自动保存，但自动路径<b>不重读</b>（否则输入框被换掉、焦点丢失）。</li>
+        <li>「额外参数」JSON 不合法时<b>拒绝落盘</b>，保存条常驻红字。</li>
+        <li>草稿可测：填了 key 没保存也能测，不然"先存再试"永远绕不开。</li>
+        <li>链路模型候选按<b>本行生效接口</b>过滤，选了别家的当场标黄。</li>
+        <li>行内文案 ≤20 字，细节进 <code>title</code>（右栏内容宽只有 266px）。</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="note info" style="margin-top:22px">
+    <span><b>这些页是什么：</b>纯静态参考稿（假数据、无构建、不参与门禁）。用来对着讨论"先动手的是哪一块"，
+      不是可直接替换 <code>SettingsView.vue</code> 的实现 —— 真落地要走 <code>webui/src</code> 的组件纪律与
+      <code>npm --prefix webui run build</code>。快捷键：<kbd>T</kbd> 切主题（点右上角也行）。</span>
+  </div>
+
+  <div class="foot">YekiTrim · docs/web-ui-mockups/llm-config-demos · 配色对齐 tokens.css 哥特双主题</div>
+</div>
+
+<script src="assets/demo.js"></script>
+<script>
+document.addEventListener('keydown', function (e) {
+  if (e.key === 't' || e.key === 'T') toggleTheme();
+});
+</script>
+</body>
+</html>

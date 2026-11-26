@@ -383,7 +383,7 @@
       "id": "settings.llm-quick",
       "phase": "P3",
       "surface": "settings",
-      "label": "LLM 配置 · 当前接口",
+      "label": "LLM 配置 · 接口清单",
       "files": [
         "webui/src/views/SettingsView.vue"
       ],

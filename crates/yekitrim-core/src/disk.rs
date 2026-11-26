@@ -19,7 +19,8 @@ use anyhow::Result;
 #[cfg(windows)]
 pub fn space_bytes(path: &Path) -> Option<(u64, u64)> {
     #[link(name = "kernel32")]
-    extern "system" {
+    // ⚠️ edition 2024 要求 extern 块自身也标 `unsafe`（其他两处 `instancelock.rs` / `tray.rs` 早就是这写法）。
+    unsafe extern "system" {
         fn GetDiskFreeSpaceExW(
             lpdirectoryname: *const u16,
             lpfreebytesavailabletocaller: *mut u64,

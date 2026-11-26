@@ -56,7 +56,7 @@ const candList = () => {
 async function doFetch() {
   if (fetching.value) return
   const base = String(props.baseUrl || '').trim()
-  if (!base) { remote.state = 'error'; remote.note = '先在右边填这个接口的 API 地址'; return }
+  if (!base) { remote.state = 'error'; remote.note = '先在这份接口的「填密钥」里填好地址，再来取候选'; return }
   fetching.value = true
   remote.state = 'loading'
   remote.note = ''
@@ -312,7 +312,7 @@ const shown = computed(() => {
           </template>
           <tr v-if="!rows.length">
             <td colspan="4" class="ml-empty">
-              这一份接口还没有模型 —— 点右上「取候选」挑几支，或「+ 添加模型」手填一行。
+              这一份接口还没有模型 —— 点上面「取候选」挑几支，或「+ 添加模型」手填一行。
             </td>
           </tr>
         </tbody>

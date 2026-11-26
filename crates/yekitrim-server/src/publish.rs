@@ -524,6 +524,10 @@ fn read_passkey(
     let path = PathBuf::from(pc.passkey_file.trim());
     let meta = std::fs::metadata(&path)
         .map_err(|e| format!("读不到 passkey_file {}: {e}", path.display()))?;
+    // ⚠️ `meta` 只在 unix 分支里读（Windows 下会报 unused）—— 这行是**故意**的占位，
+    //    别改成 `_meta`：下面 format! 里还要用同一个名字。
+    #[cfg(not(unix))]
+    let _ = &meta;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

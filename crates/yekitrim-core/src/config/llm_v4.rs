@@ -433,6 +433,29 @@ impl LlmV4 {
                 out.push(format!("模型 {} 的 provider 认不出：{}", m.id, m.provider));
             }
         }
+        // 链路指定的模型**属于另一家接口**：这是 2026-11-26 起界面在链路表里"当场标黄"的那条规则
+        // （`modelMismatch`），后端一直没查 ⇒ CLI / 直接改 toml 的人拿不到任何提示。搬到这里做唯一实现。
+        // ⚠️ **只报"清单里有、但归属不是这个接口"这一种**：清单里根本没有的模型 id 是合法的
+        //    （自建网关 / 手打 id / 老配置），报出来只会误伤。
+        for (key, link) in &self.links {
+            let mid = link.model.trim();
+            if mid.is_empty() { continue }
+            let pid = if link.provider.trim().is_empty() {
+                self.active_provider().map(|p| p.id.clone()).unwrap_or_default()
+            } else {
+                link.provider.trim().to_string()
+            };
+            let hits: Vec<&LlmModelEntry> = self
+                .models
+                .iter()
+                .filter(|m| m.id.trim().eq_ignore_ascii_case(mid))
+                .collect();
+            if hits.is_empty() || hits.iter().any(|m| m.provider == pid) { continue }
+            out.push(format!(
+                "[llm.links.{key}] 指定的模型 {mid} 属于接口 {}，而这条链路用的是 {pid}（请求会 model not found）",
+                hits[0].provider
+            ));
+        }
         // 链路行为参数：0 不表示"没配"，会被夹成 1 —— 照实说一句（不拦保存，只提示）
         for (key, link) in &self.links {
             let Some(run) = &link.run else { continue };
@@ -1135,6 +1158,44 @@ mod runtime_tests {
         assert!(p.iter().any(|s| s.contains("ghost")), "认不出的 provider 要报: {p:?}");
         let empty = LlmV4::default();
         assert!(empty.problems().iter().any(|s| s.contains("没有任何接口")));
+    }
+
+    /// **链路指定的模型属于另一家接口**必须报出来（2026-11-27 M2）。
+    ///
+    /// 这条规则以前只活在前端（链路表 `modelMismatch` 标黄），后端 `problems()` 不查 ⇒
+    /// CLI 与直接改 toml 的人拿不到任何提示，跑起来才 404。
+    /// ⚠️ 三种情况**不许**误报：清单里没有这个 id（手打 / 自建网关）、链路没写接口（跟随 active 时按 active 判）、
+    ///    同一 id 在目标接口下也有一份。
+    #[test]
+    fn problems_flag_link_model_from_another_provider() {
+        let mut c = two_providers();
+        c.models.push(LlmModelEntry { id: "m-main".into(), provider: "main".into(), ..Default::default() });
+        c.models.push(LlmModelEntry { id: "m-cheap".into(), provider: "cheap".into(), ..Default::default() });
+
+        // ① 写了接口 + 写了别家的模型 ⇒ 报
+        c.links.insert("polish".into(), LlmLinkSetting {
+            provider: "cheap".into(), model: "m-main".into(), ..Default::default()
+        });
+        let p = c.problems();
+        assert!(p.iter().any(|s| s.contains("m-main") && s.contains("cheap")), "错配要报: {p:?}");
+
+        // ② 配对的写法不报
+        c.links.insert("polish".into(), LlmLinkSetting {
+            provider: "cheap".into(), model: "m-cheap".into(), ..Default::default()
+        });
+        let clean = c.problems();
+        assert!(clean.iter().all(|s| !s.contains("m-cheap")), "配对正确不该报: {clean:?}");
+
+        // ③ 没写接口 ⇒ 按 active（main）判，m-cheap 就成了错配
+        c.links.insert("polish".into(), LlmLinkSetting { model: "m-cheap".into(), ..Default::default() });
+        let followed = c.problems();
+        assert!(followed.iter().any(|s| s.contains("m-cheap")), "跟随 active 时也要判: {followed:?}");
+
+        // ④ 清单里没有这个 id ⇒ 不报（手打 / 自建网关是合法的）
+        c.links.insert("polish".into(), LlmLinkSetting {
+            provider: "cheap".into(), model: "whatever".into(), ..Default::default()
+        });
+        assert!(c.problems().iter().all(|s| !s.contains("whatever")), "清单外的 id 不该报");
     }
 }
 
