@@ -108,6 +108,111 @@ where
 }
 
 
+/// 自动推导出来的「容器前缀 → 宿主目录」映射。
+#[derive(Debug, Clone, Default)]
+pub(crate) struct DerivedMapping {
+    pub(crate) container_root: String,
+    pub(crate) matched: usize,
+    pub(crate) probed: usize,
+    pub(crate) sample: Option<String>,
+    pub(crate) sample_local: Option<String>,
+}
+
+impl DerivedMapping {
+    pub(crate) fn to_json(&self, save_path: &str) -> serde_json::Value {
+        serde_json::json!({
+            "save_path": save_path,
+            "container_root": self.container_root,
+            "matched": self.matched,
+            "probed": self.probed,
+            "ok": self.matched > 0,
+            "sample": self.sample,
+            "sample_local": self.sample_local,
+        })
+    }
+}
+
+/// 从**历史样本 + 本地磁盘**反推 `container_root`（不再需要人填）。
+///
+/// 候选 = 样本路径的各级前缀（限定在 `save_path` 之下，且至少留一层给文件名之后的部分）；
+/// 每个候选数一遍「映射后在 `root` 下真实存在」的条数，**取命中最多、同分取最浅**的那个
+/// —— 最浅的那层对所有房间都成立，深一层就只对本房间成立了。
+///
+/// 只看前 8 条样本：候选数 ≤ 8×4，成本可忽略（走 [`crate::ingest::map_webhook_path`] 的同一套囚笼）。
+/// ⚠️ **同步**（要 stat）：调用方必须下 `spawn_blocking`。
+///
+/// 唯一实现在这里：`POST /api/admin/recorder/test`（给建议）与 `PUT /api/admin/ingest`
+/// （保存时自动补齐）都调它 —— 别在别处再写一份前缀猜测。
+pub(crate) fn derive_container_root(
+    root: &std::path::Path,
+    save_path: &str,
+    samples: &[String],
+) -> DerivedMapping {
+    const PROBE: usize = 8;
+    const MAX_DEPTH: usize = 5;
+    let sp = save_path.trim().trim_end_matches(['/', '\\']).to_string();
+    let probe: Vec<&String> = samples.iter().take(PROBE).collect();
+    let mut m = DerivedMapping {
+        probed: probe.len(),
+        sample: probe.first().map(|s| (*s).clone()),
+        ..Default::default()
+    };
+    if probe.is_empty() {
+        return m;
+    }
+
+    let mut cands: Vec<String> = Vec::new();
+    for s in &probe {
+        let mut acc = String::new();
+        let segs: Vec<&str> = s.split(['/', '\\']).filter(|x| !x.is_empty()).collect();
+        for (i, seg) in segs.iter().enumerate() {
+            if i >= MAX_DEPTH {
+                break;
+            }
+            if i == 0 && s.starts_with('/') {
+                acc.push('/');
+            } else if !acc.is_empty() && !acc.ends_with('/') {
+                acc.push('/');
+            }
+            acc.push_str(seg);
+            // 只把「还留有剩余路径」的前缀当候选（整条路径本身不是前缀）
+            if i + 1 >= segs.len() {
+                continue;
+            }
+            // 有 savePath 时只认它之下的前缀：排除 `/app` 这种明显不对的层级
+            if !sp.is_empty() && acc != sp && !acc.starts_with(&(sp.clone() + "/")) {
+                continue;
+            }
+            if !cands.contains(&acc) {
+                cands.push(acc.clone());
+            }
+        }
+    }
+
+    for c in &cands {
+        let mut matched = 0usize;
+        let mut first_local = None;
+        for s in &probe {
+            if let Ok(abs) = crate::ingest::map_webhook_path(root, c, s) {
+                matched += 1;
+                if first_local.is_none() {
+                    first_local = Some(yekitrim_core::path::display(&abs));
+                }
+            }
+        }
+        let depth = c.split('/').filter(|x| !x.is_empty()).count();
+        let best_depth = m.container_root.split('/').filter(|x| !x.is_empty()).count();
+        let better = matched > m.matched
+            || (matched == m.matched && matched > 0 && depth < best_depth);
+        if better {
+            m.matched = matched;
+            m.container_root = c.clone();
+            m.sample_local = first_local;
+        }
+    }
+    m
+}
+
 /// 录像目录探针的进程级缓存槽（与 [`root_probe_cached`] / [`last_root_probe`] 共用）。
 type RootProbeSlot = std::sync::Mutex<
     Option<(std::time::Instant, String, bool, yekitrim_service::recorder::RootProbe)>,

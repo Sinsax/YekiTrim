@@ -297,6 +297,27 @@ impl BiliLiveToolsClient {
             .collect())
     }
 
+    /// 它**在容器里**的录制根目录（`GET /config` 的 `recorder.savePath`，实测 `/app/video`）。
+    ///
+    /// 用途：推导 `[ingest.recorder] container_root`。历史条目形如
+    /// `/app/video/Bilibili/<主播>/<场次>/x.flv`，而用户只需要填**宿主侧**的共享根 ——
+    /// 「前缀该剥到哪一段」完全可以算出来，不该让人猜。
+    pub async fn save_path(&self) -> Result<String> {
+        let resp = self
+            .http
+            .get(format!("{}/config", self.base))
+            .send()
+            .await
+            .with_context(|| format!("连不上 biliLive-tools（{}）", self.base))?;
+        let v: serde_json::Value = self.json(resp, "读取配置").await?;
+        Ok(v.get("recorder")
+            .and_then(|r| r.get("savePath"))
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string())
+    }
+
     /// 版本（自检用；biliLive-tools 没有 `/api/version`，读 `/config` 只证明"连通且鉴权过"）。
     pub async fn version(&self) -> Result<String> {
         let resp = self
@@ -401,6 +422,13 @@ impl RecorderBackend {
         match self {
             Self::Bililive(c) => c.version().await,
             Self::BiliLiveTools(c) => c.version().await,
+        }
+    }
+    /// biliLive-tools 在**容器里**的录制根目录；录播姬回空串（它没有这个概念，房间靠目录名解析）。
+    pub async fn save_path(&self) -> Result<String> {
+        match self {
+            Self::BiliLiveTools(c) => c.save_path().await,
+            Self::Bililive(_) => Ok(String::new()),
         }
     }
 

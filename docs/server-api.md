@@ -200,6 +200,10 @@
     （播放会打出一串 Range 请求）、`polish_silence`/`polish_project_put`/`config_*_put`
     （`with_path_lock` 的闭包跑在当前线程，改成 `lock_path().await` + `blocking(...)`）、
     `polish_cover_frame`/`preview` 的截帧 ffmpeg、入库的扫描、`POST /api/admin/ingest/scan`。
+  - **采集配置的两个自动项（2026-11-27）**：`POST /api/admin/recorder/test` 在 biliLive-tools 下
+    额外回 `mapping{container_root,matched,probed,ok}` 与 `root_suggestion{path,matched}`（**只是建议**）；
+    `PUT /api/admin/ingest` 在「本次没给 `container_root`」时自动推导并写入（推导不出来就不写，不报错）。
+    推导唯一实现：`crates/yekitrim-server/src/ingest/mod.rs::derive_container_root`。
   - **采集目录校验（2026-11-27）**：`POST /api/admin/recorder/test` 的目录探测走
     `spawn_blocking` + **8s 超时**（死 UNC 的 `metadata` 能挂几十秒）；`GET /api/admin/ingest`
     **只读缓存、绝不现场探测**；`GET /api/rooms` 与两个录像列表端点在目录不可用时回

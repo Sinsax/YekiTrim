@@ -161,6 +161,84 @@ pub(super) fn check_projects_root(raw: &str) -> Result<String, AppError> {
     Ok(yekitrim_core::path::display(p))
 }
 
+
+/// 保存 biliLive-tools 配置时**自动补齐 `container_root`**（用户只填 地址 / 密钥 / 录像目录）。
+///
+/// 三条同时成立才动手：① kind = bililive-tools；② 本次**没提到** `container_root`
+/// （给了键就尊重用户，哪怕空串 = 清空）；③ 能连上对方、拿到历史样本、推到 ≥1 条命中。
+/// 推导不出来就原样放过（不报错）—— 用户仍可在「高级」里手填。
+async fn fill_container_root(body: &mut serde_json::Value) {
+    let Some(rec) = body.get("recorder").and_then(|v| v.as_object()) else {
+        return;
+    };
+    if rec.contains_key("container_root") {
+        return;
+    }
+    let pick = |k: &str| -> Option<String> {
+        rec.get(k)
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    let mut cfg = yekitrim_core::config::load_global_config();
+    let kind = pick("kind").unwrap_or_else(|| cfg.ingest.recorder.kind.clone());
+    if kind.trim().to_ascii_lowercase().replace('_', "-") != "bililive-tools" {
+        return;
+    }
+    // 本次一起改的连接参数也要用上（首次保存时已存配置里还是空的）
+    if let Some(v) = pick("api_base") {
+        cfg.ingest.recorder.api_base = v;
+    }
+    if let Some(v) = pick("api_key") {
+        cfg.ingest.recorder.api_key = v;
+    }
+    if let Some(v) = pick("api_user") {
+        cfg.ingest.recorder.api_user = v;
+    }
+    if let Some(v) = pick("api_pass") {
+        cfg.ingest.recorder.api_pass = v;
+    }
+    let root = pick("root").unwrap_or_else(|| cfg.ingest.recorder.root.trim().to_string());
+    if root.is_empty() {
+        return;
+    }
+    let Some(client) = yekitrim_service::recorder::RecorderBackend::from_config(&cfg.ingest) else {
+        return;
+    };
+    let save_path = client.save_path().await.unwrap_or_default();
+    let samples: Vec<String> = match client.list_rooms().await {
+        Ok(rooms) => match rooms.first() {
+            Some(r) => client
+                .list_history(&r.room_id.to_string(), &r.platform)
+                .await
+                .map(|items| items.into_iter().take(8).map(|i| i.video_file).collect())
+                .unwrap_or_default(),
+            None => Vec::new(),
+        },
+        Err(_) => Vec::new(),
+    };
+    if samples.is_empty() {
+        return;
+    }
+    let root_path = std::path::PathBuf::from(&root);
+    let derived = tokio::task::spawn_blocking(move || {
+        crate::ingest::derive_container_root(&root_path, &save_path, &samples)
+    })
+    .await
+    .unwrap_or_default();
+    if derived.matched == 0 {
+        return;
+    }
+    let obj = body.as_object_mut().expect("body 是对象");
+    let rec = obj.entry("recorder".to_string()).or_insert_with(|| serde_json::json!({}));
+    if let Some(rec) = rec.as_object_mut() {
+        rec.insert(
+            "container_root".to_string(),
+            serde_json::json!(derived.container_root),
+        );
+    }
+}
 /// `PUT /api/admin/ingest`：保存采集/录播姬配置（仅 admin）。
 ///
 /// 校验与语义见 [`build_ingest_patch`]；写入走 `patch_config_file`（toml_edit 合并）→
@@ -170,8 +248,10 @@ pub async fn put_config(
     State(state): State<Arc<AppState>>,
     axum::extract::Extension(user): axum::extract::Extension<CurrentUser>,
     ClientIp(ip): ClientIp,
-    Json(body): Json<serde_json::Value>,
+    Json(mut body): Json<serde_json::Value>,
 ) -> ApiResult {
+    // 只填了 地址 / 密钥 / 录像目录 的用户也能一把保存成功：缺 container_root 就自动推导补上。
+    fill_container_root(&mut body).await;
     let (ingest, storage, warnings) = build_ingest_patch(&body)?;
 
     if ingest.is_empty() && storage.is_empty() {

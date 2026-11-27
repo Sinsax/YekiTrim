@@ -70,6 +70,8 @@ YekiTrim。所以跨机的做法是**用户自己把目录映射成 Windows 能�
 
 2. Windows 侧**不要用映射盘符**（`Z:` 只对当前登录会话有效，服务 / 托盘进程常常看不到），
    直接填 UNC：`[ingest.recorder] root = "\\<录播机IP>\rec"`。
+   `container_root` **留空即可**（服务端从 biliLive-tools 的 `recorder.savePath` + 历史样本自动推导，
+   「测试连接」会把识别结果显示出来；填错时也能一键「填入」）。
 3. 凭据存到**运行 YekiTrim 的那个账号**下：
    `cmdkey /add:<录播机IP> /user:yekitrim /pass:<口令>`；先用资源管理器或 `dir \\<录播机IP>\rec` 验一次。
 4. 设置页「测试连接」分开报两件事：**接口**（版本 / 房间数）与 **录像目录**（可读写 / 条目数 /

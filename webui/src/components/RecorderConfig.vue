@@ -64,6 +64,14 @@
         <div class="test-line" :class="testResult.rootOk ? 'ok' : 'bad'">
           录像目录：{{ testResult.rootText }}
         </div>
+        <div v-if="testResult.mappingText" class="test-line" :class="testResult.mappingOk ? 'ok' : 'bad'">
+          路径映射：{{ testResult.mappingText }}
+          <button v-if="testResult.mappingFill" class="mini-btn" style="margin-left:6px" @click="useMapping">填入</button>
+        </div>
+        <div v-if="testResult.rootSuggest" class="test-line bad">
+          建议录像目录改成 {{ testResult.rootSuggest.path }}
+          <button class="mini-btn" style="margin-left:6px" @click="useSuggestedRoot">改用</button>
+        </div>
         <div v-if="testResult.hint" class="hint">{{ testResult.hint }}</div>
       </div>
 
@@ -82,8 +90,8 @@
             </div>
           </div>
           <div v-if="isBlt">
-            <label>容器路径前缀</label>
-            <input v-model.trim="form.container_root" placeholder="/app/video">
+            <label>容器路径前缀（留空 = 自动识别）</label>
+            <input v-model.trim="form.container_root" placeholder="留空 = 自动识别">
           </div>
         </div>
       </details>
@@ -178,7 +186,9 @@ async function save() {
       api_base: form.value.api_base
     }
     if (isBlt.value) {
-      recorder.container_root = form.value.container_root
+      // 留空 = 交给后端自动识别（`ingest/config.rs::fill_container_root`）。
+      // ⚠️ 这里**不能**发空串：空串在 PATCH 语义里是"清空"，会把自动补齐挡掉。
+      if (form.value.container_root) recorder.container_root = form.value.container_root
       if (form.value.api_key !== null) recorder.api_key = form.value.api_key
     } else {
       recorder.api_user = form.value.api_user
@@ -233,8 +243,24 @@ async function test() {
       if (form.value.api_pass) payload.api_pass = form.value.api_pass
     }
     const d = await api('/api/admin/recorder/test', { method: 'POST', body: JSON.stringify(payload) })
-    const apiOk = d?.api?.ok === true
-    const rootOk = d?.root?.ok === true
+    // ③ 路径映射（仅 biliLive-tools）：后端会自动推导 container_root，这里只是**建议**。
+    const map = d?.mapping
+    let mappingText = ''
+    let mappingOk = false
+    let mappingFill = ''
+    if (map && (map.save_path || map.container_root)) {
+      if (map.ok) {
+        mappingOk = true
+        mappingText = `${map.container_root}（${map.matched}/${map.probed} 条对得上）`
+        // 与当前表单不一致时才给「填入」——别让按钮点了没变化
+        if ((form.value.container_root || '') !== map.container_root) mappingFill = map.container_root
+      } else {
+        mappingText = map.probed
+          ? `${map.probed} 条历史都映射不到当前目录 —— 录像目录可能选到了房间子目录`
+          : '拿不到历史样本，无法自动识别（先确认接口与密钥）'
+      }
+    }
+    const sug = d?.root_suggestion
     testResult.value = {
       apiOk,
       rootOk,
@@ -243,6 +269,10 @@ async function test() {
         : (d?.api?.error || '连不上'),
       rootText: rootStatusText(d?.root),
       hint: rootOk ? '' : (d?.root?.hint || ''),
+      mappingText,
+      mappingOk,
+      mappingFill,
+      rootSuggest: sug && sug.ok ? sug : null,
     }
     // 测试结果同时更新「已配置 / 目录不可用」那枚 chip，不用等保存
     if (d?.root) rootStatus.value = d.root
@@ -252,6 +282,23 @@ async function test() {
     testResult.value = { apiOk: false, rootOk: false, apiText: e.message || '请求失败', rootText: '未测', hint: '' }
     toast('连接失败', 'err')
   }
+}
+
+
+/** 「填入」自动识别的路径映射（只填表单，仍需点保存才落盘）。 */
+function useMapping() {
+  const v = testResult.value?.mappingFill
+  if (!v) return
+  form.value.container_root = v
+  toast('已填入自动识别的路径映射，记得保存')
+}
+
+/** 「改用」建议的录像目录（root 选深了一层时）。 */
+function useSuggestedRoot() {
+  const p = testResult.value?.rootSuggest?.path
+  if (!p) return
+  form.value.root = p
+  toast('已改用建议的录像目录，记得保存后重新测试')
 }
 
 function clearPass() {

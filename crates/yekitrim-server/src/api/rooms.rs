@@ -30,6 +30,109 @@ fn missing_hint(kind: &str) -> String {
     }
 }
 
+/// biliLive-tools 的 `video_file` → 本地 `(绝对路径, 大小, mtime)`；`None` = 磁盘上找不到
+/// （历史里常有早已删掉的场次，**负结果也缓存** —— 否则每次点房间都要把上百次失败重跑一遍）。
+type BltFileInfo = Option<(std::path::PathBuf, u64, i64)>;
+
+/// 一批历史条目的**本地解析**（`map_webhook_path` 会 `canonicalize`，打在网络盘上就是几百毫秒）。
+///
+/// ⚠️ **同步**：调用方必须下 `spawn_blocking`，而且**一次调用解析整批**。
+/// 这里曾经是「async handler 里逐条 `map_webhook_path` + `metadata`」—— 129 条历史 ≈ 18 秒，
+/// 期间还占住 tokio worker（打开「添加录像」整块卡死就是这么来的）。
+fn resolve_blt_paths(
+    root: &std::path::Path,
+    container_root: &str,
+    paths: &[String],
+) -> std::collections::HashMap<String, BltFileInfo> {
+    // 命中：5 分钟（录像落盘后基本不再变；新文件不在缓存里，会当场解析）。
+    // 未命中：只 30 秒 —— 否则「共享还没挂上时先点了一次」会把 129 条"不存在"记 5 分钟，
+    // 用户挂好盘回来还是空的。
+    const TTL_OK: std::time::Duration = std::time::Duration::from_secs(300);
+    const TTL_MISS: std::time::Duration = std::time::Duration::from_secs(30);
+    type Slot = std::sync::Mutex<
+        std::collections::HashMap<String, (std::time::Instant, BltFileInfo)>,
+    >;
+    static CACHE: std::sync::OnceLock<Slot> = std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+    // 缓存键带上 root / container_root：配置一改，旧结论立刻失效（不用清表）。
+    let key_of = |p: &str| format!("{}|{}|{p}", root.display(), container_root);
+    let mut out = std::collections::HashMap::with_capacity(paths.len());
+    let mut todo: Vec<&String> = Vec::new();
+    {
+        let g = cache.lock().unwrap_or_else(|e| e.into_inner());
+        for p in paths {
+            match g.get(&key_of(p)) {
+                Some((at, info))
+                    if at.elapsed() < if info.is_some() { TTL_OK } else { TTL_MISS } =>
+                {
+                    out.insert(p.clone(), info.clone());
+                }
+                _ => todo.push(p),
+            }
+        }
+    }
+    if todo.is_empty() {
+        return out;
+    }
+
+    // 单条解析：`map_webhook_path` 会 canonicalize（网络盘上每次几十~上百毫秒）。
+    let resolve_one = |p: &String| -> BltFileInfo {
+        match crate::ingest::map_webhook_path(root, container_root, p) {
+            Ok(abs) => std::fs::metadata(&abs).ok().map(|md| {
+                let mtime = md
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                (abs, md.len(), mtime)
+            }),
+            Err(_) => None,
+        }
+    };
+
+    // 冷路径常有上百条：**串行**打 SMB 就是十几秒（实测 129 条 ≈ 18s）。按 6 路并行，
+    // 单次点开降到秒级；不足 5 条就不值得起线程，直接串行。
+    let fresh: Vec<(String, BltFileInfo)> = if todo.len() <= 4 {
+        todo.iter().map(|p| ((*p).clone(), resolve_one(p))).collect()
+    } else {
+        const LANES: usize = 6;
+        let chunk = todo.len().div_ceil(LANES);
+        let results: std::sync::Mutex<Vec<(String, BltFileInfo)>> =
+            std::sync::Mutex::new(Vec::with_capacity(todo.len()));
+        std::thread::scope(|scope| {
+            for part in todo.chunks(chunk) {
+                let results = &results;
+                let resolve_one = &resolve_one;
+                scope.spawn(move || {
+                    let mut local = Vec::with_capacity(part.len());
+                    for p in part {
+                        local.push(((*p).clone(), resolve_one(*p)));
+                    }
+                    results.lock().unwrap_or_else(|e| e.into_inner()).extend(local);
+                });
+            }
+        });
+        results.into_inner().unwrap_or_else(|e| e.into_inner())
+    };
+    for (p, info) in &fresh {
+        out.insert(p.clone(), info.clone());
+    }
+    {
+        let mut g = cache.lock().unwrap_or_else(|e| e.into_inner());
+        // 进程级缓存，体积封顶：超了就整表清空（代价只是下一轮重新 stat 一次）。
+        if g.len() + fresh.len() > 4096 {
+            g.clear();
+        }
+        let now = std::time::Instant::now();
+        for (p, info) in fresh {
+            g.insert(key_of(&p), (now, info));
+        }
+    }
+    out
+}
+
 /// biliLive-tools：每个房间的"已录 N 个 · 大小"来自它的录像历史（路径里没有房间号可解析）。
 async fn blt_summaries(
     cfg: &yekitrim_core::config::Config,
@@ -41,6 +144,11 @@ async fn blt_summaries(
     let mut out: HashMap<String, crate::ingest_worker::RoomRecordings> = HashMap::new();
     let root = std::path::PathBuf::from(cfg.ingest.recorder.root.trim());
     let container_root = cfg.ingest.recorder.container_root.clone();
+
+    // 先把各房间的历史取齐（HTTP，实测几十毫秒），再**一次**把全部路径解析到本地。
+    // ⚠️ 别再退回「逐房间 spawn_blocking + 逐条 stat」：那是「房间数 × 历史条数」次跨网来回。
+    let mut pending: Vec<(String, Vec<String>)> = Vec::new();
+    let mut all_paths: Vec<String> = Vec::new();
     for rid in room_ids {
         let platform = live
             .iter()
@@ -49,29 +157,29 @@ async fn blt_summaries(
             .unwrap_or_else(|| "Bilibili".into());
         let Ok(items) = client.list_history(rid, &platform).await else { continue };
         let paths: Vec<String> = items.into_iter().map(|i| i.video_file).collect();
-        let root = root.clone();
-        let cr = container_root.clone();
-        let stat = tokio::task::spawn_blocking(move || {
-            let mut s = crate::ingest_worker::RoomRecordings::default();
-            for p in paths {
-                let Ok(abs) = crate::ingest::map_webhook_path(&root, &cr, &p) else { continue };
-                let Ok(md) = std::fs::metadata(&abs) else { continue };
-                s.files += 1;
-                s.bytes += md.len();
-                let mtime = md
-                    .modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs() as i64)
-                    .unwrap_or(0);
-                s.latest = s.latest.max(mtime);
-            }
-            s
-        })
-        .await;
-        if let Ok(s) = stat {
-            out.insert(rid.clone(), s);
+        all_paths.extend(paths.iter().cloned());
+        pending.push((rid.clone(), paths));
+    }
+    if all_paths.is_empty() {
+        return out;
+    }
+    let root_for_io = root.clone();
+    let cr_for_io = container_root.clone();
+    let resolved = tokio::task::spawn_blocking(move || {
+        resolve_blt_paths(&root_for_io, &cr_for_io, &all_paths)
+    })
+    .await
+    .unwrap_or_default();
+
+    for (rid, paths) in pending {
+        let mut s = crate::ingest_worker::RoomRecordings::default();
+        for p in paths {
+            let Some(Some((_, len, mtime))) = resolved.get(&p) else { continue };
+            s.files += 1;
+            s.bytes += *len;
+            s.latest = s.latest.max(*mtime);
         }
+        out.insert(rid, s);
     }
     out
 }
@@ -407,39 +515,51 @@ pub(super) async fn recorder_objects(
             .and_then(|r| r.ok())
     };
 
-    let mut objects = Vec::new();
+    // 分两段：① 收历史（HTTP，几十毫秒/房间）② **一次**把全部路径解析到本地（blocking + 缓存）。
+    // ⚠️ 逐条在 async handler 里 `map_webhook_path` + `metadata` = 129 条历史 ≈ 18 秒，
+    //    而且期间占着 tokio worker（打开「添加录像」整块卡住就是这么来的）。
+    let mut pends: Vec<(String, String, String, Vec<String>)> = Vec::new();
+    let mut all_paths: Vec<String> = Vec::new();
     for r in rooms {
         let rid = r.room_id.to_string();
         // B2：不在本人 channel_map 里的房间，一个字都不回（不泄露目录在录什么）
         if !recorder_room_visible(mine.as_ref(), &rid) {
             continue;
         }
+        let mut paths = Vec::new();
+        if blt && !root.as_os_str().is_empty() {
+            if let Ok(items) = client.list_history(&rid, &r.platform).await {
+                paths = items.into_iter().map(|i| i.video_file).collect();
+                all_paths.extend(paths.iter().cloned());
+            }
+        }
+        pends.push((rid, r.title, r.platform, paths));
+    }
+    let resolved = if all_paths.is_empty() {
+        std::collections::HashMap::new()
+    } else {
+        let root_for_io = root.clone();
+        let cr_for_io = container_root.clone();
+        tokio::task::spawn_blocking(move || resolve_blt_paths(&root_for_io, &cr_for_io, &all_paths))
+            .await
+            .unwrap_or_default()
+    };
+
+    let mut objects = Vec::new();
+    for (rid, title, platform, paths) in pends {
         let mut dir = String::new();
         let mut files = 0usize;
         let mut bytes = 0u64;
         let mut latest = 0i64;
         if blt {
-            if !root.as_os_str().is_empty() {
-                if let Ok(items) = client.list_history(&rid, &r.platform).await {
-                    for it in items {
-                        let Ok(abs) = crate::ingest::map_webhook_path(&root, &container_root, &it.video_file)
-                        else { continue };
-                        if dir.is_empty() {
-                            dir = abs.parent().map(yekitrim_core::path::display).unwrap_or_default();
-                        }
-                        if let Ok(md) = std::fs::metadata(&abs) {
-                            files += 1;
-                            bytes += md.len();
-                            latest = latest.max(
-                                md.modified()
-                                    .ok()
-                                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                                    .map(|d| d.as_secs() as i64)
-                                    .unwrap_or(0),
-                            );
-                        }
-                    }
+            for p in &paths {
+                let Some(Some((abs, len, mtime))) = resolved.get(p) else { continue };
+                if dir.is_empty() {
+                    dir = abs.parent().map(yekitrim_core::path::display).unwrap_or_default();
                 }
+                files += 1;
+                bytes += *len;
+                latest = latest.max(*mtime);
             }
         } else if let Some(files_ref) = scan.as_ref() {
             for f in files_ref.iter().filter(|f| f.room.as_deref() == Some(rid.as_str())) {
@@ -453,8 +573,8 @@ pub(super) async fn recorder_objects(
         }
         objects.push(serde_json::json!({
             "id": rid,
-            "title": r.title,
-            "platform": r.platform,
+            "title": title,
+            "platform": platform,
             "dir": dir,
             "files": files,
             "bytes": bytes,
@@ -598,10 +718,18 @@ pub(super) async fn recorder_recordings(
         > = std::collections::HashMap::new();
         let mut seen_files = std::collections::HashSet::new();
         let mut room_roots: Vec<std::path::PathBuf> = Vec::new();
-        for it in items {
-            let Ok(abs) = crate::ingest::map_webhook_path(&root, &container_root, &it.video_file) else {
-                continue;
-            };
+        // ⚠️ 一批解析（blocking + 缓存）：这个房间有 129 条历史，逐条在 async 里摸 SMB
+        //    就是「点一下房间要等十几秒」的全部原因。
+        let paths: Vec<String> = items.iter().map(|i| i.video_file.clone()).collect();
+        let (root_for_io, cr_for_io) = (root.clone(), container_root.clone());
+        let paths_for_io = paths.clone();
+        let resolved = tokio::task::spawn_blocking(move || {
+            resolve_blt_paths(&root_for_io, &cr_for_io, &paths_for_io)
+        })
+        .await
+        .unwrap_or_default();
+        for p in &paths {
+            let Some(Some((abs, len, mtime))) = resolved.get(p) else { continue };
             if !seen_files.insert(abs.clone()) {
                 continue;
             }
@@ -614,17 +742,10 @@ pub(super) async fn recorder_recordings(
                     }
                 }
             }
-            let Ok(md) = std::fs::metadata(&abs) else { continue };
             let Some(dir) = abs.parent() else { continue };
-            let mtime = md
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0);
             let e = agg.entry(dir.to_path_buf()).or_insert((0, 0));
-            e.0 += md.len();
-            e.1 = e.1.max(mtime);
+            e.0 += *len;
+            e.1 = e.1.max(*mtime);
         }
         // 同子树下、历史里没有的场次：扫盘补齐（尽力而为，扫失败不挡列表）
         let cfg_scan = cfg.clone();
@@ -797,10 +918,59 @@ pub(super) async fn admin_recorder_test(body: axum::body::Bytes) -> ApiResult {
 
     // ② 目录校验（文件系统）
     let root = cfg.ingest.recorder.root.trim().to_string();
-    let root_json = probe_root_with_timeout(root).await;
+    let root_json = probe_root_with_timeout(root.clone()).await;
     let root_ok = root_json.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
 
-    // `ok` = 两件事都成立（设置页据此决定弹"连接正常"还是出提示）
+    // ③ 路径映射（仅 biliLive-tools）：自动推导 `container_root`，并检查 `root` 是否选深了一层。
+    //    两个值都只是**建议**：写入与否由前端一键确认，不悄悄改用户配置。
+    let mut mapping = serde_json::Value::Null;
+    let mut root_suggestion = serde_json::Value::Null;
+    if kind == "bililive-tools" && root_ok {
+        if let Some(c) = yekitrim_service::recorder::RecorderBackend::from_config(&cfg.ingest) {
+            let save_path = c.save_path().await.unwrap_or_default();
+            let samples: Vec<String> = match c.list_rooms().await {
+                Ok(rooms) => match rooms.first() {
+                    Some(r) => c
+                        .list_history(&r.room_id.to_string(), &r.platform)
+                        .await
+                        .map(|items| items.into_iter().take(8).map(|i| i.video_file).collect())
+                        .unwrap_or_default(),
+                    None => Vec::new(),
+                },
+                Err(_) => Vec::new(),
+            };
+            if !samples.is_empty() {
+                let root_path = std::path::PathBuf::from(&root);
+                let (sp, sm) = (save_path.clone(), samples.clone());
+                let derived = tokio::task::spawn_blocking(move || {
+                    crate::ingest::derive_container_root(&root_path, &sp, &sm)
+                })
+                .await
+                .unwrap_or_default();
+                mapping = derived.to_json(&save_path);
+
+                // 常见错法：`root` 填成了房间目录（Z:\Bilibili\耶斯yeki）。上一级能对上就建议改。
+                if derived.matched == 0 {
+                    if let Some(parent) = std::path::Path::new(&root).parent().map(|p| p.to_path_buf()) {
+                        let (sp2, sm2, up_path) = (save_path.clone(), samples.clone(), parent.clone());
+                        let up = tokio::task::spawn_blocking(move || {
+                            crate::ingest::derive_container_root(&up_path, &sp2, &sm2)
+                        })
+                        .await
+                        .unwrap_or_default();
+                        if up.matched > 0 {
+                            let mut j = up.to_json(&save_path);
+                            j["path"] = serde_json::json!(yekitrim_core::path::display(&parent));
+                            j["up"] = serde_json::json!(true);
+                            root_suggestion = j;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // `ok` = 三件事都成立（设置页据此决定弹"连接正常"还是出提示）
     ok(serde_json::json!({
         "ok": api_ok && root_ok,
         "kind": kind,
@@ -809,6 +979,8 @@ pub(super) async fn admin_recorder_test(body: axum::body::Bytes) -> ApiResult {
         "rooms": room_count,
         "api": { "ok": api_ok, "error": api_err },
         "root": root_json,
+        "mapping": mapping,
+        "root_suggestion": root_suggestion,
     }))
 }
 
@@ -1066,6 +1238,52 @@ fn recorder_visibility_and_project_id_are_owner_scoped() {
         assert!(text.contains("url"), "报错要点名 url：{text}");
     }
 
+    /// biliLive-tools 的路径解析：**整批解析 + 负结果也缓存**（历史里有大量已删场次）。
+    /// 缓存命中后即使文件被删也返回旧结论 —— 这条钉的是「5 分钟内不重复摸盘」。
+    #[test]
+    fn blt_paths_resolve_in_one_batch_and_cache_negative_results() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("Sinsa")).unwrap();
+        std::fs::write(root.join("Sinsa").join("a.flv"), b"x").unwrap();
+
+        let good = "/app/video/Bilibili/Sinsa/a.flv".to_string();
+        let missing = "/app/video/Bilibili/Sinsa/none.flv".to_string();
+        let paths = vec![good.clone(), missing.clone()];
+        let m = resolve_blt_paths(root, "/app/video/Bilibili", &paths);
+        assert!(matches!(m.get(&good), Some(Some(_))), "存在的文件要解析出来：{m:?}");
+        assert!(matches!(m.get(&missing), Some(None)), "不存在的要回 None：{m:?}");
+
+        // 文件被删掉之后仍然命中缓存（否则每次点房间都要把上百次失败重跑一遍）
+        std::fs::remove_file(root.join("Sinsa").join("a.flv")).unwrap();
+        let again = resolve_blt_paths(root, "/app/video/Bilibili", &paths);
+        assert!(matches!(again.get(&good), Some(Some(_))), "5 分钟内必须命中缓存");
+    }
+
+    /// **自动推导 `container_root`**：savePath 之下挑「命中最多、同分取最浅」，
+    /// 且命中的本地路径要能回显给用户看（"我们看到的是这条"）。
+    #[test]
+    fn derive_container_root_picks_the_shallowest_prefix_that_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("Sinsa").join("sess")).unwrap();
+        std::fs::write(root.join("Sinsa").join("sess").join("a.flv"), b"x").unwrap();
+        std::fs::create_dir_all(root.join("乙房间")).unwrap();
+        std::fs::write(root.join("乙房间").join("b.flv"), b"x").unwrap();
+
+        let samples = vec![
+            "/app/video/Bilibili/Sinsa/sess/a.flv".to_string(),
+            "/app/video/Bilibili/乙房间/b.flv".to_string(),
+            "/app/video/Bilibili/没这个/b.flv".to_string(),
+        ];
+        let m = crate::ingest::derive_container_root(root, "/app/video", &samples);
+        assert_eq!(m.container_root, "/app/video/Bilibili", "{m:?}");
+        assert_eq!((m.matched, m.probed), (2, 3), "{m:?}");
+        assert!(
+            m.sample_local.as_deref().unwrap_or("").ends_with("a.flv"),
+            "命中样本要能回显：{m:?}"
+        );
+    }
     /// **目录不可用时的降级文案**：admin 看得到路径/OS 错误 + 探针提示，普通用户只有一句中性话。
     #[test]
     fn degraded_recordings_hides_paths_from_normal_users() {

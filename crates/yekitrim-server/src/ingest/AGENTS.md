@@ -48,6 +48,8 @@
 - ⚠️ **录播入库是「原地建项目」**（2026-11-27 用户口径）：项目与 `output/` 建在**录像所在目录**，
   源文件**不搬、不复制、不删**。跨机时那个目录由用户自己映射（SMB/UNC），YekiTrim 只做
   **连接 + 目录校验**。别再往这条链路里加 `copy` / `rename` / `remove_file(src)`。
+- ⚠️ **`container_root` 可自动推导**（2026-11-27）：唯一实现 `ingest::derive_container_root`
+  （savePath + 历史样本 + 本地磁盘，取「命中最多、同分最浅」）；「测试连接」给建议、`PUT` 保存时自动补齐。别再写第二份前缀猜测。
 - ⚠️ **目录校验只有一份** `yekitrim_service::recorder::probe_recorder_root`（判「填了对方机器的 /rec」
   「盘符映射」「不可写」）。缓存走 `ingest::root_probe_cached`（TTL 60s）：
   **`GET /api/admin/ingest` 绝不现场探测**（死 UNC 的 `metadata` 能挂几十秒）；只有

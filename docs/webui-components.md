@@ -1393,6 +1393,11 @@ A 的 `polish.toml` 逐字节不变、B 的磁盘标题仍是 B 自己的）。
     `recorder::probe_recorder_root`），前端只把 `status` 映射成人话 —— 抄一份就会与后端漂移。
   - 顶部那枚状态 chip 三档：未配置 / 已配置（目录未验证）/ **目录不可用**（`root_status.ok === false`）。
     第三档别退回「已配置」——跨机报障时那是最误导人的一档。
+  - **路径映射自动识别**（2026-11-27）：biliLive-tools 的 `container_root` **可以留空** —— 后端拿它的
+    `GET /config → recorder.savePath` + 历史样本 + 本地磁盘反推（`ingest::derive_container_root`，
+    取「命中最多、同分最浅」）。「测试连接」第三行显示识别结果；与表单不一致时给「填入」，
+    `root` 选深了一层（填成房间目录）时给「改用」。保存时缺 `container_root` 也会自动补齐。
+    ⚠️ 前端**不要**把空串当 `container_root` 发出去（PATCH 语义里空串=清空，会挡住自动补齐）。
 - `DownloaderConfig`：设置页「B站下载器」卡：引擎/清晰度/限速/并发/cookie + 一键安装（显示 sha256 校验结果）。
 - `InviteManager`：设置页「注册与邀请码」卡：开关 / 生成 / **列表里明文一直可见 + 一键复制** / 未使用·已使用 chip /
   绑给了谁 / 撤销；行 `flex-wrap` 保证窄窗口换行不撑破卡片。
