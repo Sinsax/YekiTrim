@@ -259,12 +259,6 @@
     <!-- ── 子页一：模型配置 ─────────────────────────────────────────── -->
     <template v-if="llmTab === 'models'">
 
-    <!-- 并发数：检测 / 精修 / 订正共用**一个旋钮**（用户 2026-11-27：从"默认参数"里挪到这一页顶部一行） -->
-    <div class="card llm-conc">
-      <SliderField v-model="form.llm.max_concurrent" label="并发请求数"
-                   :min="1" :max="32" :step="1" hint="对所有任务生效；调高更快，但更容易撞限流" />
-    </div>
-
     <!-- 左右列表（2026-11-27 用户口径）：左 = 接口清单，右 = **接口设置（上）+ 模型清单（下）**。
          接口设置 2026-11-27 再改：**回到正文**、就在模型列表上面（用户："放在模型列表的上面那里"），不再走弹窗。 -->
     <div class="llm-split">
@@ -285,13 +279,7 @@
               :active-id="form.llm.active"
               :protocols="protocols"
               :protocols-source="protocolsSource"
-              :model-options="endpointModelOptions"
-              :caps="caps"
-              :caps-text="capsText"
-              :caps-error="capsError"
               @set-active="setActiveProvider"
-              @pick-model="onPickModel"
-              @probe="onProbeCaps"
               @remove="removeProvider"
             />
           </div>
@@ -332,11 +320,12 @@
       </div>
     </div>
 
-    <!-- 检测链路的行为参数（不进请求体）：评分权重原来在程序配置页，S4 起住这里 -->
+    <!-- 运行设置：并发 + 检测评分权重合成**一张卡**（用户 2026-11-27："和评分权重合并作为设置面板"） -->
     <div class="card">
-      <div class="form-section-title">检测评分权重
-        <span class="t-sub">只影响检测那一步的排序，不进请求</span></div>
+      <div class="form-section-title">运行设置</div>
       <div class="form-grid">
+        <SliderField v-model="form.llm.max_concurrent" class="span-2" label="并发请求数"
+                     :min="1" :max="32" :step="1" hint="对所有任务生效；调高更快，但更容易撞限流" />
         <SliderField v-model="form.llm.detectRun.llm_score_weight" class="span-2"
                      label="LLM 评分权重" :min="0" :max="1" :step="0.05"
                      hint="0 = 只用弹幕/字幕热度（也不再发那次评分请求）" />
@@ -504,10 +493,6 @@ const capsSource = ref('')
 /** `GET /api/llm/models` 真探到的能力（model id → 归一化 caps）—— 「能获取当然最好」：它能覆盖内置表。
  *  只有**探针那条路**会带 caps（表命中零网络，服务端不带）。按 model id 存，切回来还在。 */
 const probeCaps = reactive({})
-/** 探针带回的**原始** caps（model id → 服务端给的那份 JSON）。
- *  ⚠️ 别用 `probeCaps` 去写 `[[llm.models]].catalog`：那是**归一后**的形状（temperature 已经变成
- *  'supported'/'unknown' 这类字符串），再喂给 `normalizeCaps` 会被误读成"支持"。落盘一律用原始那份。 */
-const probeCapsRaw = {}
 /** 能力读失败的原因 —— **不许静默**：拿不到能力就说出来，别让用户以为"这个模型本来就没这些旋钮" */
 const capsError = ref('')
 const referenceTitlesText = ref('')
@@ -837,37 +822,15 @@ function onProbeCaps(payload) {
   for (const m of ((payload && payload.models) || [])) {
     if (!m || !m.id) continue
     const id = String(m.id)
-    if (m.caps) { probeCaps[id] = normalizeCaps({ caps: m.caps }); probeCapsRaw[id] = m.caps; changed = true }
+    if (m.caps) { probeCaps[id] = normalizeCaps({ caps: m.caps }); changed = true }
     // 这次探针**没给**能力 ⇒ 清掉旧的那份（别缓存住上一次的，否则"探针没有"会被旧值骗过去）
-    else if (probeCaps[id]) { delete probeCaps[id]; delete probeCapsRaw[id]; changed = true }
+    else if (probeCaps[id]) { delete probeCaps[id]; changed = true }
     probed.push({ id, label: String(m.name || ''), provider: String((payload && payload.providerId) || '') })
   }
   // ⚠️ 探到的模型要**带回 ① 的候选**：以前 probeModels 只初始化、从不赋值 ⇒
   //    「获取模型」之后 ① 的下拉里还是空的，用户得先去 ④ 逐支「加入」再回 ① 选。
   if (probed.length) form.llm.probeModels = probed
   if (changed) loadCaps()
-}
-
-/**
- * ① 里选中一支模型之后：清单里没有就**顺手写进去**（一次点击完成"加入 + 选用"）。
- *
- * ⚠️ 只在**用户真的点选**时发生（组件 emit 的 pick-model），不挂在 model 的 watch 上 ——
- *    否则一进页面就会因为"当前模型不在清单里"把配置改脏。
- */
-function onPickModel(payload) {
-  const p = payload || {}
-  const id = String(p.model || '').trim()
-  const pid = String(p.providerId || form.llm.active || '').trim()
-  if (!id || !pid) return
-  if (form.llm.models.some((m) => String(m.id || '').trim() === id && String(m.provider || '') === pid)) return
-  const raw = probeCapsRaw[id]
-  form.llm.models.push({
-    id,
-    provider: pid,
-    label: '',
-    catalog: raw && typeof raw === 'object' ? JSON.parse(JSON.stringify(raw)) : null,
-    overrides: null
-  })
 }
 
 // base_url / model 一变就重取能力（等 400ms 再发，别边打字边打接口）
@@ -891,19 +854,6 @@ const llmLinks = computed(() => form.llm.overrideLinks.map((key) => ({
   hint: LLM_LINK_HINT[key] || ''
 })))
 
-/** ① 的模型候选：**只属于当前接口**的清单行 + 刚探测到、还没加入清单的（inList=false） */
-const endpointModelOptions = computed(() => {
-  // ⚠️ **只给这个接口名下的**：以前"本接口一支都没有"时会退成**全清单**，于是 A 家的模型能被
-  //    选成 B 家的默认模型（后端不校验，跑起来就是 404 model not found）。
-  const list = form.llm.models
-    .filter((m) => m.id && String(m.provider || '') === editingProviderId.value)
-    .map((m) => ({ id: m.id, label: m.label || m.id, inList: true }))
-  for (const p of form.llm.probeModels) {
-    if (!p.id || String(p.provider || '') !== editingProviderId.value) continue
-    if (!list.some((x) => x.id === p.id)) list.push({ id: p.id, label: p.label || p.id, inList: false })
-  }
-  return list
-})
 /** ③ 的模型候选：**全清单**（链路可以跨接口选模型 —— D1 的全部意义之一） */
 const allModelOptions = computed(() => form.llm.models.filter((m) => m.id)
   .map((m) => ({ id: m.id, provider: m.provider, label: m.label || m.id })))

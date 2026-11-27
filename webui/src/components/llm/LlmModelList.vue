@@ -112,16 +112,12 @@ async function removeModel(m) {
               @click="addManual">+ 添加模型</button>
     </div>
 
-    <!-- 获取结果 / 失败：都在表格**上面**一行说清（不占模型行，也不挡删除列） -->
+    <!-- 获取结果只留**一行状态**；候选本身不铺成标签云，全部进下面 id 输入框的 datalist
+         （用户 2026-11-27："获取模型后列表显示是显示在下方模型添加的那个那里"） -->
     <div v-if="remote.state === 'loading'" class="ml-muted ml-res">获取中…</div>
     <div v-else-if="remote.state === 'error'" class="ml-err ml-res" data-ml-fetch="error">获取失败：{{ remote.note }}</div>
-    <div v-else-if="remote.state === 'done'" class="ml-res ml-cands">
-      <span class="ml-muted">{{ remote.note }}</span>
-      <button v-for="c in remote.models" :key="c.id" class="ml-cand" type="button"
-              :disabled="chosen(c.id)"
-              :title="c.name ? c.id + ' · ' + c.name : c.id"
-              @click="add(c.id)">{{ c.id }}<span v-if="chosen(c.id)" class="ml-muted"> · 已在清单</span></button>
-      <span v-if="!remote.models.length" class="ml-muted">服务器没返回模型 —— 点「+ 添加模型」手打一行。</span>
+    <div v-else-if="remote.state === 'done'" class="ml-muted ml-res">
+      {{ remote.note }} —— 点「+ 添加模型」，模型 id 那一格可以下拉选
     </div>
 
     <table v-if="rows.length" class="ml-tbl">
@@ -153,7 +149,7 @@ async function removeModel(m) {
     </datalist>
 
     <div v-if="!rows.length" class="ml-empty">
-      这一份接口还没有模型 —— 点上面「获取模型」挑一支，或「+ 添加模型」手打一行。
+      这一份接口还没有模型 —— 点「+ 添加模型」，模型 id 那一格可以下拉选（也可以直接打）。
     </div>
   </div>
 </template>
@@ -168,10 +164,6 @@ async function removeModel(m) {
 .ml-filter { width:120px; font-size:11px; padding:3px 6px; }
 .ml-mini { font-size:11px; padding:3px 8px; }
 .ml-res { font-size:11px; line-height:1.6; }
-.ml-cands { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
-.ml-cand { font-size:11px; padding:2px 8px; border-radius:999px; border:1px solid var(--line);
-  background:var(--surface-2); color:var(--fg); cursor:pointer; font-family:var(--mono, monospace); }
-.ml-cand:disabled { opacity:.55; cursor:default; }
 .ml-err { font-size:11px; color:var(--danger, #e5484d); }
 .ml-tbl { width:100%; border-collapse:collapse; font-size:12px; }
 .ml-tbl th { text-align:left; font-weight:500; font-size:11px; color:var(--muted);

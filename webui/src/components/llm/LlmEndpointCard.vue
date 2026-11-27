@@ -1,23 +1,18 @@
 <!--
   LlmEndpointCard — 「模型配置」右栏上半：**当前正在编辑的那一份接口**的连接信息。
-  （原来叫「① 当前接口」，是 active 决定的；2026-11-26 起与"哪一份生效"解耦：
-   providerId = 正在编辑，activeId = 当前使用，两者可以不同。）
 
-  内容：显示名 / API 协议 / 地址 / 密钥（密文框 + 已设置徽标）/ 默认模型（combobox）/ 能力 chip / 测试 / 设为当前 / 删除。
+  内容（2026-11-27 用户口径，只留这些）：显示名 / API 协议 / 地址 / 密钥 / 测试 / 设为当前 / 删除。
+  ⚠️ **默认模型、能力 chip 都删掉了**：模型在下面的模型清单里挑，链路那边再决定哪个任务用哪支 ——
+     这里再放一个"默认模型"就是第三个入口（用户截图圈掉的就是它）。
 
-  数据流：providers 是父层的 reactive 数组，本组件**原地改**当前那一份；只有"换哪一份"经 emit 回父层。
-  本组件**不保存**、不发 PUT —— 保存仍走父层的 saveLlm。
-
-  ⚠️ 「测试这个接口」**不要求先保存**：草稿（地址 / 还没落盘的 key / 手选的模型）直接进 POST /api/llm/test。
+  ⚠️ 「测试这个接口」**不要求先保存**：草稿（地址 / 还没落盘的 key）直接进 POST /api/llm/test。
   ⚠️ 密钥**只写不读**：服务端只回 api_key_set 布尔 ⇒ 输入框永远是空的，留空 = 不修改这个键。
-  ⚠️ **新建一份接口不改变 active**（父层的 addProvider 不碰它）：以前新建顺手把全局换了，
-     "加个备用接口"会把所有没单独指定的任务一起切过去（真踩过）。
+  ⚠️ **新建一份接口不改变 active**：别再让它顺手把全局换了。
 -->
 <script setup>
 import { computed, ref } from 'vue'
 import Icon from '../Icon.vue'
-import { fetchModels, testConnection } from '../../api/llm'
-import LlmModelCombobox from './LlmModelCombobox.vue'
+import { testConnection } from '../../api/llm'
 
 const props = defineProps({
   /** 配置真的读到了（读失败时父层会拒保存，这里只用来禁用按钮） */
@@ -30,18 +25,10 @@ const props = defineProps({
   activeId: { type: String, default: '' },
   /** API 协议清单（后端 /config/llm/protocols；拿不到时父层给内置清单） */
   protocols: { type: Array, default: () => [] },
-  /** 'server' | 'builtin' —— 协议清单从哪来的（照实标，别让用户以为内置那份就是后端那份） */
-  protocolsSource: { type: String, default: '' },
-  /** 模型候选：[{ id, label, inList }]（inList=false = 探测到但还没进清单） */
-  modelOptions: { type: Array, default: () => [] },
-  /** 当前模型的能力（caps.js::normalizeCaps 归一后；null = 未知） */
-  caps: { type: Object, default: null },
-  /** 能力来源那行小字（内置目录 / 联网探测 / 未收录） */
-  capsText: { type: String, default: '' },
-  /** 能力读失败的原因（照实显示，别让用户以为"这个模型本来就没这些旋钮"） */
-  capsError: { type: String, default: '' }
+  /** 'server' | 'builtin' —— 协议清单从哪来的（照实标） */
+  protocolsSource: { type: String, default: '' }
 })
-const emit = defineEmits(['pick-model', 'probe', 'set-active', 'remove'])
+const emit = defineEmits(['set-active', 'remove'])
 
 /** 正在编辑的那一份（认不出就退第一份） */
 const cur = computed(() => {
@@ -59,44 +46,6 @@ const keyTitle = computed(() => (keySet.value
 function shortText(s) {
   const t = String(s == null ? '' : s)
   return t.length > 20 ? t.slice(0, 19) + '…' : t
-}
-
-/* ── 默认模型：两处共用的 combobox（聚焦列全部；选中"未加入"或手打新 id 都 emit 给父层写进清单）── */
-function onPickModel(m) {
-  if (!cur.value || !m) return
-  emit('pick-model', { providerId: cur.value.id, model: m.id, inList: m.inList === true })
-}
-function onCommitModel(v) {
-  if (!cur.value || !v) return
-  emit('pick-model', { providerId: cur.value.id, model: v, inList: false })
-}
-
-/**
- * 「取候选」：按上面填的地址/密钥取一次模型候选（内置目录命中就**不联网**）。
- * 取到的候选同时交给右栏的模型清单（父层 onProbeCaps → probeModels），那边也能「加入」。
- */
-const fetching = ref(false)
-const fetchState = ref({ text: '', err: '', title: '' })
-async function doFetchModels() {
-  const p = cur.value
-  if (!p || fetching.value) return
-  const base = String(p.base_url || '').trim()
-  if (!base) { fetchState.value = { text: '先填 API 地址', err: '', title: '' }; return }
-  fetching.value = true
-  fetchState.value = { text: '获取中…', err: '', title: '' }
-  try {
-    const r = await fetchModels(base, p.api_key, p.id)
-    const models = Array.isArray(r.models) ? r.models : []
-    emit('probe', { providerId: p.id, models })
-    fetchState.value = models.length
-      ? { text: '候选 ' + models.length + ' 支', err: '', title: r.note || '' }
-      : { text: '', err: '服务器没返回模型（可手打 id）', title: r.note || '' }
-  } catch (e) {
-    const full = (e && e.message) ? e.message : String(e)
-    fetchState.value = { text: '', err: '获取失败', title: full }
-  } finally {
-    fetching.value = false
-  }
 }
 
 /** 测试结果：{ kind: ''|'busy'|'ok'|'err', text, title } —— 常驻行内，不是一闪就没的 toast */
@@ -133,20 +82,6 @@ async function doTest() {
     testing.value = false
   }
 }
-
-/** 能力 chip：只列**这条接口当前模型**真有的维度；未知就说未知，不猜。 */
-const chips = computed(() => {
-  const c = props.caps
-  if (!c) return []
-  // ⚠️ **不显示输入模态、也不显示档位/思考强度**（用户 2026-11-27：当前没有图像需求；
-  //    档位与思考强度归链路那边，这一格只留"这支模型能不能用"的客观事实）。
-  const out = []
-  out.push(c.temperature === 'unsupported' ? '温度 不支持'
-    : (c.temperature === 'unknown' ? '温度 未声明' : '温度 支持'))
-  if (c.maxOutput) out.push('上限 ' + c.maxOutput)
-  if (c.jsonMode === true) out.push('JSON')
-  return out
-})
 </script>
 
 <template>
@@ -186,30 +121,6 @@ const chips = computed(() => {
           <input v-model="cur.api_key" type="password" autocomplete="new-password"
                  :placeholder="keyPlaceholder" :title="keyTitle">
         </label>
-        <div class="ep-field ep-field-model">
-          <span>默认模型
-            <span class="ep-sub" title="没在「哪个任务用哪支」里单独指定模型的链路，都用这一支">其余任务默认用它</span>
-          </span>
-          <div class="ep-model-row">
-            <LlmModelCombobox v-model="cur.model" :options="modelOptions" aria-label="默认模型"
-                              placeholder="如 deepseek-chat（可手打，也可从下拉里挑）"
-                              @pick="onPickModel" @commit="onCommitModel" />
-            <button class="ep-mini" type="button" :disabled="fetching"
-                    title="按上面填的地址取一次候选（内置目录命中就不联网）"
-                    @click="doFetchModels">
-              {{ fetching ? '获取中…' : '获取模型' }}
-            </button>
-            <span v-if="fetchState.text" class="ep-note">{{ fetchState.text }}</span>
-            <span v-else-if="fetchState.err" class="ep-note err" :title="fetchState.title">{{ fetchState.err }}</span>
-          </div>
-        </div>
-      </div>
-
-      <div class="ep-caps">
-        <span v-for="c in chips" :key="c" class="ep-chip">{{ c }}</span>
-        <span v-if="!chips.length && capsError" class="ep-err" :title="capsError">能力读取失败</span>
-        <span v-else-if="!chips.length" class="muted small">能力未读到（填好地址与模型后自动查）</span>
-        <span v-else-if="capsText" class="muted small" :title="'能力来源：' + capsText">{{ capsText }}</span>
       </div>
 
       <div class="ep-actions">
