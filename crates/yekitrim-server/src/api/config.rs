@@ -82,15 +82,15 @@ fn override_link_keys() -> Vec<&'static str> {
 }
 
 pub(super) fn config_get_impl(owner: yekitrim_core::owner::Owner) -> ApiResult {
-    // ⚠️ 按 **Owner** 取目录：单人 = 程序目录（现状），多用户 = 该账号自己的 `.yekitrim/`。
-    // **别退回 `path::yekitrim_home()`** —— 那会让所有账号共用同一份配置（含明文 LLM key）。
-    let home = yekitrim_core::owner::state_dir(owner);
-    // ⚠️ 同步 IO：读 config.toml / llm.toml 两份（含 API key），调用方必须下 blocking 池。
-    let global_raw = std::fs::read_to_string(home.join("config.toml")).unwrap_or_default();
+    // ⚠️ 按 **Owner** 取目录：单人 = 当前管理员，多用户 = 该账号自己的树。
+    // **别退回顶层目录** —— 那会让所有账号共用同一份配置（含明文 LLM key）。
+    let global_raw = std::fs::read_to_string(yekitrim_core::owner::config_path(owner)).unwrap_or_default();
     // ⚠️ **明文 key 一个字都不出接口**（2026-10-19）：`llm_raw`（源文件编辑器）里那行的值在这里抹掉。
     // 配套的**写侧**口径「空 api_key = 不修改」在 `config_llm_put_locked` —— 两份合起来，
     // 「读出来（抹过）→ 原样存回去」不会把真 key 抹掉。**只删一边就是静默毁配置。**
-    let llm_raw = redact_api_key(&std::fs::read_to_string(home.join("llm.toml")).unwrap_or_default());
+    let llm_raw = redact_api_key(
+        &std::fs::read_to_string(yekitrim_core::owner::llm_config_path(owner)).unwrap_or_default(),
+    );
     let global_cfg = yekitrim_core::config::load_config_for(owner);
     let mut llm_cfg = yekitrim_core::config::load_llm_config_for(owner);
     // 「有没有配 key」以后只由这个布尔回答（界面不再回显 key 本身）。
@@ -344,7 +344,7 @@ pub(super) async fn config_global_put(
     Json(body): Json<serde_json::Value>,
 ) -> ApiResult {
     let owner = crate::auth::owner_of(&user);
-    let path = yekitrim_core::owner::state_dir(owner).join("config.toml");
+    let path = yekitrim_core::owner::config_path(owner);
     // patch / 源文件两种写法都会读改写整份配置，加锁避免并发提交互相覆盖；
     // 锁在 await 里持有，读改写下 blocking 池（`with_path_lock` 的闭包跑在当前线程）
     let _guard = yekitrim_core::filelock::lock_path(&path).await;
@@ -465,7 +465,7 @@ pub(super) async fn config_llm_put(
 ) -> ApiResult {
     let owner = crate::auth::owner_of(&user);
     let is_admin = user.is_admin();
-    let path = yekitrim_core::owner::state_dir(owner).join("llm.toml");
+    let path = yekitrim_core::owner::llm_config_path(owner);
     let _guard = yekitrim_core::filelock::lock_path(&path).await;
     blocking(move || config_llm_put_locked(&path, &body, is_admin)).await
 }
@@ -973,7 +973,7 @@ pub(super) async fn llm_models(
                 .collect::<Vec<_>>(),
         }));
     }
-    match yekitrim_llm::discovery::discover(&conn.api_key, &base).await {
+    match yekitrim_llm::discovery::discover(&conn.api_key, &base, &conn.protocol).await {
         // ⚠️ 200 + 空列表**不是失败**：连上了、地址也对，只是它没报模型 —— 别把它说成"不支持"
         Ok(d) if d.models.is_empty() => ok(serde_json::json!({
             "source": "probe",
@@ -1014,6 +1014,8 @@ struct LlmConn {
     /// 用了哪一份 provider（`None` = legacy 顶层字段）
     provider: Option<String>,
     api_key: String,
+    /// 协议 id（`protocol::PROTOCOLS`；空 = openai-chat）—— 探针按它选路径与鉴权
+    protocol: String,
     base_url: String,
     model: String,
 }
@@ -1064,6 +1066,7 @@ fn resolve_llm_conn(
         return Ok(LlmConn {
             provider: None,
             api_key: draft_key.map(str::to_string).unwrap_or_else(|| llm.effective_api_key()),
+            protocol: String::new(),
             base_url,
             model: llm.effective_model(),
         });
@@ -1071,12 +1074,13 @@ fn resolve_llm_conn(
 
     // ── 有接口：草稿优先，其次**这份接口自己的**已存值
     // （`key()` 的取值口径：显式 key 优先，其次 `api_key_env`；显式 id 与 active 不同也不会串）
-    let (saved_base, saved_key, saved_model) = match explicit {
-        Some(x) => (x.base_url.trim().to_string(), x.key(), x.model.trim().to_string()),
+    let (saved_base, saved_key, saved_model, saved_protocol) = match explicit {
+        Some(x) => (x.base_url.trim().to_string(), x.key(), x.model.trim().to_string(), x.protocol.clone()),
         None => (
             llm.effective_base_url().trim().to_string(),
             llm.effective_api_key(),
             llm.effective_model().trim().to_string(),
+            llm.active_provider().map(|p| p.protocol.clone()).unwrap_or_default(),
         ),
     };
     let base_url = draft_base.map(str::to_string).unwrap_or(saved_base);
@@ -1093,7 +1097,7 @@ fn resolve_llm_conn(
             ),
         ));
     }
-    Ok(LlmConn { provider: Some(p.id.clone()), api_key, base_url, model: saved_model })
+    Ok(LlmConn { provider: Some(p.id.clone()), api_key, protocol: saved_protocol, base_url, model: saved_model })
 }
 
 /// 显示名空着就用 id（只给上面的报错文案用）。
@@ -1429,12 +1433,12 @@ mod tests {
         uid
     }
 
-    /// 用例收尾：清掉该账号树（`users/<uid>/.yekitrim`）。
+    /// 用例收尾：清掉该账号树（`users/<uid>/`）。
     ///
     /// 不清的话同一份 `llm.toml` 会留到**下一次跑测试**（uid 复用，见 `user_at_uid`），
     /// 于是"乙还没配 key"那类断言第二次跑就红（实测 left: true / right: false）。
     fn wipe_state_dir(uid: i64) {
-        let _ = std::fs::remove_dir_all(yekitrim_core::owner::state_dir(
+        let _ = std::fs::remove_dir_all(yekitrim_core::owner::owner_root(
             yekitrim_core::owner::Owner::User(uid),
         ));
     }
@@ -1736,7 +1740,7 @@ model = "kimi-k3"
                     .body(Body::from(
                         serde_json::json!({ "patch": { "llm": {
                             "active": "x",
-                            "providers": [{ "id": "x", "api": "gemini-native", "model": "m" }]
+                            "providers": [{ "id": "x", "api": "made-up-protocol", "model": "m" }]
                         } } })
                         .to_string(),
                     ))
@@ -1995,19 +1999,17 @@ model = \"m-b\"
 /// 必须是同一份。原来那条断言钉的是"Local = 顶层"，正是"同一个人两套配置"的根。
 #[test]
 fn local_owner_config_dir_is_the_admin_user_tree() {
-    let got = yekitrim_core::owner::state_dir(yekitrim_core::owner::Owner::Local);
+    let got = yekitrim_core::owner::owner_root(yekitrim_core::owner::Owner::Local);
     let admin = yekitrim_core::owner::local_admin_uid();
     assert_eq!(
         got,
         yekitrim_core::path::data_dir()
             .join("users")
-            .join(admin.to_string())
-            .join(yekitrim_core::path::STATE_DIR_NAME),
+            .join(admin.to_string()),
         "单人形态的配置目录必须落在当前管理员名下（与 admin 登录后是同一份）"
     );
-    assert_ne!(
-        got,
-        yekitrim_core::path::yekitrim_home(),
+    assert!(
+        !got.to_string_lossy().contains(".yekitrim"),
         "不许再解析到顶层 <数据目录>/.yekitrim"
     );
 }
@@ -2718,7 +2720,7 @@ async fn llm_test_rejects_private_base_url_for_normal_user() {
     // 直接把"他自己的" llm.toml 写进他账号树的**真实解析位置**（`load_llm_config_for` 走
     // `owner::state_dir`，测试进程里解析到 exe 旁的程序目录 —— 绕开 PUT：保存那条已被拦）。
     // ⚠️ 用例结束必须清掉：这是构建产物目录里的账号树，不能留垃圾。
-    let home = yekitrim_core::owner::state_dir(yekitrim_core::owner::Owner::User(uid));
+    let home = yekitrim_core::owner::owner_root(yekitrim_core::owner::Owner::User(uid));
     std::fs::create_dir_all(&home).unwrap();
     std::fs::write(
         home.join("llm.toml"),

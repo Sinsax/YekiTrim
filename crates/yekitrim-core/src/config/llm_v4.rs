@@ -948,6 +948,8 @@ impl LlmV4 {
             .and_then(|e| e.extra_params.as_ref());
         yekitrim_llm::LlmParams {
             api_key,
+            // 协议跟着接口走：client 按它选路径 / 鉴权 / 请求体形状（adapters）
+            protocol: provider.map(|p| p.protocol.clone()).unwrap_or_default(),
             base_url,
             model,
             temperature: p.temperature.filter(|t| t.is_finite()).unwrap_or_default(),

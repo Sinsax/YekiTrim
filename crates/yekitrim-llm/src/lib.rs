@@ -35,6 +35,7 @@ pub mod params;
 /// **任务规格表**：一次 LLM 任务的默认窗口 / 默认并发 / **用量标签**（S2：11 处手写字面量的唯一来源）。
 pub mod tasks;
 /// **协议注册表**：一份 provider 的「请求怎么发」（路径 + 鉴权头）。与 `dialect`（参数怎么拼）分工不同。
+pub mod adapters;
 pub mod protocol;
 pub mod wire;
 pub mod usage;

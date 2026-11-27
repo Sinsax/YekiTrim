@@ -40,6 +40,14 @@ const remote = reactive({ state: 'idle', models: [], note: '' })
 const fetching = ref(false)
 const chosen = (id) => rows.value.some((m) => String(m.id || '').trim() === String(id || '').trim())
 
+/** 行内只留短因（报错原文常带整段 JSON —— 不截会把「候选」标签挤成竖排、错误区撑满）；全文进 title */
+function shortNote(s) {
+  const t = String(s || '')
+  const head = t.split('——')[0].trim()
+  if (head && head.length <= 40) return head
+  return t.length > 40 ? t.slice(0, 40) + '…' : t
+}
+
 /** 「获取模型」：按**这一份接口**的地址探一次（表命中不联网；表外才真发） */
 async function doFetch() {
   if (fetching.value) return
@@ -110,14 +118,14 @@ function setDefault(m) {
     <!-- 候选：**列表**（一行一支 + 加入），不是原生下拉 / 不是标签云 -->
     <div v-if="remote.state !== 'idle'" class="ml-remote">
       <div class="ml-remote-head">
-        <b>候选</b>
-        <span v-if="remote.note" class="ml-muted" :title="remote.note">{{ remote.note }}</span>
+        <b class="ml-hd">候选</b>
+        <span v-if="remote.note" class="ml-note" :title="remote.note">{{ shortNote(remote.note) }}</span>
         <span class="ml-spacer"></span>
         <button v-if="remote.state === 'error'" class="ml-mini" type="button" @click="doFetch">重试</button>
       </div>
       <div v-if="remote.state === 'loading'" class="ml-muted">获取中…</div>
       <div v-else-if="remote.state === 'error'" class="ml-err" :title="remote.note" data-ml-fetch="error">
-        获取失败：{{ remote.note }}
+        获取失败：{{ shortNote(remote.note) }}（悬停看全文）
       </div>
       <div v-else-if="!remote.models.length" class="ml-muted">服务器没返回模型 —— 点「+ 添加模型」手打一行。</div>
       <div v-else class="ml-cand-list">
@@ -175,7 +183,10 @@ function setDefault(m) {
 .ml-err { font-size:11px; color:var(--danger, #e5484d); }
 .ml-remote { border:1px solid var(--line); border-radius:var(--r-sm); background:var(--surface-2);
   padding:6px 8px; display:flex; flex-direction:column; gap:4px; max-height:200px; overflow:auto; }
-.ml-remote-head { display:flex; align-items:center; gap:8px; font-size:11px; }
+.ml-remote-head { display:flex; align-items:center; gap:8px; font-size:11px; min-width:0; }
+.ml-remote-head .ml-hd { flex:none; }
+/* 失败原因：一行截断 + title 全文 —— 原文带 JSON，整段显示会把布局撑爆（用户实测） */
+.ml-note { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--muted); }
 .ml-cand-list { display:flex; flex-direction:column; }
 .ml-cand-row { display:flex; align-items:center; gap:8px; padding:2px 0; font-size:11px; }
 .ml-rid { font-family:var(--mono, monospace); color:var(--fg); }

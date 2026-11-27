@@ -10,7 +10,6 @@ use anyhow::Result;
 use serde_json::Value;
 
 use crate::params::LlmParams;
-use crate::wire;
 
 
 use crate::usage::{UsageRecord, UsageSink};
@@ -141,20 +140,30 @@ impl LlmClient {
 
     /// 设置 thinking 参数（DeepSeek 等支持）。`Some("disabled")` 显式关闭深度思考。
 
-    fn api_url(&self) -> String {
-        let base = self.params.base_url.trim_end_matches('/');
-        if base.ends_with("/chat/completions") {
-            base.to_string()
-        } else {
-            format!("{}/chat/completions", base)
+    /// 这份客户端要说的协议。空 = 默认（openai-chat）；**未知 id 报错**，绝不静默回退
+    /// （那是"配了但没生效"最难查的形态；保存配置时 `provider_problems` 已拦过一遍）。
+    fn proto(&self) -> Result<&'static crate::protocol::Protocol> {
+        let id = self.params.protocol.trim();
+        if id.is_empty() {
+            return Ok(crate::protocol::default_protocol());
         }
+        crate::protocol::protocol(id)
+            .ok_or_else(|| anyhow::anyhow!("未知的 LLM 协议 id: {id}（llm.toml 的 protocol 字段；可用的见设置页协议下拉）"))
     }
 
-    fn build_body(&self, messages: Value) -> Value {
-        // 请求体**只有这一处拼装**：全部方言都在 `wire::apply` 里（见那个模块的注释）。
-        let mut body = serde_json::json!({ "messages": messages });
-        wire::apply(&mut body, &self.params);
-        body
+    /// 对话补全的完整 URL（Gemini 把 key 拼进查询参数）。
+    fn chat_url(&self, proto: &crate::protocol::Protocol) -> String {
+        let base = self.params.base_url.trim_end_matches('/');
+        // 兼容"用户把完整端点贴进了 base_url"的旧写法（只对 OpenAI 族成立）
+        let mut url = if proto.id == "openai-chat" && base.ends_with("/chat/completions") {
+            base.to_string()
+        } else {
+            format!("{base}{}", proto.chat_path.replace("{model}", &self.params.model))
+        };
+        if proto.auth == crate::protocol::AuthStyle::QueryKey {
+            url = format!("{url}?key={}", self.params.api_key);
+        }
+        url
     }
 
     /// 发送聊天补全请求，返回完整响应 JSON（带重试）。
@@ -163,19 +172,26 @@ impl LlmClient {
     /// `UsageRecord`（重试算同一次调用，`attempts` 记实际尝试次数）。
     /// 记账失败不影响返回值——记录仪里的错误由安装方自己吞。
     pub async fn send(&self, messages: Value) -> Result<Value> {
-        let url = self.api_url();
-        let body = self.build_body(messages);
+        let proto = self.proto()?;
+        let url = self.chat_url(proto);
+        let prep = crate::adapters::encode(&self.params, proto, &messages);
         let started = Instant::now();
 
         let mut last_err = None;
         for attempt in 0..3 {
-            let resp = self
-                .http
-                .post(&url)
-                .header("Authorization", format!("Bearer {}", self.params.api_key))
-                .json(&body)
-                .send()
-                .await;
+            // 请求构造必须在重试循环**内**：RequestBuilder 消费自身，无法跨循环复用
+            let mut req = self.http.post(&url);
+            req = match proto.auth {
+                crate::protocol::AuthStyle::Bearer => {
+                    req.header("Authorization", format!("Bearer {}", self.params.api_key))
+                }
+                // key 在 URL 查询参数里（Gemini）
+                crate::protocol::AuthStyle::QueryKey => req,
+            };
+            for (k, v) in proto.extra_headers {
+                req = req.header(*k, *v);
+            }
+            let resp = req.json(&prep.body).send().await;
 
             match resp {
                 Ok(r) if r.status().is_success() => {
@@ -278,10 +294,10 @@ impl LlmClient {
             {"role": "user", "content": user_prompt},
         ]);
         let body = self.send(messages).await?;
-        body["choices"][0]["message"]["content"]
-            .as_str()
-            .map(|s| s.to_string())
-            .ok_or_else(|| anyhow::anyhow!("LLM 响应缺少 choices[0].message.content"))
+        // 文本抽取按**这份客户端的协议**走（各家回包形状不同，映射在 adapters）
+        let proto = self.proto()?;
+        crate::adapters::extract_text(proto.id, &body)
+            .ok_or_else(|| anyhow::anyhow!("LLM 响应缺少文本（协议 {} 的回包形状不对？）", proto.id))
     }
 }
 

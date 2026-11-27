@@ -125,17 +125,33 @@ pub fn empty_hint(base_url: &str) -> String {
 /// * 模型清单的**权威只有 `/v1/models`**：路径级探测**不新增条目**，只给已有条目不的能力；
 /// * 路径探测**失败一律静默跳过**（404 / 超时 / 非 JSON / 形状不认识），但会记进 `tried`；
 /// * `/v1/models` 自己的失败仍然按四条分类文案报错（那是主路径，不能含糊）。
-pub async fn discover(api_key: &str, base_url: &str) -> Result<Discovery, String> {
+pub async fn discover(api_key: &str, base_url: &str, protocol_id: &str) -> Result<Discovery, String> {
     let root = api_root(base_url);
     if root.is_empty() {
         return Err("没填 API 基础地址（base_url）".to_string());
     }
-    let url = format!("{root}/models");
+    // 探针用**该接口自己的协议**发：路径与鉴权都在注册表里（空 = 默认 openai-chat）
+    let proto = if protocol_id.trim().is_empty() {
+        crate::protocol::default_protocol()
+    } else {
+        crate::protocol::protocol(protocol_id)
+            .ok_or_else(|| format!("未知的 LLM 协议 id: {protocol_id}"))?
+    };
+    let mut url = format!("{root}{}", proto.models_path);
+    if proto.auth == crate::protocol::AuthStyle::QueryKey {
+        url = format!("{url}?key={api_key}");
+    }
     // 客户端构造走 client 那一份（UA / connect_timeout / keepalive 只在那里设）
     let client = crate::client::build_http_client(DISCOVERY_TIMEOUT);
-    let resp = client
-        .get(&url)
-        .header("Authorization", format!("Bearer {api_key}"))
+    let mut req = client.get(&url);
+    req = match proto.auth {
+        crate::protocol::AuthStyle::Bearer => req.header("Authorization", format!("Bearer {api_key}")),
+        crate::protocol::AuthStyle::QueryKey => req,
+    };
+    for (k, v) in proto.extra_headers {
+        req = req.header(*k, *v);
+    }
+    let resp = req
         .send()
         .await
         .map_err(|e| connect_error(&url, &e))?;
@@ -148,10 +164,13 @@ pub async fn discover(api_key: &str, base_url: &str) -> Result<Discovery, String
 
     // ── 路径级探测（P3）────────────────────────────────────────────────────
     // 失败不阻断：它只是"再问一条路"，不是主流程。
-    let mut tried = vec!["/models".to_string()];
+    let mut tried = vec![proto.models_path.to_string()];
     let mut caps_from: Vec<&'static str> = Vec::new();
-    for probe in PATH_PROBES {
-        apply_probe(&client, &root, api_key, probe, &mut models, &mut tried, &mut caps_from).await;
+    // 路径级探测的读法全是 OpenAI 族形状；别家协议跳过（404 也问不出东西）
+    if proto.id == "openai-chat" {
+        for probe in PATH_PROBES {
+            apply_probe(&client, &root, api_key, probe, &mut models, &mut tried, &mut caps_from).await;
+        }
     }
     Ok(Discovery { models, tried, caps_from })
 }
@@ -405,10 +424,26 @@ fn parse_models(body: &str, url: &str) -> Result<Vec<Discovered>, String> {
     for item in arr {
         let (id, name) = match item {
             serde_json::Value::String(s) => (s.as_str(), None),
-            other => (
-                other.get("id").and_then(|i| i.as_str()).unwrap_or_default(),
-                other.get("name").and_then(|n| n.as_str()),
-            ),
+            other => {
+                // id 缺了就用 name（Gemini/Ollama 只有 name；Gemini 还带 `models/` 前缀）
+                let raw_id = other
+                    .get("id")
+                    .and_then(|i| i.as_str())
+                    .or_else(|| other.get("name").and_then(|n| n.as_str()))
+                    .unwrap_or_default();
+                let id = raw_id.strip_prefix("models/").unwrap_or(raw_id);
+                // 人名：displayName（Gemini）/ display_name（Anthropic）优先；
+                // `name` 与 id 相同时（Ollama/Gemini）它就是 id，别当名字
+                let name = other
+                    .get("displayName")
+                    .and_then(|n| n.as_str())
+                    .or_else(|| other.get("display_name").and_then(|n| n.as_str()))
+                    .or_else(|| {
+                        let n = other.get("name").and_then(|n| n.as_str())?;
+                        (n != id && n != raw_id).then_some(n)
+                    });
+                (id, name)
+            }
         };
         let id = id.trim();
         if id.is_empty() {
@@ -507,7 +542,7 @@ mod tests {
             {"id":""}
         ]}"#;
         let (_s, base, _) = fake(vec![(200, openai.to_string())]).await;
-        let got = discover("k", &base).await.unwrap().models;
+        let got = discover("k", &base, "").await.unwrap().models;
         assert_eq!(
             got,
             vec![
@@ -520,13 +555,13 @@ mod tests {
         // ② 部分中转：{"models":[…]}，元素是裸字符串
         let relay = r#"{"models":["z-model","a-model"]}"#;
         let (_s2, base2, _) = fake(vec![(200, relay.to_string())]).await;
-        let got = discover("k", &base2).await.unwrap().models;
+        let got = discover("k", &base2, "").await.unwrap().models;
         assert_eq!(got.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), vec!["a-model", "z-model"]);
 
         // ③ 裸数组
         let bare = r#"[{"id":"only-one","name":"唯一"}]"#;
         let (_s3, base3, _) = fake(vec![(200, bare.to_string())]).await;
-        let got = discover("k", &base3).await.unwrap().models;
+        let got = discover("k", &base3, "").await.unwrap().models;
         assert_eq!(got, vec![Discovered { id: "only-one".into(), name: Some("唯一".into()), caps: None }]);
     }
 
@@ -538,7 +573,7 @@ mod tests {
         assert_eq!(api_root(""), "");
 
         let (_s, base, seen) = fake(vec![(200, r#"{"data":[{"id":"m"}]}"#.to_string())]).await;
-        discover("k", &format!("{base}/chat/completions")).await.unwrap();
+        discover("k", &format!("{base}/chat/completions"), "").await.unwrap();
         let line = seen.lock().unwrap().clone();
         assert!(line.starts_with("GET /v1/models "), "请求行应为 GET /v1/models，实际：{line}");
     }
@@ -549,14 +584,14 @@ mod tests {
     #[tokio::test]
     async fn key_不对与空列表是两句不同的话() {
         let (_s, base, _) = fake(vec![(401, r#"{"error":{"message":"invalid api key"}}"#.to_string())]).await;
-        let err = discover("bad-key", &base).await.unwrap_err();
+        let err = discover("bad-key", &base, "").await.unwrap_err();
         assert!(err.contains("401"), "401 要出现在文案里：{err}");
         assert!(err.contains("key") || err.contains("api_key"), "要点名 key：{err}");
         assert!(!err.contains("/models 接口"), "别把 key 不对说成地址不对：{err}");
 
         // 200 + 空数组：**连上了、地址也对**，只是没有模型 ⇒ Ok(空)，不是 Err
         let (_s2, base2, _) = fake(vec![(200, r#"{"data":[]}"#.to_string())]).await;
-        let got = discover("k", &base2).await.expect("200 空数组是合法答案").models;
+        let got = discover("k", &base2, "").await.expect("200 空数组是合法答案").models;
         assert!(got.is_empty());
         let hint = empty_hint(&base2);
         assert_ne!(hint, err, "空列表与 key 不对必须是两句不同的话");
@@ -567,7 +602,7 @@ mod tests {
     #[tokio::test]
     async fn 状态码_404_说的是这个地址没有_models() {
         let (_s, base, _) = fake(vec![(404, "not found".to_string())]).await;
-        let err = discover("k", &base).await.unwrap_err();
+        let err = discover("k", &base, "").await.unwrap_err();
         assert!(err.contains("404"), "{err}");
         assert!(err.contains("/models"), "{err}");
         assert!(!err.contains("api_key"), "地址不对别去怪 key：{err}");
@@ -596,7 +631,7 @@ mod tests {
     /// 拿到的必然是"请求 … 失败"，而不是任何 HTTP 状态码文案。
     #[tokio::test]
     async fn 建连失败不会被说成状态码失败() {
-        let err = discover("k", "not-a-url").await.unwrap_err();
+        let err = discover("k", "not-a-url", "").await.unwrap_err();
         assert!(err.starts_with("请求 "), "{err}");
         assert!(!err.contains("HTTP"), "{err}");
     }
@@ -612,7 +647,7 @@ mod tests {
             {"id":"plain-b","name":"B"}
         ]}"#;
         let (_s, base, _) = fake(vec![(200, body.to_string())]).await;
-        let got = discover("k", &base).await.unwrap().models;
+        let got = discover("k", &base, "").await.unwrap().models;
         let a = got.iter().find(|m| m.id == "router-a").unwrap();
         let caps = a.caps.as_ref().expect("这支回包给了能力，必须读出来");
         assert!(caps.input.unwrap().image, "input_modalities 里的 image");
@@ -634,7 +669,7 @@ mod tests {
             {"id":"m-inc","supported_parameters":["include_reasoning"]}
         ]}"#;
         let (_s, base, _) = fake(vec![(200, body.to_string())]).await;
-        let got = discover("k", &base).await.unwrap().models;
+        let got = discover("k", &base, "").await.unwrap().models;
         let caps = got[0].caps.as_ref().expect("reasoning ⇒ 有结论");
         assert_eq!(caps.dialect, Some("thinking_type"));
         assert_eq!(
@@ -654,7 +689,7 @@ mod tests {
             {"id":"nested","capabilities":{"modalities":["text"]}}
         ]}"#;
         let (_s, base, _) = fake(vec![(200, body.to_string())]).await;
-        let got = discover("k", &base).await.unwrap().models;
+        let got = discover("k", &base, "").await.unwrap().models;
         // ⚠️ discover 按 id 升序返回（"nested" < "top-level"）—— 按 id 取，别按下标
         let top = got.iter().find(|m| m.id == "top-level").unwrap();
         assert!(top.caps.as_ref().unwrap().input.unwrap().image, "顶层 input_modalities");
@@ -690,7 +725,7 @@ mod tests {
     #[tokio::test]
     async fn 形状不认识时报形状() {
         let (_s, base, _) = fake(vec![(200, r#"{"object":"list"}"#.to_string())]).await;
-        let err = discover("k", &base).await.unwrap_err();
+        let err = discover("k", &base, "").await.unwrap_err();
         assert!(err.contains("形状不认识"), "{err}");
     }
     // ── P3：路径级探测（LiteLLM / Ollama）───────────────────────────────────
@@ -784,7 +819,7 @@ mod tests {
             (404, "not found".to_string()),
         ])
         .await;
-        let d = discover("k", &base).await.unwrap();
+        let d = discover("k", &base, "").await.unwrap();
         assert_eq!(d.models.len(), 1);
         let caps = d.models[0].caps.as_ref().expect("两条路都给了能力");
         // 来自 `/v1/models` 的（reader 注册表）
@@ -814,7 +849,7 @@ mod tests {
             (404, "not here".to_string()), // {origin}/api/tags
         ])
         .await;
-        let d = discover("k", &base).await.unwrap();
+        let d = discover("k", &base, "").await.unwrap();
         assert_eq!(d.caps_from, vec!["litellm"], "根上的 /model/info 必须被用上");
         assert!(d.models[0].caps.as_ref().unwrap().input.unwrap().image);
         // `tried` 记的是**路径**（不因两个 URL 变体重复）
@@ -855,7 +890,7 @@ mod tests {
             (200, show_embed.to_string()), // {origin}/api/show（embedding）
         ])
         .await;
-        let d = discover("k", &base).await.unwrap();
+        let d = discover("k", &base, "").await.unwrap();
         let llama = d.models.iter().find(|m| m.id == "llama3.2:latest").unwrap();
         let c = llama.caps.as_ref().expect("Ollama 那条路给了能力");
         assert_eq!(c.dialect, Some("openai_effort"), "thinking ⇒ 支持推理");
@@ -879,7 +914,7 @@ mod tests {
             (200, "<html>不是 JSON</html>".to_string()),
         ])
         .await;
-        let d = discover("k", &base).await.expect("路径探测失败不该让整趟探测失败");
+        let d = discover("k", &base, "").await.expect("路径探测失败不该让整趟探测失败");
         assert_eq!(d.models.len(), 1, "模型清单照常返回");
         assert!(d.models[0].caps.is_none(), "两条路都没读到 ⇒ 不下结论");
         assert!(d.caps_from.is_empty());

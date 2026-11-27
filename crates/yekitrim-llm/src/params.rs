@@ -188,6 +188,9 @@ impl ModelCaps {
 #[derive(Debug, Clone)]
 pub struct LlmParams {
     pub api_key: String,
+    /// 协议 id（`protocol::PROTOCOLS` 里的一个）。空 = 默认（openai-chat）；
+    /// 写错在保存配置时就会被拒（`provider_problems`），运行时遇到未知 id 会报错、**绝不静默回退**。
+    pub protocol: String,
     /// 基础地址，如 `https://api.openai.com/v1`。空 = 未配置（构造客户端时报错）。
     pub base_url: String,
     /// 模型 id。空 = 用兜底（`gpt-4o-mini`）。
@@ -223,6 +226,7 @@ impl Default for LlmParams {
     fn default() -> Self {
         Self {
             api_key: String::new(),
+            protocol: String::new(),
             base_url: String::new(),
             model: String::new(),
             temperature: 0.3,

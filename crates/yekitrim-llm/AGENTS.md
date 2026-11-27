@@ -23,6 +23,12 @@
 
 ## 边界
 
+### 协议注册表（2026-11-27 接通）
+
+- `protocol.rs`（路径+鉴权）× `adapters.rs`（请求体/回包/文本抽取）× `usage::parse_usage`（各家 token 形状）。
+- 三条（2026-11-27 用户口径）：`openai-chat` / `gemini-native` / `openai-responses`。⚠️ **Ollama / Anthropic 不单独注册** —— 它们走兼容层（openai-chat + 对应 base_url）；判据钉住"兼容层不是协议"。
+- ⚠️ **未知 `protocol` id 报错、绝不静默回退**；推理参数当前只在 OpenAI 族发送（别家发了会 400，宁可不发）。
+
 ### 模型能力（2026-10-20：**探针 > 内置表 > 保守默认**）
 
 - **优先级只在一处实现**：`catalog::caps_json_merged` = 先 `caps_for`（内置表 + 保守默认）再
@@ -38,7 +44,7 @@
 
 ### 并发与加速（2026-09）
 
-- **一个旋钮**：`.yekitrim/llm.toml` 的 `[llm] max_concurrent`（默认 3），**事件检测 / 精修事件生成 /
+- **一个旋钮**：`<data>/users/<uid>/llm.toml` 的 `[llm] max_concurrent`（默认 3），**事件检测 / 精修事件生成 /
   字幕订正共用**，解析只有两个入口：`LlmConfigV4::concurrency(None)`（全局）与
   `concurrency_for(link)` / `run_for(link).max_concurrent`（`[llm.links.<link>.run]`，留空即跟随全局）。
   **别再在代码里写死 `3`，也别让某条链路偷偷用自己的。** 设置页「AI 模型」页的「默认参数」块是全局旋钮的入口。

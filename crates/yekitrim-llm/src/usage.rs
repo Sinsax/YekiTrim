@@ -169,14 +169,36 @@ pub fn parse_usage(body: &Value) -> UsageNumbers {
         }
         cur.as_u64()
     };
-    UsageNumbers {
+    let openai = UsageNumbers {
         prompt_tokens: get(&["prompt_tokens"]).unwrap_or(0),
         completion_tokens: get(&["completion_tokens"]).unwrap_or(0),
         cached_tokens: get(&["prompt_cache_hit_tokens"])
             .or_else(|| get(&["prompt_tokens_details", "cached_tokens"]))
             .unwrap_or(0),
         reasoning_tokens: get(&["completion_tokens_details", "reasoning_tokens"]).unwrap_or(0),
+    };
+    if openai.prompt_tokens > 0 || openai.completion_tokens > 0 {
+        return openai;
     }
+    // ⚠️ 各家回包的 usage 形状不同（协议适配见 `adapters`），按**顶层键**辨认：
+    //    OpenAI 兼容之外一家一个形状，认不出就回 0（统计空着，不影响调用）。
+    let get_at = |v: &Value, path: &[&str]| -> Option<u64> {
+        let mut cur = v;
+        for k in path {
+            cur = cur.get(k)?;
+        }
+        cur.as_u64()
+    };
+    // Gemini：`usageMetadata.promptTokenCount / candidatesTokenCount / thoughtsTokenCount`
+    if let Some(md) = body.get("usageMetadata") {
+        return UsageNumbers {
+            prompt_tokens: get_at(md, &["promptTokenCount"]).unwrap_or(0),
+            completion_tokens: get_at(md, &["candidatesTokenCount"]).unwrap_or(0),
+            cached_tokens: get_at(md, &["cachedContentTokenCount"]).unwrap_or(0),
+            reasoning_tokens: get_at(md, &["thoughtsTokenCount"]).unwrap_or(0),
+        };
+    }
+    openai
 }
 
 /// base_url → 主机名（"https://api.deepseek.com/v1" → "api.deepseek.com"）。
@@ -226,6 +248,16 @@ mod tests {
         assert_eq!(
             parse_usage(&deepseek),
             UsageNumbers { prompt_tokens: 900, completion_tokens: 40, cached_tokens: 768, reasoning_tokens: 0 }
+        );
+    }
+
+    /// 原生协议的 usage 形状与 OpenAI 不同（adapters 里只管文本，token 在这里认）。
+    #[test]
+    fn parse_usage_reads_native_protocol_shapes() {
+        let gemini = json!({"usageMetadata": {"promptTokenCount": 50, "candidatesTokenCount": 9, "thoughtsTokenCount": 7}});
+        assert_eq!(
+            parse_usage(&gemini),
+            UsageNumbers { prompt_tokens: 50, completion_tokens: 9, cached_tokens: 0, reasoning_tokens: 7 }
         );
     }
 
