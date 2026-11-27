@@ -165,11 +165,12 @@ function setDefault(m) {
 <style scoped>
 .ml { display:flex; flex-direction:column; gap:8px; min-width:0; }
 .ml-bar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
-.ml-title { font-size:12px; font-weight:600; }
+.ml-title { font-size:13px; font-weight:700; }
 .ml-cnt { margin-left:6px; font-size:11px; color:var(--muted); font-weight:400; }
 .ml-spacer { flex:1 1 auto; }
-.ml-filter { width:120px; font-size:11px; padding:3px 6px; }
-.ml-mini { font-size:11px; padding:3px 8px; }
+.ml-filter { width:132px; font-size:12px; height:28px; padding:0 8px; }
+.ml-mini { font-size:12px; height:28px; padding:0 10px; border-radius:var(--r-sm);
+  border:1px solid var(--line); background:var(--surface-2); color:var(--fg); cursor:pointer; }
 .ml-muted { font-size:11px; color:var(--muted); }
 .ml-err { font-size:11px; color:var(--danger, #e5484d); }
 .ml-remote { border:1px solid var(--line); border-radius:var(--r-sm); background:var(--surface-2);
@@ -188,7 +189,7 @@ function setDefault(m) {
 .ml-c-label { width:30%; }
 .ml-c-act { width:190px; white-space:nowrap; text-align:right; }
 .ml-c-act .ml-mini { margin-right:6px; }
-.ml-input { width:100%; font-size:12px; padding:3px 6px; }
+.ml-input { width:100%; font-size:12px; height:28px; padding:0 8px; }
 .ml-ico { border:0; background:none; color:var(--muted); cursor:pointer; padding:2px 4px; border-radius:var(--r-sm); }
 .ml-ico.danger:hover { color:var(--danger, #e5484d); }
 .ml-empty { font-size:12px; color:var(--muted); padding:8px 2px; }

@@ -66,7 +66,7 @@ const countFor = (id) => (props.models || []).filter((m) => String(m.provider ||
 <style scoped>
 .pl { display:flex; flex-direction:column; gap:6px; min-width:0; }
 .pl-head { display:flex; align-items:baseline; gap:6px; padding:0 2px; }
-.pl-head b { font-size:12.5px; }
+.pl-head b { font-size:13px; font-weight:700; }
 .pl-n { font-size:10.5px; color:var(--ink-faint); }
 .pl-list { display:flex; flex-direction:column; gap:2px; min-width:0; }
 /* 一行两份信息：上面名字、下面 host；右侧是状态（用 / 密钥 / 模型数） */

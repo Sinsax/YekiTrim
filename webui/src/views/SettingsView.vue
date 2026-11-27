@@ -250,7 +250,7 @@
     <!-- 左右列表（2026-11-27 用户口径）：左 = 接口清单，右 = **接口设置（上）+ 模型清单（下）**。
          接口设置 2026-11-27 再改：**回到正文**、就在模型列表上面（用户："放在模型列表的上面那里"），不再走弹窗。 -->
     <div class="llm-split">
-      <div class="llm-split-left" data-cap="settings.llm-quick">
+      <div class="card llm-split-left" data-cap="settings.llm-quick">
         <LlmProviderList :providers="form.llm.providers" :models="form.llm.models"
                          :editing-id="editingProviderId" :active-id="form.llm.active"
                          @select="selectProvider" @add="addProvider()" />
@@ -258,8 +258,9 @@
 
       <div class="llm-split-right">
         <template v-if="editingProvider">
-          <!-- ① 这份接口怎么连（地址 / 密钥 / 默认模型 / 测试 / 删除） -->
-          <div class="card llm-conn-card">
+          <!-- ① 这份接口怎么连（地址 / 密钥 / 测试 / 删除） -->
+          <div class="card">
+            <div class="form-section-title">连接</div>
             <LlmEndpointCard
               :loaded="loaded"
               :providers="form.llm.providers"
@@ -305,7 +306,7 @@
     <!-- 运行设置：并发 + 检测评分权重合成**一张卡**（用户 2026-11-27："和评分权重合并作为设置面板"） -->
     <div class="card">
       <div class="form-section-title">运行设置</div>
-      <div class="form-grid">
+      <div class="llm-two">
         <SliderField v-model="form.llm.max_concurrent" label="并发请求数"
                      :min="1" :max="32" :step="1" title="对所有任务生效；调高更快，但更容易撞限流" />
         <SliderField v-model="form.llm.detectRun.llm_score_weight"
@@ -1708,13 +1709,15 @@ onMounted(async () => {
    右栏是"接口设置（上）+ 模型清单（下）"两块常驻卡 —— 接口设置就在模型列表上面，**不要弹窗**。
    窄了（<=820px）折成一栏，顺序仍是"接口 → 模型"。 */
 .llm-split { display:grid; grid-template-columns:232px minmax(0,1fr); gap:12px; align-items:start; }
-.llm-split-left { min-width:0; padding:8px; border-radius:var(--r-md); background:var(--card);
-  border:1px solid var(--line); box-shadow:var(--e-1); }
+.llm-split-left { min-width:0; }
+/* 一张卡里的两列参数：不依赖父级 form-grid 的列数，窄了自动折成一列 */
+.llm-two { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:8px 20px; }
+@container (max-width: 720px) { .llm-two { grid-template-columns:1fr; } }
 .llm-split-right { display:flex; flex-direction:column; gap:12px; min-width:0; }
 @container (max-width: 820px) {
   .llm-split { grid-template-columns:1fr; }
 }
-.llm-conn-card { padding:12px; }
+
 .llm-grp-nm { font-size:var(--fs-base); }
 .llm-grp-host { font-family:var(--mono); font-size:11px; color:var(--ink-faint); }
 .llm-grp-share { font-size:11px; color:var(--ink-faint); }

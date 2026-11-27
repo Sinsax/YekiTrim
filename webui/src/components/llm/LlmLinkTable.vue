@@ -202,15 +202,16 @@ const hasRow = computed(() => Array.isArray(props.links) && props.links.length >
 .lt-tbl { width:100%; border-collapse:collapse; font-size:12px; min-width:760px; }
 .lt-tbl th { text-align:left; font-weight:500; font-size:11px; color:var(--muted);
   padding:6px 8px; border-bottom:1px solid var(--line); white-space:nowrap; }
-.lt-tbl td { padding:6px 8px; border-bottom:1px solid var(--line-dim, var(--line)); vertical-align:top; }
-.lt-c-link { width:150px; }
-.lt-c-model { width:240px; }
-.lt-c-num { width:230px; }
-.lt-c-reason { width:120px; }
+.lt-tbl td { padding:8px; border-bottom:1px solid var(--line-dim, var(--line)); vertical-align:middle; height:44px; }
+.lt-c-link { width:148px; }
+.lt-c-model { width:232px; }
+.lt-c-num { width:236px; }
+.lt-c-reason { width:112px; }
 .lt-sub { display:block; font-size:11px; color:var(--muted); }
-.lt-sel, .lt-sel2 { width:100%; font-size:12px; padding:3px 6px; }
-.lt-sl { display:flex; align-items:center; gap:6px; }
-.lt-sl input[type=range] { flex:1 1 auto; min-width:60px; }
-.lt-num { width:68px; font-size:12px; padding:2px 4px; text-align:right; }
+.lt-sel, .lt-sel2 { width:100%; font-size:12px; height:28px; padding:0 6px; }
+.lt-sl { display:grid; grid-template-columns:minmax(0,1fr) 76px; align-items:center; gap:10px; }
+.lt-sl input[type=range] { width:100%; min-width:0; margin:0; }
+.lt-num { width:76px; height:28px; font-size:12px; padding:0 6px; text-align:right;
+  font-variant-numeric:tabular-nums; }
 .lt-empty { color:var(--muted); font-size:12px; padding:10px 8px; }
 </style>
