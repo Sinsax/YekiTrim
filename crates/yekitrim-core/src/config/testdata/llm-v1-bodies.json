@@ -84,6 +84,9 @@
         }
       ],
       "model": "deepseek-v4-pro",
+      "response_format": {
+        "type": "json_object"
+      },
       "temperature": 0.0
     },
     {
@@ -95,6 +98,9 @@
         }
       ],
       "model": "deepseek-v4-pro",
+      "response_format": {
+        "type": "json_object"
+      },
       "temperature": 0.0
     },
     {
@@ -106,6 +112,9 @@
         }
       ],
       "model": "deepseek-v4-pro",
+      "response_format": {
+        "type": "json_object"
+      },
       "temperature": 0.0
     },
     {
@@ -117,6 +126,9 @@
         }
       ],
       "model": "deepseek-v4-pro",
+      "response_format": {
+        "type": "json_object"
+      },
       "temperature": 0.0
     }
   ],
@@ -130,6 +142,9 @@
         }
       ],
       "model": "m",
+      "response_format": {
+        "type": "json_object"
+      },
       "temperature": 0.1,
       "thinking": {
         "type": "disabled"
@@ -144,6 +159,9 @@
         }
       ],
       "model": "m",
+      "response_format": {
+        "type": "json_object"
+      },
       "temperature": 0.1,
       "thinking": {
         "type": "enabled"
@@ -158,6 +176,9 @@
         }
       ],
       "model": "m",
+      "response_format": {
+        "type": "json_object"
+      },
       "temperature": 0.1,
       "thinking": {
         "type": "enabled"
@@ -172,6 +193,9 @@
         }
       ],
       "model": "m",
+      "response_format": {
+        "type": "json_object"
+      },
       "temperature": 0.1,
       "thinking": {
         "type": "enabled"

@@ -955,7 +955,11 @@ impl LlmV4 {
             reasoning,
             thinking_budget: p.thinking_budget.filter(|n| *n > 0),
             top_p: p.top_p.filter(|v| v.is_finite()),
-            json_mode: p.json_mode.unwrap_or(false),
+            // **写死 true**（2026-11-27 用户口径："要求 json 输出作为默认的写死的参数"）：
+            // 界面不再给这个开关，文件里写 `json_mode = false` 也不生效 —— 三条链路本来就全要 JSON。
+            // ⚠️ 要恢复成可配：把这里改回 `p.json_mode.unwrap_or(false)` 并把勾选加回 ⑤，
+            //    判据（golden 请求体）会一起翻面，别只改一半。
+            json_mode: true,
             extra_params: extra.and_then(|t| serde_json::to_value(t).ok()),
             caps,
         }

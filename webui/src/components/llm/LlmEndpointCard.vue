@@ -17,7 +17,6 @@
 import { computed, ref } from 'vue'
 import Icon from '../Icon.vue'
 import { fetchModels, testConnection } from '../../api/llm'
-import { inputZh } from './caps.js'
 import LlmModelCombobox from './LlmModelCombobox.vue'
 
 const props = defineProps({
@@ -84,7 +83,7 @@ async function doFetchModels() {
   const base = String(p.base_url || '').trim()
   if (!base) { fetchState.value = { text: '先填 API 地址', err: '', title: '' }; return }
   fetching.value = true
-  fetchState.value = { text: '取候选…', err: '', title: '' }
+  fetchState.value = { text: '获取中…', err: '', title: '' }
   try {
     const r = await fetchModels(base, p.api_key, p.id)
     const models = Array.isArray(r.models) ? r.models : []
@@ -94,7 +93,7 @@ async function doFetchModels() {
       : { text: '', err: '服务器没返回模型（可手打 id）', title: r.note || '' }
   } catch (e) {
     const full = (e && e.message) ? e.message : String(e)
-    fetchState.value = { text: '', err: '取候选失败', title: full }
+    fetchState.value = { text: '', err: '获取失败', title: full }
   } finally {
     fetching.value = false
   }
@@ -139,9 +138,9 @@ async function doTest() {
 const chips = computed(() => {
   const c = props.caps
   if (!c) return []
+  // ⚠️ **不显示输入模态、也不显示档位/思考强度**（用户 2026-11-27：当前没有图像需求；
+  //    档位与思考强度归链路那边，这一格只留"这支模型能不能用"的客观事实）。
   const out = []
-  out.push('输入 ' + inputZh(c.input))
-  out.push(c.levels && c.levels.length ? ('推理 ' + c.levels.length + ' 档') : '无推理档')
   out.push(c.temperature === 'unsupported' ? '温度 不支持'
     : (c.temperature === 'unknown' ? '温度 未声明' : '温度 支持'))
   if (c.maxOutput) out.push('上限 ' + c.maxOutput)
@@ -198,7 +197,7 @@ const chips = computed(() => {
             <button class="ep-mini" type="button" :disabled="fetching"
                     title="按上面填的地址取一次候选（内置目录命中就不联网）"
                     @click="doFetchModels">
-              {{ fetching ? '取候选…' : '取候选' }}
+              {{ fetching ? '获取中…' : '获取模型' }}
             </button>
             <span v-if="fetchState.text" class="ep-note">{{ fetchState.text }}</span>
             <span v-else-if="fetchState.err" class="ep-note err" :title="fetchState.title">{{ fetchState.err }}</span>

@@ -22,26 +22,28 @@
   ⚠️ **待处理项必须行里逐项可见** —— 旧运行状况卡"报 1 项待处理、展开却全绿"的病根就是底座缺失没有展示位（用户实测）；页头汇总 chip 随之删除（同一件事不说三遍）。口径见 `docs/web-ui-design.md` 附录 E。
 - LLM 组件（2026-11-27 起 **左右列表**，右栏 = 接口设置卡 + 模型清单）：
   `LlmProviderList`（左栏接口清单，底部「+ 新建接口」）·
-  `LlmEndpointCard`（协议/地址/密钥/默认模型 combobox/取候选/测试/设为当前/删除 —— **右栏顶部常驻卡**，就在模型清单上面）·
-  `LlmModelList`（**某一个接口**的模型清单 + 取候选/手填/能力手填/**每模型额外参数**，每个组各挂一份）·
-  `LlmLinkTable`（链路表：**接口与模型合并成「用哪支」一列**，选项值 = `接口|模型`；参数格仍灰字点开才编辑）·
-  `LlmParamFields`（参数控件）· `LlmModelCombobox`（单接口模型下拉，连接卡的默认模型用）。
+  `LlmEndpointCard`（协议/地址/密钥/默认模型 combobox/获取模型/测试/设为当前/删除 —— **右栏顶部常驻卡**，就在模型清单上面）·
+  `LlmModelList`（**某一个接口**的模型清单：**只有 id + 显示名**；「获取模型」的候选显示在表格**上方**，id 那一格是 `<datalist>` 输入框 ⇒ 能选也能手打）·
+  `LlmLinkTable`（链路表 **5 列**：用哪支 / 温度 / 输出上限 / 推理；数字列是**滑块 + 数字框**直接可改，无测试列、无状态列）·
+  `LlmModelCombobox`（单接口模型下拉，连接卡的默认模型用）。
   ⚠️ **加模型在右栏 `LlmModelList` 里完成**（用户原话："每一次添加模型都要翻找很不合理"）—— 别把清单塞回 `<details>`，也不许再加抽屉。
   ⚠️ **接口设置是正文里的一张常驻卡**（不是弹窗，2026-11-27 用户口径）：左栏只切 `editingId`，**不改** `[llm] active`；删除接口在卡里（`confirmDialog` + 连带影响）。
   ⚠️ **加入清单不许把探针 caps 写进 `catalog`**：`catalog` 是清单形状（`input = ["text"]` / `levels = [{level,value}]`），
   caps 是能力面（`input = {text=true}` / `levels = {high="high"}`）—— 写进去文件合法、**反序列化才炸**，整份 llm.toml 被拒收。
-  判据 ㊷（`check-layout-invariants.mjs`，带变异自证）。
-  - **额外请求参数按模型**（2026-11-26）：编辑框在模型行的「能力手填」展开区里；JSON 校验/序列化只有一份
-    —— `components/llm/extra.js`（`parseExtraObject`/`stringifyExtra`，已知键 + null 一律拒）。
-    `_extraText`/`_extraErr` 是**瞬态**字段（不进 `buildModels`）；`_extraErr` 非空时 `saveLlm` 拒绝保存。
+  判据 ㊷（`check-layout-invariants.mjs`，带变异自证）。**2026-11-27 起模型行连 catalog 都不写了**（只剩 id/provider/label）。
+  - ⚠️ **2026-11-27 删掉的东西（别捡回来）**：模型行的「能力手填」（输入模态 / 温度 / 输出字段 / 推理写法 / 档位表）、
+    每模型 `extra_params` 编辑框（连 `components/llm/extra.js` 一起删）、链路页的「默认参数」块与 `LlmParamFields.vue`。
+    模型行**只剩 id + 显示名**；参数全归链路。
   - `LlmEndpointCard`：候选来自 `modelOptions[{id,label,inList}]`；**聚焦先列全部**（`typed=false`），敲字才过滤 ——
     只按输入框现值过滤等于"只能看到当前那一支"，用户永远发现不了别的模型。选中"未加入"的 emit `pick-model`，
-    父层写进清单（`onPickModel`）。`probe` 事件把候选与能力一起交给父层 —— 右栏两个「取候选」共用 `onProbeCaps`。
+    父层写进清单（`onPickModel`）。`probe` 事件把候选与能力一起交给父层 —— 连接卡与模型清单两处「获取模型」共用 `onProbeCaps`。
     测试结果**行内**给延迟/失败短因（整句进 `title`）。
-  - `LlmLinkTable`：**参数格点开必须有退路**（Esc / 点空白处收起，不改值；按钮只留「清除覆盖」= 删键）；
+  - `LlmLinkTable`：**5 列**（链路 / 用哪支 / 温度 / 输出上限 / 推理）；数字列 = **滑块 + 数字框**（拖了才算覆盖，
+    行尾 `×` 只在有覆盖时出现，点它 = 删键回跟随）；**没有测试列、没有状态列**；
     **「用哪支」是一个下拉**（`<optgroup>` 按接口分组，值 = `接口|模型`）—— 选中的一项自带归属，
-    所以 `modelMismatch` / `modelOptionsFor` 那套"当场标黄"**已删**（缺陷在结构上不存在；规则搬到 Rust `LlmV4::problems()`，2026-11-27）；
-    推理档位按**本行生效模型**取（`levelsByModel`），别再全表共用当前接口那份 `caps.levels`。
+    所以 `modelMismatch` / `modelOptionsFor` 那套"当场标黄"**已删**（规则搬到 Rust `LlmV4::problems()`）；
+    **推理没有「跟随」这一档**：要么关、要么某个档，缺省 `off`（2026-11-27 用户口径）；
+    档位候选仍按**本行生效模型**取（`levelsByModel`），别全表共用当前接口那份 `caps.levels`。
 - 新控件带 `data-cap`；高级项用 `useDisclosure`/`<details>` 默认折叠，隐藏 ≠ 删除。
 
 ### 共享原语（`components/ui/`，v6）

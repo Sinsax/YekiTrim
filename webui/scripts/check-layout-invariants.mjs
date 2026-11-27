@@ -2,17 +2,17 @@
 //
 // 每一条都对应一次"构建通过、两条门禁全绿、而界面已经坏了"：
 //
-//  ①（L3 改写，2026-11-26 加「测试」列）**「按链路覆盖」是一张 8 列表格**
+//  ①（L3 改写；2026-11-27 砍到 **5 列**：链路/用哪支/温度/输出上限/推理 —— 测试与状态列已删）**「按链路覆盖」是一张 5 列表格**
 //     （链路/接口/模型/温度/输出上限/推理/测试/状态），
 //     且**窄屏横滚**（`min-width:640px`）而不是把格子压扁。
 //     历史：L3 之前它是 `.llm-cols` 两栏网格 —— 用户口径"各占 50%"，而两栏里并排的滑块会被压到
 //     **59px**（1280px 下只剩 41px，刻度根本看不见）。现在一列一义，滑条不再进表格格子，所以
 //     "两栏等宽 / 滑块跨满整行"这两条判据随结构一起退场，换成"表格列定义 + 横滚兜底"。
-//  ②（L3 改写）**未覆盖的格子先显示灰字、点开才可编辑**（"点一下才变成可编辑"是用户口径原文）。
+//  ②（2026-11-27 改口）**数字列直接是滑块 + 数字框**，"点开才可编辑"那套已删。
 //     静态判据：LlmLinkTable 里必须真有 `isEditing(...)` 分支 + `@click="open(...)"` 入口。
 //     没有它 = 一开始就是满屏输入框，"一眼看出哪条链路被改过"就不成立了。
 //  ③ `.ov-cols` 必须有**单栏态**（"只看一边"）：点那个按钮要真的只剩一栏占满整行。
-//  ④ `extra_params` 的 textarea `rows ≥ 10` —— 用户口径"高度翻2倍，不然根本看不清有什么内容"。
+//  ④ **模型行只留 id + 显示名**（额外参数/能力手填/档位 2026-11-27 全删）。
 //  ⑤ 模板里用到的**关键标识符必须在 `<script setup>` 里定义过**。Vue 对未定义变量**不报错**
 //     （渲染成 undefined）：`doctorProblem` 就是这么漏掉的 —— `:style="{ order: doctorProblem ? -1 : 99 }"`
 //     恒取 `99`，"运行状况"永远沉底，界面上看不出任何异常。
@@ -138,18 +138,18 @@ const RULES = [
     // ⚠️ 2026-11-26 加「测试」列：每行要能按**自己的**接口+模型验一次（只测默认模型不够）。
     // ⚠️ 2026-11-27 接口 + 模型合并成「用哪支」一列 ⇒ 8 列变 7 列；**接口列必须消失**
     //    （负向判据：它一回来就说明又分成两个下拉选了）。
-    label: '「按链路覆盖」是 7 列表格且窄屏横滚（接口与模型已合并成一列）',
-    why: '两栏网格里并排的滑块会被压到 59px（1280px 下 41px）——改表格后必须给 min-width，让它横滚而不是压扁',
+    label: '「按链路覆盖」是 5 列表格（用哪支/温度/输出上限/推理）且窄屏横滚',
+    why: '金额/参数挤在窄列里就不可读 —— 必须给 min-width 让它横滚而不是压扁',
     hit: (s) =>
       /class="lt-tbl"/.test(s)
-      && /min-width:\s*600px/.test(s)
+      && /min-width:\s*760px/.test(s)
       && /<th class="lt-c-link">链路<\/th>/.test(s)
       && /<th class="lt-c-model">用哪支<\/th>/.test(s)
       && /<th class="lt-c-reason">推理<\/th>/.test(s)
-      && /<th class="lt-c-test">测试<\/th>/.test(s)
-      && /<th class="lt-c-state">状态<\/th>/.test(s)
+      && !/lt-c-test/.test(s)
+      && !/lt-c-state/.test(s)
       && !/lt-c-prov/.test(s),
-    break: (s) => s.replace('min-width:600px', 'min-width:0')
+    break: (s) => s.replace('min-width:760px', 'min-width:0')
   },
   {
     // 2026-11-27：三个独立字段（provider / model / 链路）会被配成非法组合，
@@ -164,14 +164,15 @@ const RULES = [
   },
   {
     // L3：用户口径"点开才可编辑"—— 灰字态与编辑态必须是两条分支，且入口是 @click="open(...)"。
-    label: '链路表格的格子先灰字、点开才编辑',
-    why: '一开始就是满屏输入框 ⇒ "一眼看出哪条链路被改过"不成立（用户口径原文是"点开才可编辑"）',
+    label: '温度/输出上限是「滑块 + 数字框」，直接可改（不再点开才编辑）',
+    why: '用户 2026-11-27："链路部分凡是数字显示的设置都改为滑块+数字的方式"',
     hit: (s) =>
-      /function open\(/.test(s)
-      && /const isEditing = /.test(s)
-      && /@click="open\(/.test(s)
-      && /v-if="!isEditing\(/.test(s),
-    break: (s) => s.replace(/isEditing\(/g, 'editingX(')
+      /class="lt-sl"/.test(s)
+      && /type="range"/.test(s)
+      && /class="lt-num"/.test(s)
+      && !/function open\(/.test(s)
+      && !/isEditing\(/.test(s),
+    break: (s) => s.replaceAll('type="range"', 'type="hidden"')
   },
   {
     // 2026-10-06 用户口径变更：「未导出和已导出改成类似切片的那种筛选 tag，**所有切片都显示在一个区域内**」——
@@ -203,13 +204,14 @@ const RULES = [
   {
     // 2026-11-26：全局 extra_params 取消 ⇒ 编辑框搬进「每个模型」的展开区（LlmModelList）。
     // 用户原口径仍是"太矮就根本看不清有什么内容"，这里钉模型级那个 JSON 框的高度。
-    label: '模型级 extra_params 的编辑框 rows ≥ 6（能看清内容）',
-    why: '逃逸口只按模型存在（用户口径）；JSON 正文太矮等于看不清，改回 3 行就该翻面',
-    hit: (s) => {
-      const m = s.match(/class="mono ml-extra"[^>]*rows="(\d+)"/s)
-      return m ? Number(m[1]) >= 6 : false
-    },
-    break: (s) => s.replace('class="mono ml-extra" rows="6"', 'class="mono ml-extra" rows="3"')
+    label: '模型行只留 id + 显示名（额外参数 / 能力手填 / 档位已删）',
+    why: '用户 2026-11-27："模型配置还是只保留基础的配置吧，因为很多参数都在链路那边有了"',
+    hit: (s) =>
+      /class="ml-input"/.test(s)
+      && !/ml-extra/.test(s)
+      && !/catalog:\s*m\.caps/.test(s)
+      && !/LEVEL_VOCAB/.test(s),
+    break: (s) => s + '\n<textarea class="mono ml-extra" rows="6"></textarea>\n'
   },
   {
     label: 'ModelList 的下载按钮按 canDownload 门控（下载是 admin-only）',
@@ -2380,7 +2382,7 @@ console.log('\n㉚ 切片总览搜索（按需拉取 + 弹幕正文可读化）'
     check('㊷ [变异] 模型清单标记消失 ⇒ 顺序判据翻面',
       b1 >= 0 && badOrder.indexOf('<LlmModelList', b1 < 0 ? 0 : b1) > b1, false)
     // 变异②：catalog 换回 m.caps ⇒ 第二条翻面（这正是用户踩的那次）。
-    const badCat = list.replace('catalog: null,', 'catalog: m.caps,')
+    const badCat = list + '\ncatalog: m.caps,\n'
     check('㊷ [变异] catalog 换回 m.caps ⇒ 形状判据翻面', /catalog:\s*m\.caps/.test(badCat), true)
   }
 }

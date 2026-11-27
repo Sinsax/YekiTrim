@@ -229,8 +229,7 @@
            没触发自动保存时是「保存」按钮；一旦进了自动保存流程就换成状态文字，不可按。
            ⚠️ 常驻保存条（data-llm-savebar）已删除：它每天挡一行，而"存没存"一个点就说清了。 -->
       <span class="llm-saveslot" data-llm-saveslot>
-        <span v-if="modelExtraInvalid.length" class="llm-slot-err" :title="modelExtraInvalidTitle">额外参数 JSON 有误</span>
-        <button v-else-if="llmSaveError || autoSave.state === 'err'" type="button" class="llm-slot-btn err"
+        <button v-if="llmSaveError || autoSave.state === 'err'" type="button" class="llm-slot-btn err"
                 :title="llmSaveError || autoSave.error" @click="saveLlm()">保存失败 · 重试</button>
         <span v-else-if="llmSaving || promptSaving || autoSave.state === 'saving'" class="llm-slot-txt">
           <i class="dot busy"></i>自动保存中…</span>
@@ -244,9 +243,8 @@
     </div>
 
     <!-- ═══ LLM 配置：两个子页（2026-11-26 用户口径：模型配置 / 链路配置 分开）═══
-         模型配置 = **左右结构**（左：接口清单 + 新建；右：该接口的连接信息 + 它的模型清单 + 取候选/添加）
-                     （额外请求参数**按模型**，在模型行的展开区里改；没有全局那份）
-         链路配置 = **哪个任务用哪支（链路表，第一屏）** + 默认参数 + 检测评分权重 + 提示词。
+         模型配置 = **左右结构**（左：接口清单 + 新建；右：该接口的连接信息 + 它的模型清单）
+         链路配置 = **哪个任务用哪支（链路表，第一屏）** + 检测评分权重 + 提示词。
          ⚠️ 「保存 LLM」只写 llm.toml；⑤ 提示词有**自己的**保存按钮（它写 [llm.links.detect.prompt]）。
          ⚠️ 两枚按钮共用页头的 sticky 保存条，但**各自有基线**（baseLlm / basePrompts）——
             「保存 LLM」会重读整份配置，必须先捞出提示词草稿再放回，否则会静默回滚。 -->
@@ -260,6 +258,12 @@
 
     <!-- ── 子页一：模型配置 ─────────────────────────────────────────── -->
     <template v-if="llmTab === 'models'">
+
+    <!-- 并发数：检测 / 精修 / 订正共用**一个旋钮**（用户 2026-11-27：从"默认参数"里挪到这一页顶部一行） -->
+    <div class="card llm-conc">
+      <SliderField v-model="form.llm.max_concurrent" label="并发请求数"
+                   :min="1" :max="32" :step="1" hint="对所有任务生效；调高更快，但更容易撞限流" />
+    </div>
 
     <!-- 左右列表（2026-11-27 用户口径）：左 = 接口清单，右 = **接口设置（上）+ 模型清单（下）**。
          接口设置 2026-11-27 再改：**回到正文**、就在模型列表上面（用户："放在模型列表的上面那里"），不再走弹窗。 -->
@@ -296,7 +300,7 @@
           <div class="card" data-cap="settings.llm-models">
             <LlmModelList :models="form.llm.models" :provider-id="editingProviderId"
                           :base-url="effBaseUrl" :api-key="curApiKeyDraft"
-                          :dialects="dialects" @probe="onProbeCaps" />
+                          @probe="onProbeCaps" />
           </div>
         </template>
 
@@ -314,31 +318,17 @@
     <!-- ── 子页二：链路配置 ─────────────────────────────────────────── -->
     <template v-else>
 
-    <!-- ③ 按链路覆盖：行 = 链路，列 = 接口/模型/温度/输出上限/推理/状态。
-         ⚠️ 顺序：**它必须在第一屏**（2026-11-26）—— 这一页 90% 的动作用在这里（哪个任务用哪支），
-         而「默认参数」是"没人改就一直不用管"的那一档；把它摆在前面的结果是核心动作被推到第二屏。 -->
+    <!-- ③ 按链路覆盖：行 = 链路，列 = 用哪支 / 温度 / 输出上限 / 推理。
+         ⚠️ **必须在第一屏**：这一页 90% 的动作用在这里（哪个任务用哪支）。 -->
     <div class="card">
       <div class="form-section-title">哪个任务用哪支
-        <span class="t-sub">点一格才可编辑；没覆盖的格子按上面的「当前接口」走</span></div>
+        <span class="t-sub">没单独指定的按「当前接口」走</span></div>
       <LlmLinkTable :links="llmLinks" :rows="form.llm.links" :effective="effective"
                     :providers="form.llm.providers" :model-options="allModelOptions"
                     :probe-models="form.llm.probeModels"
-                    :active-id="form.llm.active" :levels="linkLevels" :levels-by-model="levelsByModel"
-                    @pick-model="onPickModel" />
+                    :active-id="form.llm.active" :levels="linkLevels" :levels-by-model="levelsByModel" />
       <div v-if="effectiveError" class="muted small mt-4 caps-err" :title="effectiveError">
         生效值读取失败（灰字留空）—— 覆盖功能仍然可用
-      </div>
-    </div>
-
-    <!-- ② 默认参数：所有链路的基准（并发数也在这里，它是批处理速度的第一杠杆） -->
-    <div class="card">
-      <div class="form-section-title">默认参数<span class="t-sub">上面没单独覆盖的单元格就用这里；一处改动对所有任务生效</span></div>
-      <div class="form-grid">
-        <LlmParamFields class="span-all" :caps="caps" :target="form.llm.defaults" id-prefix="llm-def"
-                        :fields="['temperature', 'max_tokens', 'reasoning', 'json_mode']"
-                        :json-mode="jsonModeOn" @update:jsonMode="setJsonMode" />
-        <SliderField v-model="form.llm.max_concurrent" class="span-2" label="并发请求数"
-                     :min="1" :max="32" :step="1" hint="对所有任务生效；调高更快，但更容易撞限流" />
       </div>
     </div>
 
@@ -486,7 +476,6 @@ import LlmProviderList from '../components/llm/LlmProviderList.vue'
 import LlmEndpointCard from '../components/llm/LlmEndpointCard.vue'
 import LlmLinkTable from '../components/llm/LlmLinkTable.vue'
 import LlmModelList from '../components/llm/LlmModelList.vue'
-import LlmParamFields from '../components/llm/LlmParamFields.vue'
 import InviteManager from '../components/InviteManager.vue'
 import UserQuotaManager from '../components/UserQuotaManager.vue'
 import RecorderConfig from '../components/RecorderConfig.vue'
@@ -985,8 +974,6 @@ function buildGlobalPatch() {
  *  两处，否则界面显示与实际请求不一致。v4 之后 json_mode 就是一等的 bool 键，**不用再改 extra_params**
  *  —— 反过来：模型级 extra_params 里若还手写着 response_format，保存时会被已知键冲突判据拒绝（extra.js）。
  */
-const jsonModeOn = computed(() => form.llm.defaults.json_mode === true)
-function setJsonMode(on) { form.llm.defaults.json_mode = !!on }
 
 /**
  * 参数面**只发改过的键**：patch 是合并语义，没改的不发 ⇒ 后端保留原值与注释。
@@ -1376,13 +1363,6 @@ function llmStateJSON() {
 /** 换接口就丢掉上一份的候选（否则 A 家探到的模型会被当成 B 家的候选） */
 watch(() => form.llm.active, () => { form.llm.probeModels = [] })
 const llmDirty = computed(() => loaded.value && llmStateJSON() !== baseLlm.value)
-/** 哪些模型的「额外参数」不是合法 JSON（非空 ⇒ 不许保存：宁可这次不落盘，也别把坏值写进 llm.toml） */
-const modelExtraInvalid = computed(() => (form.llm.models || [])
-  .filter((m) => m && m._extraErr)
-  .map((m) => String(m.id || '(未命名)')))
-const modelExtraInvalidTitle = computed(() => modelExtraInvalid.value.length
-  ? '这些模型的「额外参数」不是合法 JSON：' + modelExtraInvalid.value.join(' / ')
-  : '')
 const promptDirty = computed(() => loaded.value && promptStateJSON() !== basePrompts.value)
 /** 保存条上的一句话（≤20 字）；细节进 title */
 const llmDirtyText = computed(() => {
@@ -1475,11 +1455,6 @@ async function runAutoSave() {
     autoSave.error = '服务端版本过旧，已暂停自动保存'
     return
   }
-  if (modelExtraInvalid.value.length) {
-    autoSave.state = 'err'
-    autoSave.error = modelExtraInvalidTitle.value
-    return
-  }
   const jobs = []
   if (props.section === 'llm') {
     if (promptDirty.value) jobs.push(() => savePrompts({ quiet: true, auto: true }))
@@ -1513,11 +1488,6 @@ watch([llmDirty, promptDirty, globalDirty], () => {
   if (!loaded.value) return
   if (!llmDirty.value && !promptDirty.value && !globalDirty.value) {
     if (autoSave.state !== 'ok') autoSave.state = 'idle'
-    return
-  }
-  if (modelExtraInvalid.value.length) {
-    autoSave.state = 'err'
-    autoSave.error = modelExtraInvalidTitle.value
     return
   }
   scheduleAutoSave()
@@ -1670,12 +1640,6 @@ async function saveLlm(opts = {}) {
   if (llmSaving.value) return { ok: false, error: '正在保存' }
   if (llmLegacyBackend.value) {
     const msg = '服务端版本过旧（llm 配置还是旧形状），已阻止保存 —— 请重启/重新构建服务端'
-    llmSaveError.value = '保存失败：' + msg
-    if (!quiet) toast(msg, 'err')
-    return { ok: false, error: msg }
-  }
-  if (modelExtraInvalid.value.length) {
-    const msg = '这些模型的「额外参数」不是合法 JSON：' + modelExtraInvalid.value.join(' / ')
     llmSaveError.value = '保存失败：' + msg
     if (!quiet) toast(msg, 'err')
     return { ok: false, error: msg }
