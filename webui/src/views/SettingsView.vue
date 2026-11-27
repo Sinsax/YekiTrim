@@ -9,11 +9,18 @@
 
     <div class="settings-wrap">
       <nav class="settings-nav" aria-label="设置分区">
-        <router-link v-for="s in visibleSections" :key="s.key" :to="{ name: 'settings-' + s.key }"
-                     class="settings-nav-item" :class="{ on: s.key === section }">
-          <b>{{ s.label }}</b>
-          <span>{{ s.sub }}</span>
-        </router-link>
+        <template v-for="s in visibleSections" :key="s.key">
+          <router-link :to="{ name: 'settings-' + s.key }"
+                       class="settings-nav-item" :class="{ on: s.key === section }">
+            <b>{{ s.label }}</b>
+            <span>{{ s.sub }}</span>
+          </router-link>
+          <!-- 二级选择（2026-11-27 用户口径）：LLM 配置自己的两页挂在它下面，不再用页内 tab -->
+          <div v-if="s.key === 'llm' && section === 'llm'" class="settings-subnav">
+            <button v-for="t in LLM_TABS" :key="t.key" type="button" class="settings-subnav-item"
+                    :class="{ on: llmTab === t.key }" @click="setLlmTab(t.key)">{{ t.label }}</button>
+          </div>
+        </template>
       </nav>
       <div class="settings-body">
 
@@ -247,6 +254,9 @@
          ⚠️ 「保存 LLM」只写 llm.toml；⑤ 提示词有**自己的**保存按钮（它写 [llm.links.detect.prompt]）。
          ⚠️ 两枚按钮共用页头的 sticky 保存条，但**各自有基线**（baseLlm / basePrompts）——
             「保存 LLM」会重读整份配置，必须先捞出提示词草稿再放回，否则会静默回滚。 -->
+    <!-- ── 子页一：模型配置（地址/密钥/模型清单）── -->
+    <template v-if="llmTab === 'models'">
+
     <!-- 左右列表（2026-11-27 用户口径）：左 = 接口清单，右 = **接口设置（上）+ 模型清单（下）**。
          接口设置 2026-11-27 再改：**回到正文**、就在模型列表上面（用户："放在模型列表的上面那里"），不再走弹窗。 -->
     <div class="llm-split">
@@ -290,6 +300,11 @@
         </div>
       </div>
     </div>
+
+    </template>
+
+    <!-- ── 子页二：链路配置（哪个任务用哪支 / 运行设置 / 提示词）── -->
+    <template v-else>
 
     <!-- ③ 按链路覆盖：行 = 链路，列 = 用哪支 / 温度 / 输出上限 / 推理。
          ⚠️ **必须在第一屏**：这一页 90% 的动作用在这里（哪个任务用哪支）。 -->
@@ -355,6 +370,7 @@
         </div>
       </div>
     </details>
+    </template>
     </div>
     </template>
 
@@ -632,6 +648,30 @@ const LLM_LINK_INIT = {
   title: { temperature: 0.8, max_tokens: 4096 },
   utility: { temperature: 0.7, max_tokens: 8192 }
 }
+/** LLM 配置的两页（2026-11-27 第八版）：导航在**左侧二级**，不是页内 tab */
+const LLM_TABS = [
+  { key: 'models', label: '模型配置' },
+  { key: 'links', label: '链路配置' }
+]
+const llmTab = ref('models')
+function setLlmTab(key) { llmTab.value = key === 'links' ? 'links' : 'models' }
+/**
+ * 「模型配置做完了没有」：有接口 + 有模型 + **当前使用的那份接口有 key**。
+ * 落地规则（用户 2026-11-27）：没做完 ⇒ 模型配置；做完了 ⇒ 链路配置。
+ */
+const llmConfigured = computed(() => {
+  const ps = (form.llm && form.llm.providers) || []
+  const ms = (form.llm && form.llm.models) || []
+  if (!ps.length || !ms.length) return false
+  const active = ps.find((p) => p.id === (form.llm && form.llm.active)) || ps[0]
+  return !!active && keySetOf(active)
+})
+/** 每次**进这一页**都按当时的配置状态落地（不做记忆：配置状态变了就该换页） */
+watch(() => [props.section, loaded.value], ([sec, ld]) => {
+  if (sec !== 'llm' || !ld) return
+  llmTab.value = llmConfigured.value ? 'links' : 'models'
+})
+
 /** 一条链路该有的初始参数（认不出的链路给中档） */
 function linkInit(key) {
   return LLM_LINK_INIT[key] || { temperature: 0.7, max_tokens: 8192 }
@@ -1680,6 +1720,13 @@ onMounted(async () => {
 .settings-nav-item:hover { background:var(--surface-2); color:var(--ink); }
 .settings-nav-item.on { background:var(--main-soft); border-color:var(--main-glow); }
 .settings-nav-item.on b { color:var(--pink-text); font-weight:var(--fw-semi); }
+/* 二级：LLM 配置的两页（挂在它自己的导航项下面，缩进 + 一条竖线） */
+.settings-subnav { display:flex; flex-direction:column; gap:1px; margin:0 0 4px 12px;
+  padding-left:8px; border-left:1px solid var(--line); }
+.settings-subnav-item { text-align:left; font-size:var(--fs-sm); color:var(--ink-faint);
+  background:none; border:0; padding:5px 8px; border-radius:var(--r-sm); cursor:pointer; }
+.settings-subnav-item:hover { background:var(--surface-2); color:var(--ink); }
+.settings-subnav-item.on { background:var(--main-soft); color:var(--pink-text); font-weight:var(--fw-semi); }
 .settings-body { min-width:0; }
 @media (max-width:1000px) {
   .settings-wrap { grid-template-columns:1fr; gap:var(--s-3); }
@@ -1687,6 +1734,8 @@ onMounted(async () => {
   .settings-nav::-webkit-scrollbar { display:none; }
   .settings-nav-item { flex:none; white-space:nowrap; }
   .settings-nav-item span { display:none; }
+  .settings-subnav { flex-direction:row; margin:0; padding-left:0; border-left:0; }
+  .settings-subnav-item { flex:none; white-space:nowrap; }
 }
 /* 标签条下面紧接第一个区块标题：section-title 自带 20px 上边距，这里已经翻到新的一页了 */
 .tabs { margin-bottom: 10px; }

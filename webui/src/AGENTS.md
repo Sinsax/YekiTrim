@@ -102,10 +102,10 @@ Vue3 工作台的全部前端：壳 + 面包屑、hash 路由、首页 `#/workbe
   `account`/`monitor` 已并入 `system`（redirect）。
 - ⚠ `/settings` redirect 到 `config`；`meta.admin` 与高亮挂在每条子路由上，别写回 `route.name === 'settings'`。
   四块内容同一个 `SettingsView.vue`（`v-if` 切），`LogConsole` 只在 `system` 挂。
-- ⚠️ `LLM 配置`页（2026-11-27 第七版起是**一页**，没有子页 tab）：**模型在上、链路在下**。
-  上 = 左右列表（左 `LlmProviderList` 接口清单 / 右 `LlmEndpointCard` 连接卡 + `LlmModelList` 模型清单）；
-  中 = 链路表（5 列，数字是滑块 + 数字框）；下 = 运行设置（并发 + 评分权重**同一行**）+ 提示词（自己的保存按钮）。
-  ⚠️ 每条链路的参数在**载入时补初始值**（`LLM_LINK_INIT`，拍基线之前 ⇒ 不会因此变脏）；「默认参数」块与 json_mode 勾选已删。
+- ⚠️ `LLM 配置`页分成**两页**（2026-11-27 第八版：**导航在左侧二级**，不是页内 tab）：
+  **模型配置**（左 `LlmProviderList` / 右 `LlmEndpointCard` + `LlmModelList`）与**链路配置**（链路表 / 运行设置 / 提示词）。
+  落地规则：`llmConfigured`（有接口 + 有模型 + 当前接口有 key）为假 ⇒ 模型配置，为真 ⇒ 链路配置；**每次进这页都按当时状态判一次**。
+  链路参数载入时补初始值（`LLM_LINK_INIT`，拍基线之前 ⇒ 不变脏）。
 - 设置页数值项走 `components/SliderField.vue`：手填的值只夹 `[min, max]`、**不吸附 step**，**清空/非数字
   不写模型**；数字框在**标签行右端**（`.lbl-row`/`.rv`）；滑块宽度 = 所在格子的 **1/3**（`.slf-range`
   `flex:0 0 33.333%`）；窄格由 **`@container`** 处理，**别改成媒体查询**。
