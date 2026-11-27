@@ -701,6 +701,9 @@ async function loadRecordings() {
   try {
     const d = await api(`/api/recorder/recordings?room_id=${encodeURIComponent(recSelected.value.id)}`)
     recRecordings.value = d?.recordings || []
+    // 目录不可用时服务端回 `available:false` + 原因（200，不是 500）：照实显示，
+    // 别让它渲染成「这个房间还没有录像」——跨机报障时那是最误导人的一句。
+    if (d?.available === false) recRecError.value = d?.error || '录像目录暂不可用'
   } catch (e) {
     recRecError.value = '录像读取失败：' + (e?.message || '')
   } finally {

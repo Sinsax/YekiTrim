@@ -9,6 +9,10 @@
         </button>
       </template>
     </UiPageHeader>
+    <!-- 上次兜底扫描的结果：失败时必须能看到原因（跨机最常见：共享不可读 / 填了对方机器上的路径） -->
+    <div v-if="isAdmin && scanText" class="scan-line" :class="{ bad: scanStatus && scanStatus.ok === false }">
+      {{ scanText }}
+    </div>
 
     <!-- ⚠️ 只在**真的问了并且答否**（`=== false`）时显示：`null` = 还没问到。
          以前写成 `!ready`，直接打开 #/ingest 会先闪一句"未接入"（其实只是还没问）。 -->
@@ -143,6 +147,15 @@ const assignTo = reactive({})
 const users = ref([])
 const saving = ref(false)
 const scanning = ref(false)
+/** 最近一次兜底扫描（`/api/admin/ingest` 的 `scan`；admin-only 接口，读缓存不触发探测） */
+const scanStatus = ref(null)
+const scanText = computed(() => {
+  const s = scanStatus.value
+  if (!s) return ''
+  const when = s.at ? new Date(s.at * 1000).toLocaleString() : ''
+  if (s.ok) return `上次扫描：${when} · 新登记 ${s.registered} 个`
+  return `上次扫描失败（${when}）：${s.error || '未知原因'}${s.hint ? ' —— ' + s.hint : ''}`
+})
 const hint = ref('')
 const error = computed(() => ingestState.error)
 
@@ -151,6 +164,15 @@ async function load() {
   await loadRecords(scope)
   await loadRules()
   draft.value = ingestState.rules.map(r => ({ ...r }))
+  // 扫描状态（admin-only）：失败原因要留在页面上，别只在 toast 里闪一下
+  if (isAdmin.value) {
+    try {
+      const d = await ingestApi.config()
+      scanStatus.value = d?.scan || null
+    } catch {
+      scanStatus.value = null
+    }
+  }
   // 「指派给…」的候选账号：管理员走 `/api/admin/users` 全量（只回展示字段，不含口令）；
   // 普通管理员也至少能指派给自己。失败只退回自己（`api()` 已留痕，不弹错）。
   if (isAdmin.value && multiUser) {
@@ -250,4 +272,7 @@ onMounted(async () => {
 .rules td { vertical-align:middle; }
 .rules input:not([type="checkbox"]) { min-width:120px; }
 .rules td:last-child { width:1%; white-space:nowrap; }
+/* 上次扫描：成功一行灰字，失败要能看见原因 */
+.scan-line { font-size:12.5px; color:var(--ink-dim); margin:-4px 0 12px; }
+.scan-line.bad { color:var(--pink-text); }
 </style>

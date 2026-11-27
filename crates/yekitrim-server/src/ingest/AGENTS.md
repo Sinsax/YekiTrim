@@ -45,6 +45,13 @@
 - ⚠️ **采集配置视图只回 `api_pass_set` 布尔**，绝不回 `api_pass` / `token_hash`；审计只记**键名**（值里可能有口令）。
 - ⚠️ `build_ingest_patch` 是 `patch_config_file` 的 PATCH 语义（**键缺席 = 不改 / 空串空数组 = 清空**）的唯一实现，
   别在别处再写一份判断 —— 拆成两处就有一边会把「没写这个键」当成「清空」。
+- ⚠️ **录播入库是「原地建项目」**（2026-11-27 用户口径）：项目与 `output/` 建在**录像所在目录**，
+  源文件**不搬、不复制、不删**。跨机时那个目录由用户自己映射（SMB/UNC），YekiTrim 只做
+  **连接 + 目录校验**。别再往这条链路里加 `copy` / `rename` / `remove_file(src)`。
+- ⚠️ **目录校验只有一份** `yekitrim_service::recorder::probe_recorder_root`（判「填了对方机器的 /rec」
+  「盘符映射」「不可写」）。缓存走 `ingest::root_probe_cached`（TTL 60s）：
+  **`GET /api/admin/ingest` 绝不现场探测**（死 UNC 的 `metadata` 能挂几十秒）；只有
+  「测试连接 / 保存配置」两条显式路径会真探测（`spawn_blocking` + 8s 超时）。
 - ⚠️ **子模块里的 `super::` 是 `crate::ingest`，不是 crate 根**（与 `api/` 同一条坑）：跨层的写成
   `crate::auth` / `crate::model`；**跨同级模块的项一律 `pub(super)`**（结构体的**字段**也要，
   否则「字段 private」只在另一个文件里报），被两个以上子模块用到的 helper 放 `mod.rs`。

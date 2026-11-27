@@ -51,6 +51,32 @@ docker run -d --name bililive-recorder \
   （token 用 `yekitrim ingest token` 生成，明文只显示一次）。
 - 只想单机用、懒得装 Docker：用**桌面版**（Windows 双击即用），API/端口/webhook 配置项一致。
 
+### 2.1 跨机部署（录播机 Linux / YekiTrim Windows）
+
+录播姬的 Web API **只有房间 / 配置 / 版本**，没有文件下载端点 ⇒ 录像只能靠"文件系统"到达
+YekiTrim。所以跨机的做法是**用户自己把目录映射成 Windows 能打开的共享**，YekiTrim 只做
+**连接 + 目录校验**：不传输、不复制、不搬运，项目与 `output/` 直接写在那份共享目录里。
+
+1. 录播机（Linux）用 Samba 导出录像目录：
+
+   ```ini
+   [rec]
+   path = /srv/rec
+   valid users = yekitrim
+   read only = no          # 必须可写：项目与 output/ 建在这个目录里
+   create mask = 0664
+   directory mask = 0775
+   ```
+
+2. Windows 侧**不要用映射盘符**（`Z:` 只对当前登录会话有效，服务 / 托盘进程常常看不到），
+   直接填 UNC：`[ingest.recorder] root = "\\<录播机IP>\rec"`。
+3. 凭据存到**运行 YekiTrim 的那个账号**下：
+   `cmdkey /add:<录播机IP> /user:yekitrim /pass:<口令>`；先用资源管理器或 `dir \\<录播机IP>\rec` 验一次。
+4. 设置页「测试连接」分开报两件事：**接口**（版本 / 房间数）与 **录像目录**（可读写 / 条目数 /
+   失败原因 + 一句可照做的提示）。填了 `/rec`（对方机器上的路径）或盘符时它会直接点名。
+5. 入库语义：`yekitrim.toml` 与 `output/` 写在**录像所在目录**，源文件**不搬不删**；
+   多分片场次会在同目录合并出 `source.mp4`（唯一会新增字节的地方）。
+
 ## 3. 录播姬的 REST API（来自其源码 `BililiveRecorder.Web/Api/RoomController.cs`）
 
 | 方法 | 路径 | 用途 |

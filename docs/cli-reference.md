@@ -73,7 +73,7 @@ LLM 订正转录文本。
 
 - 自动发现优先级：`--transcript` > `yekitrim.toml` 的 `transcript_file` > `<output_dir>/transcript.json`。
 - 输出 `<output_dir>/video_llm.srt`，并把 `transcript_file` 改指向这份订正稿。
-- 需要 `.yekitrim/llm.toml` 已配置 API key。**无状态机约束**，可独立运行。
+- 需要 `users/<uid>/llm.toml` 已配置 API key。**无状态机约束**，可独立运行。
 
 ### `yekitrim detect`
 
@@ -128,9 +128,9 @@ Stage 4 — 按事件片段剪切视频 + 生成字幕。
 
 ### `yekitrim download`
 
-下载全部 ASR 模型到 `<数据目录>/.yekitrim/models/<model>/`：`sensevoice`（~165 MB，single 模式 + hybrid 打轴）、`qwen3-asr`（~879 MB，hybrid 填词）。转写时按 `[asr] model` / `[asr] mode` 自动懒加载，缺失才提示下载。
+下载全部 ASR 模型到 `<data>/models/<model>/`：`sensevoice`（~165 MB，single 模式 + hybrid 打轴）、`qwen3-asr`（~879 MB，hybrid 填词）。转写时按 `[asr] model` / `[asr] mode` 自动懒加载，缺失才提示下载。
 
-运行时找模型只有两档：**配置 `local_model_dir` → `<数据目录>/.yekitrim/models`**（默认数据目录 = exe 同级；模型管理页显示的就是实际用到的那一份）。
+运行时找模型只有两档：**配置 `local_model_dir` → `<data>/models`**（默认数据根 = exe 同级 `data/`；模型管理页显示的就是实际用到的那一份）。
 
 ### `yekitrim status`
 
@@ -172,7 +172,7 @@ Stage 4 — 按事件片段剪切视频 + 生成字幕。
 | 子命令 | 作用 |
 |---|---|
 | `init [<dir>]` | 初始化精修项目：创建 `config.toml` + `llm.toml` + `data/` + `sfx/`，自动解析素材 |
-| `llm [<dir>]` | LLM 分析生成 segments 与关键词（用 `.yekitrim/llm.toml`） |
+| `llm [<dir>]` | LLM 分析生成 segments 与关键词（用 `users/<uid>/llm.toml`） |
 | `process [<dir>]` | 后处理：解析 emoji / irasu keyword、下载资源、计算位置 |
 | `render [<dir>]` | 渲染视频，自动先跑 `process`（详见下一节） |
 | `cover [<dir>]` | 生成封面（详见下一节） |
@@ -206,7 +206,7 @@ Stage 4 — 按事件片段剪切视频 + 生成字幕。
 | `scan [--llm]` | 扫描本地贴纸目录，生成 / 更新 `stickers.json` 清单；`--llm` 用 LLM 批量生成英文 tags |
 | `build <package>` | 预处理贴纸包，生成 `<包名>.toml` 候选 tags 清单 |
 
-- 贴纸库按 owner 分：单人 / 托盘形态就在 `<数据目录>/users/<uid>/resources/stickers/`。
+- 贴纸库按 owner 分：单人 / 托盘形态就在 `<data>/users/<uid>/stickers/`。
 - ⚠️ `scan --llm` 没配 LLM key 会**报错**（用户明确要了 `--llm`，静默留空等于"看起来成功、实际没做"）。
 - 内建 emoji 分类**没有 CLI 面**（分类是程序资产，不给用户重建 / 更改），别去找对应的子命令。
 
@@ -225,7 +225,7 @@ Stage 4 — 按事件片段剪切视频 + 生成字幕。
 | `--webui-dir <dir>` | 按构建形态 | 覆盖 WebUI 静态资源目录（等价 `YEKITRIM_WEBUI_DIR`，命令行优先） |
 | `--allow-remote` | 关 | 允许监听非 loopback 地址 |
 | `--trust-proxy` | 关 | 采信反代转发的 `X-Forwarded-For` / `X-Forwarded-Proto` |
-| `--data-dir <dir>` | `<exe_dir>/.yekitrim/cloud` | 账号账本 / 会话 / 初始密码文件所在目录（也可用 `YEKITRIM_DATA_DIR`） |
+| `--data-dir <dir>` | `<exe>/data` | **数据根**（账本在 `<data>/ledger/`、日志在 `<data>/logs/`）；也可用 `YEKITRIM_DATA_DIR` |
 | `--admin-password-file <file>` | 无 | 无人值守部署：用该文件里的密码作为初始管理员密码（不进进程列表） |
 | `--local-no-auth` | 关 | 本地免登录，**仅 loopback**（托盘那条路） |
 | `--force` | 关 | 接管残留的 `yekitrim.lock`（确认上一个实例已崩溃时用） |
@@ -261,11 +261,11 @@ Stage 4 — 按事件片段剪切视频 + 生成字幕。
 
 ```toml
 [storage]
-projects_root = "D:/yekitrim-projects"        # 项目托管目录 = 下载/入库的共同落点（默认 <exe_dir>/.yekitrim/projects）
+projects_root = "D:/yekitrim-projects"        # 项目托管目录（默认 <data>/projects）
 local_roots = ["F:/media", "D:/BililiveRecorder"]   # 可选：快捷入口
 ```
 
-- **B站下载、录播姬入库、本机导入落的是同一个根**：`<projects_root>/users/<uid>/<房间或 BV 号>/<时间戳>-<pid>/`（没有单独的"下载目录"）。这一项也能在设置页「B站链接下载 → 项目存放位置」里改，改动**只影响新建项目**，已有项目仍在原位置，且改完立即生效、不用重启。
+- **哪些入口会落到这个根**：**只有** B 站链接下载（总是）。本机「选目录」不落这里（用你选的目录，仅管理员）；**录播入库不落这里** —— 2026-11-27 起项目与 `output/` 就建在**录像所在目录**（不搬源文件，所以那个目录必须可写）。目标形状：`<projects_root>/users/<uid>/<BV 号>/<时间戳>-<pid>/`（没有单独的"下载目录"）。这一项也能在设置页「B站链接下载 → 项目存放位置」里改，改动**只影响新建项目**，已有项目仍在原位置，且改完立即生效、不用重启。
 - 目标目录里**已有 `yekitrim.toml`** 时只登记 / 打开，**不会覆盖**（保护手改过的工程设置）。
 - 普通用户**只能用**自己的 `<projects_root>/users/<uid>`；`/api/fs/list` 与 `kind="local"` 对非管理员一律 **403**。仍然只读服务器已有文件：**永不接受上传**。
 
@@ -309,11 +309,13 @@ allow_ips = ["127.0.0.1"]        # 可选来源白名单（同机部署建议只
 
 [ingest.recorder]
 kind = "bililive"                # bililive(录播姬) | bililive-tools | none(关闭)；其它值一律按录播姬
-root = "D:/BililiveRecorder"     # 录播姬输出目录（与 server 同机或同可读盘）
+# 录像目录：**服务进程自己能打开**的路径；项目与 output/ 就建在这里（需要可读写）。
+# 同机 = 本地路径；跨机 = Windows 上用 UNC 共享地址，如 root = "\\\\192.168.1.20\\rec"
+root = "D:/BililiveRecorder"
 watch_interval_mins = 10         # 兜底扫描间隔（0=关闭）：漏推送/重启/历史录播导入
 finalize_idle_mins = 5           # SessionEnded 后多久没有新文件就认为本场结束
-move_into_managed = true         # 移入托管项目目录（同盘 rename，跨盘 copy+校验+删源）
-concat_files = true              # 多分片合并为 source.mp4（原始分片保留）
+# 注：`move_into_managed` 已于 2026-11-27 退场（录播入库恒为原地建项目，不搬源文件）
+concat_files = true              # 多分片合并为 source.mp4（原始分片保留；唯一会新增字节的地方）
 extensions = ["flv", "mkv", "mp4", "ts"]
 auto_pipeline = "detect"         # none | transcribe | detect | cut（房间映射可覆盖）
 ```
@@ -338,7 +340,7 @@ http://<本机IP>:26320/api/ingest/bililive/<token>
 | `show` | 显示合并后的完整配置（`yekitrim.toml` + 程序配置） |
 | `migrate [路径…]` | 把已下线的键从配置文件里**真清掉并写回** |
 
-- ⚠️ `config init` 不带 `--path` 时写的是**程序级全局配置** `global_config_path()` = `<数据目录>/users/<uid>/.yekitrim/config.toml`，**不是**项目 `./yekitrim.toml`（`--help` 里那句"默认 ./yekitrim.toml"是旧文案，以本条为准；`--path` 可改）。同目录的 `llm.toml` 一起生成，顺带建好贴纸库 / 字体库并装好自带字体。
+- ⚠️ `config init` 不带 `--path` 时写的是**程序级全局配置** `global_config_path()` = `<data>/users/<uid>/config.toml`，**不是**项目 `./yekitrim.toml`（`--help` 里那句"默认 ./yekitrim.toml"是旧文案，以本条为准；`--path` 可改）。同目录的 `llm.toml` 一起生成，并建好账号字体库 / 装好自带字体（贴纸/视频库按需创建）。
 - `migrate` 不给路径 = 只处理**程序级**那两个（`config.toml` / `llm.toml`）；给目录 → 认该目录的 `yekitrim.toml` / `polish.toml`；给文件 → 只处理该文件。清之前每个文件都留 `.bak-v<旧版本>`（原样回退的唯一手段）；文件不存在打印"跳过"；**有任一文件失败就非零退出**。
 - ⚠️ 为什么需要 `migrate`：工程级配置（`yekitrim.toml` / `polish.toml`）按设计**只在内存里升、不写回磁盘**（工程可能几百个、还可能在网络盘上），那几个已下线的键会永远留在文件里、每次读都重新发现它；这条命令是"按一下就真的清掉"的出口。
 - `yekitrim server` 首次启动时若发现程序配置缺失，会自动补齐这两个文件（**只创建缺失的**，已存在的不会被覆盖）；已存在的文件 TOML 语法错误（整份配置都会被忽略）时会先备份为 `config.toml.broken` 再重建，并在启动日志里给出原因。
@@ -352,7 +354,7 @@ http://<本机IP>:26320/api/ingest/bililive/<token>
 | `list` | 列出字体库：id / **内部族名** / 显示名 / 体积 / 标签（自带 · 默认 · emoji · 未安装） |
 | `install [--id <id>]` | 装上**自带字体**（把内嵌字节写进字体库；幂等、不联网；`--id` 只装某一支） |
 
-- 字体库是**程序级资产**（不属于某个精修工程），所以是顶层命令。库分两层：用户库 `<数据目录>/users/<uid>/resources/fonts/`（`Local` = 当前管理员），自带字体装在**公用库** `<数据目录>/global/resources/fonts/`；`list` 两个库都看，所以自带字体不会被误报成"未安装"（它会把两条路径都打印出来）。
+- 字体库是**程序级资产**（不属于某个精修工程），所以是顶层命令。库分两层：用户库 `<data>/users/<uid>/fonts/`（`Local` = 当前管理员），自带字体装在**公用库** `<data>/shared/fonts/`；`list` 两个库都看，所以自带字体不会被误报成"未安装"（它会把两条路径都打印出来）。
 - 两支自带字体都是 **SIL OFL-1.1**（可商用 / **可嵌入** / 可再分发），**字节直接内嵌在 `yekitrim.exe` 里**，首次启动自动落盘 —— 不需要联网、也不需要手动下载：**Noto Sans SC**（中文正文，10.0 MB）与 **Noto Color Emoji**（**CBDT** 位图，非 COLRv1，9.9 MB）。
 - ⚠️ **正常不需要跑 `install`**：它是**修复入口**（手删了库里那支、或落盘失败之后补回来）。`--id` 不在自带清单里会直接报错。
 - 运行时的兜底栈 = 库里那支 → `Microsoft YaHei` → `Noto Sans SC` → `sans-serif`。

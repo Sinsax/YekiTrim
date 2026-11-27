@@ -199,7 +199,13 @@
   - 其余同类修复（一并照此维护）：`serve_file` 的元数据、`/api/media` 的归属校验 + `jail_existing`
     （播放会打出一串 Range 请求）、`polish_silence`/`polish_project_put`/`config_*_put`
     （`with_path_lock` 的闭包跑在当前线程，改成 `lock_path().await` + `blocking(...)`）、
-    `polish_cover_frame`/`preview` 的截帧 ffmpeg、入库的扫描与跨盘搬运、`POST /api/admin/ingest/scan`。
+    `polish_cover_frame`/`preview` 的截帧 ffmpeg、入库的扫描、`POST /api/admin/ingest/scan`。
+  - **采集目录校验（2026-11-27）**：`POST /api/admin/recorder/test` 的目录探测走
+    `spawn_blocking` + **8s 超时**（死 UNC 的 `metadata` 能挂几十秒）；`GET /api/admin/ingest`
+    **只读缓存、绝不现场探测**；`GET /api/rooms` 与两个录像列表端点在目录不可用时回
+    **200 + `available:false` + `error`**（不再 500），普通用户的文案不含路径。
+  - **录播入库不再搬文件**：项目与 `output/` 建在录像所在目录（源文件不搬不删），
+    所以那个目录必须**可读写** —— 校验结论里 `not_writable` 是一条独立的失败态。
   - **前端取数要单飞**：`stores/workbench.js::loadProjects()`（`inflight` 去重）与
     `composables/useJobs.js::load()`（在飞合并 + SSE 250ms 合帧）。视图注册 `onJobDone(fn)`
     **必须用返回的退订函数在 `onUnmounted` 里退订** —— 不退订会攒出一串陈旧回调，

@@ -6,14 +6,14 @@
 //! 2. 归属：`owner_id` 为空 → 进"待分配池"（`state=unassigned`），admin 指派后自动继续。
 //! 3. 水位预检：全局上限 / 每用户配额 / 磁盘水位，不足则 `state=failed` 并给出
 //!    "预计需要 / 可用"文案，**绝不自动删任何东西**（§7）。
-//! 4. 落位：默认移入托管目录（同盘 `rename` 瞬时；跨盘 `copy + 校验 + 删源`），
-//!    `move_into_managed=false` 时项目目录＝录制目录。
-//! 5. 多分片：默认 `ffmpeg -f concat -c copy` 合并为 `source.mp4`（失败回退重编码）；
-//!    原始分片保留（源不删策略）。
-//! 6. 弹幕：同目录同名 `.xml`（录播姬）/`.ass` 一并搬入项目并写进 `yekitrim.toml`。
+//! 4. 落位：**原地建项目** —— 项目目录 = 录像所在目录，**不搬 / 不复制 / 不删源**
+//!    （2026-11-27 用户口径；单机双服务与跨机共享走同一条路径）。
+//! 5. 多分片：默认 `ffmpeg -f concat -c copy` 合并为**同目录**的 `source.mp4`
+//!    （失败回退重编码）；原始分片保留 —— 这是唯一会在同目录新增字节的地方。
+//! 6. 弹幕：同目录同名 `.xml`（录播姬）/`.ass` **原地引用**，只把文件名写进 `yekitrim.toml`。
 //! 7. 建项目 + 按 `auto_pipeline`（none|transcribe|detect|cut）自动跑管线。
 //!
-//! 任何一步失败都回滚刚建的托管目录并把会话标为 `failed`（错误文案直接给用户看）。
+//! 任何一步失败只把会话标为 `failed`（错误文案直接给用户看）—— **绝不删源文件**。
 //!
 //! ## 与 B站下载通道（`download_worker`）的边界
 //!
@@ -23,7 +23,7 @@
 //! - 起管线 → `crate::pipeline_boot`
 //!
 //! 留在这里的是**录播姬独有**的语义：待分配池、`is_finalized` 空闲窗口、
-//! 多分片合并、从录像目录搬文件。B站是"用户主动提交、进程退出即完结、下载器直接
+//! 多分片合并、原地落位（**不搬文件**）。B站是"用户主动提交、进程退出即完结、下载器直接
 //! 写进托管目录"，这些一个都用不上。
 
 use std::path::{Path, PathBuf};
@@ -35,7 +35,6 @@ use tokio::sync::mpsc;
 
 use yekitrim_service::db::IngestSessionRow;
 use yekitrim_service::ingest::{capacity, landing};
-use yekitrim_service::projects;
 
 use crate::pipeline_boot::{spawn_pipeline, Pipeline};
 
@@ -160,11 +159,80 @@ async fn tick(state: &Arc<AppState>) -> Result<()> {
 /// 上次兜底扫描时间（秒）。
 static LAST_SCAN: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 
-/// 兜底扫描：把 `recorder_root` 下"两轮大小/时间都没变"的文件登记成可入库会话。
+/// 最近一次兜底扫描的结果（「采集」页排障用：为什么没扫到东西）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScanStatus {
+    /// 结束时刻（unix 秒）
+    pub at: i64,
+    pub ok: bool,
+    /// 本次新登记的录像数
+    pub registered: usize,
+    pub error: Option<String>,
+    /// 目录校验给出的「下一步」（失败时才有）
+    pub hint: Option<String>,
+}
+
+impl ScanStatus {
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "at": self.at,
+            "ok": self.ok,
+            "registered": self.registered,
+            "error": self.error,
+            "hint": self.hint,
+        })
+    }
+}
+
+static LAST_STATUS: std::sync::OnceLock<std::sync::Mutex<Option<ScanStatus>>> =
+    std::sync::OnceLock::new();
+
+fn status_slot() -> &'static std::sync::Mutex<Option<ScanStatus>> {
+    LAST_STATUS.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// 最近一次扫描结果（`None` = 本次进程还没扫过）。
+pub fn last_scan_status() -> Option<ScanStatus> {
+    status_slot().lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+fn record_scan_status(st: ScanStatus) {
+    *status_slot().lock().unwrap_or_else(|e| e.into_inner()) = Some(st);
+}
+
+/// 兜底扫描：把 `recorder_root` 下「两轮大小/时间都没变」的文件登记成可入库会话。
 ///
 /// 覆盖三类场景：webhook 漏推送、录播姬重启后没补发、把历史录播直接丢进目录。
 /// 返回本次新登记的完整文件数。
+///
+/// ⚠️ 结果会写进 [`last_scan_status`]（成功与失败都写）—— 「采集」页据此说明
+/// 「为什么没扫到东西」，别再让失败只剩一条日志。
 pub fn scan_recorder(state: &Arc<AppState>, cfg: &yekitrim_core::config::Config) -> Result<usize> {
+    let out = scan_recorder_inner(state, cfg);
+    let at = yekitrim_service::db::now_secs();
+    let st = match &out {
+        Ok(n) => ScanStatus { at, ok: true, registered: *n, error: None, hint: None },
+        Err(e) => {
+            // 失败时顺带要一句「下一步」：跨机最常见的两类（填了对方路径 / 共享不可读）
+            // 都能从同一个探针里直接得到。这里只要提示，不写探针文件。
+            let p = yekitrim_service::recorder::probe_recorder_root(
+                cfg.ingest.recorder.root.trim(),
+                false,
+            );
+            ScanStatus {
+                at,
+                ok: false,
+                registered: 0,
+                error: Some(format!("{e:#}")),
+                hint: if p.hint.is_empty() { None } else { Some(p.hint) },
+            }
+        }
+    };
+    record_scan_status(st);
+    out
+}
+
+fn scan_recorder_inner(state: &Arc<AppState>, cfg: &yekitrim_core::config::Config) -> Result<usize> {
     let db = state.auth.db();
     let root = PathBuf::from(cfg.ingest.recorder.root.trim());
     if !root.is_dir() {
@@ -500,34 +568,6 @@ fn file_size(p: &Path) -> u64 {
 }
 
 
-/// 把文件搬进项目目录：同盘 `rename`，跨盘 `copy + 校验 + 删源`。
-fn move_file(src: &Path, dst: &Path) -> Result<()> {
-    if let Some(parent) = dst.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let size = file_size(src);
-    match std::fs::rename(src, dst) {
-        Ok(()) => Ok(()),
-        Err(_) => {
-            // 跨盘（或目标已存在）：拷贝后校验再删源
-            std::fs::copy(src, dst)
-                .with_context(|| format!("拷贝失败: {} → {}", src.display(), dst.display()))?;
-            let copied = file_size(dst);
-            if copied != size {
-                let _ = std::fs::remove_file(dst);
-                bail!(
-                    "拷贝校验失败（源 {} 字节，目标 {} 字节）: {}",
-                    size,
-                    copied,
-                    dst.display()
-                );
-            }
-            std::fs::remove_file(src)
-                .with_context(|| format!("删除源文件失败: {}", src.display()))?;
-            Ok(())
-        }
-    }
-}
 
 /// 多分片合并（`-c copy`，失败回退重编码）。返回合并后的文件路径。
 async fn concat_fragments(fragments: &[PathBuf], out: &Path) -> Result<()> {
@@ -594,9 +634,20 @@ async fn ingest_one(
     let Some(owner_id) = session.owner_id else {
         bail!("会话尚未指派归属");
     };
-    let recorder_root = PathBuf::from(cfg.ingest.recorder.root.trim());
+    let root_str = cfg.ingest.recorder.root.trim();
+    let recorder_root = PathBuf::from(root_str);
     if !recorder_root.is_dir() {
-        bail!("录播姬目录不存在: {}", recorder_root.display());
+        // 报错要带「下一步」（跨机最常见的是填了对方机器上的 `/rec`）
+        let hint = yekitrim_service::recorder::probe_recorder_root(root_str, false).hint;
+        bail!("录播姬目录不可用: {}（{hint}）", recorder_root.display());
+    }
+    // 原地建项目 ⇒ 项目与 output/ 要写在这个目录里。网络目录先确认可写，
+    // 别等落位到一半才发现共享是只读的。
+    if yekitrim_service::recorder::is_network_root(root_str) {
+        let probe = yekitrim_service::recorder::probe_recorder_root(root_str, true);
+        if probe.writable == Some(false) {
+            bail!("录像目录不可写（{}）：{}", recorder_root.display(), probe.hint);
+        }
     }
 
     // 1) 解析录像文件（囚笼 + 去重 + 按文件名排序 = 分片顺序）
@@ -617,43 +668,37 @@ async fn ingest_one(
     sources.sort();
     let incoming: u64 = sources.iter().map(|p| file_size(p)).sum();
 
-    let room = session
-        .room_id
-        .clone()
-        .unwrap_or_else(|| "unassigned".to_string());
-    let project_root = if cfg.ingest.recorder.move_into_managed {
-        projects::new_project_dir(owner_id, &room)
-    } else {
-        sources[0]
-            .parent()
-            .map(|p| p.to_path_buf())
-            .ok_or_else(|| anyhow!("无法确定项目目录"))?
-    };
+    // ⚠️ **原地建项目**（2026-11-27 用户口径）：项目目录 = 录像所在目录。
+    //    不搬、不复制、不删源 —— 单机双服务与跨机共享走同一条路径。
+    let project_root = project_root_for(&sources)?;
 
-    // 2) 水位/配额预检（在建目录之前）
+    // 2) 水位/配额预检：目标盘 = 录像所在盘（产物就写在这里）
     capacity::check_capacity(db, owner_id, incoming, &project_root, cfg)?;
 
-    // 3) 落位（失败时清掉刚建的托管目录）
-    let created_dir = cfg.ingest.recorder.move_into_managed;
-    if created_dir {
-        std::fs::create_dir_all(&project_root)
-            .with_context(|| format!("创建项目目录失败: {}", project_root.display()))?;
-    }
-    let result = ingest_into(state, session, owner_id, &sources, &project_root, cfg).await;
-    match result {
-        Ok(project_id) => Ok(project_id),
-        Err(e) => {
-            if created_dir {
-                if let Err(cleanup) = std::fs::remove_dir_all(&project_root) {
-                    tracing::warn!("清理半成品目录失败 {}: {cleanup}", project_root.display());
-                }
-            }
-            Err(e)
-        }
-    }
+    ingest_into(state, session, owner_id, &sources, &project_root, cfg).await
 }
 
-/// 落位 + 建项目 + 自动管线（失败由 [`ingest_one`] 回滚目录）。
+/// 项目目录 = 录像文件所在目录（[`ingest_one`] 的原地落位判据）。
+///
+/// 要求所有分片同目录：混了别的场次就说明会话聚合出错了，宁可报错也别在同一个
+/// 目录里建出两个项目。
+fn project_root_for(sources: &[PathBuf]) -> Result<PathBuf> {
+    let first = sources.first().ok_or_else(|| anyhow!("本场没有录像文件"))?;
+    let dir = first
+        .parent()
+        .ok_or_else(|| anyhow!("无法确定项目目录: {}", first.display()))?
+        .to_path_buf();
+    if let Some(other) = sources.iter().find(|p| p.parent() != Some(dir.as_path())) {
+        bail!(
+            "本场分片不在同一目录（{} 与 {}），拒绝原地建项目",
+            dir.display(),
+            other.display()
+        );
+    }
+    Ok(dir)
+}
+
+/// 建项目 + 自动管线（**原地**：不搬源文件，项目就建在录像所在目录）。
 async fn ingest_into(
     state: &Arc<AppState>,
     session: &IngestSessionRow,
@@ -663,59 +708,40 @@ async fn ingest_into(
     cfg: &yekitrim_core::config::Config,
 ) -> Result<i64> {
     let db = state.auth.db();
-    let mut moved: Vec<PathBuf> = Vec::new();
 
-    // 1) 搬文件（保留原始文件名，源不删策略的"删源"只发生在跨盘搬运时）。
-    //    跨盘时要整段拷贝 GB 级录像 —— 同步做在 async 里会白占一个 HTTP worker 几十秒，
-    //    所以每搬一个都下 blocking 池。
+    // 1) 源文件必须还在：webhook 只给相对路径，目录被清理 / 换了机器时这里要报清楚。
     for src in sources {
-        let name = src
-            .file_name()
-            .ok_or_else(|| anyhow!("录像文件名异常: {}", src.display()))?;
-        let dst = project_root.join(name);
-        if dst == *src {
-            moved.push(dst); // move_into_managed=false：文件本来就在项目目录
-            continue;
+        if !src.is_file() {
+            bail!("录像文件不存在: {}", src.display());
         }
-        let (s, d) = (src.clone(), dst.clone());
-        tokio::task::spawn_blocking(move || move_file(&s, &d))
-            .await
-            .context("搬运线程失败")??;
-        moved.push(dst);
     }
 
-    // 2) 弹幕：同目录同名 .xml/.ass/.srt 一并搬入（缺失不阻塞）
+    // 2) 弹幕：同目录同名 .xml/.ass/.srt **原地引用**（不搬）。缺失不阻塞。
     let mut danmaku_rel: Option<String> = None;
     for src in sources {
         if let Some(dm) = find_danmaku(src) {
-            let name = dm
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "danmaku.xml".to_string());
-            let dst = project_root.join(&name);
-            if dst != dm {
-                let (s, d) = (dm.clone(), dst.clone());
-                let moved_dm = tokio::task::spawn_blocking(move || move_file(&s, &d))
-                    .await
-                    .context("弹幕搬运线程失败")?;
-                if let Err(e) = moved_dm {
-                    tracing::warn!("弹幕搬运失败（项目仍可跑）: {e:#}");
-                    continue;
-                }
-            }
-            danmaku_rel = Some(name);
+            danmaku_rel = Some(
+                dm.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "danmaku.xml".to_string()),
+            );
             break;
         }
     }
 
-    // 3) 多分片合并（原始分片保留）
-    let concat = cfg.ingest.recorder.concat_files && moved.len() > 1;
+    // 3) 多分片合并（原始分片保留；这是唯一会在同目录新增字节的地方）
+    let concat = cfg.ingest.recorder.concat_files && sources.len() > 1;
     let input_name = if concat {
         let out = project_root.join("source.mp4");
-        concat_fragments(&moved, &out).await?;
+        if let Err(e) = concat_fragments(sources, &out).await {
+            // 只清自己生成的东西 —— **绝不删源**
+            let _ = std::fs::remove_file(&out);
+            let _ = std::fs::remove_file(out.with_extension("concat.txt"));
+            return Err(e);
+        }
         "source.mp4".to_string()
     } else {
-        moved[0]
+        sources[0]
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .ok_or_else(|| anyhow!("录像文件名异常"))?
@@ -766,7 +792,7 @@ async fn ingest_into(
     tracing::info!(
         "入库完成: session={} → project={project_id}（{} 个文件，合并={concat}，新建={}）",
         session.session_id,
-        moved.len(),
+        sources.len(),
         landed.created
     );
 
@@ -831,4 +857,21 @@ mod tests {
         assert!(is_finalized(&session("closing", &["a.flv", "b.flv"], &["a.flv"], 9_000), 5, 10_000));
     }
 
+    /// **原地落位**（2026-11-27）：项目目录 = 录像所在目录，不再走 `projects_root`。
+    #[test]
+    fn project_root_for_uses_source_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.flv");
+        let b = dir.path().join("b.flv");
+        std::fs::write(&a, b"x").unwrap();
+        std::fs::write(&b, b"x").unwrap();
+        assert_eq!(project_root_for(&[a.clone(), b]).unwrap(), dir.path());
+
+        // 混了别的场次 → 拒绝（否则会在同一个目录里建出两个项目）
+        let other = tempfile::tempdir().unwrap();
+        let c = other.path().join("c.flv");
+        std::fs::write(&c, b"x").unwrap();
+        let e = project_root_for(&[a, c]).unwrap_err();
+        assert!(format!("{e:#}").contains("不在同一目录"), "{e:#}");
+    }
 }

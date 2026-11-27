@@ -118,10 +118,8 @@ pub fn cmd_status() -> Result<()> {
     println!("  录制目录:   {}", if ing.recorder.root.is_empty() { "（未设置，入库不可用）".to_string() } else { ing.recorder.root.clone() });
     println!("  兜底扫描:   每 {} 分钟（0 = 关闭）", ing.recorder.watch_interval_mins);
     println!("  收尾空闲:   SessionEnded 后 {} 分钟无新文件视为结束", ing.recorder.finalize_idle_mins);
-    println!(
-        "  落位策略:   {}",
-        if ing.recorder.move_into_managed { "移入托管项目目录" } else { "留在录制目录" }
-    );
+    // 2026-11-27 起**只有一种落位**：项目与 output/ 建在录像所在目录（不搬源文件）。
+    println!("  落位:       原地建项目（录像所在目录，不搬源文件；该目录需可写）");
     println!(
         "  多分片:     {}",
         if ing.recorder.concat_files { "合并为 source.mp4" } else { "只取第一个分片" }

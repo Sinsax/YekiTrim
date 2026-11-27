@@ -119,6 +119,9 @@ pub(super) async fn rooms_list(
     // 两种后端的录像根**就是同一份配置**（[`[ingest.recorder] root`]），分支只会误导读者
     // 以为 blt 有另一个根。真有差异的是 `container_root`（见 recorder_objects）。
     let rec_root = cfg.ingest.recorder.root.as_str();
+    // ⚠️ 扫描失败**不能只写日志**：`None` 会被前端渲染成「已录 0 个」，与"确实没录过"
+    //    完全无法区分（跨机部署时这是最常见的报障形态）。所以把原因带出去。
+    let mut recordings_error: Option<String> = None;
     let summaries = if rec_root.trim().is_empty() {
         None
     } else if available && blt {
@@ -130,14 +133,29 @@ pub(super) async fn rooms_list(
             Ok(Ok(files)) => Some(crate::ingest_worker::room_summaries(&files)),
             Ok(Err(e)) => {
                 tracing::warn!("读录像目录失败: {e:#}");
+                recordings_error = Some(format!("{e:#}"));
                 None
             }
             Err(e) => {
                 tracing::warn!("读录像目录线程失败: {e}");
+                recordings_error = Some(format!("扫描线程失败: {e}"));
                 None
             }
         }
     };
+    // 文案分两套：admin 看得到路径/OS 错误 + 探针提示（缓存里那次，**这里不探测**）；
+    // 普通用户只拿中性结论，绝不回路径。
+    let recordings_available = recordings_error.is_none();
+    let recordings_error = recordings_error.map(|raw| {
+        if all_admin {
+            match crate::ingest::last_root_probe(rec_root) {
+                Some(p) if !p.hint.is_empty() => format!("{raw} · {}", p.hint),
+                _ => raw,
+            }
+        } else {
+            "录像目录暂不可用".to_string()
+        }
+    });
 
     let rooms: Vec<serde_json::Value> = rows
         .iter()
@@ -163,9 +181,22 @@ pub(super) async fn rooms_list(
         .collect();
     let kind = client.as_ref().map(|c| c.kind()).unwrap_or_else(|| cfg.ingest.recorder.kind.trim());
     if all_admin {
-        ok(serde_json::json!({ "available": available, "reason": reason, "kind": kind, "rooms": rooms }))
+        ok(serde_json::json!({
+            "available": available,
+            "reason": reason,
+            "kind": kind,
+            "rooms": rooms,
+            "recordings_available": recordings_available,
+            "recordings_error": recordings_error,
+        }))
     } else {
-        ok(serde_json::json!({ "available": available, "kind": kind, "rooms": rooms }))
+        ok(serde_json::json!({
+            "available": available,
+            "kind": kind,
+            "rooms": rooms,
+            "recordings_available": recordings_available,
+            "recordings_error": recordings_error,
+        }))
     }
 }
 
@@ -473,6 +504,32 @@ fn added_project_of(
     }
 }
 
+/// 录像目录不可用时的统一降级响应（200 + `available:false`）。
+///
+/// 与 `recorder_objects` 的 `available/error` 同口径：前端据此出一条**说明**，而不是把 500
+/// 渲染成一屏错误。普通用户只拿中性文案（**绝不回路径 / OS 错误**）。
+fn degraded_recordings(
+    cfg: &yekitrim_core::config::Config,
+    is_admin: bool,
+    room_id: &str,
+    raw: &str,
+) -> serde_json::Value {
+    let error = if is_admin {
+        match crate::ingest::last_root_probe(cfg.ingest.recorder.root.trim()) {
+            Some(p) if !p.hint.is_empty() => format!("{raw} · {}", p.hint),
+            _ => raw.to_string(),
+        }
+    } else {
+        "录像目录暂不可用".to_string()
+    };
+    serde_json::json!({
+        "configured": true,
+        "available": false,
+        "room_id": room_id,
+        "error": error,
+        "recordings": [],
+    })
+}
 /// `GET /api/recorder/recordings?room_id=`：某房间的录像列表（含 `added`，防重复添加）。
 ///
 /// ⚠️ **归属校验（2026-11-14 后端 review B2）**：普通用户只能看**自己登记的**房间 ——
@@ -502,6 +559,14 @@ pub(super) async fn recorder_recordings(
     let root = std::path::PathBuf::from(cfg.ingest.recorder.root.trim());
     if root.as_os_str().is_empty() {
         return Err(err(StatusCode::BAD_REQUEST, "未配置录像目录"));
+    }
+    // 目录不可用（跨机没映射好 / 共享没挂上）→ 200 + `available:false`。
+    // `is_dir()` 可能落在网络盘上 ⇒ 必须下 blocking 池。
+    let root_for_check = root.clone();
+    let root_is_dir = blocking(move || Ok(root_for_check.is_dir())).await?;
+    if !root_is_dir {
+        let raw = format!("录像目录不可用: {}", yekitrim_core::path::display(&root));
+        return ok(degraded_recordings(&cfg, is_admin, &room_id, &raw));
     }
     let db = state.auth.db();
     let blt = client.is_bililive_tools();
@@ -602,10 +667,26 @@ pub(super) async fn recorder_recordings(
         }
     } else {
         let cfg_scan = cfg.clone();
-        let scanned = tokio::task::spawn_blocking(move || crate::ingest_worker::list_recordings(&cfg_scan))
-            .await
-            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("扫描线程失败: {e}")))?
-            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+        let scanned = match tokio::task::spawn_blocking(move || {
+            crate::ingest_worker::list_recordings(&cfg_scan)
+        })
+        .await
+        {
+            Ok(Ok(v)) => v,
+            Ok(Err(e)) => {
+                tracing::warn!("读录像目录失败: {e:#}");
+                return ok(degraded_recordings(&cfg, is_admin, &room_id, &format!("{e:#}")));
+            }
+            Err(e) => {
+                tracing::warn!("读录像目录线程失败: {e}");
+                return ok(degraded_recordings(
+                    &cfg,
+                    is_admin,
+                    &room_id,
+                    &format!("扫描线程失败: {e}"),
+                ));
+            }
+        };
         // 与 blt 分支同口径：按目录聚合（size 求和、mtime 取最新一段）
         let mut agg: std::collections::HashMap<
             std::path::PathBuf,
@@ -648,13 +729,16 @@ pub(super) async fn recorder_recordings(
     }))
 }
 
-/// `POST /api/admin/recorder/test`：对接自检（版本 + 房间数），admin 用来看配置对不对。
+/// `POST /api/admin/recorder/test`：对接自检 —— **连接**与**目录校验**分开报。
 ///
-/// ⚠️ **body 里可以带未保存的当前输入**（2026-11-24）：前端「测试连接」原先只测**已存**配置，
+/// ⚠️ **body 里可以带未保存的当前输入**（2026-11-24 起）：前端「测试连接」原先只测**已存**配置，
 /// 于是「刚改完密钥 → 点测试 → 报 401」实际验的是旧值，锅被甩给"网络/对方服务"（实测踩过：
 /// biliLive-tools 的 passKey 被 `BILILIVE_TOOLS_PASSKEY` 环境变量覆盖，界面显示的是文件里那份）。
-/// 现在 body 里给了 `kind`/`api_base`/`api_key`/`api_user`/`api_pass` 就**临时覆盖**（不落盘），
-/// 没给的沿用已存值。⚠️ 密钥只走 **body**，别塞 query —— `access_log` 会把 URL 原样记进日志。
+/// 现在 body 里给了 `kind`/`api_base`/`api_key`/`api_user`/`api_pass`/`root` 就**临时覆盖**
+/// （不落盘），没给的沿用已存值。⚠️ 密钥只走 **body**，别塞 query —— `access_log` 会原样记 URL。
+///
+/// ⚠️ **目录那一半必须下阻塞池 + 超时**：死 UNC 的 `metadata` 能挂几十秒 —— 8 秒到点就按
+/// "不可达"回，别让一次点击把请求拖死（也顺手把结论写进 [`crate::ingest::root_probe_cached`]）。
 pub(super) async fn admin_recorder_test(body: axum::body::Bytes) -> ApiResult {
     let mut cfg = yekitrim_core::config::load_global_config();
     let over = if body.is_empty() {
@@ -684,31 +768,79 @@ pub(super) async fn admin_recorder_test(body: axum::body::Bytes) -> ApiResult {
     if let Some(pass) = pick("api_pass") {
         cfg.ingest.recorder.api_pass = pass;
     }
-    let client = yekitrim_service::recorder::RecorderBackend::from_config(&cfg.ingest);
-    let Some(client) = client else {
-        return ok(serde_json::json!({
-            "ok": false,
-            "error": "未配置 [ingest.recorder] api_base",
-        }));
-    };
-    let kind = client.kind();
-    let version = client.version().await.ok();
-    match client.list_rooms().await {
-        Ok(rooms) => ok(serde_json::json!({
-            "ok": true,
-            "kind": kind,
-            "base": client.base(),
-            "version": version,
-            "rooms": rooms.len(),
-        })),
-        Err(e) => ok(serde_json::json!({
-            "ok": false,
-            "kind": kind,
-            "base": client.base(),
-            "version": version,
-            "error": format!("{e:#}"),
-        })),
+    // 「跨机先测再存」：共享路径还没保存时也要能验
+    if let Some(root) = pick("root") {
+        cfg.ingest.recorder.root = root;
     }
+
+    // ① 连接（HTTP）
+    let (kind, base, version, room_count, api_ok, api_err) =
+        match yekitrim_service::recorder::RecorderBackend::from_config(&cfg.ingest) {
+            None => (
+                cfg.ingest.recorder.kind.clone(),
+                String::new(),
+                None,
+                0usize,
+                false,
+                Some("未配置 [ingest.recorder] api_base".to_string()),
+            ),
+            Some(c) => {
+                let base = c.base().to_string();
+                let kind = c.kind().to_string();
+                let version = c.version().await.ok();
+                match c.list_rooms().await {
+                    Ok(rooms) => (kind, base, version, rooms.len(), true, None),
+                    Err(e) => (kind, base, version, 0, false, Some(format!("{e:#}"))),
+                }
+            }
+        };
+
+    // ② 目录校验（文件系统）
+    let root = cfg.ingest.recorder.root.trim().to_string();
+    let root_json = probe_root_with_timeout(root).await;
+    let root_ok = root_json.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    // `ok` = 两件事都成立（设置页据此决定弹"连接正常"还是出提示）
+    ok(serde_json::json!({
+        "ok": api_ok && root_ok,
+        "kind": kind,
+        "base": base,
+        "version": version,
+        "rooms": room_count,
+        "api": { "ok": api_ok, "error": api_err },
+        "root": root_json,
+    }))
+}
+
+/// 目录校验：阻塞池 + 8s 超时。
+async fn probe_root_with_timeout(root: String) -> serde_json::Value {
+    if root.is_empty() {
+        return yekitrim_service::recorder::probe_recorder_root("", true).to_json();
+    }
+    let path = root.clone();
+    let probe = tokio::task::spawn_blocking(move || crate::ingest::root_probe_cached(&path, true));
+    match tokio::time::timeout(std::time::Duration::from_secs(8), probe).await {
+        Ok(Ok(p)) => p.to_json(),
+        Ok(Err(e)) => probe_unavailable(&root, &format!("探测线程失败: {e}")),
+        Err(_) => probe_unavailable(&root, "探测超时（网络路径可能不可达）"),
+    }
+}
+
+/// 探测没跑出结论时的替身。
+///
+/// ⚠️ **不要再调一次探针**：那就等于在 super 慢的路径上再挂一遍（超时本来就是为了躲它）。
+fn probe_unavailable(root: &str, why: &str) -> serde_json::Value {
+    serde_json::json!({
+        "path": root,
+        "status": "missing",
+        "ok": false,
+        "unc": yekitrim_service::recorder::is_network_root(root),
+        "readable": false,
+        "writable": null,
+        "entries": null,
+        "os_error": why,
+        "hint": "8 秒内没能打开这个目录：确认共享已开启、主机可达；Windows 上先用资源管理器访问一次。",
+    })
 }
 
 /// `PUT /api/admin/invites/registration {enabled}`：注册总闸（关掉后不再受理注册请求）。
@@ -932,5 +1064,58 @@ fn recorder_visibility_and_project_id_are_owner_scoped() {
         let (status, text) = call_json(&t, "POST", "/rooms", serde_json::json!({ "url": 5 })).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "url 类型错必须 400：{text}");
         assert!(text.contains("url"), "报错要点名 url：{text}");
+    }
+
+    /// **目录不可用时的降级文案**：admin 看得到路径/OS 错误 + 探针提示，普通用户只有一句中性话。
+    #[test]
+    fn degraded_recordings_hides_paths_from_normal_users() {
+        let mut cfg = yekitrim_core::config::Config::default();
+        cfg.ingest.recorder.root = "/definitely/not/here".into();
+        let raw = "目录不存在: /definitely/not/here";
+        let admin = degraded_recordings(&cfg, true, "23058", raw);
+        assert_eq!(admin["available"], false);
+        assert!(admin["error"].as_str().unwrap().contains("definitely"), "{admin}");
+
+        let user = degraded_recordings(&cfg, false, "23058", raw);
+        assert_eq!(user["available"], false);
+        assert!(!user["error"].as_str().unwrap().contains("definitely"), "普通用户不许看到路径：{user}");
+    }
+
+    /// **测试连接**：接口与目录**分开报**，且 `root` 能测还没保存的输入。
+    #[tokio::test]
+    async fn recorder_test_reports_root_separately() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.flv"), b"x").unwrap();
+        let body = axum::body::Bytes::from(
+            serde_json::json!({ "root": dir.path().to_string_lossy() }).to_string(),
+        );
+        let v = admin_recorder_test(body).await.expect("handler").0;
+        assert_eq!(v["root"]["ok"], true, "{v}");
+        assert_eq!(v["root"]["writable"], true, "{v}");
+        assert_eq!(v["api"]["ok"], false, "测试环境没有 api_base：{v}");
+        assert_eq!(v["ok"], false, "接口没通时总 ok 必须为假：{v}");
+
+        let missing = dir.path().join("nope");
+        let body = axum::body::Bytes::from(
+            serde_json::json!({ "root": missing.to_string_lossy() }).to_string(),
+        );
+        let v = admin_recorder_test(body).await.expect("handler").0;
+        assert_eq!(v["root"]["ok"], false, "{v}");
+        assert!(
+            !v["root"]["hint"].as_str().unwrap_or("").is_empty(),
+            "失败必须给下一步：{v}"
+        );
+    }
+
+    /// 目录探针 60s 内复用结果 —— 否则设置页每次轮询都在打网络盘（死 UNC 能挂几十秒）。
+    #[test]
+    fn root_probe_cache_reuses_the_last_result() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.flv"), b"x").unwrap();
+        let p1 = crate::ingest::root_probe_cached(&dir.path().to_string_lossy(), false);
+        assert_eq!(p1.entries, Some(1));
+        std::fs::remove_file(dir.path().join("a.flv")).unwrap();
+        let p2 = crate::ingest::root_probe_cached(&dir.path().to_string_lossy(), false);
+        assert_eq!(p2.entries, Some(1), "60s 内必须复用缓存，别再摸一次盘");
     }
 }

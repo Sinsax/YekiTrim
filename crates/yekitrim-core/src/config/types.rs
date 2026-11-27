@@ -419,9 +419,6 @@ pub struct RecorderConfig {
     /// `SessionEnded` 之后再等多久没有新的 `FileClosed` 视为"本场结束"
     #[serde(default = "default_finalize_idle_mins")]
     pub finalize_idle_mins: u32,
-    /// 落位策略：true = 移入托管项目目录（同盘 rename，跨盘 copy+校验+删源）
-    #[serde(default = "default_true")]
-    pub move_into_managed: bool,
     /// 多分片会话是否合并为单个 `source.mp4`（ffmpeg -f concat -c copy）
     #[serde(default = "default_true")]
     pub concat_files: bool,
@@ -464,7 +461,6 @@ impl Default for RecorderConfig {
             container_root: String::new(),
             watch_interval_mins: default_watch_interval_mins(),
             finalize_idle_mins: default_finalize_idle_mins(),
-            move_into_managed: true,
             concat_files: true,
             extensions: default_recorder_extensions(),
             auto_pipeline: default_auto_pipeline(),

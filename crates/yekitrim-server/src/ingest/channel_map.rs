@@ -185,10 +185,29 @@ pub async fn retry(
 /// 返回本次新登记的完整录像数；用于"历史录播导入"与排障。
 pub async fn scan_now(State(state): State<Arc<AppState>>) -> ApiResult {
     let cfg = yekitrim_core::config::load_global_config();
-    if cfg.ingest.recorder.root.trim().is_empty() {
+    let root = cfg.ingest.recorder.root.trim().to_string();
+    if root.is_empty() {
         return Err(err(
             StatusCode::BAD_REQUEST,
             "未配置 [ingest.recorder] root，无法扫描",
+        ));
+    }
+    // 先校验目录：扫描失败时 500 只会给一句 `录播姬目录不存在`，用户不知道该改什么。
+    // 探针的 hint 能直接说清（填了对方机器上的路径 / 共享没挂上 / 只读）。
+    let root_for_probe = root.clone();
+    let probe = tokio::task::spawn_blocking(move || {
+        crate::ingest::root_probe_cached(&root_for_probe, true)
+    })
+    .await
+    .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("探测线程失败: {e}")))?;
+    if !probe.status.is_ok() {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            if probe.hint.is_empty() {
+                format!("录像目录不可用（{root}）")
+            } else {
+                format!("录像目录不可用（{root}）：{}", probe.hint)
+            },
         ));
     }
     // 扫描是递归 read_dir + metadata（可能在网络盘上）→ 下 blocking 池，别占 worker

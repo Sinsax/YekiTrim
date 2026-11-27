@@ -47,7 +47,10 @@ pub(super) fn config_view_json() -> serde_json::Value {
             "container_root": cfg.ingest.recorder.container_root,
             "watch_interval_mins": cfg.ingest.recorder.watch_interval_mins,
             "finalize_idle_mins": cfg.ingest.recorder.finalize_idle_mins,
-            "move_into_managed": cfg.ingest.recorder.move_into_managed,
+            // 上次目录校验结论（`null` = 还没测过；**这里绝不现场探测**，见 ingest/mod.rs 的缓存说明）。
+            // 「项目与产物建在录像目录」⇒ 校验同时关心**可读与可写**。
+            "root_status": crate::ingest::last_root_probe(&cfg.ingest.recorder.root)
+                .map(|p| p.to_json()),
             "concat_files": cfg.ingest.recorder.concat_files,
             "extensions": cfg.ingest.recorder.extensions,
             "auto_pipeline": cfg.ingest.recorder.auto_pipeline,
@@ -91,6 +94,8 @@ pub(super) fn config_view_json() -> serde_json::Value {
                 &yekitrim_service::projects::projects_root(),
             ),
         },
+        // 最近一次兜底扫描（成功/失败都记）：采集页据此说明「为什么没扫到东西」。
+        "scan": crate::ingest_worker::last_scan_status().map(|s| s.to_json()),
     })
 }
 

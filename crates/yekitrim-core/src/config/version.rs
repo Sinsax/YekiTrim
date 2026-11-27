@@ -68,7 +68,11 @@ use toml_edit::{DocumentMut, Item};
 /// v6（2026-11-26）：取消**全局** [llm] extra_params —— 逃逸口只按模型存在
 /// （[[llm.models]].extra_params）。老文件里那一行由 migrate_llm_extra_params_to_models
 /// **搬到当前生效模型上**（不是丢掉）：请求体逐字节不变，只是换了存放位置。
-pub const CONFIG_VERSION: u32 = 6;
+///
+/// v7（2026-11-27）：录播入库改成**原地建项目** —— 项目与 output/ 落在**录像所在目录**，
+/// 不再把源文件搬进托管目录。因此 [ingest.recorder].move_into_managed 从结构体删除，
+/// 老文件里那一行由 ConfigKind::retired_in 在 6→7 这一步清掉（**没有替代键**：永远原地）。
+pub const CONFIG_VERSION: u32 = 7;
 
 /// 版本键名（顶层）。**缺键 = 0**。
 pub const VERSION_KEY: &str = "config_version";
@@ -168,6 +172,9 @@ impl ConfigKind {
             // migrate_llm_extra_params_to_models）。这里只收拾"搬不动"的残留
             // （值不是表 / 没有模型可挂）—— 正常文件走到这一步已经没这个键了。
             (Self::Llm, 5) => &[&["llm", "extra_params"]],
+            // v6 → v7：`move_into_managed` 随「原地建项目」退场（见 CONFIG_VERSION 的 v7 段）。
+            // 只有 Global 会带 `[ingest]`：工程文件按 `project_config_body` 的规矩从不写这一段。
+            (Self::Global, 6) => &[&["ingest", "recorder", "move_into_managed"]],
             (Self::Llm, 3) => &[
                 &["llm", "params"],
                 &["llm", "overrides"],
@@ -2162,6 +2169,35 @@ provider = "main"
         assert_eq!(again.text, p.text);
     }
 
+    /// **v6 → v7**：`move_into_managed` 随「原地建项目」退场 —— 老行要清掉，
+    /// 兄弟键与**别人的注释**一个都不能少，且迁移幂等。
+    #[test]
+    fn v7_retires_move_into_managed() {
+        const OLD: &str = r#"config_version = 6
+[ingest]
+webhook_enabled = true
+[ingest.recorder]
+# 录像目录（这条注释必须留着）
+root = "D:/BililiveRecorder"
+move_into_managed = true
+concat_files = false
+"#;
+        let p = migrate_text(ConfigKind::Global, OLD).unwrap();
+        assert_eq!(p.from, 6);
+        assert!(
+            p.retired.iter().any(|k| k == "ingest.recorder.move_into_managed"),
+            "退役名单要报出来：{:?}",
+            p.retired
+        );
+        assert!(!p.text.contains("move_into_managed"), "老键必须清掉：\n{}", p.text);
+        assert!(p.text.contains("concat_files = false"), "兄弟键不许丢：\n{}", p.text);
+        assert!(p.text.contains("这条注释必须留着"), "别人的注释不许丢：\n{}", p.text);
+        assert!(p.text.contains("webhook_enabled = true"), "别的段不许丢：\n{}", p.text);
+        // 幂等：第二次一个字节都不许动
+        let again = migrate_text(ConfigKind::Global, &p.text).unwrap();
+        assert!(!again.changed, "已经是最新版本");
+        assert_eq!(again.text, p.text);
+    }
     /// **内联数组 + 顶层遗留**（实测用户的 llm.toml 就是这个形状）：
     /// v3 迁移必须先把 `providers = [{...}]` 升成数组表，再把顶层 model 补进空 provider，
     /// 最后 v6 把全局 extra_params 挂到该模型上 —— 一个都不许丢。

@@ -9,6 +9,7 @@
 //! 认证是 HTTP Basic（容器里设 `BREC_HTTP_BASIC_USER/PASS` 时）；录播姬 2.11 起在没设密码时
 //! 只接受看起来来自局域网的请求，所以**推荐与 YekiTrim 同机/同内网部署**。
 
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -432,6 +433,243 @@ fn basic_auth(user: &str, pass: &str) -> String {
     format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(raw))
 }
 
+
+/// `[ingest.recorder] root` 的可达性结论。
+///
+/// ⚠️ 这是**唯一**的目录校验判据（`POST /api/admin/recorder/test`、配置视图、入库前预检
+/// 都走它）—— 别在各处再写一份 `is_dir()`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RootStatus {
+    /// 没配（空串）
+    NotConfigured,
+    /// Windows 上填了录播机（Linux）的绝对路径，如 `/rec`
+    ForeignUnixPath,
+    /// 相对路径（按服务进程 cwd 解析，换个启动方式就失效）
+    Relative,
+    /// 不存在 / 网络路径不可达
+    Missing,
+    /// 存在，但不是目录
+    NotDirectory,
+    /// 存在但读不了（权限 / 共享凭据）
+    Denied,
+    /// 可读但不可写（原地建项目必须可写）
+    NotWritable,
+    /// 可用
+    Ok,
+}
+
+impl RootStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NotConfigured => "not_configured",
+            Self::ForeignUnixPath => "foreign_unix_path",
+            Self::Relative => "relative",
+            Self::Missing => "missing",
+            Self::NotDirectory => "not_a_directory",
+            Self::Denied => "denied",
+            Self::NotWritable => "not_writable",
+            Self::Ok => "ok",
+        }
+    }
+
+    pub fn is_ok(self) -> bool {
+        matches!(self, Self::Ok)
+    }
+}
+
+/// 目录条目采样上限（只用于区分「有东西 / 是空的」，不是精确计数）。
+const ENTRY_SAMPLE: usize = 200;
+
+/// 给人抄的共享地址样例（Windows 侧）。
+const UNC_SAMPLE: &str = r"\\<录播机IP>\<共享名>";
+
+/// 一次目录校验的完整结论。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RootProbe {
+    /// 原样回显（仅 admin 可见）
+    pub path: String,
+    pub status: RootStatus,
+    /// 是不是 UNC（`\\主机\共享`）
+    pub unc: bool,
+    pub readable: bool,
+    /// `None` = 没测（`want_writable=false` 时）
+    pub writable: Option<bool>,
+    /// 目录条目采样数（上限 [`ENTRY_SAMPLE`]）
+    pub entries: Option<usize>,
+    /// 原样 OS 错误（含 code），仅 admin 可见
+    pub os_error: Option<String>,
+    /// 一句可照做的下一步（空串 = 没问题）
+    pub hint: String,
+}
+
+impl RootProbe {
+    /// 对外 JSON 形态：**只此一份**（测试连接与配置视图共用，别各拼一套字段名）。
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "path": self.path,
+            "status": self.status.as_str(),
+            "ok": self.status.is_ok(),
+            "unc": self.unc,
+            "readable": self.readable,
+            "writable": self.writable,
+            "entries": self.entries,
+            "os_error": self.os_error,
+            "hint": self.hint,
+        })
+    }
+}
+
+/// 词法阶段就能定的结论（**不做任何 IO**）。`None` = 需要真去看文件系统。
+pub fn classify_root_shape(root: &str) -> Option<RootStatus> {
+    let raw = root.trim();
+    if raw.is_empty() {
+        return Some(RootStatus::NotConfigured);
+    }
+    // ⚠️ 顺序硬性：Windows 的 `Path::is_absolute()` 对 `/rec` 返回 false，
+    //    先判「这是对方机器上的 Linux 路径」，否则会被误报成「相对路径」。
+    if cfg!(windows) && raw.starts_with('/') {
+        return Some(RootStatus::ForeignUnixPath);
+    }
+    if !Path::new(raw).is_absolute() {
+        return Some(RootStatus::Relative);
+    }
+    None
+}
+
+/// 是不是网络路径（UNC：`\\主机\共享`，也认 `//主机/共享` 的正斜杠写法）。
+pub fn is_network_root(root: &str) -> bool {
+    let raw = root.trim();
+    raw.starts_with(r"\\") || raw.starts_with("//")
+}
+
+/// Windows 盘符路径（`Z:\rec` / `Z:/rec`）。
+fn is_drive_path(raw: &str) -> bool {
+    let b = raw.as_bytes();
+    b.len() >= 2 && b[1] == b':' && b[0].is_ascii_alphabetic()
+}
+
+/// 校验 `[ingest.recorder] root`。**同步**（`metadata` / `read_dir` / 写探针），调用方必须下 blocking 池。
+///
+/// `want_writable`：录播入库的项目与 `output/` 就写在这个目录里，所以真实校验传 `true`；
+/// 只读统计传 `false`（此时 `writable` 回 `None`）。
+pub fn probe_recorder_root(root: &str, want_writable: bool) -> RootProbe {
+    let raw = root.trim().to_string();
+    let mut p = RootProbe {
+        path: raw.clone(),
+        status: RootStatus::Ok,
+        unc: is_network_root(&raw),
+        readable: false,
+        writable: None,
+        entries: None,
+        os_error: None,
+        hint: String::new(),
+    };
+    if let Some(s) = classify_root_shape(&raw) {
+        p.status = s;
+        p.hint = hint_for(&p);
+        return p;
+    }
+    match std::fs::metadata(&raw) {
+        Err(e) => {
+            p.status = if e.kind() == std::io::ErrorKind::PermissionDenied {
+                RootStatus::Denied
+            } else {
+                RootStatus::Missing
+            };
+            p.os_error = Some(describe_io_error(&e));
+            p.hint = hint_for(&p);
+            return p;
+        }
+        Ok(md) if !md.is_dir() => {
+            p.status = RootStatus::NotDirectory;
+            p.hint = hint_for(&p);
+            return p;
+        }
+        Ok(_) => {}
+    }
+    match std::fs::read_dir(&raw) {
+        Err(e) => {
+            p.status = RootStatus::Denied;
+            p.os_error = Some(describe_io_error(&e));
+        }
+        Ok(rd) => {
+            p.readable = true;
+            p.entries = Some(rd.take(ENTRY_SAMPLE).count());
+            if want_writable {
+                let w = crate::disk::writable(Path::new(&raw));
+                p.writable = Some(w);
+                if !w {
+                    p.status = RootStatus::NotWritable;
+                }
+            }
+        }
+    }
+    p.hint = hint_for(&p);
+    p
+}
+
+/// 每个状态给一句**能直接照做**的话（文案即契约，单测钉关键词）。
+fn hint_for(p: &RootProbe) -> String {
+    let mut s = match p.status {
+        RootStatus::NotConfigured => {
+            "填写录像目录；两台机器时填 Windows 能打开的共享路径（".to_string() + UNC_SAMPLE + "）"
+        }
+        RootStatus::ForeignUnixPath => {
+            format!("这是录播机（Linux）上的路径，本机打不开；Windows 要写共享地址：{UNC_SAMPLE}")
+        }
+        RootStatus::Relative => {
+            "必须是绝对路径：相对路径按服务进程的当前工作目录解析，换个启动方式就失效".to_string()
+        }
+        RootStatus::Missing => {
+            if p.unc {
+                format!("网络路径不可达：确认录播机已开共享、IP 与共享名正确、Windows 资源管理器里能打开它（{UNC_SAMPLE}）")
+            } else {
+                "目录不存在：确认路径写对，且这个目录在**本机**存在（跨机要走共享）".to_string()
+            }
+        }
+        RootStatus::NotDirectory => "这个路径是文件，不是目录".to_string(),
+        RootStatus::Denied => {
+            "没有权限：Samba 共享要账号 —— 用 cmdkey /add:<主机> /user:<用户> /pass:<口令> 存凭据，\n或让服务以有权限的账号运行".to_string()
+        }
+        RootStatus::NotWritable => {
+            "目录可读但不可写：项目与 output/ 就建在这个目录里，需要写权限（只读共享不行）".to_string()
+        }
+        RootStatus::Ok => {
+            if p.entries == Some(0) {
+                "共享已挂上但目录是空的：确认共享的就是录播姬的输出目录".to_string()
+            } else {
+                String::new()
+            }
+        }
+    };
+    // 盘符只在**出问题**时提醒：路径能用就说明这个会话确实看得到它，别没事吓人。
+    if cfg!(windows) && !p.status.is_ok() && is_drive_path(&p.path) {
+        if !s.is_empty() {
+            s.push_str("\n");
+        }
+        s.push_str("盘符映射只对当前登录会话有效，服务/托盘进程可能看不到 —— 建议直接用 ");
+        s.push_str(UNC_SAMPLE);
+    }
+    s
+}
+
+/// OS 错误 → 给人看的一行（Windows 上补常见成因）。
+fn describe_io_error(e: &std::io::Error) -> String {
+    #[cfg(windows)]
+    {
+        if let Some(code) = e.raw_os_error() {
+            let why = match code {
+                5 => "拒绝访问（共享凭据 / 目录权限）",
+                53 | 67 => "找不到网络路径（共享名或主机不对）",
+                1231 => "网络位置不可达",
+                1326 => "登录失败（凭据不对）",
+                _ => "系统错误",
+            };
+            return format!("{why}（os error {code}）");
+        }
+    }
+    format!("{}（{:?}）", e, e.kind())
+}
 /// 从录播姬的**目录名**里解析房间号。
 ///
 /// 录播姬的文件夹名模板是用户可配的，默认形如 `<房间号>-<主播名>`（实测 `26320007-耶斯yeki`），
@@ -813,5 +1051,75 @@ mod tests {
         // 跟数字无关的路径 → None（调用方保持原有行为，不瞎认领）
         assert_eq!(room_id_from_rel_path("misc/rec.flv"), None);
         assert_eq!(room_id_from_rel_path("rec.flv"), None);
+    }
+}
+
+#[cfg(test)]
+mod root_probe_tests {
+    use super::*;
+
+    #[test]
+    fn classify_root_shape_covers_the_common_mistakes() {
+        assert_eq!(classify_root_shape("   "), Some(RootStatus::NotConfigured));
+        assert_eq!(classify_root_shape("rec"), Some(RootStatus::Relative));
+        assert_eq!(classify_root_shape("./rec"), Some(RootStatus::Relative));
+        if cfg!(windows) {
+            // 录播机上那条 `/rec`：Windows 上必须点成「对方路径」，不能报「相对路径」
+            assert_eq!(classify_root_shape("/rec"), Some(RootStatus::ForeignUnixPath));
+        }
+        if cfg!(unix) {
+            assert_eq!(classify_root_shape("/tmp"), None);
+        }
+    }
+
+    #[test]
+    fn network_root_detection() {
+        assert!(is_network_root(r"\\nas\rec"));
+        assert!(is_network_root("//nas/rec"));
+        assert!(!is_network_root("D:/rec"));
+        assert!(!is_network_root("rec"));
+    }
+
+    #[test]
+    fn probe_reads_a_real_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.flv"), b"x").unwrap();
+        let p = probe_recorder_root(&dir.path().to_string_lossy(), true);
+        assert_eq!(p.status, RootStatus::Ok, "{p:?}");
+        assert!(p.readable);
+        assert_eq!(p.entries, Some(1));
+        assert_eq!(p.writable, Some(true));
+        assert!(p.hint.is_empty(), "{}", p.hint);
+        assert!(!p.unc);
+    }
+
+    #[test]
+    fn probe_reports_missing_and_not_a_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("nope");
+        let p = probe_recorder_root(&missing.to_string_lossy(), false);
+        assert_eq!(p.status, RootStatus::Missing);
+        assert!(p.os_error.is_some());
+        assert!(p.hint.contains("目录不存在"), "{}", p.hint);
+
+        let file = dir.path().join("f.txt");
+        std::fs::write(&file, b"x").unwrap();
+        let p = probe_recorder_root(&file.to_string_lossy(), false);
+        assert_eq!(p.status, RootStatus::NotDirectory);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_requires_writable_for_in_place_projects() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+        let p = probe_recorder_root(&dir.path().to_string_lossy(), true);
+        // root 用户跑测试时 chmod 拦不住写 —— 那种环境只要求「可读」成立
+        if p.writable == Some(false) {
+            assert_eq!(p.status, RootStatus::NotWritable);
+            assert!(p.hint.contains("写权限"), "{}", p.hint);
+        }
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).ok();
     }
 }

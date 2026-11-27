@@ -193,11 +193,25 @@ pub(super) fn build_ingest_patch(
 
         // 目录不可达**不拒绝**：网络盘/跨机部署时它可能只是暂时没挂上，直接 400 会让人
         // 连"先存下来"都做不到。改成回一条 warning，前端显示出来。
-        if let Some(root) = out.get("root").and_then(|v| v.as_str()) {
-            if !root.is_empty() && !std::path::Path::new(root).is_dir() {
-                warnings.push(format!(
-                    "录像目录当前不可访问（{root}）：兜底扫描会跳过它。若在网络盘/另一台机器上，请确认 YekiTrim 进程也读得到这个路径。"
-                ));
+        //
+        // ⚠️ 文案全部来自**同一个探针**（`probe_recorder_root`）：这里曾经只判 `is_dir()`，
+        // 于是「填了对方机器上的 /rec」「盘符映射服务看不到」「只读共享」全都只说一句
+        // "目录不可访问"，用户照着那句什么也修不了。
+        if let Some(root) = out.get("root").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+            let p = yekitrim_service::recorder::probe_recorder_root(root, true);
+            match p.status {
+                yekitrim_service::recorder::RootStatus::Ok => {
+                    if p.entries == Some(0) {
+                        warnings.push(format!(
+                            "录像目录可读写，但里面没有录像（{root}）：确认共享的就是录播姬的输出目录。"
+                        ));
+                    }
+                }
+                _ => warnings.push(if p.hint.is_empty() {
+                    format!("录像目录当前不可用（{root}）。")
+                } else {
+                    format!("录像目录当前不可用（{root}）：{}", p.hint)
+                }),
             }
         }
         if let Some(base) = out.get("api_base").and_then(|v| v.as_str()) {
@@ -528,5 +542,27 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **录像目录**的 warning 必须指名下一步（跨机三件事：填了对方机器的路径 / 只读 / 空目录）。
+    #[test]
+    fn recorder_root_warnings_are_actionable() {
+        let (_, _, w) = build_ingest_patch(&serde_json::json!({
+            "recorder": { "root": "rec" }
+        }))
+        .unwrap();
+        assert!(!w.is_empty(), "相对路径必须给警告");
+        assert!(
+            w.iter().any(|s| s.contains("绝对路径") || s.contains("共享地址")),
+            "{w:?}"
+        );
+
+        // 可达但空的目录：提醒"确认共享的就是录播姬输出目录"
+        let dir = tempfile::tempdir().unwrap();
+        let (_, _, w) = build_ingest_patch(&serde_json::json!({
+            "recorder": { "root": dir.path().to_string_lossy() }
+        }))
+        .unwrap();
+        assert!(w.iter().any(|s| s.contains("没有录像")), "{w:?}");
     }
 }

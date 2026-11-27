@@ -4,7 +4,7 @@
 
 ## 职责
 
-定义全站配置类型（`types.rs`）与读写合并（`mod.rs`）。两层合并: `.yekitrim/config.toml` (程序) → `yekitrim.toml` (项目, 后加载覆盖前者)。无环境变量。
+定义全站配置类型（`types.rs`）与读写合并（`mod.rs`）。两层合并: `<data>/users/<uid>/config.toml` (程序) → `yekitrim.toml` (项目, 后加载覆盖前者)。无环境变量。
 实现见 `yekitrim-core/src/config/mod.rs::load_config_at`（先 global 后 project）。
 此外提供 `patch_config_file`（设置页表单保存通道）、`write_project_config` 与几个 `save_*_path_in`（stage 落盘后回写生效值）。
 
@@ -27,7 +27,7 @@
 ### 新增配置字段步骤
 
 1. `config/types.rs` 加字段 + serde default
-2. `config/mod.rs` 的 `merge()` 加对应条件（注意 `.yekitrim/config.toml` 在 `yekitrim.toml` 之后 merge）
+2. `config/mod.rs` 的 `merge()` 加对应条件（注意 `<data>/users/<uid>/config.toml` 在 `yekitrim.toml` 之后 merge）
    —— ⚠️ **`[llm]` 是例外：它不参与 merge**，`load_config_at` 最后一句 `config.llm = load_llm_config()` 无条件覆盖，所以 LLM 相关字段只改 types/mod 的模板，不用碰 `merge()`
 3. 结构体手动 `Default` impl (有字段级 serde default 时必须)
 4. `config/mod.rs` 的模板常量 + 注释（`GLOBAL_CONFIG_TOML` = config.toml / `LLM_CONFIG_TOML` = llm.toml；仓库里**没有** `config/default.toml` 这个文件，旧文档里的写法是错的）
@@ -53,7 +53,7 @@ overwrite = false
 
 ⚠️ `llm.toml` 的 `extra_params` 样例 2026-11-26 已**取消全局那份**：逃逸口只按模型写在 `[[llm.models]].extra_params`。文档与模板不一致时**以模板为准**。
 
-**`.yekitrim/config.toml` / `.yekitrim/llm.toml`** — 程序配置与 LLM 配置：**字段与注释的权威是 `config/mod.rs` 的两个模板常量**，逐字样例见 §1.2 / §1.3（`[asr]` 的 14 个键、`[correct]`、`[detection]`、`[cutting]`、`[sfx]`；llm 的 `[llm]` / `[llm.defaults]` / `[[llm.providers]]` / `[[llm.models]]` / `[llm.links.<link>]` + 它的 `.prompt` / `.run` 子表）。⚠️ S4 起 **config.toml 里没有任何 LLM 行为键**（提示词 / 窗口 / 并发 / 评分权重都在 llm.toml）。
+**`<data>/users/<uid>/config.toml` / `llm.toml`** — 程序配置与 LLM 配置：**字段与注释的权威是 `config/mod.rs` 的两个模板常量**，逐字样例见 §1.2 / §1.3（`[asr]` 的 14 个键、`[correct]`、`[detection]`、`[cutting]`、`[sfx]`；llm 的 `[llm]` / `[llm.defaults]` / `[[llm.providers]]` / `[[llm.models]]` / `[llm.links.<link>]` + 它的 `.prompt` / `.run` 子表）。⚠️ S4 起 **config.toml 里没有任何 LLM 行为键**（提示词 / 窗口 / 并发 / 评分权重都在 llm.toml）。
 
 ### 死字段（2026-10：**已删除**，别再捡回来）
 
@@ -65,7 +65,7 @@ overwrite = false
 
 ### ⚠️ 程序配置只有一个位置（2026-11-13，方案 A）
 
-**唯一路径** = `config::global_config_path()` = `<数据>/users/<uid>/.yekitrim/config.toml`。读写两侧都用它：`load_global_config` / `load_config_at` / `load_llm_config` / `ensure_global_config` / 设置页与接入页的写通道。**别再新增"顶层 config.toml"候选位置。**
+**唯一路径** = `config::global_config_path()` = `<数据>/users/<uid>/config.toml`。读写两侧都用它：`load_global_config` / `load_config_at` / `load_llm_config` / `ensure_global_config` / 设置页与接入页的写通道。**别再新增"顶层 config.toml"候选位置。**
 
 启动迁移 `migrate_top_level_config_to`：`[ingest] [storage] [publish] [auth]` 顶层赢，其余段与 `llm.toml` 账号赢（只补缺失），旧文件改名 `*.migrated-<日期>.bak`；幂等、fail-soft。判据 `config::config_migration_tests`；正文 `docs/plan/single-user-config.md`，事故背景见 §4。
 
@@ -77,7 +77,7 @@ overwrite = false
 
 | 文件 | 位置 | 升级后写回？ |
 |---|---|---|
-| `config.toml` / `llm.toml` / `server.toml` | `<数据目录>/.yekitrim/` | ✅ 写回（先备份 `.bak-v<旧>`），一个目录各一份 |
+| `config.toml` / `llm.toml` / `server.toml` | `<data>/` | ✅ 写回（先备份 `.bak-v<旧>`），一个目录各一份 |
 | `yekitrim.toml` / `polish.toml` | **每个工程一份** | ❌ **只在内存里升，不碰磁盘**（工程可能几百个、还可能在网络盘上） |
 
 读的时候三种情况：**版本相同 ⇒ 原样用** · **版本更低 ⇒ 先迁移再解析** · **版本更高 ⇒ 一个字节都不动**（那是更新的程序写的；没有这一条，用旧版 exe 打开新配置会把文件"升"回去 —— 直接损坏用户数据）。缺键 = **0**。
@@ -103,9 +103,13 @@ overwrite = false
 ⚠️ **工程配置只允许带「按工程变化」的段**（`write_project_config` 的唯一口径）：`[asr]` / `[detection]` / `[cutting]` / `[sfx]`。`[llm]` / `[correct]` / `[auth]` / `[publish]` / `[storage]` / `[ingest]`（含子表）**一律不许抄进工程文件** —— 工程目录会被共享、搬到 NAS、发给别人（webhook 模式下甚至直接建在录像目录里）：把 `token_hash` / `api_pass` / `passkey_file` 抄进去就是泄漏；而且 `merge()` 把项目段当覆盖值 ⇒ 管理员改了全局口令、老工程拿旧副本顶回去。实现在 `config::project_config_body`，判据 `config::project_template_tests`。
 ⚠️ **存量工程不自动剥离**（R4：已有文件不无提示重写）：老工程里已经抄进去的段会留着；要清就用户自己删（或重建工程）。别在 `patch_config_file` / `merge` 的读路径上顺手剥离 —— 那会静默改用户文件，也分不清「我们抄的」与「用户自己写的工程级覆盖」。
 
-`yekitrim config init` 生成 `.yekitrim/config.toml`（`[asr]` + `[detection]` + `[correct]` + `[sfx]`）和 `.yekitrim/llm.toml`（`[llm]`，覆盖写）。`yekitrim server` 启动时若程序配置缺失会自动补齐（`yekitrim_service::ensure_global_config`）：只创建缺失文件；已存在但 TOML 语法错误的会备份为 `*.toml.broken` 后重建（坏文件会让整份配置被忽略）。设置页表单只覆盖常用项，保存走 `config::patch_config_file`（toml_edit 合并，保留其他 section 与注释），表单数据源用 `/api/config` 的 `global_config`（global-only），不能用 merged 的 `config`。
+`yekitrim config init` 生成 `<data>/users/<uid>/config.toml`（`[asr]` + `[detection]` + `[correct]` + `[sfx]`）和 `<data>/users/<uid>/llm.toml`（`[llm]`，覆盖写）。`yekitrim server` 启动时若程序配置缺失会自动补齐（`yekitrim_service::ensure_global_config`）：只创建缺失文件；已存在但 TOML 语法错误的会备份为 `*.toml.broken` 后重建（坏文件会让整份配置被忽略）。设置页表单只覆盖常用项，保存走 `config::patch_config_file`（toml_edit 合并，保留其他 section 与注释），表单数据源用 `/api/config` 的 `global_config`（global-only），不能用 merged 的 `config`。
 
 ⚠️ **`patch_config_file` 支持两层以上（递归深合并）**：值是对象时进子表继续合并 —— `{"ingest": {"recorder": {"api_base": …}}}` 只改命中的键，`[ingest.recorder]` 里没提到的兄弟键（`root`/`api_user`/`api_pass`…）与**段内注释**都保留。**别再退回"一层 section → key"**：那时 `recorder` 会被整项换成 inline table，把整张子表静默丢掉（文件仍是合法 TOML，不报错，下次读配置才发现值没了）。回归钉子：`config::patch_config_tests`。新增需要写嵌套 section 的表单时直接用这个通道，不必再开专用端点。
+
+⚠️ **`move_into_managed` 已于 v7 退场**（2026-11-27）：录播入库恒为「原地建项目」，不再搬源文件。
+删配置键按五步走 —— `CONFIG_VERSION` 6→7 + `retired_in(6)` 登记 `ingest.recorder.move_into_managed`
++ 字段/`Default`/`merge()`/模板一起删；判据 `config::version::v7_retires_move_into_managed`。
 
 ⚠️ **`[ingest.recorder]` 的新字段（`kind` / `api_key` / `container_root`）必须同步进 `merge()`**（2026-11）：`merge` 是逐字段手写的，漏一条的症状是**文件里写了、`load_global_config()` 永远读默认值**（设置页保存成功、行为完全没变，还没有任何报错）。`kind` 的默认是 `"bililive"`，判断要写成"**≠ bililive 才覆盖**" —— 写成"非空才覆盖"会让默认值在合并时把已选的值打回去。回归钉子：`config::recorder_backend_merge_tests`。
 
@@ -154,7 +158,7 @@ overwrite = false
 
 ### LLM 并发与加速（2026-09）
 
-- **一个旋钮**：`.yekitrim/llm.toml` 的 `[llm] max_concurrent`（默认 3），**事件检测 / 精修事件生成 / 字幕订正共用**；
+- **一个旋钮**：`<data>/users/<uid>/llm.toml` 的 `[llm] max_concurrent`（默认 3），**事件检测 / 精修事件生成 / 字幕订正共用**；
   某条链路要单独压就写 `[llm.links.<link>.run] max_concurrent`。读法只有两个入口：`concurrency(None)`（全局）与
   `concurrency_for(link)` / `run_for(link).max_concurrent`（链路）。**别再在代码里写死 `3`，也别让某条链路偷偷用自己的。**
   设置页「LLM 配置 → 链路配置」的「默认参数」块是全局旋钮的输入框。

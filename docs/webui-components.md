@@ -1384,6 +1384,15 @@ A 的 `polish.toml` 逐字节不变、B 的磁盘标题仍是 B 自己的）。
   （运行时是**精确字符串相等**，放行 `192.168.1.0/24` 只会让来源被静默拦掉）；`api_base` 非空必须带 scheme；
   `root` 不可达**不拒绝**、只回 `warnings`；审计只记**键名**。`POST /api/admin/ingest/token` 的明文**只在这一次响应里**回，
   `disable` 只关开关并保留 token。
+  - **「测试连接」是双结果**（2026-11-27）：`POST /api/admin/recorder/test` 回 `api{ok,error}` 与
+    `root{status,ok,readable,writable,entries,hint}` 两段，界面必须**分两行**显示（接口：版本/房间数；
+    录像目录：可读写/条目数），失败那行下面显示 `hint`；只有两者都通过才弹「连接正常」。
+  - ⚠️ **保存返回的 `warnings` 必须显示**（目录不可达 / 不可写 / 空目录 / 填了对方机器的 `/rec` / 盘符映射）：
+    以前 `save()` 收到就丢，于是"保存成功"与"其实入不了库"在界面上长得一样。
+  - ⚠️ **路径分类不在前端做**：`ForeignUnixPath` / `NotWritable` 这些判定**只有一份**（Rust 的
+    `recorder::probe_recorder_root`），前端只把 `status` 映射成人话 —— 抄一份就会与后端漂移。
+  - 顶部那枚状态 chip 三档：未配置 / 已配置（目录未验证）/ **目录不可用**（`root_status.ok === false`）。
+    第三档别退回「已配置」——跨机报障时那是最误导人的一档。
 - `DownloaderConfig`：设置页「B站下载器」卡：引擎/清晰度/限速/并发/cookie + 一键安装（显示 sha256 校验结果）。
 - `InviteManager`：设置页「注册与邀请码」卡：开关 / 生成 / **列表里明文一直可见 + 一键复制** / 未使用·已使用 chip /
   绑给了谁 / 撤销；行 `flex-wrap` 保证窄窗口换行不撑破卡片。

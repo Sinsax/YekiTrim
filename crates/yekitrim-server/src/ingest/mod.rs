@@ -107,6 +107,54 @@ where
     }
 }
 
+
+/// 录像目录探针的进程级缓存槽（与 [`root_probe_cached`] / [`last_root_probe`] 共用）。
+type RootProbeSlot = std::sync::Mutex<
+    Option<(std::time::Instant, String, bool, yekitrim_service::recorder::RootProbe)>,
+>;
+static ROOT_PROBE_CACHE: std::sync::OnceLock<RootProbeSlot> = std::sync::OnceLock::new();
+
+fn root_probe_slot() -> &'static RootProbeSlot {
+    ROOT_PROBE_CACHE.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// 录像目录探针（60s 内复用上次结果）。
+///
+/// ⚠️ **GET 接口绝不允许现场探测**：设置页会反复读配置，而一个死 UNC 路径的 `metadata`
+/// 能挂几十秒 —— 那等于把页面拖死。只有「测试连接 / 保存配置」这两条显式路径会真探测，
+/// 并把结果留在这里；读侧只拿缓存（`None` = 还没测过）。
+pub(crate) fn root_probe_cached(
+    root: &str,
+    want_writable: bool,
+) -> yekitrim_service::recorder::RootProbe {
+    const TTL: std::time::Duration = std::time::Duration::from_secs(60);
+    let key = root.trim().to_string();
+    {
+        let g = root_probe_slot().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((at, path, ww, probe)) = g.as_ref() {
+            if *ww == want_writable && *path == key && at.elapsed() < TTL {
+                return probe.clone();
+            }
+        }
+    }
+    let probe = yekitrim_service::recorder::probe_recorder_root(&key, want_writable);
+    *root_probe_slot().lock().unwrap_or_else(|e| e.into_inner()) = Some((
+        std::time::Instant::now(),
+        key,
+        want_writable,
+        probe.clone(),
+    ));
+    probe
+}
+
+/// 读上一次校验结论（**不探测、不看 TTL**）：配置视图用它显示「上次校验」。
+pub(crate) fn last_root_probe(root: &str) -> Option<yekitrim_service::recorder::RootProbe> {
+    let key = root.trim();
+    let g = root_probe_slot().lock().unwrap_or_else(|e| e.into_inner());
+    g.as_ref()
+        .filter(|(_, path, _, _)| path == key)
+        .map(|(_, _, _, probe)| probe.clone())
+}
 /// 大小写不敏感的多别名取值（`SessionId` / `session_id` / `sessionId` 都认）。
 ///
 /// 官方的 `RoomId` / `ShortId` 是**数字**，所以这里同时接受字符串与数字。

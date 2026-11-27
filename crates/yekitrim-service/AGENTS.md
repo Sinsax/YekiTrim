@@ -29,7 +29,7 @@ LLM 用量账本（`usage`）、运行日志总线（`logbus`）、单实例锁�
 - **产物落盘（唯一通道）**：`assets::bind_asr_artifact` / `bind_derived_material`；
   读侧 `assets::{AssetKind, asset_status, list_items, scan_candidates, set_asset, bind_material, remove_material,
   slot_bound, preload_policy}`。
-- **账本**：`db::{Db, SCHEMA_VERSION, data_dir, db_path, now_secs}`；`user::cmd_*`；`invite::cmd_*`；
+- **账本**：`db::{Db, SCHEMA_VERSION, ledger_dir, db_path, now_secs}`；`user::cmd_*`；`invite::cmd_*`；
   保留期清理：`Db::purge_old_audit(days)` / `Db::purge_old_llm_usage(days)`（只删**超过保留期**的行，
   `0` = 关闭清理 = 一条都不删；由 `yekitrim-server` 的每日维护调用，本 crate 不自己起定时器）；
   `auth::{hash_password, verify_password, validate_password, generate_initial_password, new_token,
@@ -41,12 +41,15 @@ LLM 用量账本（`usage`）、运行日志总线（`logbus`）、单实例锁�
   `prune_old_logs(dir, days)` 是**按天日志的保留期清理**（判据 = **文件名里的日期**，保留最近
   `days` 天含今天，`0` = 关闭）；`render-*.log` **不归它管**（`render_proc::prune_logs` 按份数留 20 份）。
 - **采集**：`ingest::{cmd_token, cmd_status, generate_token}`；`recorder::{RecorderBackend, RecorderClient,
-  BiliLiveToolsClient, RecorderRoom, room_id_from_dir_name, room_id_from_rel_path}`（`RecorderBackend` 按
+  BiliLiveToolsClient, RecorderRoom, room_id_from_dir_name, room_id_from_rel_path,
+  RootStatus, RootProbe, probe_recorder_root, classify_root_shape, is_network_root}`
+  （后五个是**录像目录校验的唯一判据**：跨机时用户自己映射盘，YekiTrim 只校验「能不能读/写」；
+  判「Windows 上填了对方的 `/rec`」「盘符映射」「只读共享」都在这里，别在别处再写 `is_dir()`）。（`RecorderBackend` 按
   `[ingest.recorder].kind` 选后端：录播姬 `/api/room` + Basic；biliLive-tools `/recorder/list` +
   `Authorization: <passkey>`）。
 - **配置**：`init_config::{init_project, init_global_config, ensure_global_config, validate_toml, show_config,
-  download_models}`。⚠️ 程序配置只有一个位置 = `config::global_config_path()`（`users/<uid>/.yekitrim/`，
-  2026-11-13 收敛；顶层那两份已退役）—— 别在别处拼 `.yekitrim/config.toml`。CLI 侧 `yekitrim user *` / `yekitrim usage` / `yekitrim doctor` / `yekitrim ingest *` 的实现都在本 crate。
+  download_models}`。⚠️ 程序配置只有一个位置 = `config::global_config_path()`（`users/<uid>/`，
+  2026-11-13 收敛；顶层那两份已退役）—— 别在别处拼 `data_dir()/users/<uid>/config.toml`。CLI 侧 `yekitrim user *` / `yekitrim usage` / `yekitrim doctor` / `yekitrim ingest *` 的实现都在本 crate。
 
 ## 边界
 

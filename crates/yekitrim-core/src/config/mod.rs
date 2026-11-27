@@ -83,7 +83,7 @@ pub const GLOBAL_CONFIG_TOML: &str = r#"# YekiTrim 全局默认配置 — 所有
 # 相同参数会被 yekitrim.toml 覆盖
 # ⚠️ config_version 是**配置结构版本**：程序读它决定要不要跑迁移。
 #    手工改配置时**别动这一行**（改了会让迁移跑错；见 config/version.rs）。
-config_version = 6
+config_version = 7
 
 [asr]
 # ASR 模式: "single"（SenseVoice 单模型）| "hybrid"（SenseVoice 打轴 + qwen3 填词）
@@ -284,8 +284,7 @@ container_root = ""
 watch_interval_mins = 10
 # SessionEnded 之后再等多久没有新 FileClosed 就认为本场结束
 finalize_idle_mins = 5
-# 落位策略：true = 移入托管项目目录（同盘 rename，跨盘 copy+校验+删源）
-move_into_managed = true
+# 落位：项目与产物**建在录像所在目录**（不搬源文件，故该目录需要可写）
 # 多分片会话合并为单个 source.mp4（ffmpeg -f concat -c copy）
 concat_files = true
 # 认定为录像的扩展名
@@ -338,7 +337,7 @@ multi_user = false
 /// 写小了的话新装的文件会被"升级"一次（多一个 .bak-v1），写大了则是本程序读不懂自己的模板。
 pub const LLM_CONFIG_TOML: &str = r#"# YekiTrim LLM 配置 — 独立于工程配置（v5：接口 / 模型清单 / 默认参数 / 链路覆盖 + 链路提示词与行为）
 # ⚠️ 配置结构版本，别手改（见 config/version.rs）
-config_version = 6
+config_version = 7
 
 [llm]
 # 当前用哪一份接口（= 下面 [[llm.providers]] 的 id；留空 = 第一份）
@@ -966,9 +965,6 @@ fn merge(base: &mut Config, overlay: Config) {
     if overlay.ingest.recorder.finalize_idle_mins != 5 {
         base.ingest.recorder.finalize_idle_mins = overlay.ingest.recorder.finalize_idle_mins;
     }
-    if !overlay.ingest.recorder.move_into_managed {
-        base.ingest.recorder.move_into_managed = false;
-    }
     if !overlay.ingest.recorder.concat_files {
         base.ingest.recorder.concat_files = false;
     }
@@ -1254,7 +1250,7 @@ pub fn load_config_for(owner: crate::owner::Owner) -> Config {
 /// ⚠️ 这个文件里有**明文 api_key**。按用户分之后，每个账号只读到自己那份 ——
 /// 这是相对"全局一份、所有人共用同一个 key"的**安全净改善**。
 pub fn load_llm_config_for(owner: crate::owner::Owner) -> LlmConfigV4 {
-    let path = crate::owner::state_dir(owner).join("llm.toml");
+    let path = crate::owner::llm_config_path(owner);
     if !path.exists() {
         return LlmConfigV4::default();
     }
@@ -1281,7 +1277,7 @@ pub fn load_llm_config_for(owner: crate::owner::Owner) -> LlmConfigV4 {
 /// 单人时指向现状文件；多用户时指向该账号自己的两份。语义与
 /// [`global_config_parse_error`] 完全一致，只是换了 base 目录。
 pub fn config_parse_error_for(owner: crate::owner::Owner) -> Option<String> {
-    let home = crate::owner::state_dir(owner);
+    let home = crate::owner::owner_root(owner);
     for (name, what) in [("config.toml", "程序配置"), ("llm.toml", "LLM 配置")] {
         let path = home.join(name);
         let Ok(raw) = std::fs::read_to_string(&path) else { continue };
@@ -1394,8 +1390,8 @@ pub fn migrate_top_level_config_to(
     if !matches!(owner, crate::owner::Owner::User(_)) {
         return Ok(Vec::new());
     }
-    let top = crate::path::yekitrim_home_at(data_home);
-    let dest = crate::owner::state_dir_at(owner, data_home);
+    let top = data_home.join("legacy-config");
+    let dest = crate::owner::owner_root_at(owner, data_home);
     if top == dest {
         return Ok(Vec::new());
     }
@@ -2198,7 +2194,7 @@ fn global_config_parse_error_points_at_the_real_file_and_needs_a_real_break() {
     // 起点干净（同 pid 同 seq 理论上不会撞，这里是纵深防御）
     let _ = std::fs::remove_dir_all(&dir);
     let uid = crate::owner::local_admin_uid();
-    let home = dir.join("users").join(uid.to_string()).join(".yekitrim");
+    let home = dir.join("users").join(uid.to_string());
     std::fs::create_dir_all(&home).unwrap();
     // 顶层那份已退役：放一份**坏**的进去，确认它不再参与判定（否则这条判据会假绿/假红）
     std::fs::create_dir_all(dir.join(".yekitrim")).unwrap();
@@ -2723,15 +2719,16 @@ mod config_migration_tests {
     fn migration_archives_top_level_files_and_is_idempotent() {
         let home = tmp_home("archive");
         let uid = 7;
-        let dest = crate::owner::state_dir_at(Owner::User(uid), &home);
+        let dest = crate::owner::owner_root_at(Owner::User(uid), &home);
         std::fs::create_dir_all(&dest).unwrap();
-        // 顶层（运行时真读的那份）
+        // 迁移源（现在是 layout 迁移留下的 legacy-config）
+        std::fs::create_dir_all(home.join("legacy-config")).unwrap();
         std::fs::write(
-            home.join(".yekitrim/config.toml"),
+            home.join("legacy-config/config.toml"),
             "[ingest]\nwebhook_enabled = true\n[detection]\nreference_titles = []\n",
         )
         .unwrap();
-        std::fs::write(home.join(".yekitrim/llm.toml"), "[llm]\napi_key = \"\"\n").unwrap();
+        std::fs::write(home.join("legacy-config/llm.toml"), "[llm]\napi_key = \"\"\n").unwrap();
         // 账号那份（设置页写的那份）
         std::fs::write(
             dest.join("config.toml"),
@@ -2745,9 +2742,9 @@ mod config_migration_tests {
         for bak in &archived {
             assert!(bak.exists(), "留档文件必须真的在: {}", bak.display());
         }
-        // 顶层不再有 config.toml / llm.toml（否则 `ensure_global_config` 会以为还没迁完）
-        assert!(!home.join(".yekitrim/config.toml").exists());
-        assert!(!home.join(".yekitrim/llm.toml").exists());
+        // 迁移源不再有 config.toml / llm.toml（否则 `ensure_global_config` 会以为还没迁完）
+        assert!(!home.join("legacy-config/config.toml").exists());
+        assert!(!home.join("legacy-config/llm.toml").exists());
         // 合并结果：平台段顶层赢、内容段账号赢、key 没被抹
         let cfg: toml::Value = toml::from_str(&std::fs::read_to_string(dest.join("config.toml")).unwrap()).unwrap();
         assert_eq!(cfg["ingest"]["webhook_enabled"].as_bool(), Some(true));
@@ -2772,7 +2769,7 @@ mod config_migration_tests {
             .unwrap_or_else(|e| e.into_inner());
         let home = tmp_home("load-at");
         let uid = crate::owner::local_admin_uid();
-        let state = home.join("users").join(uid.to_string()).join(".yekitrim");
+        let state = home.join("users").join(uid.to_string());
         std::fs::create_dir_all(&state).unwrap();
         std::fs::write(state.join("config.toml"), "[detection]\n").unwrap();
         // ⚠️ S4：提示词已经住 llm.toml 的 [llm.links.detect.prompt] —— 账号那份才是权威。
@@ -2820,9 +2817,10 @@ mod config_migration_tests {
     #[test]
     fn local_owner_is_a_no_op() {
         let home = tmp_home("local");
-        std::fs::write(home.join(".yekitrim/config.toml"), "[asr]\nmode = \"single\"\n").unwrap();
+        std::fs::create_dir_all(home.join("legacy-config")).unwrap();
+        std::fs::write(home.join("legacy-config/config.toml"), "[asr]\nmode = \"single\"\n").unwrap();
         assert!(migrate_top_level_config_to(Owner::Local, &home).unwrap().is_empty());
-        assert!(home.join(".yekitrim/config.toml").exists(), "Local 不该动顶层文件");
+        assert!(home.join("legacy-config/config.toml").exists(), "Local 不该动迁移源文件");
         let _ = std::fs::remove_dir_all(&home);
     }
 }
