@@ -288,7 +288,7 @@
           <div class="card" data-cap="settings.llm-models">
             <LlmModelList :models="form.llm.models" :provider-id="editingProviderId"
                           :base-url="effBaseUrl" :api-key="curApiKeyDraft"
-                          @probe="onProbeCaps" />
+                          @probe="onProbeCaps" @set-default="setDefaultModel" />
           </div>
         </template>
 
@@ -824,6 +824,22 @@ function onProbeCaps(payload) {
     else if (probeCaps[id]) { delete probeCaps[id]; changed = true }
   }
   if (changed) loadCaps()
+}
+
+/**
+ * 「设为默认模型」：把这支写成**所有链路**的模型（用户 2026-11-27："将所有链路都覆盖为这个模型"）。
+ * ⚠️ 一次性改所有链路是个**大动作**，但用户要的就是"一键全用它"；保存前不会落盘，撤销就再点别的。
+ */
+function setDefaultModel(payload) {
+  const p = payload || {}
+  const pid = String(p.provider || '').trim()
+  const mid = String(p.model || '').trim()
+  if (!pid || !mid) return
+  for (const row of Object.values(form.llm.links || {})) {
+    if (!row || typeof row !== 'object') continue
+    row.provider = pid
+    row.model = mid
+  }
 }
 
 // base_url / model 一变就重取能力（等 400ms 再发，别边打字边打接口）

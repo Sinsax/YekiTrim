@@ -1,21 +1,15 @@
 <script setup>
 // LlmModelList — 「模型配置」右栏下半：**某一个接口**的模型清单。
 //
-// 用户口径（2026-11-27，第三次收敛）：
-//  · 按钮叫「**获取模型**」；拿到的候选**显示在表格上面**（在模型行/删除之前），点「加入」才落盘。
-//  · 拿到之后模型 id 那一格是**可下拉的输入框**（`<datalist>`）—— 能选已有的，也**永远能手打**；
-//    获取失败就**行内照实说**，手打这条照旧可用（两条路都得在）。
-//  · 每行**只有 id + 显示名**：档位 / 思考强度 / 输入模态 / 上下文 / 额外参数/overrides 全部不在这里
-//    （前几项归链路那边；额外参数与 overrides 已按用户口径整块删掉）。
-//
-// 两条硬口径（沿用 L3）：
-//  ① 获取**只填建议、不改生效值**：候选进上面那块，点「加入」才写进清单（保存后才落 llm.toml）。
-//  ② **清单里的值说了算**：链路只能从这张表里选。
+// 用户口径（2026-11-27 第五版）：
+//  · **候选是列表**（一行一支：id · 名字 · 「加入」），不是原生 datalist/标签云 ——
+//    原生下拉渲染成"均衡/极致/DeepSeek-V4-Pro"那种样子，看不懂（用户截图）。
+//  · 「获取模型」在工具条；每一行动作是 **「设为默认模型」（把所有链路都改成用这一支）** + 删除。
+//  · 每行只有 id + 显示名；参数全归链路那边。
 //
 // ⚠️ models 是父层的 reactive **全量数组**（本组件按 provider 过滤后原地增删改），保存仍走父层的 saveLlm。
-// ⚠️ **别把探针的 caps 写进 `catalog`**：catalog 是清单形状（input = ["text"] / levels = [{level,value}]），
-//    caps 是能力面（input = {text=true}）—— 写进去文件合法、**反序列化才炸**，整份 llm.toml 会被拒收
-//    （2026-11-27 真机事故）。现在这条路径整个不存在了。
+// ⚠️ **别把探针的 caps 写进 catalog**：catalog 是清单形状（input = ["text"] / levels = [{level,value}]），
+//    caps 是能力面（input = {text=true}）—— 写进去文件合法、**反序列化才炸**，整份 llm.toml 会被拒收。
 import { computed, reactive, ref } from 'vue'
 import Icon from '../Icon.vue'
 import { confirmDialog } from '../../stores/dialog'
@@ -30,11 +24,10 @@ const props = defineProps({
   baseUrl: { type: String, default: '' },
   apiKey: { type: String, default: '' }
 })
-const emit = defineEmits(['probe'])
+const emit = defineEmits(['probe', 'set-default'])
 
 /** 这一份接口名下的行（同一个对象引用 —— 删除时用 indexOf 找回全量里的位置） */
 const rows = computed(() => props.models.filter((m) => String(m.provider || '') === String(props.providerId || '')))
-/** 过滤词（按 id / 显示名，大小写不敏感） */
 const filter = ref('')
 const shown = computed(() => {
   const q = String(filter.value || '').trim().toLowerCase()
@@ -42,19 +35,14 @@ const shown = computed(() => {
   return q ? list.filter((m) => String(m.id || '').toLowerCase().includes(q) || String(m.label || '').toLowerCase().includes(q)) : list
 })
 
-/** 获取结果：{ state: idle|loading|done|error, models: [], note } —— **失败 ≠ 空列表** */
+/** 候选：{ state: idle|loading|done|error, models: [], note } —— **失败 ≠ 空列表** */
 const remote = reactive({ state: 'idle', models: [], note: '' })
 const fetching = ref(false)
-/** 哪一行的「获取模型」在跑 / 刚有结果（状态只显示在这一行，不铺一条横条） */
-const fetchRow = ref(null)
-/** datalist 的 id：每个接口一份，别让两份接口的候选串台 */
-const listId = computed(() => 'ml-cand-' + (String(props.providerId || '') || 'x'))
 const chosen = (id) => rows.value.some((m) => String(m.id || '').trim() === String(id || '').trim())
 
 /** 「获取模型」：按**这一份接口**的地址探一次（表命中不联网；表外才真发） */
-async function doFetch(row) {
+async function doFetch() {
   if (fetching.value) return
-  fetchRow.value = row || null
   const base = String(props.baseUrl || '').trim()
   if (!base) { remote.state = 'error'; remote.note = '先在这份接口上面把 API 地址填好'; return }
   fetching.value = true
@@ -66,7 +54,7 @@ async function doFetch(row) {
     remote.models = Array.isArray(r.models) ? r.models : []
     remote.note = '来源：' + (MODEL_SOURCE_ZH[r.source] || r.source) + '（' + remote.models.length + ' 支）'
       + (r.note ? ' · ' + r.note : '')
-    // 能力面交给父层（连接卡的能力 chip / 链路档位候选），**不落盘**
+    // 能力面交给父层（链路档位候选），**不落盘**
     emit('probe', { providerId: props.providerId, models: remote.models })
   } catch (e) {
     remote.state = 'error'
@@ -99,6 +87,11 @@ async function removeModel(m) {
   const i = props.models.indexOf(m)
   if (i >= 0) props.models.splice(i, 1)
 }
+/** 设为默认模型：把这支写成**所有链路**的模型（父层落） */
+function setDefault(m) {
+  if (!m || !String(m.id || '').trim()) return
+  emit('set-default', { provider: String(m.provider || ''), model: String(m.id || '').trim() })
+}
 </script>
 
 <template>
@@ -108,8 +101,35 @@ async function removeModel(m) {
       <span class="ml-hint" title="「哪个任务用哪支」里的候选只来自这张表">链路只能从这里选</span>
       <span class="ml-spacer"></span>
       <input v-model="filter" class="ml-filter" placeholder="过滤…" aria-label="过滤本接口的模型">
+      <button class="ml-mini" type="button" :disabled="fetching || !providerId"
+              title="按这个接口的地址取一次模型清单（内置目录命中就不联网）"
+              @click="doFetch">{{ fetching ? '获取中…' : '获取模型' }}</button>
       <button class="ml-mini" type="button" :disabled="!providerId" title="手填一行（清单里没有这一支时用）"
               @click="addManual">+ 添加模型</button>
+    </div>
+
+    <!-- 候选：**列表**（一行一支 + 加入），不是原生下拉 / 不是标签云 -->
+    <div v-if="remote.state !== 'idle'" class="ml-remote">
+      <div class="ml-remote-head">
+        <b>候选</b>
+        <span v-if="remote.note" class="ml-muted" :title="remote.note">{{ remote.note }}</span>
+        <span class="ml-spacer"></span>
+        <button v-if="remote.state === 'error'" class="ml-mini" type="button" @click="doFetch">重试</button>
+      </div>
+      <div v-if="remote.state === 'loading'" class="ml-muted">获取中…</div>
+      <div v-else-if="remote.state === 'error'" class="ml-err" :title="remote.note" data-ml-fetch="error">
+        获取失败：{{ remote.note }}
+      </div>
+      <div v-else-if="!remote.models.length" class="ml-muted">服务器没返回模型 —— 点「+ 添加模型」手打一行。</div>
+      <div v-else class="ml-cand-list">
+        <div v-for="c in remote.models" :key="c.id" class="ml-cand-row">
+          <span class="ml-rid" :title="c.id">{{ c.id }}</span>
+          <span class="ml-rname" :title="c.name || ''">{{ c.name || '' }}</span>
+          <button class="ml-mini" type="button" :disabled="chosen(c.id)" @click="add(c.id)">
+            {{ chosen(c.id) ? '已加入' : '加入' }}
+          </button>
+        </div>
+      </div>
     </div>
 
     <table v-if="rows.length" class="ml-tbl">
@@ -122,23 +142,13 @@ async function removeModel(m) {
       </thead>
       <tbody>
         <tr v-for="(m, i) in shown" :key="i">
-          <!-- id 输入框**收窄**（用户 2026-11-27："占用太多了"）：候选走 datalist，能选也能手打 -->
           <td class="ml-c-id">
-            <input v-model.trim="m.id" class="ml-input" :list="listId"
-                   placeholder="如 deepseek-chat" spellcheck="false">
-            <div v-if="fetchRow === m && remote.state === 'loading'" class="ml-note">获取中…</div>
-            <div v-else-if="fetchRow === m && remote.state === 'error'" class="ml-note err" data-ml-fetch="error">
-              获取失败：{{ remote.note }}
-            </div>
-            <div v-else-if="fetchRow === m && remote.state === 'done'" class="ml-note">
-              {{ remote.models.length }} 支可选 · 点上面这一格下拉
-            </div>
+            <input v-model.trim="m.id" class="ml-input" placeholder="如 deepseek-chat" spellcheck="false">
           </td>
           <td class="ml-c-label"><input v-model="m.label" class="ml-input" placeholder="（可空，空则用 id）"></td>
           <td class="ml-act">
-            <button class="ml-mini" type="button" :disabled="fetching || !providerId"
-                    title="按这个接口的地址取一次模型清单（内置目录命中就不联网）"
-                    @click="doFetch(m)">{{ fetchRow === m && fetching ? '获取中…' : '获取模型' }}</button>
+            <button class="ml-mini" type="button" title="把所有任务链路都改成用这一支"
+                    @click="setDefault(m)">设为默认模型</button>
             <button class="ml-ico danger" title="从清单删除（保存后生效）" @click="removeModel(m)">
               <Icon name="trash" :size="12" />
             </button>
@@ -146,12 +156,9 @@ async function removeModel(m) {
         </tr>
       </tbody>
     </table>
-    <datalist :id="listId">
-      <option v-for="c in remote.models" :key="c.id" :value="c.id">{{ c.name || c.id }}</option>
-    </datalist>
 
     <div v-if="!rows.length" class="ml-empty">
-      这一份接口还没有模型 —— 点「+ 添加模型」手填，或点那一行的「获取模型」拉清单。
+      这一份接口还没有模型 —— 点「获取模型」从候选里挑，或「+ 添加模型」手打一行。
     </div>
   </div>
 </template>
@@ -165,20 +172,25 @@ async function removeModel(m) {
 .ml-spacer { flex:1 1 auto; }
 .ml-filter { width:120px; font-size:11px; padding:3px 6px; }
 .ml-mini { font-size:11px; padding:3px 8px; }
-.ml-res { font-size:11px; line-height:1.6; }
+.ml-muted { font-size:11px; color:var(--muted); }
 .ml-err { font-size:11px; color:var(--danger, #e5484d); }
+.ml-remote { border:1px solid var(--line); border-radius:var(--r-sm); background:var(--surface-2);
+  padding:6px 8px; display:flex; flex-direction:column; gap:4px; max-height:200px; overflow:auto; }
+.ml-remote-head { display:flex; align-items:center; gap:8px; font-size:11px; }
+.ml-cand-list { display:flex; flex-direction:column; }
+.ml-cand-row { display:flex; align-items:center; gap:8px; padding:2px 0; font-size:11px; }
+.ml-rid { font-family:var(--mono, monospace); color:var(--fg); }
+.ml-rname { color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ml-cand-row .ml-mini { margin-left:auto; }
 .ml-tbl { width:100%; border-collapse:collapse; font-size:12px; }
 .ml-tbl th { text-align:left; font-weight:500; font-size:11px; color:var(--muted);
   padding:4px 6px; border-bottom:1px solid var(--line); }
 .ml-tbl td { padding:4px 6px; border-bottom:1px solid var(--line-dim, var(--line)); }
-.ml-c-id { width:46%; }
-.ml-c-label { width:34%; }
-.ml-c-act { width:150px; white-space:nowrap; }
-.ml-note { font-size:11px; color:var(--muted); margin-top:2px; }
-.ml-note.err { color:var(--danger, #e5484d); }
+.ml-c-id { width:42%; }
+.ml-c-label { width:30%; }
+.ml-c-act { width:190px; white-space:nowrap; text-align:right; }
+.ml-c-act .ml-mini { margin-right:6px; }
 .ml-input { width:100%; font-size:12px; padding:3px 6px; }
-.ml-act { text-align:right; }
-.ml-act .ml-mini { margin-right:6px; }
 .ml-ico { border:0; background:none; color:var(--muted); cursor:pointer; padding:2px 4px; border-radius:var(--r-sm); }
 .ml-ico.danger:hover { color:var(--danger, #e5484d); }
 .ml-empty { font-size:12px; color:var(--muted); padding:8px 2px; }
