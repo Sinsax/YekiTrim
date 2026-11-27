@@ -45,13 +45,16 @@ const shown = computed(() => {
 /** 获取结果：{ state: idle|loading|done|error, models: [], note } —— **失败 ≠ 空列表** */
 const remote = reactive({ state: 'idle', models: [], note: '' })
 const fetching = ref(false)
+/** 哪一行的「获取模型」在跑 / 刚有结果（状态只显示在这一行，不铺一条横条） */
+const fetchRow = ref(null)
 /** datalist 的 id：每个接口一份，别让两份接口的候选串台 */
 const listId = computed(() => 'ml-cand-' + (String(props.providerId || '') || 'x'))
 const chosen = (id) => rows.value.some((m) => String(m.id || '').trim() === String(id || '').trim())
 
 /** 「获取模型」：按**这一份接口**的地址探一次（表命中不联网；表外才真发） */
-async function doFetch() {
+async function doFetch(row) {
   if (fetching.value) return
+  fetchRow.value = row || null
   const base = String(props.baseUrl || '').trim()
   if (!base) { remote.state = 'error'; remote.note = '先在这份接口上面把 API 地址填好'; return }
   fetching.value = true
@@ -105,19 +108,8 @@ async function removeModel(m) {
       <span class="ml-hint" title="「哪个任务用哪支」里的候选只来自这张表">链路只能从这里选</span>
       <span class="ml-spacer"></span>
       <input v-model="filter" class="ml-filter" placeholder="过滤…" aria-label="过滤本接口的模型">
-      <button class="ml-mini" type="button" :disabled="fetching || !providerId"
-              title="按这个接口的地址取一次模型清单（内置目录命中就不联网）"
-              @click="doFetch">{{ fetching ? '获取中…' : '获取模型' }}</button>
       <button class="ml-mini" type="button" :disabled="!providerId" title="手填一行（清单里没有这一支时用）"
               @click="addManual">+ 添加模型</button>
-    </div>
-
-    <!-- 获取结果只留**一行状态**；候选本身不铺成标签云，全部进下面 id 输入框的 datalist
-         （用户 2026-11-27："获取模型后列表显示是显示在下方模型添加的那个那里"） -->
-    <div v-if="remote.state === 'loading'" class="ml-muted ml-res">获取中…</div>
-    <div v-else-if="remote.state === 'error'" class="ml-err ml-res" data-ml-fetch="error">获取失败：{{ remote.note }}</div>
-    <div v-else-if="remote.state === 'done'" class="ml-muted ml-res">
-      {{ remote.note }} —— 点「+ 添加模型」，模型 id 那一格可以下拉选
     </div>
 
     <table v-if="rows.length" class="ml-tbl">
@@ -130,13 +122,23 @@ async function removeModel(m) {
       </thead>
       <tbody>
         <tr v-for="(m, i) in shown" :key="i">
-          <!-- 拿到候选之后这里就是下拉（能选已有的）；<datalist> 同时允许**直接手打** -->
-          <td>
+          <!-- id 输入框**收窄**（用户 2026-11-27："占用太多了"）：候选走 datalist，能选也能手打 -->
+          <td class="ml-c-id">
             <input v-model.trim="m.id" class="ml-input" :list="listId"
                    placeholder="如 deepseek-chat" spellcheck="false">
+            <div v-if="fetchRow === m && remote.state === 'loading'" class="ml-note">获取中…</div>
+            <div v-else-if="fetchRow === m && remote.state === 'error'" class="ml-note err" data-ml-fetch="error">
+              获取失败：{{ remote.note }}
+            </div>
+            <div v-else-if="fetchRow === m && remote.state === 'done'" class="ml-note">
+              {{ remote.models.length }} 支可选 · 点上面这一格下拉
+            </div>
           </td>
-          <td><input v-model="m.label" class="ml-input" placeholder="（可空，空则用 id）"></td>
+          <td class="ml-c-label"><input v-model="m.label" class="ml-input" placeholder="（可空，空则用 id）"></td>
           <td class="ml-act">
+            <button class="ml-mini" type="button" :disabled="fetching || !providerId"
+                    title="按这个接口的地址取一次模型清单（内置目录命中就不联网）"
+                    @click="doFetch(m)">{{ fetchRow === m && fetching ? '获取中…' : '获取模型' }}</button>
             <button class="ml-ico danger" title="从清单删除（保存后生效）" @click="removeModel(m)">
               <Icon name="trash" :size="12" />
             </button>
@@ -149,7 +151,7 @@ async function removeModel(m) {
     </datalist>
 
     <div v-if="!rows.length" class="ml-empty">
-      这一份接口还没有模型 —— 点「+ 添加模型」，模型 id 那一格可以下拉选（也可以直接打）。
+      这一份接口还没有模型 —— 点「+ 添加模型」手填，或点那一行的「获取模型」拉清单。
     </div>
   </div>
 </template>
@@ -169,10 +171,14 @@ async function removeModel(m) {
 .ml-tbl th { text-align:left; font-weight:500; font-size:11px; color:var(--muted);
   padding:4px 6px; border-bottom:1px solid var(--line); }
 .ml-tbl td { padding:4px 6px; border-bottom:1px solid var(--line-dim, var(--line)); }
-.ml-c-label { width:200px; }
-.ml-c-act { width:44px; }
+.ml-c-id { width:46%; }
+.ml-c-label { width:34%; }
+.ml-c-act { width:150px; white-space:nowrap; }
+.ml-note { font-size:11px; color:var(--muted); margin-top:2px; }
+.ml-note.err { color:var(--danger, #e5484d); }
 .ml-input { width:100%; font-size:12px; padding:3px 6px; }
 .ml-act { text-align:right; }
+.ml-act .ml-mini { margin-right:6px; }
 .ml-ico { border:0; background:none; color:var(--muted); cursor:pointer; padding:2px 4px; border-radius:var(--r-sm); }
 .ml-ico.danger:hover { color:var(--danger, #e5484d); }
 .ml-empty { font-size:12px; color:var(--muted); padding:8px 2px; }

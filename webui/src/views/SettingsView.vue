@@ -313,7 +313,6 @@
         <span class="t-sub">没单独指定的按「当前接口」走</span></div>
       <LlmLinkTable :links="llmLinks" :rows="form.llm.links" :effective="effective"
                     :providers="form.llm.providers" :model-options="allModelOptions"
-                    :probe-models="form.llm.probeModels"
                     :active-id="form.llm.active" :levels="linkLevels" :levels-by-model="levelsByModel" />
       <div v-if="effectiveError" class="muted small mt-4 caps-err" :title="effectiveError">
         生效值读取失败（灰字留空）—— 覆盖功能仍然可用
@@ -619,7 +618,6 @@ const form = reactive({
     /** 检测链路的本地行为参数（[llm.links.detect.run]）—— 只有评分权重有 UI（它原来是程序配置页的滑块） */
     detectRun: { llm_score_weight: 0.3 },
     /** 刚探测到、还没加入清单的模型（只做 ① 的候选，**不落盘**） */
-    probeModels: [],
     /** providers / models 的**载入快照**（保存时"没改不发"：数组是整份替换，发一次就把
      *  [[llm.providers]] / [[llm.models]] 的数组-of-表格式压成一行内联数组） */
     providersOrig: '',
@@ -818,18 +816,13 @@ async function loadCaps() {
  */
 function onProbeCaps(payload) {
   let changed = false
-  const probed = []
   for (const m of ((payload && payload.models) || [])) {
     if (!m || !m.id) continue
     const id = String(m.id)
     if (m.caps) { probeCaps[id] = normalizeCaps({ caps: m.caps }); changed = true }
     // 这次探针**没给**能力 ⇒ 清掉旧的那份（别缓存住上一次的，否则"探针没有"会被旧值骗过去）
     else if (probeCaps[id]) { delete probeCaps[id]; changed = true }
-    probed.push({ id, label: String(m.name || ''), provider: String((payload && payload.providerId) || '') })
   }
-  // ⚠️ 探到的模型要**带回 ① 的候选**：以前 probeModels 只初始化、从不赋值 ⇒
-  //    「获取模型」之后 ① 的下拉里还是空的，用户得先去 ④ 逐支「加入」再回 ① 选。
-  if (probed.length) form.llm.probeModels = probed
   if (changed) loadCaps()
 }
 
@@ -1306,12 +1299,9 @@ const baseGlobal = ref('')
 function llmStateJSON() {
   // 剔掉三类"不是用户改动"的东西：
   //  · detectPrompt（提示词归 basePrompts）、*Orig（载入快照）
-  //  · probeModels（「取候选」的临时候选，从来不落盘 —— 留着它会出现"点了取候选就变脏"）
-  const { detectPrompt, detectPromptOrig, defaultsOrig, providersOrig, modelsOrig, probeModels, ...rest } = form.llm
+  const { detectPrompt, detectPromptOrig, defaultsOrig, providersOrig, modelsOrig, ...rest } = form.llm
   return JSON.stringify(rest)
 }
-/** 换接口就丢掉上一份的候选（否则 A 家探到的模型会被当成 B 家的候选） */
-watch(() => form.llm.active, () => { form.llm.probeModels = [] })
 const llmDirty = computed(() => loaded.value && llmStateJSON() !== baseLlm.value)
 const promptDirty = computed(() => loaded.value && promptStateJSON() !== basePrompts.value)
 /** 保存条上的一句话（≤20 字）；细节进 title */

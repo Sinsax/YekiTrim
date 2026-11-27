@@ -30,8 +30,6 @@ const props = defineProps({
   modelOptions: { type: Array, default: () => [] },
   /** 当前接口 id（= [llm] active） */
   activeId: { type: String, default: '' },
-  /** 探到的候选 [{ id, label, provider }]（未加入清单的也能直接选） */
-  probeModels: { type: Array, default: () => [] },
   /** 推理档位候选（当前接口那支模型的；某行模型不一样时用 levelsByModel 覆盖） */
   levels: { type: Array, default: () => [] },
   /** model id → 档位数组 */
@@ -60,18 +58,12 @@ function inherited(key, col) {
 }
 
 /* ── 用哪支 ───────────────────────────────────────────────────────── */
-/** 这份接口下可选的模型：清单里的 + 刚探到、还没加入的 */
+/** 这份接口下可选的模型：**只有清单里的**（要选探到的模型就先在模型配置里加进清单） */
 function modelsOf(pid) {
   const id = String(pid || '')
   const all = Array.isArray(props.modelOptions) ? props.modelOptions : []
-  const out = all.filter((m) => String(m.provider || '') === id).map((m) => ({ id: m.id, label: m.label || '', inList: true }))
-  const seen = new Set(out.map((x) => x.id))
-  for (const p of (props.probeModels || [])) {
-    if (!p || !p.id || String(p.provider || '') !== id || seen.has(p.id)) continue
-    out.push({ id: p.id, label: p.label || '', inList: false })
-    seen.add(p.id)
-  }
-  return out
+  return all.filter((m) => String(m.provider || '') === id)
+    .map((m) => ({ id: m.id, label: m.label || '' }))
 }
 /** 当前选定值 = 接口|模型；没覆盖就是空串（跟随默认） */
 function selKey(key) {
@@ -158,10 +150,10 @@ const hasRow = computed(() => Array.isArray(props.links) && props.links.length >
             <td class="lt-c-model">
               <select class="lt-sel" :value="selKey(l.key)" :aria-label="'模型（' + l.label + '）'"
                       @change="pickModel(l.key, $event.target.value)">
-                <option value="">跟随默认{{ effModel(l.key) ? '（' + effModel(l.key) + '）' : '' }}</option>
+                <option value="">未选</option>
                 <optgroup v-for="p in providers" :key="p.id" :label="p.name || p.id">
                   <option v-for="m in modelsOf(p.id)" :key="p.id + '/' + m.id" :value="p.id + '|' + m.id">
-                    {{ m.id }}{{ m.inList ? '' : '（未加入清单）' }}
+                    {{ m.label || m.id }}
                   </option>
                 </optgroup>
               </select>
