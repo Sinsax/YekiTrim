@@ -2362,5 +2362,28 @@ console.log('\n㉚ 切片总览搜索（按需拉取 + 弹幕正文可读化）'
     check('㊶ [变异] 字幕环用未缩放的值 ⇒ 判据翻面', /const ring = outerRingShadow\(subStyle\.value\.outer_stroke, capStrokeW\.value \* w\.scale\)/.test(badRow), false)
   }
 }
+// ㊷ **模型配置页 = 左右列表**（2026-11-27 用户口径）：右栏是「接口设置（上）→ 模型清单（下）」，
+//    接口设置**就在正文里、模型列表上面**（先做过弹窗，用户又改回"放外面"）。
+//    同日还炸过一次：`LlmModelList.add()` 把探针的 **caps（能力面）** 写进了 `catalog`（清单形状）——
+//    文件是合法 TOML，**反序列化才炸**（"invalid type: map, expected a sequence"），整份 llm.toml 被写通道拒收。
+{
+  const view = await read('webui/src/views/SettingsView.vue')
+  const list = await read('webui/src/components/llm/LlmModelList.vue')
+  const iConn = view.indexOf('<LlmEndpointCard')
+  const iList = view.indexOf('<LlmModelList', iConn < 0 ? 0 : iConn)
+  check('㊷ 接口设置在模型清单**上面**（同一页、连接卡先出现）', iConn >= 0 && iList > iConn, true)
+  check('㊷ 加入清单不把探针 caps 写进 catalog（能力面 ≠ 清单形状）', /catalog:\s*m\.caps/.test(list), false)
+  {
+    // 变异①：连接卡挪到下面 / 消失 ⇒ 第一条翻面。
+    const badOrder = view.replace('<LlmModelList', '<XModelList')
+    const b1 = badOrder.indexOf('<LlmEndpointCard')
+    check('㊷ [变异] 模型清单标记消失 ⇒ 顺序判据翻面',
+      b1 >= 0 && badOrder.indexOf('<LlmModelList', b1 < 0 ? 0 : b1) > b1, false)
+    // 变异②：catalog 换回 m.caps ⇒ 第二条翻面（这正是用户踩的那次）。
+    const badCat = list.replace('catalog: null,', 'catalog: m.caps,')
+    check('㊷ [变异] catalog 换回 m.caps ⇒ 形状判据翻面', /catalog:\s*m\.caps/.test(badCat), true)
+  }
+}
+
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过')
 process.exit(failed ? 1 : 0)

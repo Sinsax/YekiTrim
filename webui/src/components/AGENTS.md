@@ -20,14 +20,17 @@
 - 页面级空态/下一步/首启检查：`AppEmptyState.vue` / `NextStepBar.vue` / `SetupChecklist.vue`。
 - `SetupChecklist` = 首页环境与模型的**唯一**状态卡（v8 并入原「运行状况」卡）：「运行环境」行 = ffmpeg/ffprobe/**出片底座** chips（`/api/health`，缺项指路 → `dhampir/bin/`）+「字幕模型」行内嵌 `ModelList`（下载仅 admin）；三源齐刷，`doctorError` 照实报（读失败 ≠ 缺失）。详见 §⑧.2。
   ⚠️ **待处理项必须行里逐项可见** —— 旧运行状况卡"报 1 项待处理、展开却全绿"的病根就是底座缺失没有展示位（用户实测）；页头汇总 chip 随之删除（同一件事不说三遍）。口径见 `docs/web-ui-design.md` 附录 E。
-- LLM 组件（2026-11-27 起 **左右列表 + 设置弹窗**）：
+- LLM 组件（2026-11-27 起 **左右列表**，右栏 = 接口设置卡 + 模型清单）：
   `LlmProviderList`（左栏接口清单，底部「+ 新建接口」）·
-  `LlmEndpointCard`（协议/地址/密钥/默认模型 combobox/取候选/测试/设为当前/删除 —— **装在 `AppModal` 里**，由右栏「接口设置」打开）·
+  `LlmEndpointCard`（协议/地址/密钥/默认模型 combobox/取候选/测试/设为当前/删除 —— **右栏顶部常驻卡**，就在模型清单上面）·
   `LlmModelList`（**某一个接口**的模型清单 + 取候选/手填/能力手填/**每模型额外参数**，每个组各挂一份）·
   `LlmLinkTable`（链路表：**接口与模型合并成「用哪支」一列**，选项值 = `接口|模型`；参数格仍灰字点开才编辑）·
   `LlmParamFields`（参数控件）· `LlmModelCombobox`（单接口模型下拉，连接卡的默认模型用）。
   ⚠️ **加模型在右栏 `LlmModelList` 里完成**（用户原话："每一次添加模型都要翻找很不合理"）—— 别把清单塞回 `<details>`，也不许再加抽屉。
-  ⚠️ **接口设置是弹窗**（`AppModal` + `useOverlay`）：左栏只切 `editingId`，**不改** `[llm] active`；删除接口在弹窗里（`confirmDialog` + 连带影响），删完必须关窗。
+  ⚠️ **接口设置是正文里的一张常驻卡**（不是弹窗，2026-11-27 用户口径）：左栏只切 `editingId`，**不改** `[llm] active`；删除接口在卡里（`confirmDialog` + 连带影响）。
+  ⚠️ **加入清单不许把探针 caps 写进 `catalog`**：`catalog` 是清单形状（`input = ["text"]` / `levels = [{level,value}]`），
+  caps 是能力面（`input = {text=true}` / `levels = {high="high"}`）—— 写进去文件合法、**反序列化才炸**，整份 llm.toml 被拒收。
+  判据 ㊷（`check-layout-invariants.mjs`，带变异自证）。
   - **额外请求参数按模型**（2026-11-26）：编辑框在模型行的「能力手填」展开区里；JSON 校验/序列化只有一份
     —— `components/llm/extra.js`（`parseExtraObject`/`stringifyExtra`，已知键 + null 一律拒）。
     `_extraText`/`_extraErr` 是**瞬态**字段（不进 `buildModels`）；`_extraErr` 非空时 `saveLlm` 拒绝保存。

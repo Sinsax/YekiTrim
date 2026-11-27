@@ -77,7 +77,14 @@ async function doFetch() {
   }
 }
 
-/** 加入清单：只写 id / 显示名 / 归属 / 探到的能力（catalog）；其余键一律不编 */
+/** 加入清单：只写 id / 显示名 / 归属；**能力面不落盘**。
+ *
+ *  ⚠️ 这里**不许**把 `m.caps` 塞进 `catalog`（2026-11-27 实测炸过一次）：
+ *    `catalog` 是**清单形状**（`input = ["text"]` / `levels = [{ level, value }]`），
+ *    而探针的 caps 是**能力面**（`input = { text = true }` / `levels = { high = "high" }`）——
+ *    写进去文件是合法 TOML、**反序列化才炸**："invalid type: map, expected a sequence"，
+ *    整份 llm.toml 被写通道拒收（用户看到"保存失败"）。
+ *    能力显示走内建目录（按模型 id）/ 行内「能力（手填）」写 `overrides`，都不需要这里落盘。 */
 function add(id) {
   const m = (remote.models || []).find((x) => String(x.id || '') === String(id || ''))
   if (!m || chosen(m.id)) return
@@ -85,7 +92,7 @@ function add(id) {
     id: String(m.id || '').trim(),
     provider: String(props.providerId || ''),
     label: String(m.name || ''),
-    catalog: m.caps && typeof m.caps === 'object' ? m.caps : null,
+    catalog: null,
     overrides: null
   })
 }

@@ -261,8 +261,8 @@
     <!-- ── 子页一：模型配置 ─────────────────────────────────────────── -->
     <template v-if="llmTab === 'models'">
 
-    <!-- 左右列表（2026-11-27 用户口径）：左 = 接口清单，右 = 这份接口的模型清单；
-         接口的连接设置（地址/密钥/默认模型/测试/删除）走**弹窗**，不再占页面正文。 -->
+    <!-- 左右列表（2026-11-27 用户口径）：左 = 接口清单，右 = **接口设置（上）+ 模型清单（下）**。
+         接口设置 2026-11-27 再改：**回到正文**、就在模型列表上面（用户："放在模型列表的上面那里"），不再走弹窗。 -->
     <div class="llm-split">
       <div class="llm-split-left" data-cap="settings.llm-quick">
         <LlmProviderList :providers="form.llm.providers" :models="form.llm.models"
@@ -271,19 +271,28 @@
       </div>
 
       <div class="llm-split-right">
-        <!-- 右栏：这份接口的模型清单（右上角一个「接口设置」进弹窗） -->
         <template v-if="editingProvider">
-          <div class="card llm-right-hd">
-            <b class="llm-grp-nm">{{ editingProvider.name || editingProvider.id }}</b>
-            <span class="llm-grp-host">{{ hostOf(editingProvider.base_url) }}</span>
-            <span v-if="keySetOf(editingProvider)" class="chip ok tiny"><span class="dot"></span>已配密钥</span>
-            <span v-else class="chip err tiny"><span class="dot"></span>未配密钥</span>
-            <span v-if="editingProvider.id === form.llm.active" class="chip main tiny">默认</span>
-            <span class="llm-grp-share">{{ modelCountOf(editingProvider.id) }} 支模型共用这份密钥</span>
-            <span class="spacer"></span>
-            <button type="button" class="btn sm" @click="openProviderModal()">接口设置</button>
+          <!-- ① 这份接口怎么连（地址 / 密钥 / 默认模型 / 测试 / 删除） -->
+          <div class="card llm-conn-card">
+            <LlmEndpointCard
+              :loaded="loaded"
+              :providers="form.llm.providers"
+              :provider-id="editingProviderId"
+              :active-id="form.llm.active"
+              :protocols="protocols"
+              :protocols-source="protocolsSource"
+              :model-options="endpointModelOptions"
+              :caps="caps"
+              :caps-text="capsText"
+              :caps-error="capsError"
+              @set-active="setActiveProvider"
+              @pick-model="onPickModel"
+              @probe="onProbeCaps"
+              @remove="removeProvider"
+            />
           </div>
 
+          <!-- ② 这份接口名下有哪些模型 -->
           <div class="card" data-cap="settings.llm-models">
             <LlmModelList :models="form.llm.models" :provider-id="editingProviderId"
                           :base-url="effBaseUrl" :api-key="curApiKeyDraft"
@@ -300,32 +309,6 @@
         </div>
       </div>
     </div>
-
-    <!-- 接口设置：弹窗（AppModal + useOverlay 的焦点圈定 / Esc / 滚动锁都在里面） -->
-    <AppModal :show="!!providerModalId" :title="providerModalTitle" wide @close="closeProviderModal">
-      <LlmEndpointCard
-        v-if="providerModalId"
-        :loaded="loaded"
-        :providers="form.llm.providers"
-        :provider-id="providerModalId"
-        :active-id="form.llm.active"
-        :protocols="protocols"
-        :protocols-source="protocolsSource"
-        :model-options="endpointModelOptions"
-        :caps="caps"
-        :caps-text="capsText"
-        :caps-error="capsError"
-        @set-active="setActiveProvider"
-        @pick-model="onPickModel"
-        @probe="onProbeCaps"
-        @remove="removeProvider"
-      />
-      <template #footer>
-        <span class="muted small">改动会按停手 1.2 秒自动保存</span>
-        <span class="llm-foot-gap"></span>
-        <button type="button" class="btn btn-primary" @click="closeProviderModal">完成</button>
-      </template>
-    </AppModal>
 
     </template>
     <!-- ── 子页二：链路配置 ─────────────────────────────────────────── -->
@@ -499,7 +482,6 @@ import { CAPS_SOURCE_ZH, mergeCaps, normalizeCaps, normalizeLevel } from '../com
 import { toast } from '../stores/toast'
 import Icon from '../components/Icon.vue'
 import SliderField from '../components/SliderField.vue'
-import AppModal from '../components/AppModal.vue'
 import LlmProviderList from '../components/llm/LlmProviderList.vue'
 import LlmEndpointCard from '../components/llm/LlmEndpointCard.vue'
 import LlmLinkTable from '../components/llm/LlmLinkTable.vue'
@@ -731,32 +713,7 @@ watch(() => loaded.value, (v) => {
   if (!v || tabDecided.value) return
   tabDecided.value = true
   if (!llmTabTouched.value) llmTab.value = llmConfigured.value ? 'links' : 'models'
-  // 没配好时把默认那一组的连接**直接展开**：新用户第一眼就该看到"地址 + 密钥"这两个框，
-  // 而不是一个需要先猜着点的「填密钥」。
-  const ps = (form.llm && form.llm.providers) || []
-  const first = ps.find((p) => p.id === (form.llm && form.llm.active)) || ps[0]
-  if (first && (!keySetOf(first) || !String(first.base_url || '').trim())) {
-    openProviderModal(String(first.id || ''))
-  }
 })
-/**
- * 接口设置弹窗：正在编辑哪一份接口（空 = 弹窗关着）。
- *
- * ⚠️ 打开时必须**同时切"编辑对象"**（`editingProviderId`）：能力 chip / 默认模型候选 /
- *    草稿密钥都按它算，只开弹窗不切会让第二份接口读到上一份的候选。
- */
-const providerModalId = ref('')
-const providerModalTitle = computed(() => {
-  const p = form.llm.providers.find((x) => x.id === providerModalId.value)
-  return p ? '接口设置 · ' + (p.name || p.id) : '接口设置'
-})
-function openProviderModal(id) {
-  const v = String(id || editingProviderId.value || '')
-  if (!v) return
-  selectProvider(v)
-  providerModalId.value = v
-}
-function closeProviderModal() { providerModalId.value = '' }
 /** 分组头只显示 host（整条 URL 会撑爆一行） */
 function hostOf(u) {
   const s = String(u || '').trim().replace(/^https?:\/\//i, '')
@@ -1279,8 +1236,6 @@ function addProvider() {
     api_key: '', api_key_env: '', api_key_set: false, model: ''
   })
   editingProviderId.value = id
-  // 新加的这份**直接开设置弹窗**：刚建完就要填地址与密钥，收起去等于让用户再找一次
-  providerModalId.value = id
 }
 /**
  * 删一份接口：**连带**摘掉它名下的模型与指向它的链路覆盖。
@@ -1310,8 +1265,6 @@ async function removeProvider(id) {
   }
   if (form.llm.active === pid) form.llm.active = (form.llm.providers[0] && form.llm.providers[0].id) || ''
   ensureEditingProvider()
-  // 弹窗里删掉自己 ⇒ 必须关掉，否则它会指着一份不存在的接口（空白表单）
-  if (providerModalId.value === pid) providerModalId.value = ''
 }
 
 // ---- 方言注册表（④ 的「推理写法」下拉）----
@@ -1870,7 +1823,7 @@ onMounted(async () => {
    "每页各写一份 max-width"正是这一轮收敛掉的东西；要放宽就在这里显式登记一次。 */
 .settings-block.settings-wide { max-width:min(1040px, 100%); }
 /* 模型配置 = **左右列表**（2026-11-27 用户口径）：左 = 接口清单，右 = 该接口的模型清单。
-   接口的连接设置走弹窗（AppModal），正文里不再有常驻的连接卡。
+   右栏是"接口设置（上）+ 模型清单（下）"两块常驻卡 —— 接口设置就在模型列表上面，**不要弹窗**。
    窄了（<=820px）折成一栏，顺序仍是"接口 → 模型"。 */
 .llm-split { display:grid; grid-template-columns:232px minmax(0,1fr); gap:12px; align-items:start; }
 .llm-split-left { min-width:0; padding:8px; border-radius:var(--r-md); background:var(--card);
@@ -1879,9 +1832,7 @@ onMounted(async () => {
 @container (max-width: 820px) {
   .llm-split { grid-template-columns:1fr; }
 }
-.llm-right-hd { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:10px 12px; }
-/* 弹窗页脚：说明在左、按钮在右（`.spacer` 不是本仓的工具类，别再用它占位） */
-.llm-foot-gap { flex:1 1 auto; }
+.llm-conn-card { padding:12px; }
 .llm-grp-nm { font-size:var(--fs-base); }
 .llm-grp-host { font-family:var(--mono); font-size:11px; color:var(--ink-faint); }
 .llm-grp-share { font-size:11px; color:var(--ink-faint); }

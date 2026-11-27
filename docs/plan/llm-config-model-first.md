@@ -278,7 +278,7 @@ local · Ollama    127.0.0.1:11434    ● 88ms          免密钥               
 |---|---|
 | 默认子页按状态算 | `SettingsView.vue` 的 `llmConfigured` / `llmTabTouched` / `tabDecided`（只在**首次载入完成**判一次） |
 | 模型配置 = **左右列表**（2026-11-27 用户口径，取代"分组"） | 左 `LlmProviderList`（接口清单）/ 右 `LlmModelList`（该接口的模型） |
-| 接口设置 = **弹窗** | `AppModal` + `LlmEndpointCard`（`providerModalId`；打开时同步 `selectProvider`，删接口后自动关窗） |
+| 接口设置 = **右栏顶部常驻卡** | `LlmEndpointCard` 在 `LlmModelList` **上面**（2026-11-27 用户改回正文，不做弹窗） |
 | 链路表合并两列 | `LlmLinkTable.vue`：8 列 → 7 列，「用哪支」= 分组 `<select>`，值 `接口|模型`（新增 `pickModel`/`selKey`/`modelsOf`） |
 | 保存条 → 页头保存位 | `SettingsView.vue`：删 `data-llm-savebar`，加 `data-llm-saveslot`（按钮 / 自动保存中 / 已自动保存 / 失败重试） |
 | 删掉失效入口 | `components/llm/LlmProviderList.vue` 删除；`docs/webui-capabilities.json` 去掉 `settings.llm-quick` |
