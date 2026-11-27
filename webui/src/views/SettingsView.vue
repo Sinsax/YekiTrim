@@ -127,10 +127,10 @@
                 <input id="vadEnabled" v-model="form.asr.vad" type="checkbox">
                 <label for="vadEnabled" title="single 模式快 2~3 倍，hybrid 不受影响">VAD 只解码语音段</label>
               </div>
-              <div class="check-field span-2">
-                <input id="llmCorrect" v-model="form.asr.llm_correct" type="checkbox">
-                <label for="llmCorrect">LLM 订正转录</label>
-              </div>
+              <!-- ⚠️ **「LLM 订正转录」不暴露给前端**（用户 2026-11-27：这条链路问题很大、不好用，
+                   等日后做好再发布）。字段仍在 <data>/users/<uid>/config.toml 的 [asr] 里、
+                   表单也照原样带进带出（隐藏 ≠ 删除），要改走「编辑源文件」。
+                   **别把勾选框加回来** —— 加回来就等于对用户承诺了一个还没做好的功能。 -->
               <!-- ⚠️ S4：「LLM 评分权重」已搬进 llm.toml 的 [llm.links.detect.run].llm_score_weight，
                    入口在「设置 → LLM 配置 → 链路配置」页里（这一页只放 config.toml 的项）。 -->
             </div>

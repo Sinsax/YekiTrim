@@ -47,7 +47,7 @@
 - ⚠️ **主按钮的置灰 = `busy || (!hasTranscript && !canRunAsr)`**，"跑完就永久置灰"作废（2026-09 用户改口）：两段都就绪时它变成**「重新检测」**（`confirmDialog(redetectWarning())` 二次确认，只重跑事件检测，**不做全流程重跑**）；已有字幕时它**永不置灰**。
 - ⚠️ **转写按 ASR 模式各绑一次**（旧口径"一生只跑一次"作废）：落盘即占掉那个模式的槽（`bind_asr_artifact`；`slots` 与后端 `slot_bound` 同口径）。**两格都占满才**一起置灰 —— 单格占满仍可切另一个模式。服务端 409 同口径但**只拦 HTTP**（CLI 是逃生口）。细节见 §3.2。
 - ⚠️ 行内还有一颗 **「跑 ASR」**（2026-09）：**只转写、不接检测**（`chainDetect = false`），是"换模式再出一份"的入口；`canRunAsr = !slotUsed(当前模式)`，两模式都跑过时文案变「已跑过」。
-- ASR 模式下拉在这页（`hybrid` / `single`，体积写 `title`）；值读 merged 配置（读失败回退 `hybrid`），写走 `PUT /api/project-data/config {patch:{asr:{mode}}}`。LLM 订正入口已从前端撤下。
+- ASR 模式下拉在这页（`hybrid` / `single`，体积写 `title`）；值读 merged 配置（读失败回退 `hybrid`），写走 `PUT /api/project-data/config {patch:{asr:{mode}}}`。LLM 订正入口已从前端撤下；⚠️ 程序配置页的「LLM 订正转录」勾选框也**不许暴露**（2026-11-27：链路做得不好，等做好再放出来），字段仍在 config.toml、走「编辑源文件」。
 - ⚠️ **清单落地形态 = `[project.materials]` 下的 `transcript` / `danmaku` 数组**（`MaterialEntry{ path, source, mode }`）：`*_file` 仍是**唯一生效值**；`source = "asr"` 才是 ASR 产物、`mode` 记模式；`source` 用 **String 不用 enum**（坏 toml 不该让整份配置读失败）。新增 `project.*` 字段记得同步补 `merge()` 与 `normalize_project_paths_in()`。
 - ⚠️ **ASR 产物不可删** —— 它就是那个模式用掉的转写名额（唯一例外：文件已不存在，`removable = !is_asr || !exists`）。**「删除」只从选择里移除**（清 `*_file` + 摘清单），**不删磁盘文件**，二次确认；**「切换」= 置为生效值**（没登记过也认），切完整页 `load()`。
 - ⚠️ 条目 `exists=false` 时**照实报「文件不存在」**（置灰 + 删除线、切换也灰），不要静默飘到 `output/` 兜底上 —— 用户选的这份没了必须让他知道（`api/config.rs::check_project_paths` 同口径）。
