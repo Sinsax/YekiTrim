@@ -98,7 +98,6 @@ function setDefault(m) {
   <div class="ml">
     <div class="ml-bar">
       <span class="ml-title">模型<span class="ml-cnt">{{ rows.length }} 支</span></span>
-      <span class="ml-hint" title="「哪个任务用哪支」里的候选只来自这张表">链路只能从这里选</span>
       <span class="ml-spacer"></span>
       <input v-model="filter" class="ml-filter" placeholder="过滤…" aria-label="过滤本接口的模型">
       <button class="ml-mini" type="button" :disabled="fetching || !providerId"
@@ -168,7 +167,6 @@ function setDefault(m) {
 .ml-bar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
 .ml-title { font-size:12px; font-weight:600; }
 .ml-cnt { margin-left:6px; font-size:11px; color:var(--muted); font-weight:400; }
-.ml-hint { font-size:11px; color:var(--muted); }
 .ml-spacer { flex:1 1 auto; }
 .ml-filter { width:120px; font-size:11px; padding:3px 6px; }
 .ml-mini { font-size:11px; padding:3px 8px; }

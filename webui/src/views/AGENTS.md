@@ -80,14 +80,8 @@
 - 项目设置 `#/p/:pid/settings`：**「删除源录播」**（真删媒体，唯一的手动释放空间手段）与 **「移除项目」**（只注销登记、零文件改动）。两个入口（设置页按钮 + 侧栏项目行的 `×`）文案与行为必须一致：**都不是 `danger` 红色**，但仍二次确认。移除后要调 `forgetProject(pid)` 清本地痕迹（per-pid 缓存 / `yekitrim.wb.*` / `yekitrim.polish.last.<pid>`）。
 - ⚠️ **「移除项目」不碰任何文件**（用户拍板）：`yekitrim.toml`、媒体、`output/` 全留着，重新导入即可再绑（`create_local_project` 见到已有 `yekitrim.toml` **只登记、不覆盖**）。两个入口共用 `api::unregister_project` —— 以前是两份拷贝各删一次，别再写回两份。
 - 设置页 `SettingsView.vue` 五块内容仍在**同一个文件**（`defineProps({section})` + `v-if` 切），不拆子组件。
-- ⚠️ **「LLM 配置」页自己还有两个子页**（`llmTab` = `models` / `links`，页内 tab + localStorage）：模型配置（接口分组/模型清单）与链路配置（默认参数/评分权重/链路表/提示词）。新块先判定归属：接口与模型清单 → 模型；请求参数与提示词 → 链路。
-  ⚠️ **默认落地按配置状态**（2026-11-27）：`llmConfigured` 为假 ⇒ `models`，为真 ⇒ `links`；用户手动切过就不再自动跳。别再写死默认 `models`。
-- ⚠️ 「未保存的改动」的基线要在 `await nextTick()` 之后拍：加载期 `flush:"pre"` 的 watcher 会补数据，同步拍 = 刚进页面什么都没点就 dirty。
-- ⚠️ **LLM 配置块的「按链路覆盖」是表格**（L3 起）：行 = 链路（后端 `override_links` 给），列 = 接口/模型/温度/输出上限/推理/状态；
-  未覆盖的格子显示 `/api/config/llm/effective` 的**灰字实值**，**点一下才可编辑**，「清除覆盖」按钮发 `null` ⇒ 删键；
-  Esc / 点空白处只是**取消编辑**（不改值）。⚠️ 2026-11-26 起多一列「测试」= **按这一行**的接口+模型发一次最小请求
-  （「测试这个接口」只测当前接口的默认模型），表头右侧还有「全部测试」。
-  **别退回"空输入框表达没有值"**（发空串更糟：`max_tokens = ""` 会让整份 llm.toml 被打回默认）。
+- ⚠️ **「LLM 配置」页是一页**（2026-11-27 起不再分两个子页）：模型在上、链路在下；
+  每条链路的参数载入时补初始值，保存仍走「保存 LLM」一次写整份 llm.toml。别再把子页/落地判定加回来。
 - **模型管理（别再各写一套）**：「已安装」与运行时**同源** —— `asr::local::resolve_model_dir` 是唯一真源，`download::model_install()` 在其上再校验注册表 marker（`tokens.txt` / `tokenizer/tokenizer_config.json`，**不是** `dir.exists()`）；界面显示实际路径与来源（细节 §5.4）。
 - ⚠️ `/api/models` 与运行时**必须同源**（曾经只查程序目录 `dir.exists()`，qwen3-asr 在**另一处** ⇒ 界面写着"未下载"却一直在用它）；列表仍由 `download::model_names()` 给出。⚠️ 资产收回程序目录前的"用户目录优先"档**已删除** —— 现在只有两档：配置覆盖、数据目录。
 - ⚠️ **`download::ensure_one_model`（转写前的自动守卫）也必须走 `model_install`**，不要再拼 `yekitrim_home()`：曾经写一处、运行时读另一处 ⇒ ①同一份模型下载两次；②**同音纠错的 `lexicon.txt` + `replace.fst` 与 `create_recognizer` 不同源 ⇒ 同音纠错从未生效**（日志一直是"未启用"）。

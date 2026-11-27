@@ -224,7 +224,6 @@
     </div>
     <div class="section-title row spread llm-head">
       <span>LLM 配置</span>
-      <span class="muted small llm-head-sub">接口与模型定「用谁」· 链路定「哪个任务用哪支」</span>
       <!-- 保存位（2026-11-27 用户口径）：**一个位置两种面孔** ——
            没触发自动保存时是「保存」按钮；一旦进了自动保存流程就换成状态文字，不可按。
            ⚠️ 常驻保存条（data-llm-savebar）已删除：它每天挡一行，而"存没存"一个点就说清了。 -->
@@ -248,17 +247,6 @@
          ⚠️ 「保存 LLM」只写 llm.toml；⑤ 提示词有**自己的**保存按钮（它写 [llm.links.detect.prompt]）。
          ⚠️ 两枚按钮共用页头的 sticky 保存条，但**各自有基线**（baseLlm / basePrompts）——
             「保存 LLM」会重读整份配置，必须先捞出提示词草稿再放回，否则会静默回滚。 -->
-    <div class="llm-tabs" role="tablist" aria-label="LLM 配置子页">
-      <button v-for="t in LLM_TABS" :key="t.key" type="button" role="tab" class="llm-tab"
-              :class="{ on: llmTab === t.key }" :aria-selected="llmTab === t.key ? 'true' : 'false'"
-              @click="setLlmTab(t.key)">
-        <b>{{ t.label }}</b><span>{{ t.sub }}</span>
-      </button>
-    </div>
-
-    <!-- ── 子页一：模型配置 ─────────────────────────────────────────── -->
-    <template v-if="llmTab === 'models'">
-
     <!-- 左右列表（2026-11-27 用户口径）：左 = 接口清单，右 = **接口设置（上）+ 模型清单（下）**。
          接口设置 2026-11-27 再改：**回到正文**、就在模型列表上面（用户："放在模型列表的上面那里"），不再走弹窗。 -->
     <div class="llm-split">
@@ -302,15 +290,10 @@
       </div>
     </div>
 
-    </template>
-    <!-- ── 子页二：链路配置 ─────────────────────────────────────────── -->
-    <template v-else>
-
     <!-- ③ 按链路覆盖：行 = 链路，列 = 用哪支 / 温度 / 输出上限 / 推理。
          ⚠️ **必须在第一屏**：这一页 90% 的动作用在这里（哪个任务用哪支）。 -->
     <div class="card">
-      <div class="form-section-title">哪个任务用哪支
-        <span class="t-sub">没单独指定的按「当前接口」走</span></div>
+      <div class="form-section-title">哪个任务用哪支</div>
       <LlmLinkTable :links="llmLinks" :rows="form.llm.links" :effective="effective"
                     :providers="form.llm.providers" :model-options="allModelOptions"
                     :active-id="form.llm.active" :levels="linkLevels" :levels-by-model="levelsByModel" />
@@ -323,11 +306,11 @@
     <div class="card">
       <div class="form-section-title">运行设置</div>
       <div class="form-grid">
-        <SliderField v-model="form.llm.max_concurrent" class="span-2" label="并发请求数"
-                     :min="1" :max="32" :step="1" hint="对所有任务生效；调高更快，但更容易撞限流" />
-        <SliderField v-model="form.llm.detectRun.llm_score_weight" class="span-2"
+        <SliderField v-model="form.llm.max_concurrent" label="并发请求数"
+                     :min="1" :max="32" :step="1" title="对所有任务生效；调高更快，但更容易撞限流" />
+        <SliderField v-model="form.llm.detectRun.llm_score_weight"
                      label="LLM 评分权重" :min="0" :max="1" :step="0.05"
-                     hint="0 = 只用弹幕/字幕热度（也不再发那次评分请求）" />
+                     title="0 = 只用弹幕/字幕热度（也不再发那次评分请求）" />
       </div>
     </div>
 
@@ -371,8 +354,6 @@
         </div>
       </div>
     </details>
-
-    </template>
     </div>
     </template>
 
@@ -637,55 +618,36 @@ const LLM_LINK_ZH = {
 const LLM_LINK_HINT = { title: '封面文案', utility: '贴纸包·扫描标签·测试连接' }
 
 /**
- * LLM 配置的两个**子页**（2026-11-26 用户口径：模型配置与链路配置分开）。
+ * LLM 配置（2026-11-27 第七版）：**一页**，模型在上、链路在下。
  *
- * 「怎么连 / 有哪些模型」与「每条链路怎么跑」是两个心智完全不同的任务：混在一页时，
- * 改一条链路的温度要先滚过接口与模型清单。子页只影响**渲染**，表单状态与保存按钮仍然共用
- * （「保存 LLM」一次写整份 llm.toml，「保存提示词」是 ⑤ 自己的）。
- * ⚠️ 新增块时先想清楚它属于哪一页：**请求参数/提示词 → 链路**，**接口/密钥/模型清单 → 模型**。
+ * 曾经拆成两个子页（模型配置 / 链路配置），但精简之后每块都只有一两行 ——
+ * 再挂一条 tab 与"默认落在哪一页"的判定，反而是多一层要记的东西。
+ * ⚠️ 新增块时按顺序放：接口/密钥/模型清单 → 链路表 → 运行设置 → 提示词。
  */
-const LLM_TABS = [
-  { key: 'models', label: '模型配置', sub: '接口 · 密钥 · 默认模型' },
-  { key: 'links', label: '链路配置', sub: '哪个任务用哪支 · 参数 · 提示词' }
-]
-const LLM_TAB_KEY = 'yekitrim.settings.llmTab'
-/** 读回上次停在哪个子页（读不到/认不出 ⇒ 模型配置） */
-function readLlmTab() {
-  try {
-    return localStorage.getItem(LLM_TAB_KEY) === 'links' ? 'links' : 'models'
-  } catch (e) { return 'models' }
+/** 链路参数的**初始值**（新建链路 / 老配置没写值时用；写进表单，保存后落 llm.toml） */
+const LLM_LINK_INIT = {
+  detect: { temperature: 0, max_tokens: 8192 },
+  polish: { temperature: 0.7, max_tokens: 32768 },
+  title: { temperature: 0.8, max_tokens: 4096 },
+  utility: { temperature: 0.7, max_tokens: 8192 }
 }
-const llmTab = ref(readLlmTab())
-/** 用户手动切过一次就尊重记忆；**没切过**时按配置状态落地（见 llmConfigured） */
-const llmTabTouched = ref(false)
-function setLlmTab(key) {
-  llmTab.value = key === 'links' ? 'links' : 'models'
-  llmTabTouched.value = true
-  try { localStorage.setItem(LLM_TAB_KEY, llmTab.value) } catch (e) { /* 隐私模式：记住与否不影响功能 */ }
+/** 一条链路该有的初始参数（认不出的链路给中档） */
+function linkInit(key) {
+  return LLM_LINK_INIT[key] || { temperature: 0.7, max_tokens: 8192 }
 }
-
-/**
- * 「配好了没有」：有接口 + 有模型 + **默认模型所在那份接口有 key**。
- *
- * ⚠️ 这是**默认落在哪个子页**的判据（2026-11-27 用户口径）：
- *    没配好 → 模型配置（链路页那时是一屏空下拉）；配好了 → 链路配置（日常动作都在这儿）。
- * ⚠️ 不拿"有多少模型"当"配好了"：模型加了两支但 key 还是空的，链路页照样跑不起来。
- */
-const llmConfigured = computed(() => {
-  const ps = (form.llm && form.llm.providers) || []
-  const ms = (form.llm && form.llm.models) || []
-  if (!ps.length || !ms.length) return false
-  const active = ps.find((p) => p.id === (form.llm && form.llm.active)) || ps[0]
-  if (!active) return false
-  return keySetOf(active)
-})
-/** 页面**首次载入完成**时定一次落地；之后不再自动跳（避免编辑到一半被拽走） */
-const tabDecided = ref(false)
-watch(() => loaded.value, (v) => {
-  if (!v || tabDecided.value) return
-  tabDecided.value = true
-  if (!llmTabTouched.value) llmTab.value = llmConfigured.value ? 'links' : 'models'
-})
+/** 把缺失的链路参数补成初始值（**在拍基线之前**做，所以不会因此变脏） */
+function fillLinkDefaults() {
+  const links = form.llm && form.llm.links
+  if (!links) return
+  for (const key of Object.keys(links)) {
+    const row = links[key]
+    if (!row || typeof row !== 'object') continue
+    const init = linkInit(key)
+    if (row.temperature === null || row.temperature === undefined) row.temperature = init.temperature
+    if (row.max_tokens === null || row.max_tokens === undefined || row.max_tokens === '') row.max_tokens = init.max_tokens
+    if (!row.reasoning) row.reasoning = 'off'
+  }
+}
 /** 分组头只显示 host（整条 URL 会撑爆一行） */
 function hostOf(u) {
   const s = String(u || '').trim().replace(/^https?:\/\//i, '')
@@ -1131,10 +1093,10 @@ function applyLlmConfig(d) {
     //    发一次就把 [[llm.providers]] / [[llm.models]] 的**数组-of-表**格式压成一行内联数组
     //    （toml_edit 的已知行为，v3 时代 providers 就这样）—— 少发一次就少一次降级。
     providersOrig: '',
-    modelsOrig: '',
-    // 探针候选只是"建议"，重读配置时清掉（它从来不落盘）
-    probeModels: []
+    modelsOrig: ''
   }
+  // 每条链路的参数补成**初始值**（在拍基线之前做 ⇒ 只是"显示出来"，不会因此变脏）
+  fillLinkDefaults()
   // 载入快照 = 刚装进表单的那两份数组**按 patch 形态**（"没改就不发"的判据）。
   // ⚠️ 必须过 build* 再比：表单里的对象还带 api_key: '' / api_key_set 这类**不上送**的字段，
   //    直接 JSON.stringify(form.llm.providers) 会永远"看起来改过"（于是每次保存都降级格式）。

@@ -96,7 +96,6 @@ function setNum(key, col, raw) {
   const n = Number(s)
   rowOf(key)[col] = Number.isFinite(n) ? n : null
 }
-function clearNum(key, col) { rowOf(key)[col] = null }
 
 /* ── 推理档位 ─────────────────────────────────────────────────────── */
 /** 这一行的候选档位（按本行生效模型的能力；取不到就是外层给的那份） */
@@ -167,8 +166,6 @@ const hasRow = computed(() => Array.isArray(props.links) && props.links.length >
                 <input type="number" min="0" max="2" step="0.05" class="lt-num" aria-label="温度（数值）"
                        :value="numOf(l.key, 'temperature', 0.7)"
                        @input="setNum(l.key, 'temperature', $event.target.value)">
-                <button v-if="!inherited(l.key, 'temperature')" class="lt-x" type="button"
-                        title="恢复跟随默认" @click="clearNum(l.key, 'temperature')">&#215;</button>
               </div>
             </td>
 
@@ -180,8 +177,6 @@ const hasRow = computed(() => Array.isArray(props.links) && props.links.length >
                 <input type="number" min="256" max="65536" step="256" class="lt-num" aria-label="输出上限（数值）"
                        :value="numOf(l.key, 'max_tokens', 16384)"
                        @input="setNum(l.key, 'max_tokens', $event.target.value)">
-                <button v-if="!inherited(l.key, 'max_tokens')" class="lt-x" type="button"
-                        title="恢复跟随默认" @click="clearNum(l.key, 'max_tokens')">&#215;</button>
               </div>
             </td>
 
@@ -217,7 +212,5 @@ const hasRow = computed(() => Array.isArray(props.links) && props.links.length >
 .lt-sl { display:flex; align-items:center; gap:6px; }
 .lt-sl input[type=range] { flex:1 1 auto; min-width:60px; }
 .lt-num { width:68px; font-size:12px; padding:2px 4px; text-align:right; }
-.lt-x { border:0; background:none; color:var(--muted); cursor:pointer; font-size:13px; line-height:1; padding:0 2px; }
-.lt-x:hover { color:var(--danger, #e5484d); }
 .lt-empty { color:var(--muted); font-size:12px; padding:10px 8px; }
 </style>

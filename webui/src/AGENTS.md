@@ -102,33 +102,10 @@ Vue3 工作台的全部前端：壳 + 面包屑、hash 路由、首页 `#/workbe
   `account`/`monitor` 已并入 `system`（redirect）。
 - ⚠ `/settings` redirect 到 `config`；`meta.admin` 与高亮挂在每条子路由上，别写回 `route.name === 'settings'`。
   四块内容同一个 `SettingsView.vue`（`v-if` 切），`LogConsole` 只在 `system` 挂。
-- ⚠️ `LLM 配置`页（2026-11-26 起）分成**两个子页**（页内 tab，localStorage `yekitrim.settings.llmTab`）：
-  **模型配置** = **左右列表**（2026-11-27 用户口径）：左 = `LlmProviderList`（接口清单，底部「+ 新建接口」）/
-  右 = **接口设置卡 + 该接口的模型清单**（`LlmEndpointCard` 在上、`LlmModelList` 在下）；
-  接口的连接设置（地址/密钥/默认模型/测试/设为当前/删除）= 右栏**上面那张常驻卡**（`LlmEndpointCard`），模型清单在它下面 —— **不做弹窗**（2026-11-27 用户："放在模型列表的上面那里"）
-  **链路配置** = ③ 按链路覆盖表（**第一屏**，5 列、数字是滑块+数字框，实值来自 `/api/config/llm/effective`）/ 检测评分权重 / ⑤ 提示词（**自己的保存按钮**，写 llm.toml）。⚠️ 「默认参数」块与 json_mode 勾选**已删**（2026-11-27；json_mode 在 Rust 里写死 true）。
-  子页只影响渲染：表单状态与「保存 LLM」共用，别把两块状态拆成两套。
-  - ⚠️ **默认落地由配置状态决定**（2026-11-27）：`llmConfigured`（有接口 + 有模型 + 默认模型那份接口有 key）为假 ⇒ 落「模型配置」，
-    为真 ⇒ 落「链路配置」；**用户手动切过（`llmTabTouched`）就不再自动跳**，且只在**首次载入完成**时判一次（编辑到一半不许被拽走）。
-    未配置时链路页给引导卡而不是拦路。
-  - ⚠️ **内容列是 `settings-wide`（1040px）**，全站唯一的 760px 例外：链路表 5 列在 728px 内也放不下。
-    要放宽只能加这个类（别在页面里另写 max-width）。
-  - ⚠️ **保存位在页头**（`data-llm-saveslot`，2026-11-27）：**一个位置两种面孔** —— 没触发自动保存时是「保存」按钮；
-    进了自动保存流程（pending/saving）或已存过，就换成「自动保存中…／已自动保存 · HH:MM」且**不可按**；失败态是可点的重试。
-    ⚠️ 常驻 sticky 保存条 `data-llm-savebar` **已删**；程序配置页的 `data-config-savebar` 仍在用，别一起删。
-  - ⚠️ **自动保存（2026-11-26）**：表单改动**停手 1.2s**（`AUTO_SAVE_MS`）就落盘，手动按钮照旧留着。
-    ⚠️ 自动路径**不许重读**（`saveLlm`/`saveGlobal` 的 `auto` 分支只推基线）：重读会把用户正在敲的输入框整份换掉
-    （焦点/光标/滚动全丢）。
-    ⚠️ **源文件模式不自动存**（手写 TOML 的中间态必然非法，只手动存）。
-    ⚠️ 保存失败时保存条常驻红字（不只是一闪的 toast）。
-  - ⚠️ **两条独立基线**：`baseLlm`（接口/模型/参数/链路，`llmStateJSON()`，**剔掉** detectPrompt 与 `*Orig`/`probeModels`）与
-    `basePrompts`（提示词三件）。⚠️ **「保存 LLM」会 reloadLlm 重置整份 `form.llm`** ⇒ 存之前必须把提示词草稿捞出来、
-    存完放回去（`promptDraft`），否则在 ⑤ 改了一半的提示词会被**静默回滚**（2026-11-26 真机修的那条）。
-  - ⚠️ 模型下拉按**所属接口**分组（`<optgroup>`），**选项值 = `接口|模型`**（配对由界面保证）；
-    `probeModels` 是临时候选（不落盘、不进 dirty），别算进基线。
-  - ⚠️ **编辑对象 ≠ 生效对象**：`editingProviderId` 决定编辑谁；`form.llm.active` 只由连接卡「设为当前使用」改，
-    `addProvider()` **不许**碰它。
-  - ⚠️ **加模型 / 删模型都在右栏 `LlmModelList`**（别塞回 `<details>`，也别加抽屉）。
+- ⚠️ `LLM 配置`页（2026-11-27 第七版起是**一页**，没有子页 tab）：**模型在上、链路在下**。
+  上 = 左右列表（左 `LlmProviderList` 接口清单 / 右 `LlmEndpointCard` 连接卡 + `LlmModelList` 模型清单）；
+  中 = 链路表（5 列，数字是滑块 + 数字框）；下 = 运行设置（并发 + 评分权重**同一行**）+ 提示词（自己的保存按钮）。
+  ⚠️ 每条链路的参数在**载入时补初始值**（`LLM_LINK_INIT`，拍基线之前 ⇒ 不会因此变脏）；「默认参数」块与 json_mode 勾选已删。
 - 设置页数值项走 `components/SliderField.vue`：手填的值只夹 `[min, max]`、**不吸附 step**，**清空/非数字
   不写模型**；数字框在**标签行右端**（`.lbl-row`/`.rv`）；滑块宽度 = 所在格子的 **1/3**（`.slf-range`
   `flex:0 0 33.333%`）；窄格由 **`@container`** 处理，**别改成媒体查询**。

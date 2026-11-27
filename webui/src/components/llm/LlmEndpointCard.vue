@@ -92,7 +92,7 @@ async function doTest() {
     <template v-else>
       <div v-if="!isActive" class="ep-warn">
         <Icon name="alert" :size="12" />
-        <span>这一份不是当前使用的接口 —— 没单独指定的任务仍用另一份</span>
+        <span title="任务链路各自指定了模型；这里只决定默认用哪一份接口">不是当前使用的接口</span>
       </div>
 
       <div class="ep-grid">
