@@ -91,3 +91,12 @@ initial-admin-password.txt
 
 # ---- AI 会话技能（本地工具链，不进公开仓）----
 /.dsh/
+
+# ---- 本地工具产物（2026-11-28）----
+# `.dsh-acl-recovery/` 是权限修复工具写出的备份（json + ps1），随时可重新生成，
+# 不属于任何任务；放在仓库根时会被 `git status` 一直挂成未跟踪。
+/.dsh-acl-recovery/
+# 文档审计/临时探查的一次性产物（`_docs_audit_*` 是文件清单快照，`_tmp_fp` 是
+# 指纹脚本）。用 `.workbuddy_` 前缀而非 `.workbuddy/` 目录，所以上面那条挡不住。
+/.workbuddy_docs_audit_*.json
+/.workbuddy_tmp_*.mjs
