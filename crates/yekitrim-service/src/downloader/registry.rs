@@ -99,9 +99,9 @@ pub const VERSION: &str = "2026.08.19";
 /// yt-dlp 的 license：Unlicense（公有领域）→ 随 release 打包**无附加义务**。
 pub const LICENSE: &str = "Unlicense";
 
-/// 托管副本所在目录：`<程序目录>/.yekitrim/bin/`（= `path::yekitrim_home()/bin`）。
+/// 托管副本所在目录：`<data>/bin/`（= `path::bin_dir()`）。
 pub fn managed_dir() -> PathBuf {
-    yekitrim_core::path::yekitrim_home().join("bin")
+    yekitrim_core::path::bin_dir()
 }
 
 /// 托管副本的完整路径。

@@ -28,12 +28,14 @@
   write_project_config, save_transcript_path_in, normalize_project_paths_in}`；
   `config::types::Config` / `ProjectConfig::current_stage(&output_dir)`。
 - `process::{cmd, hide_console_window}`：起子进程的唯一入口（**全仓都用它**，理由见「边界」）。
-- `path::{yekitrim_home, resources_dir, sticker_dir, sticker_dir_readable, video_dir, video_dir_readable,
-  runtime_dir, font_dir, user_home, display}`；`fonts::{dir, ensure_dir, scan, scan_at,
-  resolve_file, resolve_file_at, family_of, is_font_file_name, is_safe_id}`。
+- `path::{program_dir, app_dir, data_dir, layout_marker, server_toml_path, ledger_dir, logs_dir,
+  models_dir, bin_dir, projects_dir, shared_dir, users_dir, runtime_dir, dhampir_dir,
+  legacy_runtime_dir, legacy_dhampir_dir, display}`（`*_in` 变体给测试/迁移用）；
+  `fonts::{dir, dir_for, ensure_dir, scan, scan_at, resolve_file, resolve_file_at, family_of,
+  is_font_file_name, is_safe_id}`。
 - `owner`：`Owner::{Local, User(uid), user, is_local, uid, from_env, from_env_value, as_env_value}`、
-  `AssetKind::{Fonts, Stickers, Videos, dir_name}`、`owner_root(_at)` / `resources_dir(_at)` /
-  `asset_dir(_at)` / `state_dir(_at)` / `config_path(_at)`、
+  `AssetKind::{Fonts, Stickers, Videos, dir_name}`、`owner_root(_at)` / `config_path(_at)` /
+  `llm_config_path(_at)` / `asset_dir(_at)` / `shared_assets_dir()` / `asset_dirs(owner, kind)`、
   `sticker_dir_readable(_at)` / `video_dir_readable(_at)`、`migrate_legacy_assets_to`、常量 `OWNER_ENV`。
   ⚠️ **`Owner` 只回答"是谁"、不回答"在哪"**（路径一律由本模块算）—— 这是"将来真要落成用户级目录时
   业务代码一行不动"的全部依据。
@@ -83,33 +85,30 @@
 - **弹幕路径解析在 `pipeline/runner.rs::resolve_danmaku`**（`inject_config` 调它）：相对路径按
   **工程根（`output_dir` 的父目录）→ 视频父目录**的顺序试，两个基准都试一遍，否则
   「视频在 `videos/`、弹幕在工程根」的布局会静默丢掉弹幕。
-- ⚠️ **2026-10-09 资产布局收拢**（`path.rs`，全仓路径的唯一 choke point —— 20+ 处调用都只认这几个函数）：
-  `resources/{fonts,stickers,videos}` 是**用户素材**（用户增删），`runtime/{polish-to-dhampir.mjs,
-  effects.json}` 是**随版本发布的只读交付物**。分界是"谁往里放东西"。
-  ⚠️ **写往新位置、读两个位置都认**（`sticker_dir_readable()` / `video_dir_readable()`）：
-  判据是**目录存在与否**、不是"里面有没有东西"（用内容当判据会让新建的空库被老位置顶掉）。
-  **不做自动搬迁**（用户手工移），回落只为"升级后库不会突然变空"。
-  ⚠️ 视频库挪出 `stickers/` 的收益：原先它是贴纸根下的普通子目录，而 `scan_packages` 会把
-  非 `.` 开头、非 `backup` 的子目录都当包扫 ⇒ 只靠"一张图都没有于是被丢掉"**碰巧**没污染列表。
-  完整布局表与老→新对照在 **`docs/file-layout.md`**。
-- ⚠️ **素材/配置的路径一律经 `owner`（2026-10-10 起）**：**只有一种布局 —— 多用户**。
+- ⚠️ **2026-11-27 资产布局收敛**（`path.rs` 是全仓路径的唯一 choke point）：安装目录只有
+  `<程序>/app/`（只读：`runtime/` 转译器+词汇表、`dhampir/` 底座）与 `<程序>/data/`
+  （可写：`server.toml` / `ledger/` / `logs/` / `models/` / `bin/` / `projects/` / `shared/` /
+  `cache/` / `users/<uid>/`）。`data_dir()` = `YEKITRIM_DATA_DIR` ?? `<程序>/data`。
+  `cache_dir()` = `<data>/cache/` 是**可丢弃**的运行期缓存（今天只有音效试听 `cache/sfx/`，
+  删了只会重新抓）—— 别把用户资产放进去。
+  **没有 `.yekitrim/`、没有 `resources/`、没有 `global/resources/`**。旧树由 `layout.rs` 幂等迁移
+  （只 `rename`、目标存在就跳过、未知条目进 `data/legacy/`；带 journal + 回滚 + `layout.json` 标记）。
+  正文与老→新对照在 **`docs/file-layout.md`**。
+- ⚠️ **素材/配置的路径一律经 `owner`**：**只有一种布局 —— 多用户**。
   `Owner::Local`（托盘 / CLI / `--local-no-auth`）**就是当前管理员**，与 `Owner::User(admin)`
-  **逐字节相同**，落在 `<data>/users/<uid>/{.yekitrim,resources}/`；顶层**没有** `resources/`。
-  标准结构与"谁是谁"见 **`docs/plan/single-user-layout.md`**。
-  ⚠️ **`global/` 只是"公用素材库"**（`global/resources/{fonts,stickers,videos}`，对所有账号
-  可见、用户库优先、全局补缺）—— **它不装配置**（有单测 `global_root_holds_assets_only`）。
-  程序配置在**账号树**：`<数据>/users/<uid>/.yekitrim/{config,llm}.toml`
-  （2026-11-13 收敛，顶层的两份已退役；见 `config` 卡与 `docs/plan/single-user-config.md`）。
+  **逐字节相同**，落在 `<data>/users/<uid>/`。
+  账号配置 = `<data>/users/<uid>/{config.toml,llm.toml}`；账号素材 =
+  `<data>/users/<uid>/{fonts,stickers,videos}/`；公用素材 = `<data>/shared/{fonts,stickers,videos}/`
+  （对所有账号可见、用户库优先、公用补缺，**不装配置**）。
   ⚠️ 「当前管理员是谁」由上层 `owner::set_local_admin(uid)` 注入（core 不认识账本），
   默认 1；server 启动时紧跟建表调用。
-  **不许再在别处拼 `data_dir().join("resources")`** —— 那就是第二条通道（本模块头部三条硬规矩）。
+  **不许再在别处拼 `data_dir().join("users")` / `join("resources")`** —— 那就是第二条通道。
   子进程（出片/封面/预览）经 `OWNER_ENV` 从父进程继承身份。
   ⚠️ **账本（`users`/`sessions`/`invites` 表）永远全局**：它是身份的来源，按用户分是循环依赖。
 - **字体库**：`yekitrim_core::fonts`；位置一律 `fonts::dir_for(owner)`
-  = `<数据目录>/users/<uid>/resources/fonts/`（`Local` 即当前管理员，见上一条）。
-  ⚠️ 下面那些写 `<数据目录>/resources/fonts/` 的旧描述读作"**该 owner 的**字体库"。
+  = `<data>/users/<uid>/fonts/`（`Local` 即当前管理员，见上一条）。
   ⚠️ **2026-10-02 起资产全部收回程序目录**（用户口径：*不要用户目录*）：`path::data_dir()`
-  默认 = `exe_dir()`，可用 `YEKITRIM_DATA_DIR` 覆盖（debug/release 共用一份模型的唯一口子）。
+  默认 = `<程序>/data`，可用 `YEKITRIM_DATA_DIR` 覆盖（debug/release 共用一份模型的唯一口子）。
   这条路径**曾经**是"用户固定目录 `~/.yekitrim/fonts` 优先 + 老库一次性搬家"，已整条删掉 ——
   代价是同一个库有两个可能的位置，实测 CLI 与 WebUI 各看一份、字体列表完全不同。
   现在读=写同一个目录，`fonts::ensure_dir` 只做 `create_dir_all`。`user_home()` 只剩一个
@@ -145,7 +144,8 @@
   ⚠️ **别改成“把字体拷进项目”**：预览页面由渲染服务器（ServeDir 根 = 项目目录）端给浏览器，
   所以库里字体必须有一条自己的路由 `/vt-fonts/:name`（在 `yekitrim-polish`，见其卡）。
   回归钉子：`fonts::tests`（扫描/解析/越权）+ `fonts::tests_v2`（布局/导入/自带/默认/搬家）。
-  发行包**不带字体文件**，只建空目录 + `放这里.txt`（文案就写"本目录就是字体库"，见 README「字体」）。
+  发行包**不带字体文件、也不建字体目录**：自带字体首启落到 `data/shared/fonts`，
+  账号库 `data/users/<uid>/fonts` 由 `ensure_dir` 创建（见 README「字体」）。
 - `filelock` 的两种锁别混用：异步 `with_path_lock` / `lock_path` 给 handler，
   **同步** `with_path_lock_sync` 只给同步上下文的 read-modify-write（core 管线的 `edit_toml_at` 用）
   —— ⚠️ 只在**微秒级**的文件读改写里用，别拿它包 ffmpeg / 网络请求；它**非重入**。

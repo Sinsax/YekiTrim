@@ -1389,7 +1389,7 @@ async fn attempt_call(
         std::borrow::Cow::Owned(out)
     }
 
-    let dir = crate::path::yekitrim_home().join("llm_debug");
+    let dir = crate::path::logs_dir().join("llm");
     let _ = std::fs::create_dir_all(&dir);
     prune_debug_dir(&dir, 50);
     let log_path = dir.join(format!("yekitrim_llm_debug_{ts}.log"));

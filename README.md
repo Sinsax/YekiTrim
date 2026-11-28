@@ -92,7 +92,7 @@ yekitrim-render-core
 
 | 命令 | 作用 |
 |---|---|
-| `download` | 下载全部 ASR 模型到 `<数据目录>/.yekitrim/models/` |
+| `download` | 下载全部 ASR 模型到 `<data>/models/` |
 | `fonts list` / `fonts install [--id]` | 查看 / 重装自带字体 |
 | `config init` / `config show` / `config migrate` | 程序级配置生成 / 显示 / 清掉已下线的键 |
 | `usage [--days N]` | LLM 用量（token / 缓存命中 / 耗时） |
@@ -130,7 +130,7 @@ yekitrim-render-core
 ## 配置
 
 两层合并：项目 `yekitrim.toml` → 程序级 `config.toml`（后加载覆盖前者）。程序配置**按账号各一份**，默认在
-`<数据目录>/users/<uid>/.yekitrim/config.toml`（单人是当前管理员那份，数据目录默认就是程序目录）；
+`<data>/users/<uid>/config.toml`（单人是当前管理员那份，数据目录默认是 `<exe>/data/`）；
 LLM 凭据单独放同目录的 `llm.toml`。合并规则：String 非空才覆盖，数值只有不等于默认值时才覆盖。
 
 ```toml
@@ -157,7 +157,7 @@ overwrite = false
 ```
 
 ```toml
-# <数据目录>/users/<uid>/.yekitrim/config.toml（yekitrim config init 生成，含内建 prompt 副本）
+# <data>/users/<uid>/config.toml（yekitrim config init 生成，含内建 prompt 副本）
 [asr]
 model = "sensevoice"      # sensevoice(快) | qwen3-asr(最准,慢)
 num_workers = 0           # 0=auto(CPU/4，上限 4)
@@ -176,7 +176,7 @@ overwrite = false
 ```
 
 ```toml
-# <数据目录>/users/<uid>/.yekitrim/llm.toml
+# <data>/users/<uid>/llm.toml
 base_url = ""             # 留空 = OpenAI
 api_key = ""
 model = ""                # 留空 = 各模块默认模型
@@ -223,7 +223,7 @@ yekitrim server --host 0.0.0.0 --allow-remote   # 对外监听（先改初始密
   （仅 loopback、本机免登录，带 `Host` 与同源两道闸）。这是**唯一**免登录路径，别拿它对外。
 - 项目：管理员可在首页「新增项目 → 服务器文件」填**任意绝对路径**；普通用户只能用自己的
   `<projects_root>/users/<uid>`；**服务不接受上传**。B站下载 / 录播姬入库 / 本机导入落同一个根。
-- `--data-dir` 默认 `<exe_dir>/.yekitrim/cloud`；反代 / HTTPS / 上线清单见 [docs/deploy.md](docs/deploy.md)。
+- `--data-dir` 默认 `<exe>/data`（数据根，账本在 `<data>/ledger/`）；反代 / HTTPS / 上线清单见 [docs/deploy.md](docs/deploy.md)。
 - release 里 WebUI 是**内嵌**的，升级只需换 exe；`--webui-dir` / `YEKITRIM_WEBUI_DIR` 可覆盖。
 - 全部参数与首次启动行为：[docs/cli-reference.md](docs/cli-reference.md)。
 
@@ -302,7 +302,7 @@ yekitrim fonts install --id NotoColorEmoji   # 只装某一支
 ```
 
 - 想用别的字体：在 WebUI「字体库」页导入，或放进字体库目录（`yekitrim fonts list` 会打印实际路径：
-  单人是 `<数据目录>/users/<uid>/resources/fonts/`，自带的在公用库 `<数据目录>/global/resources/fonts/`）；
+  单人是 `<data>/users/<uid>/fonts/`，自带的在公用库 `<data>/shared/fonts/`）；
   精修页「字幕字体」与封面设计器「字体」下拉选完**保存即生效**（预览与成片一致）。
 - ⚠️ `.ttc` / `.otc` 用不了（浏览器 `@font-face` 不认字体集合），导入会被直接拒绝，请先拆包。
 - 兜底栈、换字体历史、字体库目录形状与第三方字体授权：[docs/fonts.md](docs/fonts.md)。

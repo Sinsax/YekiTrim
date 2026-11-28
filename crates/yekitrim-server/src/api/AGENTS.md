@@ -35,7 +35,7 @@
   ⚠️ **同一路径别在两个 Router 里各挂一次**：axum merge 时 panic（`Overlapping method route`），**不是**后者覆盖前者。
   读 `GET /api/polish/fonts`（`fonts::scan_all`），写 `POST /polish/fonts/{import,upload,default,builtin}` 与 `DELETE /polish/fonts?id=`（`builtin=true` → **403**）。贴纸端点从 `/admin/stickers/*` 挪来，老路径已删。
 - **素材库取文件（`GET /polish/asset?kind=video|font&file=`）与 `GET /polish/video-thumb?file=`**：
-  ⚠️ 前者的**安全性质是"只认单个文件名"**（`is_safe_component` 挡分隔符与 `..`）—— 一旦 `file` 认 `/`，普通账号就能读走 `.yekitrim/llm.toml` 里的 API key；单测钉在**穿越尝试**上。
+  ⚠️ 前者的**安全性质是"只认单个文件名"**（`is_safe_component` 挡分隔符与 `..`）—— 一旦 `file` 认 `/`，普通账号就能读走 `users/<uid>/llm.toml` 里的 API key；单测钉在**穿越尝试**上。
   ⚠️ 贴纸**不收编**进来（两级：包 / 包内文件；收编就得让 `file` 认 `/`）。
   ⚠️ **抽不出来回 404 不是 500**（没装 ffmpeg / 文件损坏都只是"这张没缩略图"）。
   ⚠️ **写路径（导入/上传/装自带）必须走 `fonts::ensure_dir_for(owner)`**，`owner` 不能省 —— 省了字节会落进别人的库（"传了却看不见"）。`set_default`/`remove` 同样按 `asset_dir(owner, Fonts)`。

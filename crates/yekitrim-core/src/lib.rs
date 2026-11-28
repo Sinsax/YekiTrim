@@ -8,6 +8,7 @@ pub mod config;
 pub mod disk;
 pub mod fonts;
 pub mod path;
+pub mod layout;
 pub mod srt;
 pub mod pipeline;
 pub mod audio;

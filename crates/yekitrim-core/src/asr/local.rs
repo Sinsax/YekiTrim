@@ -65,7 +65,7 @@ impl ModelDirSource {
 /// 上面记的那次错位（界面只看程序目录、模型实际在 `~/.yekitrim/models`）正是它造成的。
 /// 现在位置只有一个，"只查了一处"这类 bug 从根上没有了。
 pub fn resolve_model_dir(cfg: &AsrConfig, model: &str) -> (PathBuf, ModelDirSource) {
-    resolve_model_dir_in(cfg, model, &crate::path::yekitrim_home())
+    resolve_model_dir_in(cfg, model, &crate::path::data_dir())
 }
 
 /// `resolve_model_dir` 的可注入版本（单测用：不碰环境变量，edition 2024 下 `set_var` 是 unsafe）。

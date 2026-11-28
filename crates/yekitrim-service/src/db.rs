@@ -1,8 +1,7 @@
 //! 账号账本（SQLite）。
 //!
 //! P1 最小切片只落 `users` + `audit`（供 `yekitrim user` 使用）；`sessions` 表一并建好，
-//! HTTP 登录/会话在下一步接入。库位置：`$YEKITRIM_DATA_DIR/yekitrim.db`，
-//! 未设置时取 `<exe_dir>/.yekitrim/cloud/yekitrim.db`（与设计稿 §3.5.7 一致）。
+//! HTTP 登录/会话在下一步接入。库位置：`<data>/ledger/yekitrim.db`。
 //!
 //! 身份数据不可缺省：打不开/写不了库一律返回错误，由调用方升级为"启动失败 + 修复指引"。
 
@@ -29,25 +28,17 @@ use rusqlite::{params, Connection, OptionalExtension};
 ///   两条流程的语义完全不同，混在一起会互相踩（见 `docs/plan/p4-implementation-plan.md` §2）。
 pub const SCHEMA_VERSION: i64 = 8;
 
-/// 账号账本 / 会话 / 初始密码所在目录（`<数据目录>/.yekitrim/cloud`）。
+/// 账号账本 / 会话 / 初始密码所在目录（`<data>/ledger`）。
 ///
-/// ⚠️ **这是 [`yekitrim_core::path::data_dir`] 的第二个实现，不是它的调用者** ——
-/// 它多一级 `cloud`，且**在有覆盖时返回覆盖值本身**（不是覆盖值 + `/cloud`）。
-/// 这个"两种拼接规则"是刻意的（`--data-dir` 指的就是账本目录），但**改环境变量名时
-/// 必须与 `yekitrim-core/src/path.rs` 的 `DATA_DIR_ENV` 和 `server/src/lib.rs` 的
-/// `set_var` 三端成对改** —— 只改一端 = `--data-dir` 静默失效、CLI 与 server 读**两个不同的库**，
-/// 而且只有传了 `--data-dir` 才暴露。
-pub fn data_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var(yekitrim_core::path::DATA_DIR_ENV) {
-        if !dir.trim().is_empty() {
-            return PathBuf::from(dir);
-        }
-    }
-    yekitrim_core::path::yekitrim_home().join("cloud")
+/// ⚠️ **拼接规则只有这一处**：`--data-dir` / `YEKITRIM_DATA_DIR` 表示**数据根**，
+/// 账本永远在它下面的 `ledger/`。历史那个"覆盖值就是账本目录"的特例已删除
+/// （2026-11-27 目录 v2），启动迁移会把旧的直挂账本搬进来。
+pub fn ledger_dir() -> PathBuf {
+    yekitrim_core::path::ledger_dir()
 }
 
 pub fn db_path() -> PathBuf {
-    data_dir().join("yekitrim.db")
+    ledger_dir().join("yekitrim.db")
 }
 
 pub fn now_secs() -> i64 {
@@ -2175,7 +2166,7 @@ mod tests {
     /// ⚠️ 测试**必须串行**：它改的是进程级环境变量。用一把专用锁把读-改-写包起来，
     /// 并在结束时**无论如何都还原**（`user.rs` 明写"测试不能靠环境变量隔离，会互相踩"）。
     #[test]
-    fn data_dir_env_var_is_the_only_override_and_points_the_ledger_at_it() {
+    fn ledger_dir_is_under_the_data_root() {
         static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
@@ -2185,22 +2176,25 @@ mod tests {
         // ① 名字必须是新名（旧名不再被认）
         assert_eq!(yekitrim_core::path::DATA_DIR_ENV, "YEKITRIM_DATA_DIR");
 
-        // ② 设了覆盖 ⇒ 账本落在**覆盖目录本身**（不是它下面的 .yekitrim/cloud）
+        // ② 设了覆盖 ⇒ 数据根 = 覆盖值，账本在它下面的 ledger/
         unsafe { std::env::set_var(yekitrim_core::path::DATA_DIR_ENV, &tmp) };
-        assert_eq!(data_dir(), tmp, "覆盖值就是账本目录");
-        assert_eq!(db_path(), tmp.join("yekitrim.db"));
+        assert_eq!(ledger_dir(), tmp.join("ledger"), "覆盖值只是数据根");
+        assert_eq!(db_path(), tmp.join("ledger").join("yekitrim.db"));
 
-        // ③ 覆盖为空串 ⇒ 等同没设（别把账本写到根目录去）
+        // ③ 覆盖为空串 ⇒ 等同没设
         unsafe { std::env::set_var(yekitrim_core::path::DATA_DIR_ENV, "") };
-        assert_eq!(data_dir(), yekitrim_core::path::yekitrim_home().join("cloud"));
+        assert_eq!(
+            ledger_dir(),
+            yekitrim_core::path::data_dir().join("ledger")
+        );
 
-        // ④ 没设 ⇒ 落到 `<数据目录>/.yekitrim/cloud`，且**状态目录名是新名**
+        // ④ 没设 ⇒ `<程序目录>/data/ledger`，且路径里不再有 `.yekitrim`
         unsafe { std::env::remove_var(yekitrim_core::path::DATA_DIR_ENV) };
-        let expected = yekitrim_core::path::yekitrim_home().join("cloud");
-        assert_eq!(data_dir(), expected);
+        let expected = yekitrim_core::path::data_dir().join("ledger");
+        assert_eq!(ledger_dir(), expected);
         assert!(
-            expected.to_string_lossy().contains(".yekitrim"),
-            "状态目录必须是新名: {}",
+            !expected.to_string_lossy().contains(".yekitrim"),
+            "账本不该再落在 .yekitrim 下: {}",
             expected.display()
         );
 

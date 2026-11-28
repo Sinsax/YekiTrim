@@ -1,6 +1,6 @@
 //! Server 状态持久化：记住上次打开的工程。
 //!
-//! 文件位置：与全局配置同目录 `.yekitrim/server.toml`（跟随数据目录的 `.yekitrim/`）。
+//! 文件位置：`<data>/server.toml`（与账本/模型同级，扁平命名）。
 //!
 //! ⚠️ 这里只放**记忆**（"上次用了哪个工程"），不放**状态**。"当前工程"这个状态
 //! 2026-10-03 已删 —— 每个请求由 `scope::Scope` 按 `?project=<id>` 现场解析。
@@ -46,7 +46,7 @@ impl Default for ServerState {
 }
 
 pub fn state_path() -> PathBuf {
-    yekitrim_core::path::yekitrim_home().join("server.toml")
+    yekitrim_core::path::server_toml_path()
 }
 
 pub fn load_state() -> Option<ServerState> {

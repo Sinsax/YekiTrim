@@ -7,13 +7,21 @@
 //! `users/<首个管理员>/` 下 —— 与"admin 在 server 里登录"**逐字节相同**。
 //!
 //! ```text
-//! <数据目录>/
-//! ├── .yekitrim/          账本 + server.toml + models + logs   （账号无关）
-//! ├── runtime/            随版本发布的交付物                    （账号无关）
-//! └── users/<uid>/        .yekitrim/{config,llm}.toml + resources/{fonts,stickers,videos}/
+//! <程序目录>/
+//! ├── app/                随版本发布的只读交付物（runtime + dhampir）
+//! └── data/
+//!     ├── server.toml     当前工程 + 端口
+//!     ├── ledger/         账本 + 运行锁
+//!     ├── logs/           唯一日志根
+//!     ├── models/         ASR 模型
+//!     ├── bin/            内置下载器
+//!     ├── projects/       托管项目（可被 [storage] projects_root 覆盖）
+//!     ├── shared/         公用素材库 {fonts,stickers,videos}
+//!     └── users/<uid>/    config.toml + llm.toml + {fonts,stickers,videos}
 //! ```
 //!
-//! **顶层没有 `resources/`。** 完整结构与"谁是谁"见 `docs/plan/single-user-layout.md`。
+//! **没有隐藏的 `.yekitrim/`，也没有 `resources/` 这一层。**
+//! 完整结构与"谁是谁"见 `docs/file-layout.md`。
 //!
 //! ⚠️ **托盘与"admin 登录"必须解析到同一处**：它们本来就是同一个人的两种进入方式。
 //! 以前托盘落 `<数据>/resources/`、admin 登录落 `<数据>/users/1/`，于是"同一个我"
@@ -131,12 +139,17 @@ impl Owner {
 /// 素材种类 —— [`asset_dir`] 的入参。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AssetKind {
-    /// `<…>/resources/fonts/`
+    /// `<…>/fonts/`
     Fonts,
-    /// `<…>/resources/stickers/`
+    /// `<…>/stickers/`
     Stickers,
-    /// `<…>/resources/videos/`
+    /// `<…>/videos/`
     Videos,
+    /// `<…>/sfx/` —— **用户导入的音效包**（`<包名>/` 一个子目录 = 一个包）。
+    ///
+    /// ⚠️ 与内建预设包（编译期 `assets/sfx_catalog.json`）是两回事：
+    /// 预设包不在磁盘上、不可删；这里的包全是用户自己传的、可删。
+    Sfx,
 }
 
 impl AssetKind {
@@ -146,6 +159,7 @@ impl AssetKind {
             AssetKind::Fonts => "fonts",
             AssetKind::Stickers => "stickers",
             AssetKind::Videos => "videos",
+            AssetKind::Sfx => "sfx",
         }
     }
 }
@@ -217,66 +231,49 @@ pub fn local_admin_uid() -> i64 {
     LOCAL_ADMIN_UID.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// **全局（公用）素材库根** —— `<数据目录>/global/resources/`。
+/// **公用素材库根** —— `<data>/shared/`。
 ///
-/// 口径（2026-10-10 用户拍板）：**`global/` 就是"公用素材库"这一件事** ——
-/// 字体 / 贴纸 / 视频素材，对所有账号可见（用户库优先、全局补缺）。
+/// 口径（2026-10-10 用户拍板，2026-11-27 改名）：公用素材库就是这一件事 ——
+/// 字体 / 贴纸 / 视频素材，对所有账号可见（用户库优先、公用补缺）。
 ///
-/// ⚠️ **它不装配置**：曾经短暂地把 `global/.yekitrim/{config,llm}.toml` 当"账号初始化模板"，
-/// 已按用户口径去掉 —— 配置回到顶层 `.yekitrim/`（账号无关的程序配置）。
-/// 别再把配置类的目录塞进 `global/`：那会让"公用素材库"这个概念变浑。
-pub fn global_resources_dir() -> PathBuf {
-    global_root().join("resources")
+/// ⚠️ **它不装配置**：配置在账号树 `<data>/users/<uid>/{config,llm}.toml`。
+/// 别再把配置类的目录塞进 `shared/`：那会让"公用素材库"这个概念变浑。
+pub fn shared_assets_dir() -> PathBuf {
+    path::shared_dir()
 }
 
-/// 全局根 `<数据目录>/global/`。
-pub fn global_root() -> PathBuf {
-    path::data_dir().join(GLOBAL_DIR_NAME)
-}
+/// 公用目录名。
+pub const SHARED_DIR_NAME: &str = "shared";
 
-/// 全局目录名。
-pub const GLOBAL_DIR_NAME: &str = "global";
-
-/// 某类素材**该读哪几个目录**，**按优先级从高到低**：`[用户库, 全局库]`。
+/// 某类素材**该读哪几个目录**，**按优先级从高到低**：`[用户库, 公用库]`。
 ///
 /// ## 为什么是"候选列表"而不是违反硬规矩 2
 ///
 /// 硬规矩 2 禁的是**同一个东西有多个可能位置、而解析时只查一处**（那种漂移不报错）。
-/// 这里是**有意的分层**：用户库优先、全局补缺，两层**都查**、顺序**固定**，
+/// 这里是**有意的分层**：用户库优先、公用库补缺，两层**都查**、顺序**固定**，
 /// 且"写到哪"永远只有一处（[`asset_dir`] = 用户库）。
 ///
-/// ⚠️ **写绝不能走这个列表** —— 往"第一个存在的"里写会让"全局只读"变成"谁先写谁占用"。
+/// ⚠️ **写绝不能走这个列表** —— 往"第一个存在的"里写会让"公用只读"变成"谁先写谁占用"。
 pub fn asset_dirs(owner: Owner, kind: AssetKind) -> Vec<PathBuf> {
     let mut v = vec![asset_dir(owner, kind)];
-    let g = global_resources_dir().join(kind.dir_name());
+    let g = shared_assets_dir().join(kind.dir_name());
     if !v.contains(&g) {
         v.push(g);
     }
     v
 }
 
-/// 该 owner 的**素材库根**。
-///
-/// 一律 `<数据目录>/users/<uid>/resources/`（`Local` 即当前管理员）。
-pub fn resources_dir(owner: Owner) -> PathBuf {
-    resources_dir_at(owner, &path::data_dir())
-}
-
-/// [`resources_dir`] 的可注入版本（单测用）。
-pub fn resources_dir_at(owner: Owner, data_home: &Path) -> PathBuf {
-    owner_root_at(owner, data_home).join("resources")
-}
-
 /// 某一类素材的库目录。
 ///
-/// ⚠️ 三者的父目录一律是 `users/<uid>/resources/`（`Local` 先经 [`resolve`] 换成管理员 uid）。
+/// ⚠️ 三者的父目录一律是 `users/<uid>/`（`Local` 先经 [`resolve`] 换成管理员 uid），
+/// 不再有中间的 `resources/` 层。
 pub fn asset_dir(owner: Owner, kind: AssetKind) -> PathBuf {
     asset_dir_at(owner, kind, &path::data_dir())
 }
 
 /// [`asset_dir`] 的可注入版本（单测用）。
 pub fn asset_dir_at(owner: Owner, kind: AssetKind, data_home: &Path) -> PathBuf {
-    resources_dir_at(owner, data_home).join(kind.dir_name())
+    owner_root_at(owner, data_home).join(kind.dir_name())
 }
 
 /// 贴纸库**该读哪个目录**。
@@ -310,37 +307,51 @@ pub fn video_dir_readable_at(owner: Owner, data_home: &Path) -> PathBuf {
     asset_dir_at(owner, AssetKind::Videos, data_home)
 }
 
-/// 该 owner 的**状态目录**（`<…>/.yekitrim/`：配置、server.toml…）。
+/// 用户导入的**音效包库**该读哪个目录（口径同 [`sticker_dir_readable`]）。
+///
+/// ⚠️ 与内建预设（`assets/sfx_catalog.json`，编译期内嵌、**不在磁盘上**）是两回事：
+/// 这里只放用户自己传的包，`<包名>/` 一个子目录 = 一个包。
+pub fn sfx_dir_readable(owner: Owner) -> PathBuf {
+    sfx_dir_readable_at(owner, &path::data_dir())
+}
+
+/// [`sfx_dir_readable`] 的可注入版本（单测用）。
+pub fn sfx_dir_readable_at(owner: Owner, data_home: &Path) -> PathBuf {
+    asset_dir_at(owner, AssetKind::Sfx, data_home)
+}
+
+/// 该 owner 的**程序配置**（`config.toml`，就在用户根下）。
 ///
 /// ⚠️ **账本（`users` / `sessions` / `invites` 表）永远全局、不走这里** ——
 /// 它是**身份的来源**，按用户分 = 登录前先得知道你是谁 = 循环依赖。
-/// 见 `yekitrim-service::db::db_path`。
-pub fn state_dir(owner: Owner) -> PathBuf {
-    state_dir_at(owner, &path::data_dir())
-}
-
-/// [`state_dir`] 的可注入版本（单测用）。
-pub fn state_dir_at(owner: Owner, data_home: &Path) -> PathBuf {
-    owner_root_at(owner, data_home).join(path::STATE_DIR_NAME)
-}
-
-/// 该 owner 的**全局配置文件**（`config.toml`）。
+/// 见 `yekitrim_service::db::db_path`。
 pub fn config_path(owner: Owner) -> PathBuf {
     config_path_at(owner, &path::data_dir())
 }
 
 /// [`config_path`] 的可注入版本（单测用）。
 pub fn config_path_at(owner: Owner, data_home: &Path) -> PathBuf {
-    state_dir_at(owner, data_home).join("config.toml")
+    owner_root_at(owner, data_home).join("config.toml")
 }
 
-/// 把**单人时期**的存量（`<data>/resources/*` 与 `<data>/.yekitrim/{config,llm}.toml`）
+/// 该 owner 的 LLM 配置（`llm.toml`，与 `config.toml` 同级）。
+pub fn llm_config_path(owner: Owner) -> PathBuf {
+    llm_config_path_at(owner, &path::data_dir())
+}
+
+/// [`llm_config_path`] 的可注入版本（单测用）。
+pub fn llm_config_path_at(owner: Owner, data_home: &Path) -> PathBuf {
+    owner_root_at(owner, data_home).join("llm.toml")
+}
+
+/// 把**旧布局**的存量（`<data>/resources/*` 与 `<data>/legacy-config/{config,llm}.toml`）
 /// 归到某个账号名下 —— **一次性、幂等、不复制内容**。
 ///
 /// ## 为什么要它
 ///
-/// 单人形态（[`Owner::Local`]）的数据就在 `<数据>/resources/` 与 `<数据>/.yekitrim/`；
-/// 而多用户形态下 [`Owner::User`] 解析到 `<数据>/users/<uid>/…`。不做这一步的话，
+/// 旧布局把单人素材放在 `<data>/resources/`、把退役的顶层配置放在
+/// `<data>/.yekitrim/`（迁移引擎会把后者改名成 `<data>/legacy-config/`）；
+/// 而多用户形态下 [`Owner::User`] 解析到 `<data>/users/<uid>/…`。不做这一步的话，
 /// 一台已用很久的机器一开多用户，**新账号看到的是空素材库与默认配置**，
 /// 用户会以为"我的东西全丢了"。
 ///
@@ -350,7 +361,7 @@ pub fn config_path_at(owner: Owner, data_home: &Path) -> PathBuf {
 /// 且两份从此分叉）。所以是 `rename`；跨盘时 `rename` 会失败，那时**如实报错、
 /// 保持原状**，让调用方（或用户手工）决定 —— 绝不悄悄退化成"复制一半"。
 ///
-/// ⚠️ **只在目标不存在时动手**（幂等）：`users/<uid>/resources/` 已经在了就整段跳过，
+/// ⚠️ **只在目标不存在时动手**（幂等）：`users/<uid>/<kind>/` 已经在了就整段跳过，
 /// 跑第二遍是 no-op。这也是"用户自己已经把东西放好了"的情况。
 ///
 /// ⚠️ **`Owner::Local` 不参与**：它就是源头，没有可迁的。
@@ -370,11 +381,11 @@ pub fn migrate_legacy_assets_to(owner: Owner, data_home: &Path) -> std::io::Resu
     let Owner::User(_) = owner else {
         return Ok(Vec::new()); // 单人形态：数据本来就在那儿，无事可做
     };
-    let legacy_resources = path::resources_dir_at(data_home);
+    let legacy_resources = path::legacy_resources_dir_at(data_home);
 
     let mut moved = Vec::new();
 
-    // ① 素材：<data>/resources/* → <data>/users/<uid>/resources/*
+    // ① 素材：<data>/resources/<kind>/ → <data>/users/<uid>/<kind>/
     if legacy_resources.is_dir() {
         for kind in [AssetKind::Fonts, AssetKind::Stickers, AssetKind::Videos] {
             let from = legacy_resources.join(kind.dir_name());
@@ -391,11 +402,18 @@ pub fn migrate_legacy_assets_to(owner: Owner, data_home: &Path) -> std::io::Resu
             std::fs::rename(&from, &to)?;
             moved.push(to);
         }
+        // 搬完的空壳不留（非空说明还有别的东西，保持原状）
+        if std::fs::read_dir(&legacy_resources)
+            .map(|mut it| it.next().is_none())
+            .unwrap_or(false)
+        {
+            let _ = std::fs::remove_dir(&legacy_resources);
+        }
     }
 
-    // ② 配置：<data>/.yekitrim/{config,llm}.toml → <data>/users/<uid>/.yekitrim/
-    let legacy_state = path::yekitrim_home_at(data_home);
-    let dest_state = state_dir_at(owner, data_home);
+    // ② 配置：<data>/legacy-config/{config,llm}.toml → <data>/users/<uid>/
+    let legacy_state = data_home.join("legacy-config");
+    let dest_state = owner_root_at(owner, data_home);
     for name in ["config.toml", "llm.toml"] {
         let from = legacy_state.join(name);
         if !from.is_file() {
@@ -408,6 +426,12 @@ pub fn migrate_legacy_assets_to(owner: Owner, data_home: &Path) -> std::io::Resu
         std::fs::create_dir_all(&dest_state)?;
         std::fs::rename(&from, &to)?;
         moved.push(to);
+    }
+    if std::fs::read_dir(&legacy_state)
+        .map(|mut it| it.next().is_none())
+        .unwrap_or(false)
+    {
+        let _ = std::fs::remove_dir(&legacy_state);
     }
 
     Ok(moved)
@@ -429,7 +453,7 @@ mod tests {
         assert!(admin > 0, "管理员 uid 必须是正数，实得 {admin}");
 
         // 顶层**不该**再出现在任何解析结果里。
-        let top_resources = path::resources_dir_at(home);
+        let top_resources = path::legacy_resources_dir_at(home);
         for kind in [AssetKind::Fonts, AssetKind::Stickers, AssetKind::Videos] {
             let local = asset_dir_at(Owner::Local, kind, home);
             let as_user = asset_dir_at(Owner::User(admin), kind, home);
@@ -449,11 +473,21 @@ mod tests {
         assert_ne!(a, b, "不同账号的库必须分开");
         let admin_home = home.join("users").join(local_admin_uid().to_string());
         assert_eq!(owner_root_at(Owner::Local, home), admin_home);
-        assert_eq!(resources_dir_at(Owner::Local, home), admin_home.join("resources"));
-        assert_eq!(state_dir_at(Owner::Local, home), admin_home.join(path::STATE_DIR_NAME));
+        assert_eq!(
+            asset_dir_at(Owner::Local, AssetKind::Fonts, home),
+            admin_home.join("fonts")
+        );
+        assert_eq!(
+            config_path_at(Owner::Local, home),
+            admin_home.join("config.toml")
+        );
+        assert_eq!(
+            llm_config_path_at(Owner::Local, home),
+            admin_home.join("llm.toml")
+        );
     }
 
-    /// 多用户形态：三类素材都落在 `<data>/users/<uid>/resources/<kind>/`。
+    /// 多用户形态：三类素材都落在 `<data>/users/<uid>/<kind>/`。
     #[test]
     fn user_owner_gets_its_own_tree() {
         let home = Path::new("/data");
@@ -465,17 +499,17 @@ mod tests {
         ] {
             assert_eq!(
                 asset_dir_at(Owner::User(uid), kind, home),
-                Path::new("/data/users/7/resources").join(sub)
+                Path::new("/data/users/7").join(sub)
             );
         }
         assert_eq!(owner_root_at(Owner::User(uid), home), Path::new("/data/users/7"));
         assert_eq!(
-            state_dir_at(Owner::User(uid), home),
-            Path::new("/data/users/7/.yekitrim")
+            config_path_at(Owner::User(uid), home),
+            Path::new("/data/users/7/config.toml")
         );
         assert_eq!(
-            config_path_at(Owner::User(uid), home),
-            Path::new("/data/users/7/.yekitrim/config.toml")
+            llm_config_path_at(Owner::User(uid), home),
+            Path::new("/data/users/7/llm.toml")
         );
     }
 
@@ -535,19 +569,19 @@ mod tests {
         );
     }
 
-    /// **全局层**（`<data>/global/resources/`）：素材共享、且**用户库优先**。
+    /// **公用层**（`<data>/shared/<kind>/`）：素材共享、且**用户库优先**。
     ///
-    /// 这条钉住三件事：① 顺序是 `[用户库, 全局库]`；② 两者不同；③ **写路径**只有一个
-    /// （`asset_dir` = 用户库）—— 写如果也跟着"候选列表"走，"全局只读"就变成"谁先写谁占用"。
+    /// 这条钉住三件事：① 顺序是 `[用户库, 公用库]`；② 两者不同；③ **写路径**只有一个
+    /// （`asset_dir` = 用户库）—— 写如果也跟着"候选列表"走，"公用只读"就变成"谁先写谁占用"。
     #[test]
-    fn global_library_is_a_second_read_layer_but_never_a_write_target() {
+    fn shared_library_is_a_second_read_layer_but_never_a_write_target() {
         let home = Path::new("/data");
         for kind in [AssetKind::Fonts, AssetKind::Stickers, AssetKind::Videos] {
             let user = asset_dir_at(Owner::User(7), kind, home);
-            let global = home.join(GLOBAL_DIR_NAME).join("resources").join(kind.dir_name());
+            let shared = home.join(SHARED_DIR_NAME).join(kind.dir_name());
 
-            // 全局库与任何账号的库都不是同一个目录。
-            assert_ne!(user, global, "{kind:?}：用户库不能等于全局库");
+            // 公用库与任何账号的库都不是同一个目录。
+            assert_ne!(user, shared, "{kind:?}：用户库不能等于公用库");
 
             // 顺序固定：用户库在前（同 id 时用户赢）。
             // ⚠️ `asset_dirs` 走真实 data_dir()，所以这里只断言**关系**，不比绝对路径。
@@ -555,45 +589,39 @@ mod tests {
             assert_eq!(dirs.len(), 2, "{kind:?}：正好两层");
             assert_ne!(dirs[0], dirs[1], "{kind:?}：两层必须不同");
             assert!(
-                dirs[1].ends_with(Path::new(GLOBAL_DIR_NAME).join("resources").join(kind.dir_name())),
-                "{kind:?}：第二层必须是 global/resources/<kind>，实得 {}",
+                dirs[1].ends_with(Path::new(SHARED_DIR_NAME).join(kind.dir_name())),
+                "{kind:?}：第二层必须是 shared/<kind>，实得 {}",
                 dirs[1].display()
             );
         }
 
-        // admin 那棵树与全局库也是分开的（admin ≠ 全局）。
+        // admin 那棵树与公用库也是分开的（admin ≠ 公用）。
         assert_ne!(
             asset_dir_at(Owner::User(local_admin_uid()), AssetKind::Fonts, home),
-            home.join(GLOBAL_DIR_NAME).join("resources").join("fonts"),
-            "管理员库不能等于全局库"
+            home.join(SHARED_DIR_NAME).join("fonts"),
+            "管理员库不能等于公用库"
         );
     }
 
-    /// **`global/` 只放素材** —— 它不是"第二个配置目录"。
-    ///
-    /// 这条钉住用户 2026-10-10 的口径：「global 更多是作为一个公用素材库的作用」。
-    /// 曾经短暂地把账号配置模板放进去（`global/.yekitrim/config.toml`），已去掉；
-    /// 这条会红着拦住"顺手再把配置塞回去"。
+    /// **`shared/` 只放素材** —— 它不是"第二个配置目录"。
     #[test]
-    fn global_root_holds_assets_only() {
-        let assets = global_resources_dir();
-        let name = assets.file_name().and_then(|s| s.to_str()).unwrap_or_default();
-        assert_eq!(name, "resources", "global 下面只该有 resources/（素材），实得 {assets:?}");
+    fn shared_root_holds_assets_only() {
+        let assets = shared_assets_dir();
+        assert_eq!(assets, path::data_dir().join(SHARED_DIR_NAME));
         assert_eq!(
-            assets.parent().and_then(|p| p.file_name()).and_then(|s| s.to_str()),
-            Some(GLOBAL_DIR_NAME),
-            "上一层必须是 global/"
+            assets.file_name().and_then(|s| s.to_str()),
+            Some(SHARED_DIR_NAME)
         );
 
-        // 三个素材种类都能在 global 下取到。
+        // 三个素材种类都能在 shared 下取到。
         for kind in [AssetKind::Fonts, AssetKind::Stickers, AssetKind::Videos] {
             assert!(assets.join(kind.dir_name()).ends_with(kind.dir_name()));
         }
 
-        // ⚠️ 配置**不在** `global/` 里（它在顶层 `.yekitrim/`）。
+        // ⚠️ 配置**不在** `shared/` 里（它在 users/<uid>/）。
         assert!(
-            !assets.starts_with(path::data_dir().join("global").join(path::STATE_DIR_NAME)),
-            "配置目录不该在 global/ 下"
+            !assets.starts_with(path::data_dir().join("users")),
+            "配置目录不该在 shared/ 下"
         );
     }
 
@@ -651,13 +679,13 @@ mod tests {
         let home = tmp.as_path();
 
         // 造出"单人时期"的存量。
-        let legacy_stickers = path::sticker_dir_at(home);
+        let legacy_stickers = path::legacy_sticker_dir_in_resources_at(home);
         std::fs::create_dir_all(&legacy_stickers).unwrap();
         std::fs::write(legacy_stickers.join("pack.toml"), b"x").unwrap();
-        let legacy_fonts = path::font_dir_at(home);
+        let legacy_fonts = path::legacy_font_dir_at(home);
         std::fs::create_dir_all(&legacy_fonts).unwrap();
         std::fs::write(legacy_fonts.join("a.ttf"), b"font").unwrap();
-        let legacy_state = path::yekitrim_home_at(home);
+        let legacy_state = home.join("legacy-config");
         std::fs::create_dir_all(&legacy_state).unwrap();
         std::fs::write(legacy_state.join("llm.toml"), b"[llm]\napi_key = \"k\"\n").unwrap();
         // ⚠️ **刻意不建 `users/7`** —— 真实升级路径上它就是不存在的：
@@ -671,7 +699,7 @@ mod tests {
         // 到了目标位置……
         let new_fonts = asset_dir_at(Owner::User(7), AssetKind::Fonts, home);
         assert!(new_fonts.join("a.ttf").is_file(), "字体应已搬到用户树");
-        let new_llm = state_dir_at(Owner::User(7), home).join("llm.toml");
+        let new_llm = llm_config_path_at(Owner::User(7), home);
         assert!(new_llm.is_file(), "llm.toml 应已搬到用户树");
         // ……而**源头不再留着**（= 真搬，不是复制）。
         assert!(!legacy_fonts.join("a.ttf").exists(), "搬运后源头不该还有同一份");
@@ -689,7 +717,7 @@ mod tests {
         std::fs::create_dir_all(&own).unwrap();
         std::fs::write(own.join("mine.ttf"), b"mine").unwrap();
         // 同时老位置也有东西。
-        let legacy = path::font_dir_at(home);
+        let legacy = path::legacy_font_dir_at(home);
         std::fs::create_dir_all(&legacy).unwrap();
         std::fs::write(legacy.join("old.ttf"), b"old").unwrap();
 
@@ -708,7 +736,7 @@ mod tests {
     fn migration_is_a_noop_for_the_local_owner() {
         let tmp = temp_root("local");
         let home = tmp.as_path();
-        let legacy = path::font_dir_at(home);
+        let legacy = path::legacy_font_dir_at(home);
         std::fs::create_dir_all(&legacy).unwrap();
         std::fs::write(legacy.join("a.ttf"), b"font").unwrap();
 

@@ -1,12 +1,12 @@
-//! 程序级字体库：**`<数据目录>/resources/fonts/`**（默认就是程序目录，见
-//! [`crate::path::data_dir`]）。读写同一个位置，[`ensure_dir`] 建的就是它。
+//! 字体库：**当前 owner 的 `<data>/users/<uid>/fonts/`**（[`dir_for`]）；
+//! 公用层 `<data>/shared/fonts/`（自带字体，用户库优先、公用补缺）。
 //!
 //! ⚠️ **2026-10-02 之前是"用户固定目录 `~/.yekitrim/fonts` 优先"**，已整条改掉
 //! （用户口径：*所有内容围绕程序目录来，不要用户目录*）。老那份用户目录不再被读，
 //! 留 [`legacy_user_dir_report`] 只做"报路径和体积"，**不自动删也不搬**。
 //!
-//! 用户把 `.ttf` / `.otf` 丢进这个目录，界面就能把它们列出来当字幕/封面字体用。
-//! 解析规则见 [`crate::path::font_dir`]。
+//! 用户把 `.ttf` / `.otf` 丢进**自己的字体库**，界面就能把它们列出来当字幕/封面字体用。
+//! 解析规则见 [`dir_for`] 与 `crate::owner::asset_dirs`。
 //!
 //! # 自带字体（\`BUILTIN_FONTS\`）**字节内嵌在二进制里**（2026-10-02 起，不再依赖下载）
 //!
@@ -33,8 +33,11 @@ use std::sync::{Mutex, OnceLock};
 pub const FONT_EXTS: [&str; 3] = ["ttf", "otf", "ttc"];
 
 /// 目录是否已就绪（读侧一律不创建目录，方便判断"库是空的"和"库还没有"）。
+///
+/// 2026-11-27 起 = 当前 owner 的 `<data>/users/<uid>/fonts/`；
+/// 旧的顶层 `resources/fonts` 只在迁移回落里出现。
 pub fn dir() -> PathBuf {
-    crate::path::font_dir()
+    crate::owner::asset_dir(crate::owner::Owner::from_env(), crate::owner::AssetKind::Fonts)
 }
 
 /// **按归属**取字体库（`Owner::Local` = 现状位置；`Owner::User(uid)` = 各自的树）。
@@ -112,17 +115,21 @@ static ASCII_MIGRATED: std::sync::atomic::AtomicBool = std::sync::atomic::Atomic
 
 /// 建好字体库目录并返回**写路径**（`config init` / `server` 启动 / 导入前用）。
 ///
-/// ⚠️ **只有一个库**：`<数据目录>/resources/fonts/`（见 [`crate::path::font_dir`]）。
+/// ⚠️ **只有一个库**：当前 owner 的 `<data>/users/<uid>/fonts/`（见 [`dir_for`]）。
 /// 2026-10-02 之前这里会"用户目录优先 + 老库一次性搬家"，那是为了躲开构建目录漂移；
 /// 代价是**同一个库有两个可能的位置**，CLI 与 WebUI 各看一份、互不同步。
 /// 现在建目录就是建目录，没有任何"搬"的动作。
 pub fn ensure_dir() -> std::io::Result<PathBuf> {
-    ensure_dir_at(&crate::path::data_dir())
+    ensure_dir_for(crate::owner::Owner::from_env())
 }
 
 /// [`ensure_dir`] 的可注入版本（单测用）。
 pub fn ensure_dir_at(data_home: &Path) -> std::io::Result<PathBuf> {
-    let root = crate::path::font_dir_at(data_home);
+    let root = crate::owner::asset_dir_at(
+        crate::owner::Owner::from_env(),
+        crate::owner::AssetKind::Fonts,
+        data_home,
+    );
     std::fs::create_dir_all(&root)?;
     // 老库里“路径含非 ASCII”的条目在这里一次性搬成 ASCII 形状（幂等；失败只 warn）。
     // 放在 ensure_dir 里是有意的：它是**写路径**（server 启动 / config init 都会走），
@@ -1669,12 +1676,12 @@ pub fn install_builtin_font(root: &Path, b: &BuiltinFont) -> anyhow::Result<()> 
 /// 字体库一建出来就是"能选字"的状态。**失败只 warn、不返回 Err** —— 字体装不上不该拦住
 /// `yekitrim server` 启动或一条 CLI 命令（没有它顶多是回落到系统字体栈，功能降级不是故障）。
 ///
-/// ⚠️ **装在全局库**（`<数据>/global/resources/fonts/`，2026-10-10 用户拍板）：
+/// ⚠️ **装在公用库**（`<data>/shared/fonts/`，2026-10-10 用户拍板）：
 /// 自带字体是"程序自带的**公用**素材"，不属于任何账号 —— 装一份所有人共用，
 /// 而不是每个账号首次启动各落一份（约 20 MB × 人数）。
-/// 各账号通过 `owner::asset_dirs()` 的"用户库优先、全局补缺"看到它。
+/// 各账号通过 `owner::asset_dirs()` 的"用户库优先、公用补缺"看到它。
 pub fn ensure_builtin_fonts() {
-    let root = crate::owner::global_resources_dir().join("fonts");
+    let root = crate::owner::shared_assets_dir().join("fonts");
     if let Err(e) = std::fs::create_dir_all(&root) {
         tracing::warn!("全局字体库目录不可用，跳过自带字体安装：{e}");
         return;
@@ -2742,14 +2749,17 @@ mod tests_v2 {
     /// ⚠️ **字体库只有一个位置**的钉子（2026-10-02 口径切换）。
     ///
     /// 口径：*所有内容围绕程序目录来，不要用户目录*。
-    /// `ensure_dir` 建的就是 `<数据目录>/resources/fonts/` —— **不碰任何用户目录**，
-    /// 也没有"老库一次性搬家"那个动作了（搬家是当年为了躲开构建目录漂移才有的，
-    /// 代价是同一个库有两个可能的位置，CLI 与 WebUI 各看一份）。
+    /// `ensure_dir` 建的是**当前 owner 的** `<数据目录>/users/<uid>/fonts/` ——
+    /// 不碰任何用户目录，也不再在数据根下建 `resources/`。
     #[test]
     fn ensure_dir_is_the_program_dir_and_never_touches_user_home() {
         let data = tmp("ensure-data");
         let root = ensure_dir_at(&data).unwrap();
-        assert_eq!(root, data.join("resources").join("fonts"));
+        let admin = crate::owner::local_admin_uid();
+        assert_eq!(
+            root,
+            data.join("users").join(admin.to_string()).join("fonts")
+        );
         assert!(root.is_dir(), "ensure_dir 要把目录建出来");
 
         // 幂等：再调一次还是同一个目录（不新开一层、不搬东西）
@@ -2757,15 +2767,11 @@ mod tests_v2 {
         assert_eq!(ensure_dir_at(&data).unwrap(), root);
         assert!(root.join("Keep.ttf").is_file(), "已装的不该被动过");
 
-        // ⚠️ 数据根之外的任何位置都不该被建出来 —— 特别是用户目录那条老路
-        let stray = data.parent().unwrap().join(".yekitrim");
-        assert!(!stray.exists(), "不该在数据根旁边另建 .yekitrim/：{}", stray.display());
-        // 同一条判据也钉住**新**状态目录名：字体库不该在数据根旁边开状态目录
-        let stray_new = data.parent().unwrap().join(crate::path::STATE_DIR_NAME);
+        // ⚠️ 数据根下不该再有旧的顶层 resources/ 壳
         assert!(
-            !stray_new.exists(),
-            "不该在数据根旁边另建状态目录：{}",
-            stray_new.display()
+            !data.join("resources").exists(),
+            "不该在数据根下另建 resources/：{}",
+            data.join("resources").display()
         );
     }
 

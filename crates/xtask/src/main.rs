@@ -563,14 +563,14 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
     // `include_bytes!` 嵌进去），所以包里**不再带** `webui/dist/`：
     //   · "只换 exe 就能升级" —— 前端跟着 exe 一起换，不存在"新 exe + 旧界面"这种错配；
     //   · 新鲜度检查也搬去了编译期（`dist` 比 `src` 旧会让**编译失败**），这里不必再查一遍。
-    // ⚠️ 字体是同一个套路，所以包里 `resources/fonts/` 只留说明文件（见下面那段"纯重复"）。
+    // ⚠️ 字体是同一个套路，所以 v2 包里**连 `resources/` 空壳都不建**；
+    // 字体库首次启动建在 `data/users/<uid>/fonts` 与 `data/shared/fonts`。
 
     println!("==> assembling {package_name}");
     if package_dir.exists() {
         fs::remove_dir_all(&package_dir)?;
     }
-    fs::create_dir_all(package_dir.join("resources").join("fonts"))?;
-
+    fs::create_dir_all(package_dir.join("app").join("runtime"))?;
     fs::copy(&exe, package_dir.join("yekitrim.exe"))?;
     if tray_exe.is_file() {
         fs::copy(&tray_exe, package_dir.join("yekitrim-tray.exe"))?;
@@ -598,7 +598,7 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
     // ⚠️ **2026-10-09：转译器与词汇表合并进 `<程序目录>/runtime/`**（原先 `tools/` + `spec/`）。
     // 消费侧的候选顺序跟着改（`dhampir.rs::translator_candidates_for` 与
     // `pipeline.rs::spec_effects_path` 都是"新位优先、老位回落"）。
-    let runtime_dir = package_dir.join("runtime");
+    let runtime_dir = package_dir.join("app").join("runtime");
     fs::create_dir_all(&runtime_dir)?;
     let translator = root.join("tools").join("polish-to-dhampir.mjs");
     if !translator.is_file() {
@@ -681,57 +681,29 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
         }
         copy_dir_all(
             &artifact.join("preview"),
-            &package_dir.join("dhampir").join("preview"),
+            &package_dir.join("app").join("dhampir").join("preview"),
         )?;
         fs::copy(
             artifact.join("VERSION"),
-            package_dir.join("dhampir").join("VERSION"),
+            package_dir.join("app").join("dhampir").join("VERSION"),
         )?;
-        fs::create_dir_all(package_dir.join("dhampir").join("bin"))?;
+        fs::create_dir_all(package_dir.join("app").join("dhampir").join("bin"))?;
         fs::copy(
             &base_exe,
             package_dir
+                .join("app")
                 .join("dhampir")
                 .join("bin")
                 .join(dhampir_bin_name("windows")),
         )?;
-        println!("    + dhampir/（出片二进制 + 预览产物 + VERSION）");
+        println!("    + app/dhampir/（出片二进制 + 预览产物 + VERSION）");
     }
-    println!("    + runtime/polish-to-dhampir.mjs + runtime/effects.json（转译器与效果词汇表）");
+    println!("    + app/runtime/polish-to-dhampir.mjs + app/runtime/effects.json（转译器与效果词汇表）");
 
-    // ⚠️ 2026-10-02 起：自带字体**内嵌在 yekitrim.exe 里**（`crates/yekitrim-core/assets/fonts/`，
-    // 经 include_bytes! 进二进制），首次启动自动落盘到字体库 —— 所以**发行包仍然只带一个空目录**，
-    // 但用户侧已经不需要任何"下载"动作。内嵌的授权依据 = 两支都是 SIL OFL-1.1（正文明确允许
-    // bundled/embedded）；许可原文也一并内嵌、随字体落盘。
-    // 用户自己导入的字体放这里（`yekitrim_core::fonts`，v2 = 一支一个目录 + FONT.toml）。
-    // ⚠️ **本目录就是字体库本体**（2026-10-02 资产收回程序目录之后）。
-    // 曾经它只是"老安装的回落态"，正式位置在 `%USERPROFILE%\.yekitrim\fonts` ——
-    // 那条已经作废：现在读写都走这里，**别再改回用户目录**。
-    fs::write(
-        package_dir
-            .join("resources")
-            .join("fonts")
-            .join("放这里.txt"),
-        concat!(
-            "【本目录就是字体库本体 —— 把 .ttf / .otf 直接放进这里即可。\n",
-            "（2026-10-02 起：资产全部围绕程序目录。以前正式位置在\n",
-            "  %USERPROFILE%\\.yekitrim\\fonts，那条已作废，程序不再读它。）】\n",
-            "把字体文件（.ttf / .otf）放进字体库，精修页里就会多出对应的字体可选：\n",
-            "\n",
-            "  - 字幕字体 =「生成与导出」卡 → LLM 剪辑参数块 → 字幕字体\n",
-            "  - 封面字体 = 封面设计器 →「排版」组 → 字体\n",
-            "\n",
-            "⚠️ .ttc / .otc（字体集合）用不了：浏览器的 @font-face 不认集合，\n",
-            "   收进来会出现「预览回退系统字体、出片却用了它」。请先拆包成单个 .ttf/.otf。\n",
-            "\n",
-            "自带字体（Noto Sans SC + Noto Color Emoji，均 OFL-1.1，可商用/可嵌入/可再分发）\n",
-            "已内嵌在程序里，首次启动会自动装进字体库 —— 不需要联网、也不需要手动下载。\n",
-            "  yekitrim fonts list       看看库里有什么\n",
-            "  yekitrim fonts install    万一被删了，重新装回来（幂等）\n",
-            "\n",
-            "其余字体请自行获取并遵守其许可（见 README「字体」）。\n",
-        ),
-    )?;
+    // ⚠️ 2026-11-27 起发布包**不再**带 `resources/`（连空壳都不建）：
+    // 字体库在 `data/users/<uid>/fonts` 与 `data/shared/fonts`，首次启动由
+    // `fonts::ensure_dir_for` / `ensure_builtin_fonts` 创建并写说明。
+    // 自带字体仍内嵌在 exe 里（SIL OFL-1.1），用户不需要下载。
 
     let notes = root
         .join("docs")
@@ -771,6 +743,7 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
         smoke_test(&package_dir)?;
     }
 
+    assert_package_layout(&package_dir)?;
     println!("==> compressing {}", zip_path.display());
     if zip_path.exists() {
         fs::remove_file(&zip_path)?;
@@ -983,17 +956,11 @@ fn run_package_linux(
     if package_dir.exists() {
         fs::remove_dir_all(package_dir)?;
     }
-    fs::create_dir_all(package_dir.join("resources").join("fonts"))?;
+    fs::create_dir_all(package_dir.join("app").join("runtime"))?;
 
     fs::copy(&exe, package_dir.join("yekitrim"))?;
-    // WebUI / 字体与 Windows 一样是**编进二进制**的，包里不带 dist（见 AGENTS.md）。
-    // 但保留了 resources/fonts 空目录 + 说明：那是运行时的数据目录落点，用户会往里放字体。
-    fs::write(
-        package_dir.join("resources").join("fonts").join("放这里.txt"),
-        "本目录就是字体库。\n\n\
-         YekiTrim 首次启动会把自带字体落盘到 <数据目录>/resources/fonts/。\n\
-         数据目录默认是**本程序所在目录**，可用环境变量 YEKITRIM_DATA_DIR 覆盖。\n",
-    )?;
+    // WebUI / 字体都编进二进制；v2 包不再带 `resources/` 空壳（字体库首次启动建在
+    // `data/users/<uid>/fonts` 与 `data/shared/fonts`）。
 
     for name in ["LICENSE", "THIRD-PARTY-NOTICES.md"] {
         let src = root.join(name);
@@ -1071,17 +1038,17 @@ fn run_package_linux(
             }
             copy_dir_all(
                 &artifact.join("preview"),
-                &package_dir.join("dhampir").join("preview"),
+                &package_dir.join("app").join("dhampir").join("preview"),
             )?;
             fs::copy(
                 artifact.join("VERSION"),
-                package_dir.join("dhampir").join("VERSION"),
+                package_dir.join("app").join("dhampir").join("VERSION"),
             )?;
             println!("    dhampir artifact: {}", artifact.display());
         }
         match &dhampir_exe {
             Some(path) => {
-                let bin_dir = package_dir.join("dhampir").join("bin");
+                let bin_dir = package_dir.join("app").join("dhampir").join("bin");
                 fs::create_dir_all(&bin_dir)?;
                 fs::copy(path, bin_dir.join(dhampir_bin_name("linux")))?;
                 println!("    dhampir: {}", path.display());
@@ -1105,7 +1072,7 @@ fn run_package_linux(
     // 合并后转译器与词汇表**同目录**，所以它自己那份查找会先试 `./effects.json`、
     // 再回落 `../spec/effects.json`（见 `polish-to-dhampir.mjs` 的 `EFFECT_VOCAB`）——
     // 开发树里仍是 `tools/` + `spec/` 并列，两条路都得留。
-    let runtime_dir = package_dir.join("runtime");
+    let runtime_dir = package_dir.join("app").join("runtime");
     fs::create_dir_all(&runtime_dir)?;
     let translator = root.join("tools").join("polish-to-dhampir.mjs");
     if translator.is_file() {
@@ -1119,38 +1086,11 @@ fn run_package_linux(
     // ---------------------------------------------------------------- 可选冒烟
     if options.smoke_test {
         smoke_test_linux(package_dir)?;
-        // ⚠️ **烟测会把内嵌字体解包进包目录，必须清掉**（与 Windows 通道同一条，
-        // 2026-10-02 在 Windows 上实际踩到，2026-10-05 发现 Linux 通道漏了这一步）。
-        //
-        // 机制：`fonts::ensure_dir` 写的**就是** `<数据目录>/resources/fonts`，
-        // 而烟测起的进程就在包目录里（`exe_dir()` = 包目录）⇒ 两个自带字体
-        // （NotoSansSC-Regular + NotoColorEmoji-CBDT，合计约 **21 MB**）被解包进
-        // `resources/fonts/<slug>/`，随后原样进归档。
-        //
-        // 这是**纯重复**（同样字节已经 `include_bytes!` 编在 `yekitrim` 里了），
-        // 还直接违反发行说明「发行包只带一个空 fonts 目录 + 说明」那条。
-        // 实测未清理时包从 40.3 MB 涨到 56.2 MB —— 正好是那 21 MB 字体。
-        //
-        // 只删字体目录里的**子项**，保留 `放这里.txt`（组装阶段写的，属于包的一部分）。
-        let fonts_dir = package_dir.join("resources").join("fonts");
-        if fonts_dir.is_dir() {
-            for entry in fs::read_dir(&fonts_dir)? {
-                let entry = entry?;
-                let name = entry.file_name();
-                if name == "放这里.txt" {
-                    continue;
-                }
-                let path = entry.path();
-                if path.is_dir() {
-                    fs::remove_dir_all(&path)?;
-                } else {
-                    fs::remove_file(&path)?;
-                }
-            }
-        }
+        clean_runtime_state(package_dir);
     }
 
     // ---------------------------------------------------------------- 打包
+    assert_package_layout(package_dir)?;
     println!("==> compressing {}", tarball.display());
     if tarball.exists() {
         fs::remove_file(tarball)?;
@@ -1267,38 +1207,7 @@ fn smoke_test_linux(package_dir: &Path) -> Result<(), Box<dyn std::error::Error>
 
     // 首次运行会生成运行态（数据目录、server.toml 含真实绝对路径）—— 一律不许进发布包。
     // ⚠️ **2026-10-09：素材库落点由 `stickers/` 改成 `resources/` 下的子目录**。
-    // ⚠️ **2026-10-30：多用户布局会在包目录下生成 `global/`（内置字体）与 `users/`** ——
-    //    实测它们被原样打进 tar.gz（包从 ~40MB 涨到 57.6MB，且带着烟测的解包字体）。
-    //    `global/` 与 `users/` 都是**运行态**，组装阶段不会创建它们，一律清掉；
-    //    仅保留 `resources/fonts/放这里.txt` 这个随包说明。
-    // ⚠️ `resources/` 与 `runtime/` 是**随包发的**，别整个删 —— 只清生成出来的素材库子目录，
-    // 且 `resources/fonts` 只清子项、保留组装阶段写的 `放这里.txt`（与 Windows 通道同一条）。
-    for junk in [".yekitrim", "stickers", "global", "users"] {
-        let p = package_dir.join(junk);
-        if p.exists() {
-            let _ = fs::remove_dir_all(&p);
-        }
-    }
-    for junk in ["resources/stickers", "resources/videos"] {
-        let p = package_dir.join(junk);
-        if p.exists() {
-            let _ = fs::remove_dir_all(&p);
-        }
-    }
-    let fonts_dir = package_dir.join("resources").join("fonts");
-    if let Ok(entries) = fs::read_dir(&fonts_dir) {
-        for entry in entries.flatten() {
-            if entry.file_name() == "放这里.txt" {
-                continue;
-            }
-            let path = entry.path();
-            if path.is_dir() {
-                let _ = fs::remove_dir_all(&path);
-            } else {
-                let _ = fs::remove_file(&path);
-            }
-        }
-    }
+    clean_runtime_state(package_dir);
     result
 }
 
@@ -1475,53 +1384,7 @@ fn smoke_test(package_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let _ = child.kill();
     let _ = child.wait();
 
-    // First run creates .yekitrim next to the exe, and the asset library under resources/;
-    // runtime state must not ship.
-    //
-    // ⚠️ `resources/` 本身是**随包发的**（里面有 `fonts/放这里.txt`），所以**不能整个删**
-    // —— 只清首次运行会生成的那几个**素材库**子目录。`runtime/` 也是随包发的，**不清理**。
-    // ⚠️ `resources/fonts` **不在这里删**：它的清理在下面，得保留 `放这里.txt`。
-    for generated in [".yekitrim", "global", "users"] {
-        let path = package_dir.join(generated);
-        if path.exists() {
-            fs::remove_dir_all(&path)?;
-        }
-    }
-    for generated in ["resources/stickers", "resources/videos"] {
-        let path = package_dir.join(generated);
-        if path.exists() {
-            fs::remove_dir_all(&path)?;
-        }
-    }
-
-    // ⚠️ **内嵌字体也会被这次启动解包进包目录，必须一并清掉**（2026-10-02 实际踩到）。
-    //
-    // 机制：`fonts::ensure_dir` 写的**就是** `<数据目录>/resources/fonts`，而烟测起的 exe
-    // 就在包目录里（`exe_dir()` = 包目录）—— 于是两个自带字体（合计 **约 21 MB**）被解包进
-    // `resources/fonts/<slug>/`，接着被原样压进 zip：**包从 37.2 MB 涨到 52.4 MB**。
-    //
-    // 这是**纯重复**：同样的字节已经通过 `include_bytes!` 编在 `yekitrim.exe` 里了
-    // （exe 67.5 MB 里就含它们），包再带一份没有任何意义，还与发行说明
-    // 「发行包仍然只带一个空目录」自相矛盾。
-    //
-    // 只删**字体目录里的子项**，保留 `放这里.txt` —— 那份说明是组装阶段写进去的、
-    // 属于包的一部分（有判据要求它在），不能一起删掉。
-    let fonts_dir = package_dir.join("resources").join("fonts");
-    if fonts_dir.is_dir() {
-        for entry in fs::read_dir(&fonts_dir)? {
-            let entry = entry?;
-            let name = entry.file_name();
-            if name == "放这里.txt" {
-                continue;
-            }
-            let path = entry.path();
-            if path.is_dir() {
-                fs::remove_dir_all(&path)?;
-            } else {
-                fs::remove_file(&path)?;
-            }
-        }
-    }
+    clean_runtime_state(package_dir);
 
     if !ok {
         return Err(
@@ -1741,6 +1604,72 @@ fn sha256_of_file(path: &Path) -> io::Result<String> {
         hasher.update(&buffer[..read]);
     }
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// 清掉烟测在包目录里生成的运行态。
+///
+/// v2 起首启只创建 `<包>/data/`（账本、日志、模型、用户素材全在里面）；
+/// 老布局的散目录作为防御一并清掉，绝不进归档。
+fn clean_runtime_state(package_dir: &Path) {
+    let data = package_dir.join("data");
+    if data.exists() {
+        let _ = fs::remove_dir_all(&data);
+    }
+    for old in [
+        ".yekitrim",
+        "global",
+        "users",
+        "logs",
+        "resources",
+        "runtime",
+        "dhampir",
+        "stickers",
+    ] {
+        let path = package_dir.join(old);
+        if path.exists() {
+            let _ = fs::remove_dir_all(&path);
+        }
+    }
+}
+
+/// 包根形状门禁：只允许 `app/` + 顶层文件；缺 `app/runtime` 的两件就失败。
+///
+/// 为什么要机器判据：`resources/` / `runtime/` / `data/` 这些老目录一旦被顺手加回来，
+/// 用户拿到的包就又变成"要解释才懂"的形状 —— 而且**不会有人报错**。
+fn assert_package_layout(package_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let allowed_files = [
+        "yekitrim.exe",
+        "yekitrim",
+        "yekitrim-tray.exe",
+        "yekitrim.ico",
+        "LICENSE",
+        "THIRD-PARTY-NOTICES.md",
+        "RELEASE-NOTES.md",
+    ];
+    for entry in fs::read_dir(package_dir)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let ty = entry.file_type()?;
+        if ty.is_dir() {
+            if name != "app" {
+                return Err(format!(
+                    "包根出现不该有的目录 `{name}`：v2 只允许 app/（程序件）+ 顶层文件"
+                )
+                .into());
+            }
+        } else if !allowed_files.contains(&name.as_str()) {
+            return Err(format!("包根出现未知文件 `{name}`").into());
+        }
+    }
+    for required in [
+        "app/runtime/polish-to-dhampir.mjs",
+        "app/runtime/effects.json",
+    ] {
+        if !package_dir.join(required).is_file() {
+            return Err(format!("包缺必需文件 `{required}`").into());
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

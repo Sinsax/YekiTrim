@@ -26,7 +26,7 @@ B站链接通道（P4）的**引擎侧**：引擎无关的端口（trait + 纯�
 - **yt-dlp 适配器**（`ytdlp.rs`）：`YtDlp::{new, format_selector}`；哨兵常量
   `SENTINEL_PROGRESS`(`YEKITRIM_PROG:`) / `SENTINEL_PATH`(`YEKITRIM_PATH:`) / `SENTINEL_META`(`YEKITRIM_META:`)；
   `relative_input_path(project_dir, final_path)`（真实产物路径 → 写 `yekitrim.toml` 的项目相对名）。
-- **供应链**（`registry.rs`）：`pin()` / `VERSION` / `LICENSE` / `managed_dir()`（`<程序目录>/.yekitrim/bin/`）/
+- **供应链**（`registry.rs`）：`pin()` / `VERSION` / `LICENSE` / `managed_dir()`（`<data>/bin/`）/
   `managed_path()` / `YtDlpSource` / `YtDlpInstall { path, source, verified }` / `verify_sha256` /
   `find_ytdlp(cfg)` / `ready(cfg)` / `download_managed()` / `ensure_ytdlp(cfg)`。
 

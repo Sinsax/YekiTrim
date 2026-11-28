@@ -129,9 +129,11 @@ yekitrim-render-core ←── yekitrim-polish ──┐
 
 以下是**全局**不变式（模块内的规矩在各自卡里）：
 
-- ⚠️ **程序资产只挂一个根**（2026-10-02 口径：*不要用户目录*）：`path::data_dir()` = `YEKITRIM_DATA_DIR` ??
-  `exe_dir()`，配置/账本/模型/字体/工程全在它下面。**别再挂 `~/.yekitrim/`** —— 两个可能的位置就必然有地方
-  只查一处（实测 CLI 与 WebUI 各看一份字体库）。见 **`docs/file-layout.md`**。
+- ⚠️ **安装目录只有两个根**（2026-11-27 口径）：`app/`（只读程序件：runtime + dhampir）与
+  `data/`（全部可写：`server.toml` / `ledger/` / `logs/` / `models/` / `bin/` / `projects/` /
+  `shared/` / `users/<uid>/`）。`path::data_dir()` = `YEKITRIM_DATA_DIR` ?? `<exe>/data`；
+  **没有 `.yekitrim/`、没有 `resources/`、没有 `global/resources/`**。别再挂 `~/.yekitrim/` ——
+  两个可能的位置就必然有地方只查一处（实测 CLI 与 WebUI 各看一份字体库）。见 **`docs/file-layout.md`**。
 - ⚠️ **同步 IO 绝不能留在 async 线程上**（剪切时"整个服务器连不上"的根因）：handler 里的
   同步文件访问走 `api::blocking(f)`，任务体走 `api::spawn_job`。完整纪律（已覆盖清单、panic 兜底、
   路径锁）在 `crates/yekitrim-server/src/api/AGENTS.md`。
@@ -165,7 +167,7 @@ yekitrim-render-core ←── yekitrim-polish ──┐
   `ServerArgs.port`、`DEFAULT_URL`、`polish preview` 回退都引用它，**别处不许再写端口字面量**。
 - ⚠️ **只监听 loopback**；`--allow-remote` 才对外，且**仍用初始密码时拒绝启动**。
   `--trust-proxy` 是 `X-Forwarded-*` 的唯一开关（决定限流键与 cookie 的 `Secure`）。
-- ⚠️ **改内建 prompt 要同步用户配置**：`.yekitrim/config.toml` 里的检测 prompt 是 `config init`
+- ⚠️ **改内建 prompt 要同步用户配置**：`<data>/users/<uid>/config.toml` 里的检测 prompt 是 `config init`
   填进去的**副本**，改代码默认值对它无效；**每个程序目录各有一份**。
 - ⚠️ **不许手改生成物**：`webui/dist/`（vite 构建产物，**已入库**）—— 改了 `webui/src` 必须
   `npm --prefix webui run build` 重建，再一起提交；别直接编辑 dist 里的 js/css。

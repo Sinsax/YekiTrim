@@ -289,7 +289,10 @@ mod tests {
             title: None,
         };
         let r = resolve_webhook_completion(&cfg, &completion).unwrap();
-        assert_eq!(r.project_root, session);
+        assert_eq!(
+            yekitrim_core::path::display(&r.project_root),
+            yekitrim_core::path::display(&session)
+        );
         assert_eq!(r.input_name, "rec-后处理.mp4");
         assert_eq!(r.danmaku_name.as_deref(), Some("rec.xml"));
         assert!(r.source_label().contains("123456"));

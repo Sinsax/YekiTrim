@@ -8,29 +8,24 @@ use std::path::{Path, PathBuf};
 /// **新增/修改任何读写工程配置的地方，一律引用本常量**，别再写字面量。
 pub const PROJECT_CONFIG_FILE: &str = "yekitrim.toml";
 
-/// 程序状态目录名（`<data_dir>/.yekitrim/`：全局配置、模型、server.toml、账本…）。
+/// **工程内**状态目录名（`<工程目录>/.yekitrim/`：断点续传 checkpoint、LLM 状态…）。
 ///
-/// ⚠️ **与 [`PROJECT_STATE_DIR_NAME`] 是两个不同的东西**，别混：
-/// 这个是**全局**的（一处），那个是**每工程一份**的（`<工程目录>/.yekitrim/`）。
-/// 两者刻意同名同改，但**拼接点不同**（一个挂 `data_dir()`、一个挂工程根）。
-pub const STATE_DIR_NAME: &str = ".yekitrim";
-
-/// 工程内状态目录名（`<工程目录>/.yekitrim/`：断点续传 checkpoint、LLM 状态…）。
-///
-/// ⚠️ 它**不是**全局状态目录（见 [`STATE_DIR_NAME`]）。改这个名会让**已有工程的
-/// checkpoint / status 文件找不到** —— 按不兼容口径这是可接受的（不会迁移、不会告警），
-/// 但**写侧与读侧必须同时改**，否则每次精修都白跑一遍 LLM。
+/// ⚠️ 2026-11-27 起程序数据目录**不再有**这个隐藏目录（见 [`data_dir`] 与
+/// `docs/file-layout.md`）；这里只剩"每个工程一份"的语义。
+/// 改这个名会让**已有工程的 checkpoint / status 文件找不到** —— 按不兼容口径这是可接受的
+/// （不会迁移、不会告警），但**写侧与读侧必须同时改**，否则每次精修都白跑一遍 LLM。
 pub const PROJECT_STATE_DIR_NAME: &str = ".yekitrim";
 
 /// 数据目录覆盖用的环境变量名（见 [`data_dir`]）。
 pub const DATA_DIR_ENV: &str = "YEKITRIM_DATA_DIR";
 
-/// 程序所在目录：`.yekitrim/`（配置、模型、server.toml）与 `stickers/` 的父目录。
+/// 程序所在目录（exe 的同级目录）。
 ///
-/// 取不到可执行文件路径时回退当前工作目录。这两个函数在 HTTP handler 里被频繁调用，
+/// 只读程序件（`app/`、`LICENSE` 等）与可写数据（`data/`）都以它为基准。
+/// 取不到可执行文件路径时回退当前工作目录。这个函数在 HTTP handler 里被频繁调用，
 /// 一旦 panic 会连累整条调用链（任务体的 panic 由 `spawn_job` 兜住、但那次任务就失败了），
 /// 所以这里绝不 `expect`。
-pub(crate) fn exe_dir() -> PathBuf {
+pub fn program_dir() -> PathBuf {
     std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
@@ -38,37 +33,44 @@ pub(crate) fn exe_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// **程序资产的根目录**（用户口径 2026-10-02：*所有内容围绕程序目录来，不要用户目录*）。
+/// **只读程序件**的根 —— `<程序目录>/app/`（`runtime/` + `dhampir/`）。
 ///
-/// 默认 = [`exe_dir`]，即 `target/debug/`（debug 构建）或安装目录（发行版）——
-/// 字体库、ASR 模型、配置全都挂它下面。
+/// 与 `data/` 的分界是**谁往里放东西**：`app/` 随版本发布、升级整目录替换；
+/// `data/` 是用户与运行态，升级时必须保留。
+pub fn app_dir() -> PathBuf {
+    app_dir_in(&program_dir())
+}
+
+/// [`app_dir`] 的可注入版本（单测用）。
+pub fn app_dir_in(program: &Path) -> PathBuf {
+    program.join("app")
+}
+
+/// **程序数据的唯一根** —— `YEKITRIM_DATA_DIR` ?? `<程序目录>/data/`。
 ///
-/// ⚠️ **`YEKITRIM_DATA_DIR` 是唯一的口子**，留着它是为了应付一个具体的痛点：
-/// `target/debug` 与 `target/release`（以及换 `CARGO_TARGET_DIR`）各是一份程序目录，
-/// 那样 **1.1 GB 的 ASR 模型会被复制两份**。想共用就把这个变量指到同一处。
+/// 2026-11-27 起所有可写状态都挂它下面，且**扁平命名**（`ledger/`、`logs/`、`models/`、
+/// `bin/`、`projects/`、`shared/`、`users/`），不再有 `.yekitrim/` 这种隐藏目录。
 ///
-/// ⚠️ 别再退回"用户目录优先"：那条路是 2026-10 之前的设计（当年为了躲开构建目录漂移
-/// 才把资产挂到 `~/.yekitrim/`），代价是**同一个东西有了两个可能的位置**，于是界面上出过
-/// "模型管理说没下载、实际转写一直在用"（`api/config.rs` 记着那次错位）。
-/// 资产只有一个位置，就没有"只查了一处"的 bug。
+/// ⚠️ **`YEKITRIM_DATA_DIR` 是唯一的口子**：`target/debug` 与 `target/release`
+/// （以及换 `CARGO_TARGET_DIR`）各是一份程序目录，想共用 1 GB 级模型就把它指到同一处。
+/// ⚠️ 别再退回"用户目录优先"：那条路是 2026-10 之前的设计，代价是同一个东西有两个
+/// 可能的位置，实测出过"模型管理说没下载、转写却一直在用"。
 pub fn data_dir() -> PathBuf {
-    std::env::var_os(DATA_DIR_ENV)
-        .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(exe_dir)
+    let override_dir = std::env::var_os(DATA_DIR_ENV).map(PathBuf::from);
+    data_dir_in(override_dir.as_deref(), &program_dir())
 }
 
 /// [`data_dir`] 的可注入版本（单测用：不碰环境变量，edition 2024 下 `set_var` 是 unsafe）。
-pub fn data_dir_in(override_dir: Option<&Path>, exe_home: &Path) -> PathBuf {
+pub fn data_dir_in(override_dir: Option<&Path>, program: &Path) -> PathBuf {
     match override_dir {
         Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
-        _ => exe_home.to_path_buf(),
+        _ => program.join("data"),
     }
 }
 
 /// 用户主目录（`USERPROFILE` → `HOME`；取不到 = None）。
 ///
-/// ⚠️ **程序资产不再挂它下面**（2026-10-02 起，见 [`data_dir`]）。仅存两个用途：
+/// ⚠️ **程序资产不再挂它下面**（2026-10-02 起）。仅存两个用途：
 /// ① 识别用户目录里**遗留**的老资产（`fonts::legacy_user_dir_report`）；
 /// ② 老库巡检的报数。**别拿它当资产的落点**。
 pub fn user_home() -> Option<PathBuf> {
@@ -77,67 +79,201 @@ pub fn user_home() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// 程序状态目录（配置、模型、server.toml）—— 挂在 [`data_dir`] 下的 `.yekitrim/`。
-pub fn yekitrim_home() -> PathBuf {
-    data_dir().join(STATE_DIR_NAME)
+// ---------------------------------------------------------------------------
+// data/ 下的实名目录（每个都只有这一个拼接点）
+// ---------------------------------------------------------------------------
+
+/// 迁移标记：`<data>/layout.json`（内容 `{"version":2}`）。
+pub fn layout_marker() -> PathBuf {
+    layout_marker_in(&data_dir())
 }
 
-/// [`yekitrim_home`] 的可注入版本（单测用：不碰环境变量）。
-/// 与 [`data_dir_in`] 同一形状 —— 拼规则只有这一处，测试直接验它。
-pub fn yekitrim_home_at(data_dir: &Path) -> PathBuf {
-    data_dir.join(STATE_DIR_NAME)
+/// [`layout_marker`] 的可注入版本。
+pub fn layout_marker_in(data_home: &Path) -> PathBuf {
+    data_home.join("layout.json")
 }
 
-/// **用户素材库的根** —— `<数据目录>/resources/`（贴纸、视频、字体都在它下面）。
+/// 当前工程 + 端口：`<data>/server.toml`。
+pub fn server_toml_path() -> PathBuf {
+    server_toml_path_in(&data_dir())
+}
+
+/// [`server_toml_path`] 的可注入版本。
+pub fn server_toml_path_in(data_home: &Path) -> PathBuf {
+    data_home.join("server.toml")
+}
+
+/// 账本与运行锁：`<data>/ledger/`。
+pub fn ledger_dir() -> PathBuf {
+    ledger_dir_in(&data_dir())
+}
+
+/// [`ledger_dir`] 的可注入版本。
+pub fn ledger_dir_in(data_home: &Path) -> PathBuf {
+    data_home.join("ledger")
+}
+
+/// 唯一日志根：`<data>/logs/`。
+pub fn logs_dir() -> PathBuf {
+    logs_dir_in(&data_dir())
+}
+
+/// [`logs_dir`] 的可注入版本。
+pub fn logs_dir_in(data_home: &Path) -> PathBuf {
+    data_home.join("logs")
+}
+
+/// ASR 模型：`<data>/models/`。
+pub fn models_dir() -> PathBuf {
+    models_dir_in(&data_dir())
+}
+
+/// [`models_dir`] 的可注入版本。
+pub fn models_dir_in(data_home: &Path) -> PathBuf {
+    data_home.join("models")
+}
+
+/// 内置下载器（yt-dlp）：`<data>/bin/`。
+pub fn bin_dir() -> PathBuf {
+    bin_dir_in(&data_dir())
+}
+
+/// [`bin_dir`] 的可注入版本。
+pub fn bin_dir_in(data_home: &Path) -> PathBuf {
+    data_home.join("bin")
+}
+
+/// 托管项目根（默认）：`<data>/projects/`。
 ///
-/// ⚠️ **2026-10-09 收拢**：这三类曾经分散在 `<数据目录>/stickers/`（含它下面的 `videos/`
-/// 子目录）与 `<数据目录>/resources/fonts/`，即"同类资产住两个不同名字的根"。
-/// 现在统一到 `resources/` 下按**素材种类**分子目录 —— 贴纸与视频是**并列**的两类，
-/// 视频不再是贴纸的子目录。
-///
-/// 与 [`data_dir`] 同一条规矩：**只有一个位置**，`YEKITRIM_DATA_DIR` 是唯一的口子。
-pub fn resources_dir() -> PathBuf {
-    resources_dir_at(&data_dir())
+/// ⚠️ 实际根可能被 `[storage] projects_root` 覆盖（见 `yekitrim_service::projects`）；
+/// 这个函数只给"默认值"与迁移用。
+pub fn projects_dir() -> PathBuf {
+    projects_dir_in(&data_dir())
 }
 
-/// [`resources_dir`] 的可注入版本（单测用：不碰环境变量）。
-pub fn resources_dir_at(data_home: &Path) -> PathBuf {
+/// [`projects_dir`] 的可注入版本。
+pub fn projects_dir_in(data_home: &Path) -> PathBuf {
+    data_home.join("projects")
+}
+
+/// 公用素材库：`<data>/shared/{fonts,stickers,videos}/`。
+pub fn shared_dir() -> PathBuf {
+    shared_dir_in(&data_dir())
+}
+
+/// [`shared_dir`] 的可注入版本。
+pub fn shared_dir_in(data_home: &Path) -> PathBuf {
+    data_home.join("shared")
+}
+
+/// 可丢弃的运行期缓存：`<data>/cache/`。
+///
+/// 与 `shared/` 的分界：**删掉它不需要重新下载或重新配置任何东西**（丢了只会重算/重抓）。
+/// 今天的住户只有音效试听缓存 `cache/sfx/`（`api/polish/sfx-preview` 落盘的那一份）。
+///
+/// ⚠️ 别把"用户资产"（贴纸/字体/视频/音效库本体）放到这里 —— 那些删了是要重传的。
+pub fn cache_dir() -> PathBuf {
+    cache_dir_in(&data_dir())
+}
+
+/// [`cache_dir`] 的可注入版本。
+pub fn cache_dir_in(data_home: &Path) -> PathBuf {
+    data_home.join("cache")
+}
+
+/// 账号树：`<data>/users/<uid>/`。
+pub fn users_dir() -> PathBuf {
+    users_dir_in(&data_dir())
+}
+
+/// [`users_dir`] 的可注入版本。
+pub fn users_dir_in(data_home: &Path) -> PathBuf {
+    data_home.join("users")
+}
+
+// ---------------------------------------------------------------------------
+// app/ 下的只读程序件
+// ---------------------------------------------------------------------------
+
+/// 转译器 + 效果词汇表：`<program>/app/runtime/`。
+pub fn runtime_dir() -> PathBuf {
+    runtime_dir_in(&program_dir())
+}
+
+/// [`runtime_dir`] 的可注入版本（参数是**程序目录**，不是数据目录）。
+pub fn runtime_dir_in(program: &Path) -> PathBuf {
+    app_dir_in(program).join("runtime")
+}
+
+/// 出片底座：`<program>/app/dhampir/`。
+pub fn dhampir_dir() -> PathBuf {
+    dhampir_dir_in(&program_dir())
+}
+
+/// [`dhampir_dir`] 的可注入版本。
+pub fn dhampir_dir_in(program: &Path) -> PathBuf {
+    app_dir_in(program).join("dhampir")
+}
+
+/// 转译器/词汇表的**旧位置**（2026-10-09 之前）：`<程序目录>/tools/` 与 `<程序目录>/spec/`。
+///
+/// 只为裸换 exe 的存量安装回落；新写入一律走 [`runtime_dir`]。
+pub fn legacy_runtime_dirs_in(program: &Path) -> (PathBuf, PathBuf) {
+    (program.join("tools"), program.join("spec"))
+}
+
+/// 旧包里的 `runtime/`（2026-11-27 之前它在程序根，不在 `app/` 下）。
+pub fn legacy_runtime_dir_in(program: &Path) -> PathBuf {
+    program.join("runtime")
+}
+
+/// 旧包里的 `dhampir/`（2026-11-27 之前它在程序根，不在 `app/` 下）。
+pub fn legacy_dhampir_dir_in(program: &Path) -> PathBuf {
+    program.join("dhampir")
+}
+
+// ---------------------------------------------------------------------------
+// 旧素材位置（只供迁移与只读回落；生产写入禁止）
+// ---------------------------------------------------------------------------
+
+/// **旧**顶层素材根（≤0.5）：`<data>/resources/`。
+///
+/// ⚠️ 2026-11-27 起不再创建、不再写入；启动迁移会把内容并入
+/// `users/<uid>/<kind>/`，空目录删除。
+pub fn legacy_resources_dir_at(data_home: &Path) -> PathBuf {
     data_home.join("resources")
 }
 
-/// 贴纸库路径 —— `<数据目录>/resources/stickers/`。
-///
-/// ⚠️ **老位置 `<数据目录>/stickers/` 仍然读**（见 [`sticker_dir_readable`]）：
-/// 存量安装里那个目录里有用户自己的贴纸包，改名不迁移就会让"贴纸库空了"。
-/// **写一律往新位置**，读两个位置都认。
-pub fn sticker_dir() -> PathBuf {
-    sticker_dir_at(&data_dir())
+/// [`legacy_resources_dir_at`] 的实时版本。
+pub fn legacy_resources_dir() -> PathBuf {
+    legacy_resources_dir_at(&data_dir())
 }
 
-/// [`sticker_dir`] 的可注入版本（单测用）。
-pub fn sticker_dir_at(data_home: &Path) -> PathBuf {
-    resources_dir_at(data_home).join("stickers")
-}
-
-/// 贴纸库的**老位置**（2026-10-09 之前）：`<数据目录>/stickers/`。
-///
-/// 只为**读回落**存在。新位置一旦有内容就以新位置为准。
+/// 旧贴纸库（2026-10-09 之前）：`<data>/stickers/`。
 pub fn legacy_sticker_dir_at(data_home: &Path) -> PathBuf {
     data_home.join("stickers")
 }
 
-/// 贴纸库**该读哪个目录**：新位置存在就用它，否则回落老位置，都没有则返回新位置
-/// （调用方据此报"库为空"，而不是报一个不存在的路径）。
-///
-/// ⚠️ **判据是"目录存在"而不是"目录里有东西"**：用户可以先建个空库再放。
-/// 用"有没有内容"当判据会让"新建的空库"被老位置顶掉 —— 那是个只会出现在迁移期的怪状态。
-pub fn sticker_dir_readable() -> PathBuf {
-    sticker_dir_readable_at(&data_dir())
+/// 旧字体库：`<data>/resources/fonts/`（只读回落）。
+pub fn legacy_font_dir_at(data_home: &Path) -> PathBuf {
+    legacy_resources_dir_at(data_home).join("fonts")
 }
 
-/// [`sticker_dir_readable`] 的可注入版本（单测用）。
-pub fn sticker_dir_readable_at(data_home: &Path) -> PathBuf {
-    let new = sticker_dir_at(data_home);
+/// 旧贴纸库：`<data>/resources/stickers/`（只读回落）。
+pub fn legacy_sticker_dir_in_resources_at(data_home: &Path) -> PathBuf {
+    legacy_resources_dir_at(data_home).join("stickers")
+}
+
+/// 旧视频库：`<data>/resources/videos/`（只读回落）。
+pub fn legacy_video_dir_at(data_home: &Path) -> PathBuf {
+    legacy_resources_dir_at(data_home).join("videos")
+}
+
+/// 旧贴纸库**该读哪个目录**：`resources/stickers/` → `<data>/stickers/` → 前者。
+///
+/// ⚠️ 判据是"目录存在"而不是"里面有没有东西"：用户可以先建空库再放。
+pub fn legacy_sticker_dir_readable_at(data_home: &Path) -> PathBuf {
+    let new = legacy_sticker_dir_in_resources_at(data_home);
     if new.is_dir() {
         return new;
     }
@@ -148,110 +284,95 @@ pub fn sticker_dir_readable_at(data_home: &Path) -> PathBuf {
     new
 }
 
-/// 视频素材库路径 —— `<数据目录>/resources/videos/`。
+/// 旧视频库**该读哪个目录**：`resources/videos` → `resources/stickers/videos` →
+/// `<data>/stickers/videos`，都没有则返回 `resources/videos`。
 ///
-/// ⚠️ **2026-10-09 从 `stickers/videos/` 挪出来**：它是**独立的一类素材**，
-/// 挂在贴纸库下面有两个坏处 ——（a）名字骗人；（b）`scan_packages` 会把 `videos/`
-/// 当成一个贴纸包扫出来，今天只靠"包内 `files` 全非图片 ⇒ 被丢掉"**碰巧**没污染列表。
-/// 挪出来之后这条隐患从"碰巧"变成"结构上不可能"。
-///
-/// 老位置仍读（存量库），见 [`video_dir_readable`]。
-pub fn video_dir() -> PathBuf {
-    video_dir_at(&data_dir())
-}
-
-/// [`video_dir`] 的可注入版本（单测用）。
-pub fn video_dir_at(data_home: &Path) -> PathBuf {
-    resources_dir_at(data_home).join("videos")
-}
-
-/// 视频库的**该读哪个目录**：新位置 → 老 `<data>/resources/stickers/videos` →
-/// 更老 `<data>/stickers/videos`，都没有则返回新位置。
-///
-/// ⚠️ 中间那一档是必须的：`resources/stickers/videos` 是"贴纸库刚挪进 `resources/`
-/// 但视频还没挪"那一步的中间态 —— 只认头尾两档会让那一刻的视频库变空。
-///
-/// ⚠️ **"存在"不足以当选，这一档要挑"真有素材"的那个**（2026-10-09 修的真 bug）：
-/// 用户手工搬迁时**先建目录、后搬文件**，于是新位置/中间态会先出现一个**空目录**。
-/// 只看 `is_dir()` 的话那个空壳就当选了，而**真素材还躺在老位置** ——
-/// 结果视频库返回**空列表**、界面只说"库是空的"、**一个字都不报**。
-/// 实测配方：`resources/stickers/videos/`（空残留）+ `stickers/videos/op.mp4` → 解析到空的那份。
-/// 所以顺序是**两轮**：先挑"目录存在**且里面有文件**"的，都没有再退回"目录存在"的那个
-/// （空库也是合法状态 —— 全新安装就是空的，那时返回新位置才对）。
-pub fn video_dir_readable() -> PathBuf {
-    video_dir_readable_at(&data_dir())
-}
-
-/// [`video_dir_readable`] 的可注入版本（单测用）。
-pub fn video_dir_readable_at(data_home: &Path) -> PathBuf {
+/// ⚠️ 这一档要挑"真有素材"的那个（用户手工搬迁会先建空目录、后搬文件）。
+pub fn legacy_video_dir_readable_at(data_home: &Path) -> PathBuf {
     let candidates = [
-        video_dir_at(data_home),
-        sticker_dir_at(data_home).join("videos"),
+        legacy_video_dir_at(data_home),
+        legacy_sticker_dir_in_resources_at(data_home).join("videos"),
         legacy_sticker_dir_at(data_home).join("videos"),
     ];
-    // 第一轮：有内容才算数（`read_dir` 至少一个条目）。
     if let Some(hit) = candidates.iter().find(|p| dir_has_entries(p)) {
         return hit.clone();
     }
-    // 第二轮：空目录也认（全新安装 / 用户刚建好还没放东西）。
     candidates
         .iter()
         .find(|p| p.is_dir())
         .cloned()
-        .unwrap_or_else(|| video_dir_at(data_home))
+        .unwrap_or_else(|| legacy_video_dir_at(data_home))
 }
 
 /// 目录存在**且里面至少有一个条目**。
-///
-/// ⚠️ 用来区分"真有素材的库"与"搬迁过程中先建出来的空壳"。
-/// 读不了的目录一律按"没有内容"处理（调不动就当空，别让权限问题顶掉一个可用的库）。
 fn dir_has_entries(dir: &Path) -> bool {
     std::fs::read_dir(dir)
         .map(|mut it| it.next().is_some())
         .unwrap_or(false)
 }
 
-/// **程序自带的运行时资产**目录 —— `<数据目录>/runtime/`（转译器 + 效果词汇表）。
-///
-/// ⚠️ 与 `resources/` 的区别是**谁往里放东西**：`resources/` 是**用户素材**
-/// （用户可以增删贴纸/视频/字体），`runtime/` 是**随版本发布的只读交付物**
-/// （用户不该动）。发布包只装后者。
-///
-/// 老位置是两个分开的目录 `<数据目录>/tools/` 与 `<数据目录>/spec/`，仍作回落读。
-pub fn runtime_dir() -> PathBuf {
-    runtime_dir_at(&data_dir())
+// ---------------------------------------------------------------------------
+// 旧 API 别名（只供回落/测试；生产写入请走 owner::asset_dir）
+// ---------------------------------------------------------------------------
+
+/// 旧顶层素材根（≤0.5）—— 只读回落。
+pub fn resources_dir() -> PathBuf {
+    legacy_resources_dir()
 }
 
-/// [`runtime_dir`] 的可注入版本（单测用）。
-pub fn runtime_dir_at(data_home: &Path) -> PathBuf {
-    data_home.join("runtime")
+/// [`resources_dir`] 的可注入版本。
+pub fn resources_dir_at(data_home: &Path) -> PathBuf {
+    legacy_resources_dir_at(data_home)
 }
 
-/// 老位置：`<数据目录>/tools/`（转译器）与 `<数据目录>/spec/`（词汇表）。
-///
-/// 返回 `(老 tools, 老 spec)`，供两个消费点各自回落。
-pub fn legacy_runtime_dirs_at(data_home: &Path) -> (PathBuf, PathBuf) {
-    (data_home.join("tools"), data_home.join("spec"))
+/// 旧贴纸库（`resources/stickers`）—— 只读回落。
+pub fn sticker_dir() -> PathBuf {
+    sticker_dir_at(&data_dir())
 }
 
-/// 字体库路径 —— **程序目录下**：`<数据目录>/resources/fonts/`。
-///
-/// ⚠️ **2026-10-02 由"用户固定目录优先"改成程序目录**（用户口径：*不要用户目录*）。
-/// 历史：这条路径曾经优先取 `~/.yekitrim/fonts`（为了躲开 `target/debug` 与
-/// `target/cl/debug` 各存一份的问题），再用 `resources/fonts/` 当老安装的回落态。
-/// 代价是**同一个库有两个可能的位置**，而"用户目录那份"与"程序目录那份"内容一旦分叉，
-/// CLI 与 WebUI 就各看各的（实测：CLI 报 `target/debug/resources/fonts`、
-/// 网页用 `~/.yekitrim/fonts`，两边字体列表完全不同）。
-///
-/// 现在只有一处：`<数据目录>/resources/fonts/`。
-/// 相关读写见 [`crate::fonts`]。
+/// [`sticker_dir`] 的可注入版本。
+pub fn sticker_dir_at(data_home: &Path) -> PathBuf {
+    legacy_sticker_dir_in_resources_at(data_home)
+}
+
+/// 旧贴纸库该读哪个目录（带更老位置回落）。
+pub fn sticker_dir_readable() -> PathBuf {
+    sticker_dir_readable_at(&data_dir())
+}
+
+/// [`sticker_dir_readable`] 的可注入版本。
+pub fn sticker_dir_readable_at(data_home: &Path) -> PathBuf {
+    legacy_sticker_dir_readable_at(data_home)
+}
+
+/// 旧视频库（`resources/videos`）—— 只读回落。
+pub fn video_dir() -> PathBuf {
+    video_dir_at(&data_dir())
+}
+
+/// [`video_dir`] 的可注入版本。
+pub fn video_dir_at(data_home: &Path) -> PathBuf {
+    legacy_video_dir_at(data_home)
+}
+
+/// 旧视频库该读哪个目录（带更老位置回落）。
+pub fn video_dir_readable() -> PathBuf {
+    video_dir_readable_at(&data_dir())
+}
+
+/// [`video_dir_readable`] 的可注入版本。
+pub fn video_dir_readable_at(data_home: &Path) -> PathBuf {
+    legacy_video_dir_readable_at(data_home)
+}
+
+/// 旧字体库（`resources/fonts`）—— 只读回落。
 pub fn font_dir() -> PathBuf {
     font_dir_at(&data_dir())
 }
 
-/// [`font_dir`] 的可注入版本（单测用）。
+/// [`font_dir`] 的可注入版本。
 pub fn font_dir_at(data_home: &Path) -> PathBuf {
-    data_home.join("resources").join("fonts")
+    legacy_font_dir_at(data_home)
 }
 
 /// 给"人要看的/前端要回传的"路径用的显示形式：去掉 Windows 的 `\\?\` 逐字前缀
@@ -283,35 +404,74 @@ mod tests {
         assert_eq!(display(Path::new("/tmp/a")), "/tmp/a");
     }
 
-    /// 2026-10-09 的布局：`resources/{stickers,videos,fonts}` + `runtime/`。
-    ///
-    /// 钉住**纯拼接**（`.is_dir()` 那层回落测不到静态路径，见下一条用例）。
+    /// **新布局没有任何隐藏状态目录**：`data/` 下全是实名目录。
     #[test]
-    fn assets_live_under_resources_and_runtime_is_separate() {
-        let d = Path::new("/install");
-        assert_eq!(resources_dir_at(d), Path::new("/install/resources"));
-        assert_eq!(font_dir_at(d), Path::new("/install/resources/fonts"));
-        assert_eq!(sticker_dir_at(d), Path::new("/install/resources/stickers"));
-        assert_eq!(video_dir_at(d), Path::new("/install/resources/videos"));
-        assert_eq!(runtime_dir_at(d), Path::new("/install/runtime"));
-        // ⚠️ 视频**不是**贴纸的子目录（挪库的全部意义就是这个）
-        assert!(!video_dir_at(d).starts_with(sticker_dir_at(d)));
-        // 老位置仍可算出来（回落要用）
-        assert_eq!(legacy_sticker_dir_at(d), Path::new("/install/stickers"));
+    fn data_root_is_flat_and_has_no_hidden_state_dir() {
+        let program = Path::new("/install");
+        let data = data_dir_in(None, program);
+        assert_eq!(data, Path::new("/install/data"));
+        assert_eq!(layout_marker_in(&data), Path::new("/install/data/layout.json"));
+        assert_eq!(server_toml_path_in(&data), Path::new("/install/data/server.toml"));
+        assert_eq!(ledger_dir_in(&data), Path::new("/install/data/ledger"));
+        assert_eq!(logs_dir_in(&data), Path::new("/install/data/logs"));
+        assert_eq!(models_dir_in(&data), Path::new("/install/data/models"));
+        assert_eq!(bin_dir_in(&data), Path::new("/install/data/bin"));
+        assert_eq!(projects_dir_in(&data), Path::new("/install/data/projects"));
+        assert_eq!(shared_dir_in(&data), Path::new("/install/data/shared"));
+        assert_eq!(cache_dir_in(&data), Path::new("/install/data/cache"));
+        assert_eq!(users_dir_in(&data), Path::new("/install/data/users"));
+        // 正向判据：整条路径里不得再出现旧的全局 `.yekitrim`
+        for p in [
+            layout_marker_in(&data),
+            server_toml_path_in(&data),
+            ledger_dir_in(&data),
+            logs_dir_in(&data),
+            models_dir_in(&data),
+            users_dir_in(&data),
+        ] {
+            assert!(
+                !p.components().any(|c| c.as_os_str() == ".yekitrim"),
+                "data 下不该再有 .yekitrim: {}",
+                p.display()
+            );
+        }
+    }
+
+    /// 只读程序件在 `app/` 下，与 `data/` 分开。
+    #[test]
+    fn program_payload_lives_under_app() {
+        let program = Path::new("/install");
+        assert_eq!(app_dir_in(program), Path::new("/install/app"));
+        assert_eq!(runtime_dir_in(program), Path::new("/install/app/runtime"));
+        assert_eq!(dhampir_dir_in(program), Path::new("/install/app/dhampir"));
+        // 旧包位置仍能算出来（裸换 exe 回落）
+        assert_eq!(legacy_runtime_dir_in(program), Path::new("/install/runtime"));
+        assert_eq!(legacy_dhampir_dir_in(program), Path::new("/install/dhampir"));
         assert_eq!(
-            legacy_runtime_dirs_at(d),
+            legacy_runtime_dirs_in(program),
             (PathBuf::from("/install/tools"), PathBuf::from("/install/spec"))
         );
     }
 
-    /// **存量升级不丢库**：新位置不存在时，两个 `*_readable` 必须回落到老位置。
-    ///
-    /// 为什么值得单测：`sticker_dir_readable()` 的判据是**目录存在与否**，
-    /// 写错（比如永远返回新位置）的表现是"升级后贴纸库/视频库全空"——
-    /// 而**界面只会显示"库是空的"，不报错**，用户会以为自己的素材被删了。
-    /// 这条同时钉住"中间态"：`resources/stickers/videos`（贴纸挪了、视频还没挪）。
+    /// **存量升级不丢库**：旧位置仍可算出/回落到。
     #[test]
-    fn readable_dirs_fall_back_to_legacy_locations() {
+    fn legacy_asset_locations_are_still_computable() {
+        let data = Path::new("/install/data");
+        assert_eq!(legacy_resources_dir_at(data), Path::new("/install/data/resources"));
+        assert_eq!(legacy_font_dir_at(data), Path::new("/install/data/resources/fonts"));
+        assert_eq!(
+            legacy_sticker_dir_in_resources_at(data),
+            Path::new("/install/data/resources/stickers")
+        );
+        assert_eq!(
+            legacy_video_dir_at(data),
+            Path::new("/install/data/resources/videos")
+        );
+        assert_eq!(legacy_sticker_dir_at(data), Path::new("/install/data/stickers"));
+    }
+
+    #[test]
+    fn legacy_readable_dirs_fall_back_to_old_locations() {
         let tmp = std::env::temp_dir().join(format!(
             "_yekitrim_path_fallback_{}_{}",
             std::process::id(),
@@ -323,79 +483,39 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
 
-        // ① 什么都没有 ⇒ 返回**新位置**（调用方据此报"库为空"，而不是一个瞎编的路径）
-        assert_eq!(sticker_dir_readable_at(&tmp), sticker_dir_at(&tmp));
-        assert_eq!(video_dir_readable_at(&tmp), video_dir_at(&tmp));
+        // 什么都没有 ⇒ 返回新（resources）位置
+        assert_eq!(
+            legacy_sticker_dir_readable_at(&tmp),
+            legacy_sticker_dir_in_resources_at(&tmp)
+        );
+        assert_eq!(
+            legacy_video_dir_readable_at(&tmp),
+            legacy_video_dir_at(&tmp)
+        );
 
-        // ② 只有老位置 ⇒ 回落到它（**这条就是"存量不丢"**）
+        // 只有更老的位置 ⇒ 回落
         let old_stickers = legacy_sticker_dir_at(&tmp);
         std::fs::create_dir_all(old_stickers.join("ysyk")).unwrap();
-        assert_eq!(sticker_dir_readable_at(&tmp), old_stickers);
+        assert_eq!(legacy_sticker_dir_readable_at(&tmp), old_stickers);
         let old_videos = old_stickers.join("videos");
         std::fs::create_dir_all(&old_videos).unwrap();
-        assert_eq!(video_dir_readable_at(&tmp), old_videos);
-
-        // ③ 新位置一建出来就**立刻**以新位置为准（不看内容多少，只看存在）
-        let new_stickers = sticker_dir_at(&tmp);
-        std::fs::create_dir_all(&new_stickers).unwrap();
-        assert_eq!(sticker_dir_readable_at(&tmp), new_stickers);
-
-        // ④ 中间态：贴纸已挪进 resources，视频还在贴纸库底下 ⇒ 视频回落命中中间那一档
-        let mid_videos = new_stickers.join("videos");
-        std::fs::create_dir_all(&mid_videos).unwrap();
-        assert_eq!(video_dir_readable_at(&tmp), mid_videos);
-        // 新位置也建出来 ⇒ 两档都以新位置为准
-        std::fs::create_dir_all(video_dir_at(&tmp)).unwrap();
-        assert_eq!(video_dir_readable_at(&tmp), video_dir_at(&tmp));
+        assert_eq!(legacy_video_dir_readable_at(&tmp), old_videos);
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    /// **资产只有一个位置**：默认在程序目录，`YEKITRIM_DATA_DIR` 是唯一的口子。
-    ///
-    /// 回归的是 2026-10-02 的口径切换（*所有内容围绕程序目录来，不要用户目录*）：
-    /// 字体库曾经优先取 `~/.yekitrim/fonts`，导致 CLI 与 WebUI 各看一份库（实测两边
-    /// 列出的字体完全不同）。现在 `font_dir` 里**不再有任何用户目录**参与。
+    /// **资产只有一个位置**：`YEKITRIM_DATA_DIR` 是唯一口子，不掺用户目录。
     #[test]
-    fn font_dir_lives_under_data_dir_no_user_home_involved() {
-        let exe = Path::new("/install");
-        // 没有覆盖 ⇒ 程序目录
-        assert_eq!(data_dir_in(None, exe), Path::new("/install"));
-        assert_eq!(font_dir_at(&data_dir_in(None, exe)), Path::new("/install/resources/fonts"));
-        // 空串等同没设（环境变量为空时别把资产写到根目录去）
-        assert_eq!(data_dir_in(Some(Path::new("")), exe), Path::new("/install"));
-        // 显式覆盖 ⇒ 用覆盖值（debug/release 共用一份 1.1 GB 模型靠它）
+    fn data_dir_override_is_the_only_escape_hatch() {
+        let program = Path::new("/install");
+        assert_eq!(data_dir_in(None, program), Path::new("/install/data"));
+        // 空串等同没设
+        assert_eq!(data_dir_in(Some(Path::new("")), program), Path::new("/install/data"));
+        // 显式覆盖 ⇒ 用覆盖值（debug/release 共用模型靠它）
         let shared = Path::new("/shared/yekitrim-data");
-        assert_eq!(data_dir_in(Some(shared), exe), shared);
-        assert_eq!(font_dir_at(shared), Path::new("/shared/yekitrim-data/resources/fonts"));
-        // ⚠️ 判据是"字体库在**程序目录**下、不掺用户目录"。要断言的是**正向**那条 ——
-        //    当年出事的是"字体库优先取 ~/.yekitrim/fonts"，程序目录与用户目录各看一份库。
-        //    改写名时这里曾被机械替换成"不包含 `.yekitrim/fonts`"，那句话恒真、等于没断言。
-        let d = font_dir_at(&data_dir_in(None, exe));
-        assert_eq!(d, Path::new("/install/resources/fonts"));
-        assert!(!d.to_string_lossy().contains("/.yekitrim"));
-    }
-
-    /// ⚠️ 状态目录就一个名字：`.yekitrim`。**旧 `.vtrim` 一律不再被创建**（无兼容期）。
-    ///
-    /// 2026-10-30 修：这条用例曾被"vtrim → yekitrim"的机械改名连带改坏 —— 负向断言里的
-    /// **旧名**也被一起换成了 `.yekitrim`，于是"断言它 `== /install/.yekitrim`"与
-    /// "断言它**不含** `/.yekitrim`"直接打架，基线一直红。负向断言只能钉**旧名**：
-    /// 新名本身必然包含 `/.yekitrim`，那不是判据。
-    #[test]
-    fn state_dir_uses_the_new_name() {
-        assert_eq!(STATE_DIR_NAME, ".yekitrim");
-        // 全局与工程级两个拼接点刻意同名，但挂的根不同（data_dir vs 工程根）
-        assert_eq!(PROJECT_STATE_DIR_NAME, ".yekitrim");
-        let exe = Path::new("/install");
-        let home = yekitrim_home_at(exe);
-        // 正向：它就是 `<数据目录>/.yekitrim`（全仓唯一的全局拼接点）
-        assert_eq!(home, Path::new("/install/.yekitrim"));
-        // 负向：不再写旧目录 `.vtrim`（判据是旧目录名，不是"路径里出现过 yekitrim 子串"）
-        assert!(
-            !home.to_string_lossy().contains("/.vtrim"),
-            "状态目录不得回到旧名 `.vtrim`: {}",
-            home.display()
-        );
+        assert_eq!(data_dir_in(Some(shared), program), shared);
+        assert_eq!(models_dir_in(shared), Path::new("/shared/yekitrim-data/models"));
+        // 覆盖值里也不该被塞 `.yekitrim`
+        assert!(!models_dir_in(shared).to_string_lossy().contains(".yekitrim"));
     }
 }

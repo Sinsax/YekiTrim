@@ -6,7 +6,7 @@
 //! ⚠️ 这里曾经还有 `workspace_from_state(state)`（从 `AppState` 取那份"全局当前工程"）。
 //! **2026-10-03 随全局工程一起删掉了**：项目的 `Workspace` 现在**只能**从 `scope::Scope`
 //! 提取器拿（它按 `?project=<id>` 校验归属后现场解析）。要工程就接一个 `Scope`；
-//! 需要"跟具体项目无关"的那几个值，直接读 `path::yekitrim_home()` / `load_global_config()`。
+//! 需要"跟具体项目无关"的那几个值，直接读 `path::data_dir()` / `load_global_config()`。
 //!
 //! 外部命令探测（原 `probe_cache` / `command_available`）已搬去 `crate::tool_probe` —— 见该模块说明。
 //!

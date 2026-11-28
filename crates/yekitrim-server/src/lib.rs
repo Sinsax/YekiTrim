@@ -104,7 +104,7 @@ pub struct ServerArgs {
     #[arg(long)]
     pub trust_proxy: bool,
 
-    /// 账号账本 / 会话 / 初始密码文件所在目录（默认 `<exe_dir>/.yekitrim/cloud`，也可用 `YEKITRIM_DATA_DIR`）
+    /// 数据根（默认 `<exe>/data`；也可用 `YEKITRIM_DATA_DIR`）
     #[arg(long)]
     pub data_dir: Option<PathBuf>,
 
@@ -261,13 +261,13 @@ fn explicit_admin_password(args: &ServerArgs) -> anyhow::Result<Option<String>> 
 
 /// 「初始密码怎么改」的可操作提示 —— 拒绝启动与启动警告**共用这一份文案**。
 ///
-/// ⚠️ 第一行命令里的 `YEKITRIM_DATA_DIR=<账本目录>` **不能省**：`yekitrim user passwd` 是
-/// **另一个进程**，它只认环境变量、不认 `--data-dir`（见 `db::data_dir` 的注释）。少了它，用户
+/// ⚠️ 第一行命令里的 `YEKITRIM_DATA_DIR=<数据根>` **不能省**：`yekitrim user passwd` 是
+/// **另一个进程**，它只认环境变量、不认 `--data-dir`。少了它，用户
 /// 照着提示改的是 exe 旁边那份账本，服务器上这份仍是初始密码 —— 命令行一切正常、重启照样被拒。
 /// 这正是"我明明改了密码还是起不来"的报障形态，所以它同时是 `password_change_hint_names_ledger`
 /// 那条单测的判据。
-fn password_change_hint(ledger_dir: &Path, initial_pw_file: &Path) -> String {
-    let dir = ledger_dir.display();
+fn password_change_hint(data_root: &Path, initial_pw_file: &Path) -> String {
+    let dir = data_root.display();
     let mut s = String::from("改掉它再启动，任选一条：\n");
     s.push_str("  ① 账本里已有 admin —— 先改密码，再用同样的参数启动：\n");
     s.push_str(&format!(
@@ -371,25 +371,29 @@ where
     auth::set_trust_proxy(args.trust_proxy);
 
     // ---- 账号数据（身份不可缺省）----
-    let data_dir = args.data_dir.clone().unwrap_or_else(db::data_dir);
-    if args.data_dir.is_some() {
-        // ⚠️ **写端**：把 `--data-dir` 经环境变量传给 service 侧（`db::data_dir` / `logbus` /
-        // 初始密码文件路径都读它）。**必须与 `yekitrim_core::path::DATA_DIR_ENV` 同源** ——
-        // 写成字面量时，改名只改读端漏改写端 ⇒ `--data-dir` **静默失效**：
-        // server 用一个目录、CLI 侧命令读另一个，症状是"命令行说没这个用户、网页里明明有"，
-        // 而且**只有传了 `--data-dir` 才暴露**。
-        unsafe { std::env::set_var(yekitrim_core::path::DATA_DIR_ENV, &data_dir) };
+    if let Some(dir) = args.data_dir.as_ref() {
+        // ⚠️ **写端**：把 `--data-dir` 经环境变量传给 service 侧（`db::ledger_dir` / `logbus` /
+        // 初始密码文件路径都读它）。**必须与 `yekitrim_core::path::DATA_DIR_ENV` 同源**。
+        unsafe { std::env::set_var(yekitrim_core::path::DATA_DIR_ENV, dir) };
     }
-    prepare_data_dir(&data_dir)?;
-    // 日志落盘（<data_dir>/logs/yekitrim-YYYYMMDD.log）。要在启动横幅**之前**开，
+    // ⚠️ **目录布局迁移必须先于任何账本/配置路径解析**：0.5 → v2 把
+    // `.yekitrim/cloud` 搬成 `ledger/`、`global/resources` 搬成 `shared/`。
+    // 放在 `prepare_data_dir` / `AuthService::open` 之前，否则账本会在旧位置被新建。
+    yekitrim_core::layout::ensure_layout().with_context(|| {
+        "目录布局迁移失败。请先退出托盘/服务，或手动运行 `yekitrim migrate-layout --root <程序目录>` 查看计划"
+    })?;
+    let data_root = yekitrim_core::path::data_dir();
+    let ledger_dir = db::ledger_dir();
+    prepare_data_dir(&ledger_dir)?;
+    // 日志落盘（<data>/logs/yekitrim-YYYYMMDD.log）。要在启动横幅**之前**开，
     // 否则"监听地址 / 初始密码"这些只有一次的信息进不了文件。
     let log_dir = logbus::enable_file_log();
     info!("日志文件: {}", logbus::file_log_path(&log_dir).display());
     let explicit_pw = explicit_admin_password(&args)?;
-    let auth = auth::AuthService::open(data_dir.clone(), listening).with_context(|| {
+    let auth = auth::AuthService::open(ledger_dir.clone(), listening).with_context(|| {
         format!(
-            "账号账本不可用（{}）。请检查磁盘空间/权限，或用 --data-dir <可写路径> 指定别处",
-            data_dir.display()
+            "账号账本不可用（{}）。请检查磁盘空间/权限，或用 --data-dir <可写数据根> 指定别处",
+            ledger_dir.display()
         )
     })?;
     // LLM 用量记账：core 的 LlmClient 只负责产出记录，这里把它接到账号账本上
@@ -414,7 +418,7 @@ where
             // 文案与拒绝启动那条共用（含 `YEKITRIM_DATA_DIR` —— 改密是另一个进程）。
             tracing::warn!(
                 "⚠ 管理员仍在使用初始密码 —— 一旦对外监听（--allow-remote / 非 loopback）服务会**拒绝启动**。\n{}",
-                password_change_hint(&data_dir, &pw_file)
+                password_change_hint(&data_root, &pw_file)
             );
         }
     }
@@ -440,12 +444,12 @@ where
         anyhow::bail!(
             "拒绝在 {addr} 上对外监听：管理员仍在使用初始密码（初始密码会写进启动日志与 {}，等同把凭证摊在服务器上）。\n{}",
             pw_file.display(),
-            password_change_hint(&data_dir, &pw_file)
+            password_change_hint(&data_root, &pw_file)
         );
     }
 
-    // 单实例保护：两个实例指向同一 data_dir 会抢项目/端口/SQLite 写（§3.5.8）
-    let _instance_lock = InstanceLock::acquire(&data_dir, args.force)?;
+    // 单实例保护：两个实例指向同一 ledger 会抢项目/端口/SQLite 写（§3.5.8）
+    let _instance_lock = InstanceLock::acquire(&ledger_dir, args.force)?;
     info!(
         "单实例锁: {}（{}）",
         _instance_lock.path().display(),
@@ -565,7 +569,7 @@ where
 
     // 清扫上次运行遗留的渲染子进程：服务器重启不会带走 `polish render` 及它的
     // ffmpeg / 底座孙进程（实测空转两小时，把后续渲染拖到跑不完）。
-    let swept = render_proc::sweep_orphans(state.auth.data_dir());
+    let swept = render_proc::sweep_orphans();
     if !swept.is_empty() {
         info!("已结束 {} 个遗留的渲染子进程: {:?}", swept.len(), swept);
     }
@@ -619,8 +623,8 @@ where
             let hint = bind_conflict_hint(
                 &addr,
                 peer.as_ref(),
-                &exe_dir(),
-                &data_dir,
+                &yekitrim_core::path::program_dir(),
+                &data_root,
                 e.raw_os_error(),
                 free_port,
             );
@@ -809,9 +813,8 @@ fn maintenance_line(p: Purged, keep: RetentionDays) -> String {
 async fn run_daily_maintenance(state: &Arc<model::AppState>) -> Purged {
     let auth = Arc::clone(&state.auth);
     // 日志目录与 `logbus::enable_file_log()` 是同一个：两者都从数据目录派生
-    // （server 启动时 `--data-dir` 已经写进环境变量，`db::data_dir()` == 这里这个）。
-    // 走 `auth.data_dir()` 而不是再调一次 `enable_file_log()`，是为了让单测能指到临时目录。
-    let log_dir = state.auth.data_dir().join("logs");
+    // （server 启动时 `--data-dir` 已经写进环境变量，`path::logs_dir()` 就是它）。
+    let log_dir = yekitrim_core::path::logs_dir();
     let done = tokio::task::spawn_blocking(move || {
         let keep = RetentionDays::from_config();
         (purge_now(&auth, &log_dir, keep), keep)
@@ -884,14 +887,7 @@ pub(crate) fn open_browser(url: &str) {
     }
 }
 
-/// 本次实例的程序目录（绑定失败时要说清"你起的是哪一份" —— 两份实例各有一套 `.yekitrim`）。
-fn exe_dir() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-        .unwrap_or_else(|| PathBuf::from("."))
-}
-
+/// 本次实例的程序目录（绑定失败时要说清"你起的是哪一份"）。
 /// 从 `/api/health` 的响应体里认出"对端是另一个 YekiTrim 实例"。
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct HealthPeer {

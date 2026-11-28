@@ -18,12 +18,12 @@ use super::Workspace;
 const VIDEO_EXT: [&str; 4] = ["mp4", "flv", "mkv", "ts"];
 const DANMAKU_EXT: [&str; 4] = ["xml", "ass", "srt", "json"];
 
-/// 托管项目根：`[storage] projects_root`；留空 → `<exe_dir>/.yekitrim/projects`。
+/// 托管项目根：`[storage] projects_root`；留空 → `<data>/projects`。
 pub fn projects_root() -> PathBuf {
     let cfg = yekitrim_core::config::load_global_config();
     let raw = cfg.storage.projects_root.trim();
     if raw.is_empty() {
-        yekitrim_core::path::yekitrim_home().join("projects")
+        yekitrim_core::path::projects_dir()
     } else {
         PathBuf::from(raw)
     }

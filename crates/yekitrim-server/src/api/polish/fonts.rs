@@ -23,7 +23,7 @@ use super::*;
 
 /// 字体库全量（**只读**，非 admin 也能看）：字幕字体 / 封面字体的下拉数据源。
 ///
-/// 库位置就是 `yekitrim_core::path::font_dir()`：**`<数据目录>/resources/fonts/`** 一处
+/// 库位置就是 `owner::asset_dir(owner, Fonts)`：**`<data>/users/<uid>/fonts/`** 一处
 /// （默认程序目录；`YEKITRIM_DATA_DIR` 可覆盖）。读写同一个位置，见 `fonts::ensure_dir`。
 /// **以磁盘为准**：往里丢一个 `.ttf` / `.otf` / `.ttc` 就会出现在列表里，没有索引文件要维护。
 /// `id` = 目录名（v2 布局）或文件名去扩展名（老布局）—— **配置里存的就是它**；
@@ -222,7 +222,8 @@ pub(crate) async fn polish_fonts_import(
         // 判据抽成纯函数（[`font_import_allowed`] / [`font_import_roots`]）—— 单测能钉住
         // "别人的项目目录 → 拒"，不必往真实字体库里种文件。
         if !user_for_check.is_admin() {
-            let resources_root = yekitrim_core::owner::resources_dir(crate::auth::owner_of(&user_for_check));
+            let resources_root =
+                yekitrim_core::owner::owner_root(crate::auth::owner_of(&user_for_check));
             let roots = font_import_roots(&db, user_for_check.id, resources_root);
             if !font_import_allowed(false, &roots, &path) {
                 return Err(err(

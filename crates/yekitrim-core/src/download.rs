@@ -3,7 +3,7 @@
 //! 入口：`model_names`、`model_install`、`download_all`（`download_all_with` 带整批进度）、
 //! `download_vad_model`、`ensure_models`；
 //! 另有两个**通用**下载件给别处复用：`fetch_url_to` / `fetch_text_to`（自带字体下载用，见 `fonts::BUILTIN_FONTS`）。
-//! 边界：模型落在 `<数据目录>/.yekitrim/models/`（默认 = 程序目录，`YEKITRIM_DATA_DIR` 可改指；debug / release
+//! 边界：模型落在 `<数据目录>/models/`（`YEKITRIM_DATA_DIR` 可改指；debug / release
 //! 默认各一份，互不相干）；许可上别把 espeak-ng 等 GPL 组件带回来 —— 见 `crates/yekitrim-core/AGENTS.md`
 
 use std::collections::HashMap;
@@ -16,7 +16,6 @@ use reqwest::StatusCode;
 use tokio::io::AsyncWriteExt;
 
 use crate::config::AsrConfig;
-use crate::path::yekitrim_home;
 
 const ASR_MODELS_BASE: &str = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models";
 
@@ -293,7 +292,7 @@ pub async fn download_all_with(
     target_dir: Option<&Path>,
     progress: &dyn DownloadProgress,
 ) -> Result<()> {
-    let home = target_dir.map_or_else(yekitrim_home, |p| p.to_path_buf());
+    let home = target_dir.map_or_else(crate::path::data_dir, |p| p.to_path_buf());
     let mut pending = pending_all(&home)?;
 
     // 总量与下载地址一起问清楚：GitHub 的资产清单同时给出 `size` 和 `id`
@@ -1165,7 +1164,7 @@ fn vad_download_dir_in(
 
 /// 确保 VAD 权重落在**运行时真正会读的**目录里（与 `vad_model_path` 同一套查找顺序）。
 async fn ensure_vad_model(asr: &AsrConfig) -> Result<()> {
-    let (dir, source) = vad_download_dir_in(asr, &crate::path::yekitrim_home());
+    let (dir, source) = vad_download_dir_in(asr, &crate::path::data_dir());
     if crate::asr::vad::find_vad_model(&dir).is_some() {
         tracing::info!("silero VAD 已就绪（{}）", dir.display());
         return Ok(());

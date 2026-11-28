@@ -51,13 +51,17 @@ pub(crate) fn spec_effects_path() -> Option<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            // ⚠️ **2026-10-09：发布包里的落点由 `spec/` 改成 `runtime/`**
-            //（与转译器合并成一个目录）。老 `<程序目录>/spec/` 仍作**回落**：
-            // 存量安装升级时那个目录还在，不给回落会让 doctor 与转译器都读不到权威词汇表。
-            // 新位排前面（两个都在时优先用新的）。`effects.json` 的名字不变。
+            // ⚠️ **2026-11-27：v2 落点是 `<程序>/app/runtime/`**；
+            // `<程序>/runtime`（0.5）与 `<程序>/spec`（更老）仍作**回落**。
+            candidates.push(
+                yekitrim_core::path::runtime_dir_in(dir).join("effects.json"),
+            );
             candidates.push(dir.join("runtime").join("effects.json"));
             candidates.push(dir.join("spec").join("effects.json"));
             if let Some(up2) = dir.parent().and_then(Path::parent) {
+                candidates.push(
+                    yekitrim_core::path::runtime_dir_in(up2).join("effects.json"),
+                );
                 candidates.push(up2.join("runtime").join("effects.json"));
                 candidates.push(up2.join("spec").join("effects.json"));
             }
@@ -430,7 +434,7 @@ pub async fn cmd_render_with(project_path: &Path, opts: RenderOpts) -> anyhow::R
     // 底座那条腿不需要页面，声音事件由 `collect_sound_events` 在 Rust 里直接收。
     tracing::info!("\n  -- Sound data --");
     let t_sound = std::time::Instant::now();
-    let sfx_data = collect_sound_events(&config);
+    let sfx_data = collect_sound_events(&config, project_path);
     tracing::info!(
         "  v {} sound events  ⏱ {:.1}s",
         sfx_data.len(),

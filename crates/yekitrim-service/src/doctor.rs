@@ -37,7 +37,7 @@ fn line(title: &str) {
 
 /// `yekitrim doctor [--url ...]`
 pub fn cmd_doctor(url: &str) -> Result<()> {
-    let data_dir = db::data_dir();
+    let data_dir = db::ledger_dir();
     let db_path = db::db_path();
     let pw_file = user::initial_password_path();
     // 供结尾的"建议"使用（只有真正适用的才打印）
@@ -143,7 +143,7 @@ pub fn cmd_doctor(url: &str) -> Result<()> {
         println!("  初始密码文件: 不存在 ✓");
     }
     // 运行日志（`yekitrim server` 每进程一份当天的文件；顺带说清"日志在哪"）
-    let log_dir = data_dir.join("logs");
+    let log_dir = yekitrim_core::path::logs_dir();
     let latest_log = std::fs::read_dir(&log_dir)
         .ok()
         .and_then(|rd| {

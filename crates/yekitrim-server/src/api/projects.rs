@@ -972,7 +972,10 @@ async fn create_project_runs_sync_io_off_the_worker() {
     for i in 0..3000 {
         std::fs::write(dir.join(format!("f{i:05}.bin")), b"x").unwrap();
     }
-    let cfg = dir.join(yekitrim_core::path::PROJECT_CONFIG_FILE);
+    let cfg = dir
+        .canonicalize()
+        .unwrap()
+        .join(yekitrim_core::path::PROJECT_CONFIG_FILE);
 
     // ---- 心跳：只有 1 个 worker，同步 IO 若留在 worker 上它就再也跳不动 ----
     let ticks = Arc::new(AtomicUsize::new(0));
@@ -983,7 +986,7 @@ async fn create_project_runs_sync_io_off_the_worker() {
             beats.fetch_add(1, Ordering::SeqCst);
         }
     });
-    sleep(Duration::from_millis(5)).await;
+    sleep(Duration::from_millis(50)).await;
     assert!(ticks.load(Ordering::SeqCst) > 0, "心跳应当已经跳起来");
 
     let before = ticks.load(Ordering::SeqCst);

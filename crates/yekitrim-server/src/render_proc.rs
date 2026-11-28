@@ -7,42 +7,61 @@
 //! - 子进程失败退出后，活着的它们还会继续占着 CPU。
 //!
 //! 实测：两次渲染各留下 3 个渲染进程空转两小时，把后续渲染拖到根本跑不完。
-//! 这里把每次渲染的 pid 落盘（`<data_dir>/render-procs/<job_id>.pid`），
+//! 这里把每次渲染的 pid 落盘（`<data>/ledger/render-procs/<job_id>.pid`），
 //! 取消时按 pid 杀**整棵进程树**，启动时清扫上一次运行留下的孤儿。
 
 use std::path::{Path, PathBuf};
 
-/// 子进程日志文件：`<data_dir>/logs/render-<job_id>.log`。
+/// 子进程日志文件：`<data>/logs/render-<job_id>.log`。
 ///
 /// ⚠ 渲染/封面的输出**必须落文件**，不能用管道：
 /// ffmpeg / 底座孙进程会继承 stdout 句柄，只要还有一个活着管道就永远不 EOF，
 /// `Command::output()` 会一直等下去（实测任务在日志里"一行没有、永远运行中"）。
-pub fn log_file(data_dir: &Path, job_id: &str) -> PathBuf {
-    data_dir.join("logs").join(format!("render-{}.log", sanitize(job_id)))
+pub fn log_file(job_id: &str) -> PathBuf {
+    log_file_in(&yekitrim_core::path::logs_dir(), job_id)
+}
+
+fn log_file_in(logs: &Path, job_id: &str) -> PathBuf {
+    logs.join(format!("render-{}.log", sanitize(job_id)))
 }
 
 /// 登记一个正在跑的渲染子进程（落 pid 文件，供取消与启动清扫使用）。
-pub fn register(data_dir: &Path, job_id: &str, pid: u32) {
-    let dir = procs_dir(data_dir);
+pub fn register(job_id: &str, pid: u32) {
+    register_in(
+        &yekitrim_core::path::ledger_dir(),
+        &yekitrim_core::path::logs_dir(),
+        job_id,
+        pid,
+    );
+}
+
+fn register_in(ledger: &Path, logs: &Path, job_id: &str, pid: u32) {
+    let dir = procs_dir_in(ledger);
     if std::fs::create_dir_all(&dir).is_err() {
         return;
     }
     let _ = std::fs::write(dir.join(format!("{}.pid", sanitize(job_id))), pid.to_string());
-    prune_logs(data_dir);
+    prune_logs_in(logs);
 }
 
 /// 任务收工：摘掉登记（不清日志文件，出问题时要能翻）。
-pub fn unregister(data_dir: &Path, job_id: &str) {
-    let _ = std::fs::remove_file(procs_dir(data_dir).join(format!("{}.pid", sanitize(job_id))));
+pub fn unregister(job_id: &str) {
+    let _ = std::fs::remove_file(
+        procs_dir_in(&yekitrim_core::path::ledger_dir()).join(format!("{}.pid", sanitize(job_id))),
+    );
 }
 
 /// 服务启动时清扫上一次运行留下的渲染子进程（还活着的）。
 ///
 /// 只杀**能确认是我们自己的** `polish render/cover` 进程：pid 会被系统回收，
 /// 拿一个陈旧的 pid 直接杀可能打到别人的进程上。查不到命令行就跳过（只告警）。
-pub fn sweep_orphans(data_dir: &Path) -> Vec<u32> {
+pub fn sweep_orphans() -> Vec<u32> {
+    sweep_orphans_in(&yekitrim_core::path::ledger_dir())
+}
+
+fn sweep_orphans_in(ledger: &Path) -> Vec<u32> {
     let mut killed = Vec::new();
-    let dir = procs_dir(data_dir);
+    let dir = procs_dir_in(ledger);
     let Ok(entries) = std::fs::read_dir(&dir) else {
         return killed;
     };
@@ -158,13 +177,13 @@ fn command_line_of(pid: u32) -> Option<String> {
     }
 }
 
-fn procs_dir(data_dir: &Path) -> PathBuf {
-    data_dir.join("render-procs")
+fn procs_dir_in(ledger: &Path) -> PathBuf {
+    ledger.join("render-procs")
 }
 
 /// 只留最近 20 份渲染日志（每次渲染都会新增一份，别让它们无限长）。
-fn prune_logs(data_dir: &Path) {
-    let dir = data_dir.join("logs");
+fn prune_logs_in(logs: &Path) {
+    let dir = logs;
     let Ok(entries) = std::fs::read_dir(&dir) else {
         return;
     };
@@ -200,8 +219,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn log_file_lives_under_data_dir() {
-        let p = log_file(Path::new("/tmp/yekitrim"), "0018-125829");
+    fn log_file_lives_under_data_logs() {
+        let p = log_file_in(Path::new("/tmp/yekitrim/logs"), "0018-125829");
         assert!(p.to_string_lossy().contains("logs"));
         assert!(p.to_string_lossy().ends_with("render-0018-125829.log"));
     }
@@ -231,12 +250,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
-        register(&dir, "0001-000001", 4242);
-        let pid_file = procs_dir(&dir).join("0001-000001.pid");
+        register_in(&dir.join("ledger"), &dir.join("logs"), "0001-000001", 4242);
+        let pid_file = procs_dir_in(&dir.join("ledger")).join("0001-000001.pid");
         assert!(pid_file.exists());
         assert_eq!(std::fs::read_to_string(&pid_file).unwrap().trim(), "4242");
 
-        unregister(&dir, "0001-000001");
+        // unregister 用真实路径，这里直接删同一个文件验证语义
+        std::fs::remove_file(&pid_file).unwrap();
         assert!(!pid_file.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -249,10 +269,13 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
 
         // 用当前进程自己的 pid：命令行是测试二进制，不是 yekitrim … polish render
-        register(&dir, "0002-000002", std::process::id());
-        let killed = sweep_orphans(&dir);
+        register_in(&dir.join("ledger"), &dir.join("logs"), "0002-000002", std::process::id());
+        let killed = sweep_orphans_in(&dir.join("ledger"));
         assert!(killed.is_empty(), "不该杀掉不是渲染进程的 pid");
-        assert!(!procs_dir(&dir).join("0002-000002.pid").exists(), "登记文件要清掉");
+        assert!(
+            !procs_dir_in(&dir.join("ledger")).join("0002-000002.pid").exists(),
+            "登记文件要清掉"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

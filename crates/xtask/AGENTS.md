@@ -52,16 +52,10 @@
   `max_glibc_symbol()` 刻意不依赖 `objdump`/`readelf`（本 crate 只用 std + sha2 + zip）。
 - 打包内容（⚠️ **2026-10-05 订正**：下面这条以前写"`webui/dist/`（整个）"，
   但那次改动之后 dist 已经**编在 exe 里**、包里不再带它 —— 卡片当时没跟着改）：
-  `yekitrim[.exe]`、`resources/fonts/放这里.txt`、
-  `LICENSE`、`THIRD-PARTY-NOTICES.md`，以及 `docs/releases/v<版本>.md`（存在才拷，包内名 `RELEASE-NOTES.md`）；
-  **外加默认出片通道的随身件（2026-10-01；落点 2026-10-09 改）**：转译器
-  `tools/polish-to-dhampir.mjs` 与效果词汇表 `spec/effects.json` —— ⚠️ **两者现在都装进包内
-  `runtime/`**（原先分别是包内 `tools/` 与 `spec/`）：合并成一个目录，所以转译器的词汇表查找
-  先试**同目录** `./effects.json`、再回落 `../spec/effects.json`（开发树仍是 `tools/` + `spec/` 并列，
-  两条路都得留）。另外还有底座三样
-  `dhampir/bin/<exe>` + `dhampir/preview/{engine.js,pkg/*}` + `dhampir/VERSION`
-  （包内形状由 `yekitrim_polish::render::dhampir::{find_binary,wasm_dirs,preview_dir}` 定义；
-  ⚠️ `VERSION` 在 **`dhampir/` 下**、不在 `preview/` 里 —— 摆错报错只说"缺 VERSION"）。
+  `yekitrim[.exe]`、`LICENSE`、`THIRD-PARTY-NOTICES.md`，以及 `docs/releases/v<版本>.md`（存在才拷，包内名 `RELEASE-NOTES.md`）；
+  **外加只读程序件目录 `app/`**：转译器 `app/runtime/polish-to-dhampir.mjs` 与效果词汇表
+  `app/runtime/effects.json`；底座三样 `app/dhampir/bin/<exe>` +
+  `app/dhampir/preview/{engine.js,pkg/*}` + `app/dhampir/VERSION`。**没有 `resources/`，也没有 `data/`**。
   ⚠️ **包内文件名跟目标平台走，不跟宿主走**（`dhampir_bin_name(target_os)`，2026-11-24 修）：
   Windows 包必须是 `dhampir/bin/dhampir.exe`、Linux 包是 `dhampir/bin/dhampir`。原先那里写
   `cfg!(windows)` —— 那是**宿主编译期**常量：在 Linux 上交叉打 Windows 包会给出无后缀的 `dhampir`，
@@ -81,10 +75,10 @@
   输出到 `<repo>/release/`（gitignored），包名 `yekitrim-v<版本>-win-x64`，zip 用 Deflated level 9。
 - `smoke_test`：起打包好的 exe（端口 `18000 + 纳秒%1000`，Windows 上 `CREATE_NO_WINDOW`），
   最多 20 次 × 500ms 轮询 `/api/health`（含 `"ok"` + `true`）与 `/`（` 200 ` + `<div id="app">`），
-  然后 kill 并**清掉首次运行生成的运行态** —— ⚠️ **2026-10-09 起素材库落在 `resources/` 下**：
-  清理名单是 `.yekitrim/` + `global/` + `users/` + `resources/stickers/` + `resources/videos/`，而 **`resources/fonts/`
-  只清子项、保留组装阶段写的 `放这里.txt`**（`resources/` 与 `runtime/` 本身是随包发的，
-  **不能整个删**）。老位置 `<程序目录>/stickers/` 仍在名单里（老包形态）。
+  然后 kill 并**整棵清掉首启生成的 `data/`**（v2：账本/日志/模型/素材全在里面，含真实绝对路径）；
+  老布局的 `.yekitrim/` / `global/` / `users/` / `resources/` 作为防御一并清掉（`clean_runtime_state`）。
+  ⚠️ 归档前还有一条 **包根形状门禁** `assert_package_layout`：只允许 `app/` + 顶层文件，
+  且 `app/runtime/{polish-to-dhampir.mjs,effects.json}` 必须在。
 
 ## 边界
 
@@ -118,8 +112,8 @@
 - ⚠️ **`LICENSE` 与 `THIRD-PARTY-NOTICES.md` 是硬要求，不是 best-effort**：缺任一个直接 Err。
   二进制静态链接的第三方代码几乎全是 MIT / Apache-2.0 / BSD / ISC / Zlib，每一种都要求版权声明与许可文本
   随二进制分发，Apache-2.0 还额外要求许可文本与 NOTICE 文件 —— "什么都不带"是唯一确定错误的选项。
-- ⚠️ **发行包仍然不带任何字体**：只建空的 `resources/fonts/` + 一份 `放这里.txt` 说明。
-  原先随包的兜底字体授权不允许嵌入式用途（见 README「字体」），**别把 ttf 塞回发布包**。
+- ⚠️ **发行包仍然不带任何字体**：v2 包里**连 `resources/` 空壳都不建**；字体库由首启创建在
+  `data/users/<uid>/fonts` 与 `data/shared/fonts`。**别把 ttf 塞回发布包**。
 - ⚠️ **刻意不依赖 python / PowerShell**：整个 crate 只用 std + `sha2` + `zip`。
   所以**仓库任务不许往 xtask 里塞脚本调用**（那会把刚去掉的那层依赖又加回来）。
 - `zip = { version = "2", default-features = false, features = ["deflate", "time"] }`：
@@ -127,8 +121,8 @@
   而"不依赖外部工具"正是这个 helper 存在的全部理由。`time` 保留真实 mtime。
 - `repo_root()` 靠 `CARGO_MANIFEST_DIR` 往上两级（`crates/xtask` 必须在仓库根下两层），
   **挪动这个 crate 的深度会直接 panic**。`cargo()` 优先用 `CARGO` 环境变量。
-- ⚠️ 分发前检查 `release/` 里那份**解包目录**（不是 zip）：跑过的实例会在里面留下 `.yekitrim/`
-  （`server.toml` 含真实绝对路径）。`cargo xtask package --smoke-test` 会清掉它 —— 这是这条开关的主要用途之一。
+- ⚠️ 分发前检查 `release/` 里那份**解包目录**（不是 zip）：跑过的实例会在里面留下 `data/`
+  （`server.toml` 与账本含真实绝对路径）。`cargo xtask package --smoke-test` 会整棵删掉它 —— 这是这条开关的主要用途之一。
 - ⚠️ **验证发行行为要拿 `release/` 里的 exe，别拿 `cargo build --release`（工作区级）的那份**：
   `package` 建的是 `-p yekitrim-cli`（feature 统一域更窄），两者**字节不同**（实测 sha256 不一样），
   拿错等于验证了一个不发的二进制。`--skip-build` 复跑只重组装与 zip，不会换掉这一份。

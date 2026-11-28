@@ -46,7 +46,7 @@
   那份全局状态于是成了一条**没人查的旁路**（删它时全仓只剩两个消费者，且都已改掉）：
   ① 过渡期 `/api/media/<绝对路径>` —— **已删**，媒体路径现在**必须**带项目 id；
   ② `/api/project/list` 回显的 `workspace_root` —— **已删**（那个接口自己就标着 deprecated）。
-  **要工程就接一个 `Scope`**；要"项目无关"的值就直接读 `path::yekitrim_home()` /
+  **要工程就接一个 `Scope`**；要"项目无关"的值就直接读 `path::data_dir()` /
   `load_global_config()`。`server.toml` 里**只留记忆**（`last_config_file`，供启动恢复上次工程），
   **不再留状态** —— 记忆允许过期，状态不允许。
   ⚠️ 同一次还把 `/api/config` 与 `/api/project-data/config` 拆开：前者是**纯程序配置**
@@ -117,11 +117,11 @@
 ### 渲染子进程
 
 - **输出必须落文件，不能用管道**：`api::run_polish_child` 把子进程 stdout/stderr 重定向到
-  `<data_dir>/logs/render-<job_id>.log`，再用 `follow_render_output` 边跑边读。
+  `<data>/logs/render-<job_id>.log`，再用 `follow_render_output` 边跑边读。
   ⚠ 绝对不要改回 `Command::output()`/管道：ffmpeg 与底座拉起的孙进程是**孙进程**，它们会继承 stdout
   句柄 —— 只要还有一个活着，管道就永远不 EOF，`output()` 一直等下去。
 - **取消 = 杀进程树**（`render_proc::kill_tree(pid)`：Windows `taskkill /F /T`；Unix 子进程在 spawn 时 `process_group(0)` 自成一组、取消时 `kill -9 -<pid>` —— 正 pid 只杀得到子进程，ffmpeg/底座孙进程会留下来继续烧 CPU）。**启动清扫孤儿**：
-  每次渲染往 `<data_dir>/render-procs/<job_id>.pid` 登记 pid，`server::run` 启动时 `render_proc::sweep_orphans`
+  每次渲染往 `<data>/ledger/render-procs/<job_id>.pid` 登记 pid，`server::run` 启动时 `render_proc::sweep_orphans`
   结束遗留渲染（**先核对命令行**再杀，pid 会被系统回收）。
 
 ### 归属校验与作用域
@@ -176,7 +176,7 @@
 ### 贴纸 / 认证 / 限流
 
 - `src/stickers.rs`：路由在**用户层**（**不是** admin-only —— 贴纸库按 `Owner` 分，见 `src/stickers.rs` 头部；
-  单人 = `<数据>/resources/stickers/`，多用户 = `<数据>/users/<uid>/resources/stickers/`）；`spawn_build` 走 JobManager（占 `stickers` 键，取消在
+  单人 = `<data>/users/<uid>/stickers/`，多用户 = `<data>/users/<uid>/stickers/`）；`spawn_build` 走 JobManager（占 `stickers` 键，取消在
   **批次边界**生效）；上限 = `[stickers] upload_max_mb`（默认 1 GiB，路由硬顶 4 GiB）；`.../:pack/files/:name` 与
   `/api/media/*` 共用 `media::serve_file_from_headers`；包名过 `sanitize_pack_name`、文件名过 `is_safe_component`。
 - `src/media.rs` 是**唯一**的文件出口（`/api/media/*`、字体、贴纸、素材库、Dhampir wasm）。

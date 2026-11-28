@@ -62,7 +62,7 @@ fn resolve_password(source: &PasswordSource) -> Result<(String, bool)> {
 
 /// 初始密码文件位置（首次部署打印此路径；登录成功后由 HTTP 侧删除）。
 pub fn initial_password_path() -> PathBuf {
-    db::data_dir().join("initial-admin-password.txt")
+    db::ledger_dir().join("initial-admin-password.txt")
 }
 
 /// **密码一经变更，把初始密码文件处置掉**（2026-10-02）。
@@ -82,7 +82,7 @@ pub fn initial_password_path() -> PathBuf {
 /// ⚠️ 所有改密码的入口**都必须走这里**（cmd_passwd / cmd_reset_admin_password /
 /// HTTP 改密 / 登录成功后的清理）。漏掉任何一条 = 那个入口之后文件就开始撒谎。
 pub fn retire_initial_password_file(generated: Option<&str>) {
-    retire_initial_password_file_in(&db::data_dir(), generated);
+    retire_initial_password_file_in(&db::ledger_dir(), generated);
 }
 
 /// [`retire_initial_password_file`] 的可注入版本（单测用，不碰真实数据目录）。
@@ -372,7 +372,7 @@ fn print_once(password: &str, what: &str) {
 
 /// 显示账本位置（诊断用）。
 pub fn cmd_info() -> Result<()> {
-    let dir = db::data_dir();
+    let dir = db::ledger_dir();
     println!("账号账本目录: {}", dir.display());
     println!("账本文件:     {}", db::db_path().display());
     println!("初始密码文件: {}", initial_password_path().display());

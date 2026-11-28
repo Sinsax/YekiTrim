@@ -21,13 +21,13 @@
 ## 边界
 
 - **分批窗口调用**：每窗口 30 条字幕段、窗口间重叠 5 条（`DETECT_WINDOW_SIZE`/`DETECT_WINDOW_OVERLAP`），
-  并发取 `[llm.links.detect.run] max_concurrent`（留空跟随 `.yekitrim/llm.toml` 的 `[llm] max_concurrent`，默认 3）；
+  并发取 `[llm.links.detect.run] max_concurrent`（留空跟随 `<data>/users/<uid>/llm.toml` 的 `[llm] max_concurrent`，默认 3）；
   每窗口完成即写 `events.checkpoint.json`（断点续传）、
   累计结果写 `events.partial.json`。单窗口失败重试 2 次；**被 max_tokens 截断（`finish_reason=length`）
   时不重试**（参数不变必然再截断，白烧一次调用），直接走拆半递归：`≥ 8 段`且层数 `< 2` 才拆，
   两半各自成败、**一半成功也保留那一半**（曾经的判据是 `len > 30`，而窗口大小就是 30，这条兜底
   从未触发过，被截断的窗口整段丢失 —— 实测事件覆盖率掉到 46%）。截断前已完整的 JSON 元素由
-  `llm::parse_json` 抢救回来；解析失败的现场转储在**程序目录** `.yekitrim/llm_debug/`（别再写进程 CWD）。
+  `llm::parse_json` 抢救回来；解析失败的现场转储在 `<data>/logs/llm/`（别再写进程 CWD）。
   ⚠️ **取消**：`EventDetector::run` 把 `ctx.progress` 包成 `CancelProbe` 交给
   `call_with_progress` → `Agent::with_cancel`（窗口边界生效）；检测跑完后、**热度评分之前**再查一次，
   用户在评分阶段点停止就不会再发那批调用。
@@ -85,11 +85,11 @@
   `--lib diagnose_scattered_stage`（跑通整条 Stage 3，看最终落盘）/
   `--lib diagnose_scattered_funnel`（**漏斗**：一次调用拿候选块，再用同一批块重放多组阈值 +
   逐条打印"为什么没进主列表"—— 校准阈值看这条）。
-- ⚠️ **改内建 prompt 要同步用户配置**：S4 起检测提示词住 `.yekitrim/llm.toml` 的
+- ⚠️ **改内建 prompt 要同步用户配置**：S4 起检测提示词住 `<data>/users/<uid>/llm.toml` 的
   `[llm.links.detect.prompt]`（`system_prompt` / `prompt_template` / `reference_titles`），
   那是 `config init` 时把内建文本写进去的**副本**，代码里改默认值对它无效；要么在设置页改，
   要么把三项清空（清空才走内建默认）。第二趟（`[detection.scattered]`）的两份 prompt 仍在 config.toml。
-  **每个程序目录各有一份**（`target/debug/.yekitrim/`、`release/<包名>/.yekitrim/` 互不相干）——
+  **每个程序目录各有一份**（`target/debug/data/`、`release/<包名>/data/` 互不相干）——
   改 prompt 时别只改一个；`'''…'''` 是三引号**字面量**（免转义），正文里没有单引号时可用。
 - **前缀缓存**：`DEFAULT_PROMPT` 里 `{segments}` 必须留在**最后**（`{hot_windows}` 排在它之前），
   改 prompt 时别把变化的部分塞到中间 —— 细节见 `src/llm/AGENTS.md` 与 `src/config/AGENTS.md`。

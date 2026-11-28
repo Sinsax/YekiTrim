@@ -40,6 +40,7 @@
     ├── projects/               # 托管入库根（按需创建，可整体覆盖）
     │   └── users/<uid>/<room>/<stamp>-<pid>/
     ├── shared/{fonts,stickers,videos}   # 公用素材库
+    ├── cache/sfx/              # 音效试听缓存（可整目录删，删了下次试听重新抓）
     └── users/<uid>/
         ├── config.toml
         ├── llm.toml
@@ -61,6 +62,7 @@
 | yt-dlp | `path::bin_dir()` | `<data>/bin/` |
 | 托管项目（默认） | `path::projects_dir()` | `<data>/projects/`（可被 `[storage] projects_root` 覆盖） |
 | 公用素材 | `owner::shared_assets_dir()` | `<data>/shared/` |
+| 运行期缓存 | `path::cache_dir()` | `<data>/cache/`（今天只有 `cache/sfx/`；**删了不需要重配任何东西**） |
 | 账号根 | `owner::owner_root(owner)` | `<data>/users/<uid>/` |
 | 账号配置 | `owner::config_path` / `llm_config_path` | `<data>/users/<uid>/{config,llm}.toml` |
 | 账号素材 | `owner::asset_dir(owner, kind)` | `<data>/users/<uid>/{fonts,stickers,videos}/` |

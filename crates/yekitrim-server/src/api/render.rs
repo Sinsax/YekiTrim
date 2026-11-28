@@ -273,7 +273,6 @@ pub(super) fn cleanup_render_leftovers(dir: &Path) {
 /// 取消：子进程是**另一个进程**，看不到我们的进程内标志 —— 由 `cancel_watch`
 /// 按 pid 杀掉整棵树（含 ffmpeg 与底座拉起的孙进程）。
 pub(super) async fn run_polish_child(
-    data_dir: &Path,
     jobs: &Arc<crate::jobs::JobManager>,
     job_id: &str,
     sub: &str,
@@ -283,7 +282,7 @@ pub(super) async fn run_polish_child(
 ) -> anyhow::Result<()> {
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    let log_path = crate::render_proc::log_file(data_dir, job_id);
+    let log_path = crate::render_proc::log_file(job_id);
     if let Some(parent) = log_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -327,7 +326,7 @@ pub(super) async fn run_polish_child(
         .map_err(|e| anyhow::anyhow!("{sub} 进程启动失败: {e}"))?;
     let pid = child.id().unwrap_or(0);
     if pid != 0 {
-        crate::render_proc::register(data_dir, job_id, pid);
+        crate::render_proc::register(job_id, pid);
     }
     jobs.log(
         job_id,
@@ -368,7 +367,7 @@ pub(super) async fn run_polish_child(
         .await
         .map_err(|e| anyhow::anyhow!("等待 {sub} 进程失败: {e}"))?;
     stop.store(true, Ordering::SeqCst);
-    crate::render_proc::unregister(data_dir, job_id);
+    crate::render_proc::unregister(job_id);
     let out = follow.await.unwrap_or_default();
     cancel_watch.abort();
 

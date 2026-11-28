@@ -27,8 +27,6 @@ use serde::Serialize;
 use tracing::field::{Field, Visit};
 use tracing_subscriber::layer::{Context, Layer};
 
-use super::db;
-
 /// 环形缓冲条数（面板"最近 2000 条"）+ SSE 广播队列长度。
 const RING_CAP: usize = 2000;
 const BROADCAST_CAP: usize = 1024;
@@ -125,7 +123,7 @@ static FILE_DIR: OnceLock<PathBuf> = OnceLock::new();
 /// （之后的日志才进文件，所以要在启动横幅之前）。目录 = `<data_dir>/logs`。
 pub fn enable_file_log() -> PathBuf {
     let dir = FILE_DIR
-        .get_or_init(|| db::data_dir().join("logs"))
+        .get_or_init(|| yekitrim_core::path::logs_dir())
         .clone();
     let _ = std::fs::create_dir_all(&dir);
     dir

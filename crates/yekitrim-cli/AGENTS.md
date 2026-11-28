@@ -20,7 +20,7 @@
     `yekitrim-core` → `sherpa-onnx`（静态链接的 C++ ASR）是整条依赖图的根，引用 core 的**任何一个符号**
     都会把 ASR 一起链进来 —— 上一版就是这样：托盘 **57 MB**、和主程序一样重。现在 **0.49 MB**。
     代价是两处**刻意抄的规则**，改一处要改两处：
-      ① 数据目录（`YEKITRIM_DATA_DIR` ?? exe 同级，只为放 `logs/tray.log`）—— 正文在 `docs/file-layout.md`；
+      ① 数据目录（`YEKITRIM_DATA_DIR` ?? `<exe>/data`，只为放 `data/logs/tray.log`）—— 正文在 `docs/file-layout.md`；
       ② `CREATE_NO_WINDOW`（它用不了 `process::cmd()`，见下面门禁的例外）。
     ⚠️ **跨进程两条契约**（本文件与 `yekitrim-server` 各写一份字面量，改一处必须改两处）：
       ① 关停令牌走 **环境变量 `YEKITRIM_SHUTDOWN_TOKEN`**（不用命令行参数：本仓"秘密不进进程列表"）；
@@ -48,7 +48,7 @@
     ⚠️ windows-sys **钉 0.52**（那个版本句柄是 `isize`；0.59+ 改指针包装，代码对不上）。
 - **`src/tracing_setup.rs` 只给 `yekitrim` 这个 bin 用**（`setup(true)` = 终端 + 日志总线）。
   ⚠️ **托盘不再用它**：薄启动器不能链接 `yekitrim-service`（`LogBusLayer` 在那儿），
-  否则 ASR 被一起拉回来。它自己往 `<数据目录>/logs/tray.log` 追加几行（`tray.rs::log`）。
+  否则 ASR 被一起拉回来。它自己往 `<data>/logs/tray.log` 追加几行（`tray.rs::log`）。
 - **命令面**（`cli.rs` 的 `Cli` / `Command`，改命令先改这里）：
   `init <video> [--danmaku <file>] [--force]` / `extract [-i] [-o]` / `process [-i] [-o] [--dry-run]` /
   `transcribe [-i]` / `detect [-t <transcript>]` / `cut [-i] [-e <events>] [-o]` /
@@ -66,7 +66,7 @@
   `process` 全自动管线（`--dry-run` = 只到 Stage 3。⚠️ 它是**补齐未完成的阶段**：`current_stage` 已经
   覆盖到的阶段一律"已存在，跳过"—— 改完 prompt / 模型想重跑，得用单级命令；根卡那句"无视检查全部重跑"
   与实际不符，已在本卡纠正）；`silence`「去静音」**只写 `polish.toml`、不改视频**；
-  `download` 把全部 ASR 模型下到 `<程序>/.yekitrim/models/`；`status` 看当前进度；
+  `download` 把全部 ASR 模型下到 `<程序>/data/models/`；`status` 看当前进度；
   `config migrate` = **把已下线的键从配置文件里真清掉并写回**（工程级配置按设计不自动写回，见 core/config 卡）；
   `usage` LLM 用量（token/缓存命中/耗时，账本 `llm_usage`）；`doctor` 安全与运行状况摘要；
   `ingest` 录播姬 webhook / 采集配置概览；`user invite|invites|invite-revoke` = 邀请码

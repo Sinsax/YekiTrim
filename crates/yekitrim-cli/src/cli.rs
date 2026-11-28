@@ -146,11 +146,27 @@ pub enum Command {
         url: String,
     },
 
+    /// 目录布局迁移（0.5 → v2：app/ + data/；默认只打印计划）
+    MigrateLayout {
+        /// 程序目录（默认当前 exe 所在目录）
+        #[arg(long)]
+        root: Option<PathBuf>,
+        /// 真正执行（默认 dry-run）
+        #[arg(long)]
+        apply: bool,
+        /// 回滚指定的 journal 文件
+        #[arg(long)]
+        rollback: Option<PathBuf>,
+        /// 已有迁移锁时强制接管
+        #[arg(long)]
+        force: bool,
+    },
+
     /// 账号管理（多用户服务：账号账本 / 密码 / 角色）
     #[command(subcommand)]
     User(UserAction),
 
-    /// LLM 用量（每次调用的 token / 缓存命中 / 耗时；落 <data_dir>/yekitrim.db）
+    /// LLM 用量（每次调用的 token / 缓存命中 / 耗时；落 <data>/ledger/yekitrim.db）
     Usage {
         /// 统计最近多少天
         #[arg(long, default_value_t = 30)]

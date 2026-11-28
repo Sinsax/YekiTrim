@@ -125,7 +125,7 @@ pub fn cmd_invites() -> Result<()> {
     let rows = db.list_invites()?;
     let now = db::now_secs();
     println!("注册开关: {}", if registration_enabled() { "已开启" } else { "已关闭" });
-    println!("账号账本: {}", yekitrim_core::path::display(&db::data_dir()));
+    println!("账号账本: {}", yekitrim_core::path::display(&db::ledger_dir()));
     if rows.is_empty() {
         println!();
         println!("暂无邀请码。生成：yekitrim user invite [--note 给谁] [--days 7]");

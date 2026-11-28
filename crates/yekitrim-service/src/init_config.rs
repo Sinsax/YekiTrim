@@ -106,7 +106,7 @@ pub fn init_global_config(path: Option<&Path>) -> anyhow::Result<()> {
     if let Some(parent) = out.parent() { std::fs::create_dir_all(parent)?; }
     std::fs::write(&out, global_config_body())?;
     std::fs::write(llm_config_path(&out), llm_config_body())?;
-    std::fs::create_dir_all(yekitrim_core::path::sticker_dir())?;
+    // 贴纸/视频库目录按需创建（用户第一次放东西时建），启动阶段不再造空壳。
     yekitrim_core::fonts::ensure_dir()?;
     // 自带字体是**内嵌**的（2026-10-02）：建完库就地装好，用户不需要任何额外操作
     yekitrim_core::fonts::ensure_builtin_fonts();
@@ -159,9 +159,9 @@ pub fn ensure_global_config() -> anyhow::Result<EnsureConfigResult> {
     // ⚠️ **不再建顶层 `resources/`**（2026-10-10）：素材库现在只有"用户库 + 全局库"两层，
     // 顶层那份是这次要消灭的。这里改为保证**全局库**存在（自带字体落在那儿）。
     if !result.created.is_empty() || !result.repaired.is_empty() {
-        if let Err(e) = std::fs::create_dir_all(yekitrim_core::owner::global_resources_dir()) {
-            tracing::warn!("全局素材库目录建不出来（{}）：{e}",
-                yekitrim_core::path::display(&yekitrim_core::owner::global_resources_dir()));
+        if let Err(e) = std::fs::create_dir_all(yekitrim_core::owner::shared_assets_dir()) {
+            tracing::warn!("公用素材库目录建不出来（{}）：{e}",
+                yekitrim_core::path::display(&yekitrim_core::owner::shared_assets_dir()));
         }
     }
 
@@ -169,10 +169,10 @@ pub fn ensure_global_config() -> anyhow::Result<EnsureConfigResult> {
     // 目录不存在那个提示就没法用。装到只读位置（Program Files）时建不出来
     // 也不能拦住 server 启动，所以这里只告警。
     //
-    // ⚠️ **建全局那一个**（`<数据>/global/resources/fonts`）：自带字体落在这里。
+    // ⚠️ **建公用那一个**（`<data>/shared/fonts`）：自带字体落在这里。
     // 各账号的用户库由 `fonts::ensure_dir_for(owner)` 在写入时按需创建 —— 这里
     // 不预先给每个账号建空目录（那样新账号一多就是一堆空壳）。
-    let global_fonts = yekitrim_core::owner::global_resources_dir()
+    let global_fonts = yekitrim_core::owner::shared_assets_dir()
         .join(yekitrim_core::owner::AssetKind::Fonts.dir_name());
     if let Err(e) = std::fs::create_dir_all(&global_fonts) {
         tracing::warn!(
@@ -191,7 +191,7 @@ pub fn ensure_global_config() -> anyhow::Result<EnsureConfigResult> {
             yekitrim_core::path::display(&dir),
             count,
             bytes as f64 / 1_048_576.0,
-            yekitrim_core::path::display(&yekitrim_core::path::font_dir())
+            yekitrim_core::path::display(&yekitrim_core::fonts::dir())
         );
     }
     // ⚠️ **自带字体在这里自动装好**（内嵌字节，不联网、幂等）。

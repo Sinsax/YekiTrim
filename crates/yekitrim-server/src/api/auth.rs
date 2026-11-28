@@ -188,8 +188,7 @@ pub(super) async fn auth_password(
 }
 
 pub(super) async fn doctor(State(_state): State<Arc<AppState>>) -> ApiResult {
-    let home = yekitrim_core::path::yekitrim_home();
-    let models_dir = home.join("models");
+    let models_dir = yekitrim_core::path::models_dir();
     // 与 /api/models 同源：按运行时查找顺序（配置 → 用户目录 → 程序目录）判"能不能用"。
     // ⚠️ 同步 IO：`load_global_config` + 每个模型的 `model_install` 都要 stat 磁盘 → 搬出 async worker
     //（`/api/admin/doctor` 与旧别名 `/api/doctor` 都走这里）。

@@ -297,14 +297,15 @@ mod win {
 
     /// 数据目录。
     ///
-    /// ⚠️ 这里是 `yekitrim_core::path::data_dir()` 规则的**第二份实现**（`YEKITRIM_DATA_DIR` ?? exe 同级）
-    /// —— 链接 core 只为拿这个路径会把 ASR 拉回来，所以刻意抄。改动请一起改（规则正文在
-    /// `docs/file-layout.md`）。本文件只拿它来放托盘自己的日志。
+    /// ⚠️ 这里是 `yekitrim_core::path::data_dir()` 规则的**第二份实现**
+    /// （`YEKITRIM_DATA_DIR` ?? `<exe>/data`）—— 链接 core 只为拿这个路径会把 ASR 拉回来，
+    /// 所以刻意抄。改动请一起改（规则正文在 `docs/file-layout.md`）。
+    /// 本文件只拿它来放托盘自己的日志；真正的目录迁移由服务端启动时做。
     fn data_dir() -> PathBuf {
         std::env::var_os("YEKITRIM_DATA_DIR")
             .map(PathBuf::from)
             .filter(|p| !p.as_os_str().is_empty())
-            .or_else(crate_dir)
+            .or_else(|| crate_dir().map(|d| d.join("data")))
             .unwrap_or_else(|| PathBuf::from("."))
     }
 

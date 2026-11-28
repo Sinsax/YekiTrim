@@ -263,6 +263,11 @@ async fn main() -> anyhow::Result<()> {
     tracing_setup::setup(true);
 
     let cli = Cli::parse();
+    // ⚠️ 目录布局迁移必须先于"读配置/开账本"：0.5 → v2 会把 `.yekitrim/cloud`
+    // 搬成 `data/ledger`。`migrate-layout` 子命令自己决定迁移哪个根，不走这一句。
+    if !matches!(&cli.command, Command::MigrateLayout { .. }) {
+        yekitrim_core::layout::ensure_layout()?;
+    }
     // ⚠️ **必须在任何读配置之前**：程序配置按 owner 取路径，而 CLI 只有 `Local`
     //（= 首个管理员）。没装解析器时会按默认 uid=1 读 —— 首个管理员不是 1 的库就读错人。
     install_local_admin_from_db();
@@ -430,6 +435,60 @@ Command::User(action) => {
 
 Command::Doctor { url } => {
             yekitrim_service::cmd_doctor(url)?;
+        }
+
+        Command::MigrateLayout { root, apply, rollback, force } => {
+            if let Some(journal) = rollback {
+                yekitrim_core::layout::rollback(journal, *force)?;
+                println!("✓ 回滚完成: {}", journal.display());
+            } else {
+                let program = root
+                    .clone()
+                    .unwrap_or_else(yekitrim_core::path::program_dir);
+                let data_override =
+                    std::env::var_os(yekitrim_core::path::DATA_DIR_ENV).map(PathBuf::from);
+                let plan = yekitrim_core::layout::plan(&program, data_override.as_deref());
+                println!("程序目录: {}", plan.program.display());
+                println!("数据目录: {}", plan.data.display());
+                if plan.already_v2 {
+                    println!("标记: 已是 v2（仍会补齐残留项）");
+                }
+                if plan.moves.is_empty() {
+                    println!("· 没有可搬的项");
+                }
+                for mv in &plan.moves {
+                    println!("  {} → {}", mv.from.display(), mv.to.display());
+                }
+                for dir in &plan.deletes {
+                    println!("  空壳可删: {}", dir.display());
+                }
+                for w in &plan.warnings {
+                    println!("  ⚠ {w}");
+                }
+                if *apply {
+                    // ⚠️ 必须**多轮**：第一轮把 `users/<uid>` 整棵搬进 `data/`，第二轮才把
+                    // 它内部的 `.yekitrim/` 与 `resources/` 扁平化；`cloud/logs` 同理。
+                    // 服务端启动走 `ensure_layout()`（自己会循环），这条 CLI 也要对齐。
+                    let mut done = Vec::new();
+                    for _ in 0..8 {
+                        let next = yekitrim_core::layout::plan(&program, data_override.as_deref());
+                        if next.moves.is_empty() {
+                            let _ = yekitrim_core::layout::apply_with(&next, *force)?;
+                            break;
+                        }
+                        let moved = yekitrim_core::layout::apply_with(&next, *force)?;
+                        done.extend(moved);
+                    }
+                    yekitrim_core::layout::write_marker(&plan.data)?;
+                    println!(
+                        "✓ 迁移完成：{} 项；标记 {}",
+                        done.len(),
+                        plan.data.join("layout.json").display()
+                    );
+                } else {
+                    println!("（dry-run；加 --apply 执行）");
+                }
+            }
         }
 
         Command::Usage { days } => {
