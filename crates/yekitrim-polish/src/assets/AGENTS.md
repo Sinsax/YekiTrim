@@ -11,7 +11,11 @@
 
 ## 入口
 
-- `sticker_index`：`scan_packages(root) -> Vec<StickerPackage>`、`pick_package_file(packages, name, seed)`、
+- `sticker_index`：`scan_packages(root) -> Vec<StickerPackage>`、
+  `pick_package_file(packages, name, seed)` / **`pick_package_file_in_tag(root, packages, name, tag, seed)`**
+  （**包内选文件的唯一入口**：`tag` 命中 `<包名>.toml` 的某个组就**只在组内**按 seed 挑、
+  命中不了退回整包；seed 规则由私有的 `pick_index` 一处给出，两条路共用 —— 各写一份的话
+  同一个 tag 换个入口会挑出不同的图）、
   `local_sticker_candidates_text(root)`、`is_package_source(root, source)`、`load_sticker_index` / `save_sticker_index`、
   `register_package` / `unregister_package` / `remove_package`、`import_package(root, name, src) -> ImportReport`、
   `list_package_files`、`load_package_meta` / `build_package_meta_from_tags` / `package_meta_to_toml` / `tag_files`、
@@ -23,7 +27,48 @@
 - `sfx_catalog`：`all()` / `lookup(id)` / `lookup_variant(file_stem)` / `lookup_label(label)`、
   `is_blacklisted(id, blacklist)`、`search_by_tags` / `candidates_for_tags(target_tags, used, limit, blacklist)` /
   `candidates_text(...)`、`fuzzy_search(_excluding)`、`categories_text()` / `CATEGORY_ORDER` / `all_tags()`、
-  `variant_url(entry, variant)`、`SfxEntry`。
+  `variant_url(entry, variant)`、`variant_stem(variant)` / `variant_source(id, stem)`、
+  `pack_of(entry)` / `group_of(entry)` / `UNCATEGORIZED_GROUP`、`SfxEntry`。
+  ⚠️ **预设只有一个库**（`PRESET_PACK_NAME` = 小森平），**大类不是包**：素材库左侧是"音效库的位置"，
+  现在一张卡（小森平），用户导入的包会往下长。层级是 `pack`（库）→ `group`（大类 7）→
+  `subgroup`（小类 147）→ 组（1213）→ 变体（2118）。
+  判据 `preset_is_one_pack_and_categories_are_subdivisions` 钉住"库恰 1 个 + 一级恰 7 个"。
+  ⚠️ 兜底各一份：`pack_of`→`PRESET_PACK_NAME`、`group_of`→`category_bare_name(cat)`、
+  `subgroup_of`→`UNCATEGORIZED_GROUP`（「其他」）。缺 `subcat` 的 10 条噪音类（`base_noise` 等）是已知的。
+  **别在前端再写一份 `subcat || '其他'`**。
+- `sfx_packs`：**用户导入的音效包**（`<data>/users/<uid>/sfx/<包名>/`）。入口 `is_audio_file_name`
+  （**唯一**的音频扩展名判据）、`stem_of`（与 `variant_stem` 同规则，多去一层非 mp3 扩展名）、
+  `scan_pack`、`scan_all`、`import_pack_from_zip`（回 `ImportReport{copied,skipped,transcode_failed}`）、
+  `transcode_to_mp3`、`entry_id` / `split_entry_id`（**全局 id = `<包名>/<变体键>`**，三处共用一条判据）、
+  `candidates_text`（用户包的 LLM 候选）、`category_bare_name`、`SFX_PACK_DIR`。
+  ⚠️ **包清单 `pack.toml`（2026-11-28）**：`load_manifest` / `save_manifest` / `manifest_file` /
+  `PackManifest{PackMeta, Vec<ManifestEntry{stem,name,group,tags,gain_db}>}`、`filter_known_tags`。
+  **两个写入者**：包作者随 zip 带（优先级最高，导入时原样落到包根）+ yekitrim LLM 构建
+  （`commands::build_sfx_pack_for`，`built_by = "yekitrim"`）。读侧的三条兜底**只在 `scan_pack` 一份**：
+  `label` = 清单 `name` → 文件名去扩展名；`group` = 清单 `group` → `.groups.toml` → 「其他」；
+  `tags` = 清单里的（**必须取自内建 84 个**，导入/构建两处过滤，读侧不过滤）。
+  ⚠️ **坏清单不拒包**：解析失败只 warn、退回纯文件名行为（与 `transcode_failed` 同一条哲学）。
+  ⚠️ **清单写出来就删 `.groups.toml`**（一个事实一个写者），`restore_manifest` 无。
+  ⚠️ **tag 是封闭词表**（与贴纸"LLM 自由发明 10~20 个情绪词"**相反**）：音效 tag 是
+  `SFX_RULES` / `sfx_tags_for_event_type` / `is_blacklisted` 的连接键，词表外 = 永远解析不到 = 静默没声音。
+  ⚠️ **未构建的包不进 LLM 候选**（`candidates_text` 只列有清单的，与贴纸只列已构建的同一口径）；
+  它们仍能手选、能试听。
+  ⚠️ **用户包必须同时接进三条腿**（2026-11-28 之前只接了试听，出片/LLM 全没接 ⇒「导入的包从来不被用」）：
+  ① LLM 候选 `llm/mod.rs` 拼在 `candidates_text` 后面；
+  ② 解析 `process::sfx::resolve_sfx_value` 认 `<包名>/<键>` 并**到此为止**（屏蔽了就是 None）——
+     不许落到模糊匹配，否则被屏蔽的用户包会匹到无关的预设音效；
+  ③ 下载 `downloader::copy_user_sfx` 从库复制进项目 `sfx/`（保原扩展名）。
+  ⚠️ `split_entry_id` 的判据"带 `/`"是可靠的：预设变体键永远不含 `/`（`variant_stem` 拍平了）。
+  ⚠️ **导入时尽力转 mp3**（`transcode_to_mp3`）：失败保留原格式、计 `transcode_failed`，**不算错误** ——
+  出片侧 `render::sound::resolve_sound_file` 会按真实扩展名找（mp3→wav→ogg→m4a→flac→aac）。
+  ⚠️ **包是扁平的**：zip 子目录名只进分组表 `.groups.toml`，文件一律拍平到包根 ——
+  出片侧按 `sfx/<stem>.mp3` 找文件，留子目录只会 warn 一句「文件缺失」、成片少一声。
+  ⚠️ 预设包名是**保留名**：比较用 `category_bare_name`（去 `①`/空格），否则用户能建一个
+  `主播情绪反应` 的包与预设包重名。
+  ⚠️ **变体键一律过 `variant_stem`**（去 `.mp3`、把 `Crowds/xxx` 这类目录形态拍平成 `Crowds-xxx`）：
+  56 个变体名自带子目录，照原名写盘会落到 `sfx/Crowds/` 下、出片侧按 `sfx/<name>.mp3` 找不到
+  ⇒ 只 warn 一句「文件缺失」。`variant_source` 是反过来的那半（键 → 原变体名 + 源 URL，试听用）。
+  常驻判据：`every_variant_stem_is_safe_and_round_trips`（2118 个变体全量往返）。
 - `emoji_taxonomy`：**emoji 六维分类的唯一词表真源**（`assets/emoji_taxonomy.json`，`include_str!`）：
   `taxonomy()` / `find_dim` / `is_valid_value` / `primary_dim` / `prompt_vocab_text()` / `parse_query` / `guess_dims`。
   ⚠️ prompt 文本、构建工具校验、查询打分**都读它** —— 别在别处再抄一份（抄了就必然漂，
@@ -39,7 +84,16 @@
   `sanitize_pack_name` 拒绝它（上传/目录导入建不出同名包）、`scan_packages` 跳过同名目录、
   `load_package_meta` 对保留名直接给内建那份（磁盘 TOML 不算数）、`builtin_meta` **不看磁盘**（没有 root 参数）。
 - `irasu_search`：`download_images` / `resolve_image_urls` / `collect_keywords(segments)`、`PLACEHOLDER_PNG`。
-- `downloader`：`AssetDownloader::{new, download_stickers, …}`、`DownloadReport { sticker_downloaded, sticker_existing, sfx_downloaded, sfx_existing, errors }`、`collect_sfx_ids(segments)`。
+- `downloader`：`AssetDownloader::{new, download_stickers, …}`、
+  `DownloadReport { sticker_downloaded, sticker_existing, sfx_downloaded, sfx_existing, substitutions, errors }`、
+  `collect_sfx_ids(segments)`。
+  ⚠️ **整组失效的兜底（2026-11-28）**：源站有些 page 整批 404（实测 `enviroment01` / `enviroment02` /
+  `noise01`，共 65 组）。`download_sfx_for_segments` 在一条引用整条失败后调
+  `pick_alternate_group`，按**四档**找替补（同 tag 活页 → 同类活页 → 同 tag → 同类，共探 8 个），
+  并记进 `substitutions`；**调用方必须 `apply_substitutions(&mut segments)` 改写事件里的 id** ——
+  只下不换 = 文件在替补名下、出片按原 id 找，成片依旧缺一声且日志全绿。
+  `substitutions` 的目标是**实际落盘的变体键**（不是组 id）：落盘名是 `variant_stem(第一个变体)`。
+  `dead_pages` 记已确认失效的页，替补选择时优先跳过（否则探测全撞坏页）。
 
 ## 边界
 
@@ -109,10 +163,14 @@
   上传时勾了「上传后立刻构建」就顺带起它；**导入成功与构建任务是两件事** ——
   构建起不来只回一句 `job_error`，上传照样算成功。
 - `sfx_catalog` 的屏蔽语义：精确 id（如 `fear-1`）屏蔽单个音效；`tag:xxx`（如 `tag:surprise`）
-  屏蔽整个标签族。项目级 `polish.toml [sfx] blacklist` 与全局 `.yekitrim/config.toml [sfx] blacklist`
+  屏蔽整个标签族。项目级 `polish.toml [sfx] blacklist` 与全局 `<data>/users/<uid>/config.toml [sfx] blacklist`
   由 `process::load_sfx_blacklist` 求并集。
 - 只读接口：`GET /api/polish/sticker-library`（磁盘为准）与
   `GET /api/polish/sticker-file`（缩略图）；音效列表来自 `GET /api/polish/sfx-catalog`。
+  ⚠️ 素材库「音效」页（2026-11-27）用三个端点：目录带 `include_blacklisted=1`（要能看见并解除屏蔽）、
+  `GET /api/polish/sfx-preview`（服务端抓源站落 `<data>/cache/sfx/` 再按 Range 供给 —— 站方要求
+  不转载音效 URL，**别让浏览器直连 `taira-komori.net`**）、`PUT /api/polish/sfx-blacklist`（整份覆盖）。
+  抓取那一段（`downloader::fetch_sfx_bytes`）与出片下载共用 `sound_os2/` 备用目录规则。
 - 管理接口（**2026-10-09 起全在 `/polish/stickers/*`，登录用户即可用**；原 `/api/admin/stickers/*`
   **已删除、不留别名** —— 用户口径「素材库是用户级、跟随用户」）：`GET /api/polish/stickers`（列表）/
   `GET .../:pack`（包内文件 + 每个文件的 tags，展开时才拉）/ `POST .../upload?name=&build=`（**上传 zip**）/

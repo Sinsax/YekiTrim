@@ -75,6 +75,12 @@ pub fn download_key(session_id: &str) -> String {
 /// 全局：贴纸库（`<程序目录>/stickers`）。
 pub const STICKERS: &str = "stickers";
 
+/// 全局：音效包库（`<data>/users/<uid>/sfx/`）。
+///
+/// 与 [`STICKERS`] **分开**：两个库互不相干，共用一个键会让"一个人在构建贴纸包"
+/// 挡住"另一个人构建音效包"（贴纸构建动辄几十批 LLM 调用）。
+pub const SFX_PACKS: &str = "sfx_packs";
+
 /// 剪切任务的资源键。`clip_dir = None` = 全切（只占 out + idx，**不带** `clip:*`，
 /// 因此可与精修并行）；`clip_dir = Some` = 单条重切，会写那个目录，与精修互斥。
 pub fn cut_keys(pid: i64, output_dir: &Path, clip_dir: Option<&str>) -> Keys {

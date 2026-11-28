@@ -2,8 +2,9 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Extension, State};
+use axum::extract::{Extension, Query, State};
 use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 
 use crate::model::AppState;
@@ -169,28 +170,696 @@ pub(crate) async fn polish_video_library(
 }
 
 
-/// 音效目录（只读）：编辑器里音效事件/特效配声的列表选择。
+/// 音效目录（只读）：编辑器里音效事件/特效配声的列表选择，以及素材库「音效」页。
 ///
 /// 数据来自编译进二进制的 `assets/sfx_catalog.json`；全局 `[sfx] blacklist`
-/// 屏蔽掉的整族不列出来（选了也不会被解析）。
-pub(crate) async fn polish_sfx_catalog() -> ApiResult {
+/// 屏蔽掉的整族默认不列出来（选了也不会被解析）。
+///
+/// # 查询参数
+///
+/// - `include_blacklisted=1` —— 把它们也列出来（**素材库「音效」页要用**：
+///   那一页的职责之一就是"看见并取消屏蔽"，默认过滤掉等于没法取消）。
+///   条目上带 `blacklisted` 位，前端自己决定怎么标。
+///
+/// # 返回值
+///
+/// `entries[]` 每组带 `variants`（**扁平化后的变体键**，下载时再按 `variant_source`
+/// 换回原变体名）、`blacklisted`（该条是否被屏蔽：精确 id 或整族 tag 命中）；
+/// 顶层带 `blacklist`（当前 owner 的全局音效屏蔽列表）与 `tags`（全部 tag + 组数，
+/// 素材库左栏分组用）。
+///
+/// ⚠️ **黑名单按 `Owner` 读**（`load_config_for`）。以前这里是
+/// `load_config_at(Path::new("."))` —— 那是**进程默认 owner**，多用户下等于
+/// "每个账号看到的是管理员那份黑名单"。音效页要能把屏蔽写回自己的配置，
+/// 读侧就必须先落到同一个 owner 上，否则"我屏蔽了、刷新又回来"。
+pub(crate) async fn polish_sfx_catalog(
+    Extension(user): Extension<crate::auth::CurrentUser>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> ApiResult {
     use yekitrim_polish::assets::sfx_catalog;
-    let blacklist = yekitrim_core::config::load_config_at(std::path::Path::new("."))
-        .map(|c| c.sfx.blacklist)
-        .unwrap_or_default();
-    let entries: Vec<serde_json::Value> = sfx_catalog::all()
+    let owner = crate::auth::owner_of(&user);
+    let include_blacklisted = q.get("include_blacklisted").map(String::as_str) == Some("1");
+    // 同步 IO（读 config.toml）⇒ blocking 池（本目录纪律）
+    let blacklist = blocking(move || {
+        Ok(yekitrim_core::config::load_config_for(owner)
+            .sfx
+            .blacklist)
+    })
+    .await?;
+    let mut entries: Vec<serde_json::Value> = sfx_catalog::all()
         .iter()
-        .filter(|e| !sfx_catalog::is_blacklisted(&e.id, &blacklist))
+        .filter(|e| include_blacklisted || !sfx_catalog::is_blacklisted(&e.id, &blacklist))
         .map(|e| {
+            let blocked = sfx_catalog::is_blacklisted(&e.id, &blacklist);
             serde_json::json!({
                 "id": e.id,
                 "label": e.label,
                 "cat": e.cat,
+                // 素材库音效页按**包**分组（一包 = 贴纸那样的一行卡片）。
+                // ⚠️ `pack` 走 `sfx_catalog::pack_of` —— **唯一**的兜底规则在那里
+                //    （缺 subcat 的 10 条噪音类落到「其他」），别在前端再写一份
+                //    `subcat || '其他'`。
+                // **三层细分**（左侧是库，层级全在右侧）：
+                //   pack    = 哪个库（预设一律「小森平」）
+                //   group   = 一级细分（大类，7 个）
+                //   subgroup= 二级细分（`subcat`，145 个）
+                // ⚠️ 兜底各只在 Rust 侧一份（`sfx_catalog::pack_of/group_of/subgroup_of`）。
+                "pack": sfx_catalog::pack_of(e),
+                "group": sfx_catalog::group_of(e),
+                "subgroup": sfx_catalog::subgroup_of(e),
+                "subcat": e.subcat,
                 "tags": e.tags,
+                // 变体键（不带扩展名、已扁平化）—— 试听与前端列变体用。
+                // ⚠️ 必须带 `.as_str()`：`variant_stem` 吃 `&str`，传 `&String` 是类型错。
+                "variants": e.variants.iter().map(|v| sfx_catalog::variant_stem(v.as_str())).collect::<Vec<_>>(),
+                "blacklisted": blocked,
+                "built": true,
             })
         })
         .collect();
-    ok(serde_json::json!({ "ok": true, "entries": entries }))
+    // **用户音效包**（`<data>/users/<uid>/sfx/<包名>/`）：与预设包排在同一个包列表里。
+    // ⚠️ 它们是**运行期资产**（不是内嵌的）⇒ 每次读目录都现扫，不缓存。
+    let user_packs = user_pack_list(owner);
+    // ⚠️ **用户包的条目必须并进 `entries`**（2026-11-28 修）：它和预设包在素材库里是
+    //    同一种东西（网格里的一个组），而前端只读 `entries`。以前这里把它们只放在
+    //    `user_packs` 里 ⇒ 左侧卡片显示"N 组"、点进去网格空白，用户以为包导坏了。
+    //    编辑器的手动配声（`SfxPicker`）读的也是 `entries`，同一条修复覆盖两处。
+    for p in &user_packs {
+        entries.extend(user_pack_entries(p, &blacklist, include_blacklisted));
+    }
+    // 左侧「音效库」列表：**预设只有一条**（小森平），用户导入的各一条。
+    // ⚠️ 别把大类塞进来 —— 左侧是"库的位置"，占满了新库没地方放（用户口径）。
+    // ⚠️ 预设的 `count` 用**预设条目数**，不是 `entries.len()` —— `entries` 现在
+    //    还并进了用户包条目，拿它会让预设卡片显示"1213 + 用户包总数"
+    //    （而且被屏蔽的条目会被过滤掉，数量还会随屏蔽状态漂）。
+    let preset_count = sfx_catalog::all().len();
+    let mut packs: Vec<serde_json::Value> = vec![serde_json::json!({
+        "id": sfx_catalog::PRESET_PACK_NAME,
+        "name": sfx_catalog::PRESET_PACK_NAME,
+        "kind": "preset",
+        "count": preset_count,
+        "deletable": false,
+        "built": true,
+    })];
+    for p in &user_packs {
+        packs.push(serde_json::json!({
+            "id": p.name,
+            "name": p.name,
+            "kind": "user",
+            "count": p.entries.len(),
+            "groups": p.groups(),
+            "deletable": true,
+            // 「未构建」= 没有 `pack.toml`：能试听、能手选，但 **LLM 生成事件时读不到**。
+            "built": p.built,
+            "built_by": p.built_by,
+        }));
+    }
+    ok(serde_json::json!({
+        "ok": true,
+        "entries": entries,
+        "blacklist": blacklist,
+        "packs": packs,
+        "tags": sfx_catalog::all_tags(),
+    }))
+}
+
+
+/// **单条音效试听**（`GET /api/polish/sfx-preview?id=&variant=`）—— 素材库「音效」页的播放源。
+///
+/// # 为什么不把 `taira-komori.net` 的 URL 直接发给浏览器
+///
+/// 源站（小森平/効果音ラボ）声明音效免费可商用，但**要求不要直接转载音效 URL**
+/// （见 `THIRD-PARTY-NOTICES.md`）。所以浏览器只跟本服务说话：这里按需抓一次字节、
+/// 落进 `<data>/cache/sfx/<变体键>.mp3`，之后所有试听都走本地文件（Range 由
+/// [`crate::media::serve_file_from_headers`] 处理，`<audio>` 的拖动进度条能用）。
+///
+/// # 失败语义
+///
+/// 抓不到（源站 404、断网、超时）回 **404 + JSON**，前端标"试听不可用"。
+/// **不回 500**：那会把一条"这个音效暂时听不到"渲染成"接口坏了"。
+///
+/// # 参数
+///
+/// - `id`：组 id（`explosion`）；给了 `variant` 就用指定变体，否则取该组第一个。
+/// - `variant`：**变体键**（`variant_stem` 之后的形态，例如 `Crowds-Amb_Terrasse_Resto`）。
+///   也接受原始变体名（`Crowds/Amb_Terrasse_Resto.mp3`）—— 前端只发键，但老链接要能用。
+pub(crate) async fn polish_sfx_preview(
+    Extension(user): Extension<crate::auth::CurrentUser>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    use yekitrim_polish::assets::{downloader, sfx_catalog};
+    let id = q.get("id").map(String::as_str).unwrap_or("");
+
+    // **用户包**的 id 形如 `<包名>/<变体键>`（见 `user_pack_list` 的 `id` 字段）——
+    // 它们不在内嵌目录里，所以要在 `lookup` 之前分流。
+    // ⚠️ 分流判据是"包名目录真的存在"（`sanitize_pack_name` 已挡掉分隔符/`..`），
+    //    不是"id 里带 `/`" —— 后者的兜底会随 id 格式变化而失效。
+    if let Some((pack, stem)) = id.split_once('/') {
+        if let Some(resp) = user_pack_preview(&user, pack, stem, &headers).await {
+            return resp;
+        }
+    }
+
+    let Some(entry) = sfx_catalog::lookup(id) else {
+        return crate::media::json_error(StatusCode::NOT_FOUND, "没有这个音效");
+    };
+    // 变体键：没给就用该组第一个
+    let stem = match q.get("variant").map(String::as_str).filter(|v| !v.is_empty()) {
+        Some(v) => sfx_catalog::variant_stem(v),
+        None => entry
+            .variants
+            .first()
+            .map(|v| sfx_catalog::variant_stem(v.as_str()))
+            .unwrap_or_default(),
+    };
+    if stem.is_empty() {
+        return crate::media::json_error(StatusCode::NOT_FOUND, "这个音效没有可试听的变体");
+    }
+    // ⚠️ 键必须真的属于这一组：`variant` 是用户输入，直接拿去拼路径等于开了个任意文件名口子
+    let Some((_raw, url)) = sfx_catalog::variant_source(id, &stem) else {
+        return crate::media::json_error(StatusCode::BAD_REQUEST, "variant 不属于这个音效");
+    };
+    // ⚠️ 再挡一道 `is_safe_component`：`stem` 来自用户输入，虽然已经过 `variant_source`
+    //    的"必须真在 catalog 里"校验，但它是**文件名**，两道判据比一道稳。
+    if !yekitrim_polish::assets::sticker_index::is_safe_component(&stem) {
+        return crate::media::json_error(StatusCode::BAD_REQUEST, "变体名不合法");
+    }
+    // 缓存根在 blocking 池里建（`create_dir_all` 是同步 IO；目录可能落在移动盘/网络盘上）
+    let cache_dir = yekitrim_core::path::cache_dir().join("sfx");
+    if let Err((status, body)) = blocking({
+        let dir = cache_dir.clone();
+        move || {
+            std::fs::create_dir_all(&dir).map_err(|e| {
+                err(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("缓存目录创建失败: {e}"),
+                )
+            })
+        }
+    })
+    .await
+    {
+        return (status, body).into_response();
+    }
+    let path = cache_dir.join(format!("{stem}.mp3"));
+    if !path.is_file() {
+        // ⚠️ 先写临时文件再 rename：两个浏览器标签同时点同一首时，
+        // 后来的那个不能读到半个文件（Range 会对不上长度）。
+        // 临时名带**进程号 + 纳秒**：两个并发请求各写各的，最后谁的 rename 先到就用谁的
+        // （同一份源字节，内容一致；重名 `.part` 会互相截断）。
+        let uniq = format!(
+            "{}-{:x}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        );
+        let tmp = cache_dir.join(format!(".{stem}.{uniq}.part"));
+        match downloader::fetch_sfx_bytes(&url).await {
+            Ok(bytes) => {
+                if let Err(e) = tokio::fs::write(&tmp, &bytes).await {
+                    let _ = tokio::fs::remove_file(&tmp).await;
+                    return crate::media::json_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        &format!("缓存落盘失败: {e}"),
+                    );
+                }
+                // Windows 上 rename 到**已存在**的目标会失败（另一个并发请求先落地了）——
+                // 那不是错误：目标已经是同一份字节，删掉自己的临时文件即可。
+                if let Err(e) = tokio::fs::rename(&tmp, &path).await {
+                    let _ = tokio::fs::remove_file(&tmp).await;
+                    if !path.is_file() {
+                        return crate::media::json_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            &format!("缓存落盘失败: {e}"),
+                        );
+                    }
+                }
+            }
+            Err(_) => {
+                let _ = tokio::fs::remove_file(&tmp).await;
+                // 源站没有 / 断网 / 超时 —— 对用户来说都是"这一条暂时听不到"
+                return crate::media::json_error(
+                    StatusCode::NOT_FOUND,
+                    "试听源抓取失败（源站不可达或该文件缺失）",
+                );
+            }
+        }
+    }
+    crate::media::serve_file_from_headers(&path, "audio/mpeg", &headers).await
+}
+
+
+/// **用户包的试听**：直接从 `<data>/users/<uid>/sfx/<包名>/` 读字节，不走源站、不缓存。
+///
+/// 返回 `None` 表示"这个 id 不是用户包的形态"（由调用方继续走内嵌目录那条路）；
+/// `Some(resp)` 是**最终响应**（成功 200、或者 4xx —— 都不要再落到 `lookup`）。
+///
+/// ⚠️ 与预设包那条的关键区别：预设包要**抓源站并缓存**（站方要求不转载 URL），
+/// 用户包的音频就在本地磁盘上，直接 `serve_file_from_headers` 即可（Range 天然支持）。
+/// ⚠️ `pack` 与 `stem` 都是用户输入：`sanitize_pack_name` / `is_safe_component` 两道挡，
+/// 拼出来的路径还必须真在包目录里（`canonicalize` 比对，防符号链接逃逸）。
+async fn user_pack_preview(
+    user: &crate::auth::CurrentUser,
+    pack: &str,
+    stem: &str,
+    headers: &axum::http::HeaderMap,
+) -> Option<Response> {
+    use yekitrim_polish::assets::{sfx_packs, sticker_index};
+    let owner = crate::auth::owner_of(user);
+    let Some(pack) = sticker_index::sanitize_pack_name(pack) else {
+        return None;
+    };
+    let Some(stem) = sticker_index::sanitize_pack_name(stem) else {
+        return Some(crate::media::json_error(
+            StatusCode::BAD_REQUEST,
+            "变体名不合法",
+        ));
+    };
+    let dir = sfx_pack_root(owner).join(&pack);
+    if !dir.is_dir() {
+        return None; // 不是用户包 → 交给内嵌目录那条路（它会回 404）
+    }
+    // 变体键 → 磁盘文件名：`scan_pack` 是**唯一**的键来源（它自己套了 `stem_of`）
+    let entries = blocking(move || Ok(sfx_packs::scan_pack(&dir)))
+        .await
+        .unwrap_or_default();
+    let Some(entry) = entries.into_iter().find(|e| e.stem == stem) else {
+        return Some(crate::media::json_error(
+            StatusCode::NOT_FOUND,
+            "这个音效包里没有这一条",
+        ));
+    };
+    let file = sfx_pack_root(owner).join(&pack).join(&entry.file_name);
+    // 纵深防御：解析后必须仍在包目录内（防软链接/竞态）
+    let root = sfx_pack_root(owner).join(&pack);
+    let (Ok(real), Ok(real_root)) = (file.canonicalize(), root.canonicalize()) else {
+        return Some(crate::media::json_error(
+            StatusCode::NOT_FOUND,
+            "音频文件不在了",
+        ));
+    };
+    if !real.starts_with(&real_root) {
+        return Some(crate::media::json_error(
+            StatusCode::BAD_REQUEST,
+            "路径不合法",
+        ));
+    }
+    let mime = match real.extension().and_then(|e| e.to_str()).unwrap_or("") {
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "ogg" => "audio/ogg",
+        "m4a" | "aac" => "audio/mp4",
+        "flac" => "audio/flac",
+        _ => "application/octet-stream",
+    };
+    Some(crate::media::serve_file_from_headers(&real, mime, headers).await)
+}
+
+/// 用户音效包根目录（`<data>/users/<uid>/sfx/`）。
+fn sfx_pack_root(owner: yekitrim_core::owner::Owner) -> std::path::PathBuf {
+    yekitrim_core::owner::asset_dir(owner, yekitrim_core::owner::AssetKind::Sfx)
+}
+
+/// 扫出来的一个用户音效包（内部形态；对外的 JSON 由调用方组装）。
+///
+/// ⚠️ 抽成结构体是为了**一份扫描喂两个消费者**：左侧 `packs` 卡片与中间 `entries` 网格
+/// 都必须来自同一次 `scan_pack`，否则两边的组数会对不上。
+struct UserPack {
+    name: String,
+    entries: Vec<yekitrim_polish::assets::sfx_packs::PackEntry>,
+    /// 有没有 `pack.toml`（未构建 = LLM 生成事件时读不到这个包）
+    built: bool,
+    /// 清单是谁写的（`author` / `yekitrim`）；没有清单 = `None`
+    built_by: Option<String>,
+}
+
+impl UserPack {
+    fn groups(&self) -> Vec<String> {
+        let mut g: Vec<String> = self.entries.iter().map(|e| e.group.clone()).collect();
+        g.sort();
+        g.dedup();
+        g
+    }
+}
+
+/// 列当前 owner 的**用户音效包**。
+///
+/// 同步 IO ⇒ 只在 blocking 池里调（[`polish_sfx_catalog`] 与导入/删除 handler 都是这么做的）。
+/// ⚠️ 用户包是**运行期资产**，每次现扫、不缓存 —— 导入/删除之后必须立刻反映到目录里。
+fn user_pack_list(owner: yekitrim_core::owner::Owner) -> Vec<UserPack> {
+    use yekitrim_polish::assets::sfx_packs;
+    let root = sfx_pack_root(owner);
+    let Ok(rd) = std::fs::read_dir(&root) else {
+        return Vec::new();
+    };
+    let mut dirs: Vec<std::path::PathBuf> = rd
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .map(|e| e.path())
+        // 暂存目录（`.upload-*`）不算包
+        .filter(|d| {
+            d.file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| !n.starts_with('.'))
+                .unwrap_or(false)
+        })
+        .collect();
+    dirs.sort();
+    dirs.into_iter()
+        .filter_map(|dir| {
+            let name = dir.file_name()?.to_str()?.to_string();
+            let entries = sfx_packs::scan_pack(&dir);
+            if entries.is_empty() {
+                return None; // 空目录（比如导入到一半崩了）不出现在列表里
+            }
+            let manifest = sfx_packs::load_manifest(&dir);
+            Some(UserPack {
+                name,
+                built: manifest.is_some(),
+                built_by: manifest.as_ref().map(|m| {
+                    if m.pack.built_by.is_empty() {
+                        sfx_packs::BUILT_BY_AUTHOR.to_string()
+                    } else {
+                        m.pack.built_by.clone()
+                    }
+                }),
+                entries,
+            })
+        })
+        .collect()
+}
+
+/// 用户包条目是否被屏蔽：精确 id + `tag:xxx`（按**清单里的 tag**）。
+///
+/// ⚠️ `sfx_catalog::is_blacklisted` 只认内嵌目录（它内部 `lookup(id)`），用户包的 id
+/// 在那里查不到 ⇒ `tag:xxx` 对用户包**恒不命中**。这条补上那一半。
+/// 两半的语义必须一致：精确 id 屏蔽单条、`tag:xxx` 屏蔽整族。
+fn user_pack_blacklisted(
+    id: &str,
+    tags: &[String],
+    blacklist: &[String],
+) -> bool {
+    blacklist.iter().any(|b| match b.strip_prefix("tag:") {
+        Some(tag) => tags.iter().any(|t| t == tag),
+        None => b == id,
+    })
+}
+
+/// 用户包条目的全局 id（`<包名>/<变体键>`）。
+///
+/// ⚠️ 与 `sfx_packs::entry_id` **同一份实现**：那个函数在 polish crate 里，
+/// 这里直接转调，**不要再 `format!` 一遍** —— 两处各拼一次就是"两个 id 空间"的起点。
+fn user_pack_entry_id(pack: &str, stem: &str) -> String {
+    yekitrim_polish::assets::sfx_packs::entry_id(pack, stem)
+}
+
+/// 把一个用户包铺成**与预设条目同形状**的 JSON 列表。
+///
+/// ⚠️ 抽出来是为了能被单测直接钉住 —— 这段曾经漏掉整条（用户包只进了
+/// `user_packs`、没进 `entries`），症状是"左侧卡片写着 N 组、点进去网格空白"，
+/// 只有靠 `entries` 的输出才测得出来。
+///
+/// 形状约定（与预设条目的键**逐个对齐**，前端只有一条渲染路径）：
+/// - `pack` = 包名（左侧卡片就按它过滤 `sfxPackEntries`）
+/// - `group` = 空串（用户包只有一级细分 ⇒ 前端跳过一级 chips）
+/// - `subgroup` = 包内分组（清单 / zip 子目录 / 「其他」）
+/// - `variants` = `[stem]`（用户包一条就是一个变体）
+/// - `built` = 有没有清单
+fn user_pack_entries(pack: &UserPack, blacklist: &[String], include_blacklisted: bool) -> Vec<serde_json::Value> {
+    let mut out = Vec::new();
+    for e in &pack.entries {
+        let id = user_pack_entry_id(&pack.name, &e.stem);
+        let blocked = user_pack_blacklisted(&id, &e.tags, blacklist);
+        if blocked && !include_blacklisted {
+            continue;
+        }
+        out.push(serde_json::json!({
+            "id": id,
+            "label": e.label,
+            "cat": "",
+            "pack": pack.name,
+            "group": "",
+            "subgroup": e.group,
+            "subcat": serde_json::Value::Null,
+            "tags": e.tags,
+            "variants": [e.stem],
+            "blacklisted": blocked,
+            "built": pack.built,
+        }));
+    }
+    out
+}
+
+/// **导入用户音效包**（`POST /api/polish/sfx-packs/upload?name=<包名>`）。
+///
+/// 请求体就是 zip 的原始字节（与贴纸上传同一条口径，不是 multipart）。
+/// zip 里的**子目录名 = 包内细分组**；文件一律拍平到包根（理由见 `sfx_packs` 模块头：
+/// 出片侧按 `sfx/<stem>.mp3` 找文件，子目录会让它只 warn 一句「文件缺失」）。
+pub(crate) async fn polish_sfx_pack_upload(
+    Extension(user): Extension<crate::auth::CurrentUser>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+    body: axum::body::Bytes,
+) -> ApiResult {
+    use yekitrim_polish::assets::{sfx_packs, sticker_zip::ZipLimits};
+    let owner = crate::auth::owner_of(&user);
+    let name = q.get("name").map(String::as_str).unwrap_or("").trim().to_string();
+    if name.is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "缺少包名 name"));
+    }
+    if body.is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "上传内容为空"));
+    }
+    let root = sfx_pack_root(owner);
+    let pack = name.clone();
+    // 同步解压 ⇒ blocking 池（可能有上百 MB）
+    let report = blocking(move || {
+        sfx_packs::import_pack_from_zip(&root, &pack, &body, &ZipLimits::default())
+            .map_err(|e| err(StatusCode::BAD_REQUEST, format!("{e:#}")))
+    })
+    .await?;
+    // `transcode_failed` 照实回给前端：那一批会保留原格式，出片按真实扩展名找
+    // （不是错误，但用户该知道"有几个没转成 mp3"）。
+    ok(serde_json::json!({
+        "ok": true,
+        "name": name,
+        "copied": report.copied,
+        "skipped": report.skipped,
+        "transcode_failed": report.transcode_failed,
+    }))
+}
+
+/// **LLM 构建用户音效包清单**（`POST /api/polish/sfx-packs/:name/build`）。
+///
+/// 与贴纸的 `POST /polish/stickers/:pack/build` 对应：读包内文件名 → 让 LLM 挑 tag →
+/// 写 `<包名>/pack.toml`。**写的是清单，不动音频**。
+///
+/// # 与贴纸构建的关键差异
+///
+/// 贴纸 tag 是 LLM **自由发明**的；音效 tag 是**封闭词表**（内建 84 个）——
+/// 词表外的会被 `filter_known_tags` 丢弃。实现与理由在
+/// `yekitrim_polish::commands::build_sfx_pack_for`。
+///
+/// # 任务档位
+///
+/// `JobClass::Medium`（整批 LLM 调用，与 `sticker_build` 同档）+ 资源键
+/// [`crate::scope_key::SFX_PACKS`]（与贴纸库分开：两个库互不相干，
+/// 共用一个键会让贴纸构建挡住音效构建）。
+pub(crate) async fn polish_sfx_pack_build(
+    State(state): State<std::sync::Arc<crate::model::AppState>>,
+    Extension(user): Extension<crate::auth::CurrentUser>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> ApiResult {
+    use yekitrim_polish::assets::sticker_index::sanitize_pack_name;
+    let name = sanitize_pack_name(&name)
+        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "包名不合法"))?;
+    let owner = crate::auth::owner_of(&user);
+    // 包必须真实存在（读目录是同步 IO ⇒ blocking 池）
+    let dir = sfx_pack_root(owner).join(&name);
+    let exists = blocking(move || Ok(dir.is_dir())).await?;
+    if !exists {
+        return Err(err(StatusCode::NOT_FOUND, format!("音效包不存在: {name}")));
+    }
+    let handle = state
+        .jobs
+        .create(
+            user.id,
+            crate::jobs::JobSpec::new(
+                "sfx_pack_build",
+                format!("用 LLM 构建「{name}」的音效标签"),
+                vec![crate::scope_key::SFX_PACKS.to_string()],
+                crate::jobs::JobClass::Medium,
+            )
+            .background(),
+        )
+        .await;
+    let id = handle.id.clone();
+    let job_id = id.clone();
+    let jobs = state.jobs.clone();
+    let cancel = jobs.cancel_token(&job_id).await;
+    // 无管线阶段框架：expected 空（经 stage_started("音效包标签") 自报阶段）
+    let progress = crate::api::core::progress_bridge(job_id.clone(), jobs.clone(), cancel, Vec::new());
+    let pack = name.clone();
+    crate::api::spawn_job(jobs.clone(), job_id.clone(), move || async move {
+        if handle.wait_start().await.is_err() {
+            jobs.complete(&job_id).await;
+            return;
+        }
+        // ⚠️ **必须传 `data_owner`**（理由同 `stickers::spawn_build`）：任务跑在 server
+        //    进程里，`Owner::from_env()` 拿到的是 server 自己的环境，多用户下会翻错库。
+        match yekitrim_polish::commands::build_sfx_pack_for(owner, &pack, progress.as_ref()).await {
+            Ok(r) => {
+                jobs.log(
+                    &job_id,
+                    "info",
+                    format!(
+                        "清单已写出：{} 条音效，{} 个 tag{}",
+                        r.files,
+                        r.tags,
+                        if r.dropped_tags > 0 {
+                            format!("（丢弃 {} 个词表外 tag）", r.dropped_tags)
+                        } else {
+                            String::new()
+                        }
+                    ),
+                )
+                .await;
+                jobs.complete(&job_id).await;
+            }
+            Err(e) => {
+                jobs.log(&job_id, "error", format!("{e:#}")).await;
+                jobs.fail(&job_id, format!("{e:#}")).await;
+            }
+        }
+    });
+    ok(serde_json::json!({ "ok": true, "id": id }))
+}
+
+/// **删除用户音效包**（`DELETE /api/polish/sfx-packs/:name`）。
+/// ⚠️ 只删**用户包**：预设包不在磁盘上，`lookup` 走的是内嵌目录，
+/// 这里对 `①`-去序号后的预设名会先被 `is_reserved` 那层挡掉（见 `sfx_packs`）。
+pub(crate) async fn polish_sfx_pack_delete(
+    Extension(user): Extension<crate::auth::CurrentUser>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> ApiResult {
+    use yekitrim_polish::assets::sticker_index::sanitize_pack_name;
+    let owner = crate::auth::owner_of(&user);
+    let Some(name) = sanitize_pack_name(&name) else {
+        return Err(err(StatusCode::BAD_REQUEST, "包名不合法"));
+    };
+    if yekitrim_polish::assets::sfx_catalog::CATEGORY_ORDER
+        .iter()
+        .any(|c| yekitrim_polish::assets::sfx_packs::category_bare_name(c) == name)
+    {
+        return Err(err(StatusCode::BAD_REQUEST, "内建预设包不能删除"));
+    }
+    let dir = sfx_pack_root(owner).join(&name);
+    let present = blocking(move || {
+        let ok = dir.is_dir();
+        if ok {
+            std::fs::remove_dir_all(&dir)
+                .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("删除失败: {e}")))?;
+        }
+        Ok(ok)
+    })
+    .await?;
+    if !present {
+        return Err(err(StatusCode::NOT_FOUND, format!("没有音效包「{name}」")));
+    }
+    ok(serde_json::json!({ "ok": true, "name": name }))
+}
+
+/// **音效屏蔽**（`PUT /api/polish/sfx-blacklist`）—— 素材库「音效」页的"不看这一类"。
+///
+/// # 语义
+///
+/// body：`{"blacklist": ["tag:恐怖氛围", "white_noise", ...]}` —— **整份覆盖写**
+/// 当前 owner `config.toml` 的 `[sfx] blacklist`。值是精确 id 或 `tag:xxx`（整族），
+/// 与 `sfx_catalog::is_blacklisted` 同一套语义（唯一一份判据在那里）。
+///
+/// # 为什么是覆盖而不是增删单条
+///
+/// 这一页天然是"整张表打勾"的形状（取消勾选 = 从列表里去掉），覆盖写让前端只维护
+/// 一个数组、不担心两条并发 patch 合并出中间态。代价是**前端必须先拿到当前那份**
+/// （`GET /polish/sfx-catalog` 顶层 `blacklist` 已回）再改 —— 别在没读到的情况下盲写。
+///
+/// # 写法
+///
+/// 走 `patch_config_file`（toml_edit 合并语义、保留注释）：`[sfx] blacklist = [...]`
+/// 一项数组值。**不要**用"读整份 Config 再写回"那条路 —— 那会按结构体重新序列化，
+/// 把用户 config.toml 里的注释与其他手写键抹掉。
+pub(crate) async fn polish_sfx_blacklist_put(
+    Extension(user): Extension<crate::auth::CurrentUser>,
+    Json(body): Json<serde_json::Value>,
+) -> ApiResult {
+    let owner = crate::auth::owner_of(&user);
+    // ⚠️ 同步 IO（扫用户包目录）⇒ 先整体搬进 blocking 池算一遍「合法的用户包 id 集合」。
+    let user_ids_owner = owner;
+    let user_pack_ids: std::collections::HashSet<String> = blocking(move || {
+        Ok(user_pack_list(user_ids_owner)
+            .iter()
+            .flat_map(|p| {
+                p.entries
+                    .iter()
+                    .map(|e| user_pack_entry_id(&p.name, &e.stem))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<std::collections::HashSet<String>>())
+    })
+    .await?;
+    let Some(list) = body.get("blacklist").and_then(|v| v.as_array()) else {
+        return Err((StatusCode::BAD_REQUEST, Json(serde_json::json!({
+            "ok": false, "error": "缺少 blacklist 数组"
+        }))));
+    };
+    let mut cleaned: Vec<String> = Vec::new();
+    for v in list {
+        let Some(s) = v.as_str() else {
+            return Err((StatusCode::BAD_REQUEST, Json(serde_json::json!({
+                "ok": false, "error": "blacklist 只能全是字符串"
+            }))));
+        };
+        let s = s.trim();
+        if s.is_empty() {
+            continue;
+        }
+        // 形状校验：`tag:xxx` / catalog id / 用户包 id（`<包名>/<变体键>`）；
+        // 其余一律 400（别把路径/任意串写进配置）
+        if let Some(tag) = s.strip_prefix("tag:") {
+            if !yekitrim_polish::assets::sfx_catalog::all_tags()
+                .iter()
+                .any(|(t, _)| *t == tag)
+            {
+                return Err((StatusCode::BAD_REQUEST, Json(serde_json::json!({
+                    "ok": false, "error": format!("未知的音效 tag: {tag}")
+                }))));
+            }
+        } else if yekitrim_polish::assets::sfx_catalog::lookup(s).is_none()
+            && !user_pack_ids.contains(s)
+        {
+            // ⚠️ 用户包条目也要认（`<包名>/<变体键>`）：`lookup` 只查内嵌目录，
+            //    不补这一条的话素材库里对导入包点「屏蔽这一组」**必失败**
+            //    （400「未知的音效 id」），而界面上的按钮看起来一切正常。
+            return Err((StatusCode::BAD_REQUEST, Json(serde_json::json!({
+                "ok": false, "error": format!("未知的音效 id: {s}")
+            }))));
+        }
+        if !cleaned.contains(&s.to_string()) {
+            cleaned.push(s.to_string());
+        }
+    }
+    let path = yekitrim_core::owner::config_path(owner);
+    let patch = serde_json::json!({ "sfx": { "blacklist": cleaned } });    let _guard = yekitrim_core::filelock::lock_path(&path).await;
+    blocking(move || {
+        yekitrim_core::config::patch_config_file(&path, &patch)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
+                "ok": false, "error": format!("音效屏蔽保存失败: {e:#}")
+            }))))
+    })
+    .await?;
+    ok(serde_json::json!({ "ok": true }))
 }
 
 
@@ -862,6 +1531,105 @@ mod tests {
         assert_eq!(v["ok"], true);
         assert_eq!(v["decoded"].as_u64(), Some(0));
         assert_eq!(v["failed"].as_u64(), Some(1), "只有那一个文件被真的尝试过：{v}");
+    }
+
+    /// 用户包的屏蔽判据：精确 id + `tag:xxx`（按**清单里的 tag**）。
+    ///
+    /// ⚠️ 这条补的是 `sfx_catalog::is_blacklisted` 的另一半：那个函数内部 `lookup(id)`
+    /// 只查内嵌目录，用户包的 id 在那里查不到 ⇒ `tag:xxx` 对用户包**恒不命中**。
+    /// 两半的语义必须一致（精确 id 屏蔽单条、`tag:xxx` 屏蔽整族）。
+    #[test]
+    fn 用户包屏蔽判据认精确id与tag两档() {
+        let tags = vec!["敲门推门".to_string(), "打击格斗".to_string()];
+        // 精确 id
+        assert!(user_pack_blacklisted("我的包/敲门", &tags, &["我的包/敲门".into()]));
+        // tag 整族
+        assert!(user_pack_blacklisted("我的包/敲门", &tags, &["tag:敲门推门".into()]));
+        // 不相干的不许误伤
+        assert!(!user_pack_blacklisted("我的包/敲门", &tags, &["tag:雨雷".into()]));
+        assert!(!user_pack_blacklisted("我的包/敲门", &tags, &["我的包/下雨".into()]));
+        // 没有清单（`tags` 空）⇒ 只有精确 id 那条能命中
+        assert!(!user_pack_blacklisted("我的包/敲门", &[], &["tag:敲门推门".into()]));
+        assert!(user_pack_blacklisted("我的包/敲门", &[], &["我的包/敲门".into()]));
+        // 空黑名单恒 false
+        assert!(!user_pack_blacklisted("我的包/敲门", &tags, &[]));
+    }
+
+    /// 用户包的条目**必须**铺成与预设同形状，且 `pack` 必须是包名。
+    ///
+    /// ⚠️ 这条钉的是那个真 bug：用户包曾经只进 `user_packs`、没进 `entries` ——
+    /// 左侧卡片（读 `packs[].count`）写着"N 组"，点进去网格（读 `entries` 按
+    /// `pack === 包名` 过滤）**一条都没有**。前端只读 `entries`，所以只有在这里
+    /// 断言形状才拦得住回归。
+    #[test]
+    fn 用户包条目铺成与预设同形状且pack是包名() {
+        use yekitrim_polish::assets::sfx_packs::PackEntry;
+        let pack = UserPack {
+            name: "我的包".into(),
+            built: true,
+            built_by: Some("yekitrim".into()),
+            entries: vec![
+                PackEntry {
+                    stem: "敲门".into(),
+                    label: "敲铁门".into(),
+                    group: "门窗".into(),
+                    file_name: "敲门.mp3".into(),
+                    tags: vec!["敲门推门".into()],
+                    gain_db: None,
+                },
+                PackEntry {
+                    stem: "下雨".into(),
+                    label: "下雨".into(),
+                    group: "天气".into(),
+                    file_name: "下雨.mp3".into(),
+                    tags: vec![],
+                    gain_db: None,
+                },
+            ],
+        };
+        let out = user_pack_entries(&pack, &[], false);
+        assert_eq!(out.len(), 2, "两条都要铺出来：{out:?}");
+
+        let first = &out[0];
+        // ⚠️ `pack` 是左侧卡片的过滤键：写成空串 = 前端网格永远空
+        assert_eq!(first["pack"], "我的包");
+        assert_eq!(first["id"], "我的包/敲门", "id 必须走 entry_id 那一份实现");
+        assert_eq!(first["label"], "敲铁门");
+        assert_eq!(first["group"], "", "用户包没有大类这一层");
+        assert_eq!(first["subgroup"], "门窗");
+        assert_eq!(first["variants"], serde_json::json!(["敲门"]));
+        assert_eq!(first["tags"], serde_json::json!(["敲门推门"]));
+        assert_eq!(first["built"], true);
+        assert_eq!(first["blacklisted"], false);
+        // 键集合必须与预设条目**逐个对齐**（前端只有一条渲染路径）
+        for k in ["id", "label", "cat", "pack", "group", "subgroup", "tags", "variants", "blacklisted", "built"] {
+            assert!(first.get(k).is_some(), "缺字段 {k}：{first}");
+        }
+    }
+
+    /// 被屏蔽的用户包条目：默认过滤掉；`include_blacklisted` 时出现且带位。
+    #[test]
+    fn 用户包条目按屏蔽位过滤且带blacklisted标记() {
+        use yekitrim_polish::assets::sfx_packs::PackEntry;
+        let pack = UserPack {
+            name: "包".into(),
+            built: false,
+            built_by: None,
+            entries: vec![PackEntry {
+                stem: "a".into(),
+                label: "A".into(),
+                group: "其他".into(),
+                file_name: "a.mp3".into(),
+                tags: vec!["敲门推门".into()],
+                gain_db: None,
+            }],
+        };
+        let blocked = vec!["tag:敲门推门".to_string()];
+        assert!(user_pack_entries(&pack, &blocked, false).is_empty(), "默认应过滤掉");
+        let with = user_pack_entries(&pack, &blocked, true);
+        assert_eq!(with.len(), 1);
+        assert_eq!(with[0]["blacklisted"], true);
+        assert_eq!(with[0]["built"], false, "没清单 ⇒ 未构建");
     }
 
 }

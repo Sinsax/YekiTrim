@@ -118,6 +118,12 @@ pub async fn run_llm_pipeline(
 
     // Step 2: 逐段事件生成 (core Agent, 并发 ≤3, checkpoint 续传)
     println!("  ── LLM: Per-segment events (Agent) ──");
+    // **用户导入的音效包**也要进候选（2026-11-28）：以前只列内建目录 ⇒ LLM 根本
+    // 看不到用户包的 id，「导入的包从来不被用」就是这么来的。
+    // ⚠️ 与内建那段是**两段独立文本**：用户包的 label 是用户自己起的文件名，
+    //    内建目录里没有，混在一起 LLM 会拿中文 label 去匹配内建（注定失败）。
+    let user_sfx_root = yekitrim_core::owner::sfx_dir_readable(owner);
+
     let candidate_texts: Vec<String> = {
         // 根据 event_type 提供通用 SFX 候选方向；Step2 仍可在候选内按字幕语义选择
         let tags = sfx_tags_for_event_type(event_type);
@@ -126,12 +132,18 @@ pub async fn run_llm_pipeline(
             .iter()
             .map(|_seg| {
                 let text = crate::assets::sfx_catalog::candidates_text(&tags, &used_sfx, 32, sfx_blacklist);
+                let user_text = crate::assets::sfx_packs::candidates_text(&user_sfx_root, &used_sfx, 16);
                 used_sfx.extend(
-                    text.lines().flat_map(|l| l.split_whitespace())
-                        .filter(|w| w.ends_with(".mp3"))
-                        .map(|w| w.to_string()),
+                    text.lines()
+                        .flat_map(|l| l.split_whitespace())
+                        .chain(user_text.lines().flat_map(|l| l.split_whitespace()))
+                        // 内建候选带着 `(N变体)` 后缀，用户候选是 `label(包名/键)` ⇒
+                        // 两种都要认：这里统一收集**含 `/` 的整段**（用户包 id）与 `.mp3`（内建）
+                        .filter(|w| w.ends_with(".mp3") || w.contains('/'))
+                        .map(|w| w.trim_matches(|c: char| c == '(' || c == ')').to_string()),
                 );
-                text
+                if user_text.is_empty() { text } else { format!("{text}
+{user_text}") }
             })
             .collect()
     };
@@ -361,7 +373,21 @@ pub async fn regenerate_segment_events(
         32,
         sfx_blacklist,
     );
-    let sticker_root = yekitrim_core::path::sticker_dir_readable();
+    let sticker_owner = yekitrim_core::owner::Owner::from_env();
+    let sticker_dirs = yekitrim_core::owner::asset_dirs(
+        sticker_owner,
+        yekitrim_core::owner::AssetKind::Stickers,
+    );
+    let sticker_root = sticker_dirs
+        .iter()
+        .find(|p| p.is_dir())
+        .cloned()
+        .unwrap_or_else(|| {
+            yekitrim_core::owner::asset_dir(
+                sticker_owner,
+                yekitrim_core::owner::AssetKind::Stickers,
+            )
+        });
     // ⚠️ 用 §is_known_pack_source§（**磁盘 ∪ 内建 emoji 包**）而不是 §is_package_source§：
     //    后者是纯磁盘判据，而内建包不是目录 ⇒ 来源只写 §emoji§ 的工程会**整段候选文本都不注入**
     //    （那正是"LLM 不知道有哪些词可用"的一个入口）。

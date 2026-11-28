@@ -44,6 +44,17 @@ pub async fn cmd_init_with(
 
     let mut example = ProjectFile::example();
 
+    // **初始状态不带任何内容**（用户口径 2026-11-28：「精修不要在初始状态添加任何东西」）。
+    //
+    // `example()` 自带一段 `0~10s` / `note = "开场"` 的示例段，落盘之后新片段一打开，
+    // 时间轴上就多出一块**不存在的内容**（视频 100s，那块只到 10s，还顶着「开场」），
+    // 而它既不是 LLM 产出的、也不是用户建的 —— 用户看到的就是"初始化自己塞了东西"。
+    // 段表归 LLM / 剪辑 / 编辑产出，init 只负责目录、配置与素材探测。
+    //
+    // ⚠️ **只在这里清**：`example()` 同时是全仓 120+ 处测试的夹具（都按"带一段"写的），
+    //    别为了这条去改它 —— 那会把一大批判据连根翻掉，而"新工程写到盘上是什么"才是本条要的。
+    example.segments.clear();
+
     // **新工程的字幕字体 = 字体库里「设为默认」的那支**（用户 2026-10-06 报：
     // 「每次切出切片，字体都不是字体库设置的默认字体」）。
     //
@@ -1179,6 +1190,198 @@ pub async fn build_package_tags_for(
         batches,
         tags: meta.tags.len(),
     })
+}
+
+/// 音效包构建的产出概要。
+#[derive(Debug, Clone)]
+pub struct SfxPackBuildReport {
+    /// 参与打标的音效条数
+    pub files: usize,
+    /// 实际发出的 LLM 批次数
+    pub batches: usize,
+    /// 写进清单的 tag 总数（去重后）
+    pub tags: usize,
+    /// LLM 给了但**不在内建 84 个词表里**、被丢弃的 tag 数
+    pub dropped_tags: usize,
+    /// LLM 给了但包里没有这个文件名的条数
+    pub unknown_files: usize,
+    /// 清单落盘路径
+    pub out_path: std::path::PathBuf,
+}
+
+/// 音效包构建的批次大小（与贴纸同一个量级，文件名比图片名短，可以略多）。
+const SFX_BUILD_BATCH: usize = 120;
+
+/// **用 LLM 给用户音效包生成 `pack.toml`** —— 与贴纸的 `build_package_tags_for` 对应。
+///
+/// # 与贴纸构建的关键差异
+///
+/// 贴纸的 tag 是 **LLM 自由发明**的 10~20 个情绪词（那套对贴纸成立，因为贴纸 tag
+/// 只用于"选图"，不进任何封闭词表）。**音效不行**：音效的 tag 是
+/// `SFX_RULES`（`tag:xxx`）、`sfx_tags_for_event_type`、`is_blacklisted` 的**连接键**，
+/// 写了词表外的就是"永远解析不到 = 静默没声音"。
+///
+/// 所以这里的提示词把**内建 84 个 tag**（按大类分组、带组数，`categories_text()`）整份喂进去，
+/// 并要求只能从里面选；回来之后 `filter_known_tags` 再过滤一遍
+/// （prompt 是软约束，**词表校验是硬约束**，两者缺一不可）。
+///
+/// # 失败语义
+///
+/// - 包里一条音频都没有 ⇒ 报错（没什么可构建的）。
+/// - LLM 一个可用 tag 都没给 ⇒ **不写清单**并报错（"这个包的文件名给不出语义标签"）——
+///   写一份空清单等于把包标记成"已构建"，之后 LLM 就再也不选它了，比不构建更糟。
+/// - 中途取消 ⇒ 批次边界 `bail!("任务已取消")`，不落盘（清单是最后一步写的）。
+///
+/// ⚠️ **会覆盖已有清单**（这是"重新构建"）。作者手写的清单也会被覆盖 ——
+/// UI 上那个按钮的文案是「重新构建」，用户点它就是要重写。
+pub async fn build_sfx_pack_for(
+    owner: yekitrim_core::owner::Owner,
+    pack: &str,
+    progress: &dyn yekitrim_core::progress::ProgressReporter,
+) -> anyhow::Result<SfxPackBuildReport> {
+    use crate::assets::sfx_catalog;
+    use crate::assets::sfx_packs::{self, ManifestEntry, PackManifest, PackMeta};
+
+    let name = crate::assets::sticker_index::sanitize_pack_name(pack)
+        .ok_or_else(|| anyhow::anyhow!("包名不合法: {pack}"))?;
+    let root = yekitrim_core::owner::sfx_dir_readable(owner);
+    let pack_dir = root.join(&name);
+    if !pack_dir.is_dir() {
+        anyhow::bail!("音效包不存在: {}", pack_dir.display());
+    }
+    let entries = sfx_packs::scan_pack(&pack_dir);
+    if entries.is_empty() {
+        anyhow::bail!("音效包里没有音频文件: {}", pack_dir.display());
+    }
+
+    // ⚠️ **按 owner 读**（不是 `load_llm_config()` —— 那个读顶层那份，迁移后恒空）。
+    let llm_cfg = yekitrim_core::config::load_llm_config_for(owner);
+    require_llm_key(&llm_cfg)?;
+
+    progress.stage_started("音效包标签");
+    let total = entries.len().div_ceil(SFX_BUILD_BATCH) as u64;
+    let vocab = sfx_catalog::categories_text();
+    let system = build_sfx_pack_system_prompt(&vocab);
+    let client = yekitrim_llm::LlmClient::new(
+        &llm_cfg.for_link(yekitrim_core::config::LlmLink::Utility),
+    )?
+    .with_usage_context(yekitrim_llm::usage::UsageContext::new(
+        yekitrim_llm::tasks::SFX_PACK_TAGS.label,
+    ));
+
+    let mut per_stem: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    let mut dropped_tags = 0usize;
+    let mut unknown_files = 0usize;
+    let mut done = 0u64;
+
+    for chunk in entries.chunks(SFX_BUILD_BATCH) {
+        // 取消只在批次边界生效（进行中的那次 LLM 调用照常跑完）—— 与贴纸同一口径
+        if progress.cancelled() {
+            anyhow::bail!("任务已取消");
+        }
+        progress.stage_progress(done, total);
+        let names: Vec<&str> = chunk.iter().map(|e| e.label.as_str()).collect();
+        let user = format!(
+            "音效列表（显示名，可以为空就当文件名用）:\n{}\n\n输出 JSON 对象：key 必须是上面列出的名字之一，\
+             value 是 1~3 个 tag 的数组。",
+            serde_json::to_string(&names)?
+        );
+        let resp = client.chat(&system, &user).await?;
+        let json = yekitrim_llm::agent::extract_json_object(&resp)?;
+        let map: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&json)?;
+        for (label, arr) in map {
+            // LLM 可能编一个包里没有的名字：按**显示名或 stem** 认回来，认不出就计数
+            let hit = chunk
+                .iter()
+                .find(|e| e.label == label || e.stem == label)
+                .map(|e| e.stem.clone());
+            let Some(stem) = hit else {
+                unknown_files += 1;
+                continue;
+            };
+            let Some(arr) = arr.as_array() else { continue };
+            let raw: Vec<String> = arr
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect();
+            // **硬约束**：词表外的 tag 一律丢弃（prompt 是软约束，这里是最后一道）
+            let (kept, dropped) = sfx_packs::filter_known_tags(&raw);
+            dropped_tags += dropped;
+            if !kept.is_empty() {
+                per_stem.entry(stem).or_default().extend(kept);
+            }
+        }
+        done += 1;
+        progress.stage_progress(done, total);
+    }
+
+    // 每个 stem 的 tag 去重（同一文件可能出现在两条输出里）
+    for tags in per_stem.values_mut() {
+        tags.sort();
+        tags.dedup();
+    }
+    if per_stem.is_empty() {
+        // ⚠️ **不写清单**：写一份空清单 = 把包标记成"已构建"，LLM 之后再也不选它
+        anyhow::bail!("这个包的文件名给不出语义标签（LLM 没有返回任何可用 tag）");
+    }
+
+    // 保留已有清单的 `[pack]` 元信息（作者 / 版本 / 许可证），只重写 entries。
+    // ⚠️ 重新构建会覆盖 entries —— 那是这个按钮的语义。
+    let existing = sfx_packs::load_manifest(&pack_dir);
+    let mut meta = existing.as_ref().map(|m| m.pack.clone()).unwrap_or_default();
+    meta.built_by = sfx_packs::BUILT_BY_YKT.to_string();
+    let manifest = PackManifest {
+        pack: PackMeta { built_by: meta.built_by, ..meta },
+        entry: entries
+            .iter()
+            .map(|e| ManifestEntry {
+                stem: e.stem.clone(),
+                name: Some(e.label.clone()),
+                // 分组沿用**现有**判定（清单 > `.groups.toml` > 「其他」），
+                // 构建不重新发明分组：那是 zip 子目录/作者清单的职责。
+                group: Some(e.group.clone()),
+                tags: per_stem.get(&e.stem).cloned().unwrap_or_default(),
+                gain_db: e.gain_db,
+            })
+            .collect(),
+    };
+    sfx_packs::save_manifest(&pack_dir, &manifest)?;
+    let out_path = sfx_packs::manifest_file(&pack_dir);
+    progress.stage_completed("音效包标签");
+    let tags_total: usize = per_stem.values().map(Vec::len).sum();
+    tracing::info!(
+        "  ✓ 已生成音效包清单: {} ({} 条, {} 个 tag, 丢弃{} 个词表外 tag)",
+        out_path.display(),
+        per_stem.len(),
+        tags_total,
+        dropped_tags
+    );
+    Ok(SfxPackBuildReport {
+        files: entries.len(),
+        batches: total as usize,
+        tags: tags_total,
+        dropped_tags,
+        unknown_files,
+        out_path,
+    })
+}
+
+/// 音效包构建的 system prompt。**词表是唯一真源**（`categories_text()`），
+/// 在这里只做格式包装，不抄第二份词表。
+fn build_sfx_pack_system_prompt(vocab: &str) -> String {
+    format!(
+        "你是音效库的语义标签助手。用户会给你一批音效的显示名，你要给每个音效挑 1~3 个 tag。\n\
+         \n\
+         ⚠️ **tag 只能从下面的词表里选，不许造词**（词表外的 tag 会被直接丢弃，等于白做）：\n\
+         \n\
+         {vocab}\n\
+         \n\
+         规则：\n\
+         - 输出 JSON 对象：key = 音效的显示名（原样照抄，不要改写），value = tag 数组\n\
+         - 每个音效 1~3 个 tag；拿不准就给 1 个最接近的，不要硬凑\n\
+         - 一个都贴不上的音效**直接不写**，不要塞一个不相关的 tag\n\
+         - 只输出 JSON，不要其他文字"
+    )
 }
 
 

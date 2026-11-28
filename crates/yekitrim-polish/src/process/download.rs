@@ -16,10 +16,17 @@ pub fn sanitize_sticker_name(keyword: &str) -> String {
 /// 尝试用指定来源解析 sticker keyword → 文件名。失败返回 None。
 /// 供 Step 2 轮询 (phase 1) 与再平衡 (phase 2) 共用。
 /// 来源：emoji / 具体贴纸包名（如 ysyk）。
+///
+/// ⚠️ `tag`（`sticker_tag`）是**第二判据**，两条支都用它兜一层：
+/// `keyword` 是 LLM 的**许愿词**（可能是包名 `emoji`、维度查询串 `emotion:awkward`、或自由词），
+/// 它落空时真正还带着语义的只剩 `tag`。以前两条支都不看 `tag`：
+/// · emoji 档必然失败 ⇒ 事件被轮转到下一个包；· 包档按 `time` 随机挑一张。
+/// 合起来的症状就是「LLM 写 tag=think，画面上是一张不相干的硬币贴纸，而面板写着 emoji」。
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn try_resolve_sticker(
     src: &str,
     kw: &str,
+    tag: &str,
     time: f64,
     catalog: &Option<crate::assets::emoji_search::EmojiCatalog>,
     sticker_dir: &std::path::Path,
@@ -28,33 +35,46 @@ pub(super) async fn try_resolve_sticker(
 ) -> Option<String> {
     match src {
         "emoji" => {
-            if let Some(cat) = catalog {
-                // ⚠️ **走 `search_best` 而不是 `search`**（2026-10-17）：
-                //    `search` 只有"精确 + 子串 ⊇"两档，命中谁**由目录顺序决定**、无评分 ——
-                //    那是"LLM 写 game，结果拿到 video-game 那一组的前 8 个"的来源。
-                //    `search_best` 先试**分维查询**（`emotion:joy,usage:punchline` 这种紧凑串，
-                //    或能对上词表的自由词）并按维度权重打分排序，再落回 `search` 兜底 ——
-                //    所以老工程那些词表外的 keyword（`lol`/`angry`）照样能命中。
-                // 取第一个未被使用的 codepoint, 避免同一 emoji 重复出现
-                cat.search_best(kw, 8).into_iter()
+            let cat = catalog.as_ref()?;
+            // ⚠️ **走 `search_best` 而不是 `search`**（2026-10-17）：
+            //    `search` 只有"精确 + 子串 ⊇"两档，命中谁**由目录顺序决定**、无评分 ——
+            //    那是"LLM 写 game，结果拿到 video-game 那一组的前 8 个"的来源。
+            //    `search_best` 先试**分维查询**（`emotion:joy,usage:punchline` 这种紧凑串，
+            //    或能对上词表的自由词）并按维度权重打分排序，再落回 `search` 兜底 ——
+            //    所以老工程那些词表外的 keyword（`lol`/`angry`）照样能命中。
+            // ⚠️ 先 keyword、失败再 tag：实测 LLM 会写成 `keyword="emoji"` +
+            //    `sticker_tag="think"`（think 是词表里的 `action:think`）—— 只试 keyword
+            //    的话这一档必空，事件就轮到别的包去随机出图了。
+            // 取第一个未被使用的 codepoint, 避免同一 emoji 重复出现
+            let mut hit = None;
+            for q in [kw, tag] {
+                let q = q.trim();
+                if q.is_empty() {
+                    continue;
+                }
+                if let Some(cp) = cat.search_best(q, 8).into_iter()
                     .find(|cp| !used_emojis.contains(cp))
-                    .inspect(|cp| { used_emojis.insert(cp.clone()); })
-            } else {
-                None
+                {
+                    hit = Some(cp);
+                    break;
+                }
             }
+            hit.inspect(|cp| { used_emojis.insert(cp.clone()); })
         }
         "irasu" => {
             // 实际查询 irasutoya 验证有图 (带缓存), 避免写入 name 但下载时无图
             let urls = crate::assets::irasu_search::resolve_image_urls(kw, sticker_dir, client).await;
             if urls.is_empty() { None } else { Some(sanitize_sticker_name(kw)) }
         }
-        // 贴纸包名（如 "ysyk"）：keyword 通常是包名，直接从包内选文件
+        // 贴纸包名（如 "ysyk"）：keyword 通常是包名，从包内选文件
         src => {
-            let packages = crate::assets::sticker_index::scan_packages(
-                &yekitrim_core::owner::sticker_dir_readable(yekitrim_core::owner::Owner::from_env()),
-            );
+            let root = yekitrim_core::owner::sticker_dir_readable(yekitrim_core::owner::Owner::from_env());
+            let packages = crate::assets::sticker_index::scan_packages(&root);
             if packages.iter().any(|p| p.name == src) {
-                crate::assets::sticker_index::pick_package_file(&packages, src, time)
+                // **先在 tag 组里挑，命中不了才退回整包**（退回那半在函数里，行为零变化）
+                crate::assets::sticker_index::pick_package_file_in_tag(
+                    &root, &packages, src, tag, time,
+                )
             } else {
                 None
             }
@@ -67,10 +87,25 @@ pub async fn cmd_download(project_path: &Path) -> anyhow::Result<()> {
     let downloader = assets::downloader::AssetDownloader::new(project_path);
 
     let mut total_errors = 0;
-    if let Ok(cfg) = project::load_project(project_path)
+    if let Ok(mut cfg) = project::load_project(project_path)
         && !cfg.segments.is_empty() {
             let blacklist = load_sfx_blacklist(&cfg);
-            total_errors += download_keyword_assets(&downloader, &cfg, &blacklist).await;
+            let refs = |c: &project::ProjectFile| -> Vec<String> {
+                c.segments.iter()
+                    .flat_map(|s| s.events.iter())
+                    .filter_map(|e| crate::process::event_sfx_ref(e).map(str::to_string))
+                    .collect()
+            };
+            let before = refs(&cfg);
+            total_errors += download_keyword_assets(&downloader, &mut cfg, &blacklist).await;
+            let after = refs(&cfg);
+            // 替补改变了事件 ⇒ 必须落盘（否则下次出片又按原 id 找，替补白换）
+            if before != after {
+                let _ = project::update_polish_toml(project_path, |disk| {
+                    // 只覆盖 `segments`：这一步只改音效引用，别的字段不许被顺带写回。
+                    disk.segments = cfg.segments.clone();
+                });
+            }
         }
 
     if total_errors > 0 {
@@ -82,7 +117,7 @@ pub async fn cmd_download(project_path: &Path) -> anyhow::Result<()> {
 /// 下载 sticker + sfx 资产 (blacklist 中的 sfx 跳过下载)
 pub async fn download_keyword_assets(
     downloader: &assets::downloader::AssetDownloader,
-    config: &project::ProjectFile,
+    config: &mut project::ProjectFile,
     blacklist: &[String],
 ) -> usize {
     let mut total_errors = 0;
@@ -147,6 +182,12 @@ pub async fn download_keyword_assets(
         if r.sfx_downloaded > 0 || r.sfx_existing > 0 || !r.errors.is_empty() {
             tracing::info!("  ✓ sfx: {} new, {} cached, {} errors", r.sfx_downloaded, r.sfx_existing, r.errors.len());
         }
+        // **整组失效时下载那边换了替补 ⇒ 事件里的 id 必须跟着改**（2026-11-28）。
+        // 不改就是"文件下到了替补名下、出片按原 id 找"—— 成片依旧缺一声，且日志全绿。
+        if !r.substitutions.is_empty() {
+            tracing::info!("  ↪ sfx 替补 {} 条（源站整组不可用，已换成同 tag 的组）", r.substitutions.len());
+            r.apply_substitutions(&mut config.segments);
+        }
         total_errors += r.errors.len();
     }
 
@@ -192,11 +233,11 @@ pub fn ensure_assets_should_run(
 pub async fn ensure_assets(project_path: &Path) {
     let downloader = assets::downloader::AssetDownloader::new(project_path);
 
-    if let Ok(config) = project::load_project(project_path)
+    if let Ok(mut config) = project::load_project(project_path)
         && ensure_assets_should_run(&config.segments, &config.edl.clips)
     {
         let blacklist = load_sfx_blacklist(&config);
-        let total_errors = download_keyword_assets(&downloader, &config, &blacklist).await;
+        let total_errors = download_keyword_assets(&downloader, &mut config, &blacklist).await;
         if total_errors > 0 {
             tracing::info!("  ⚠ {} download errors (will use CDN fallback where available)", total_errors);
         }

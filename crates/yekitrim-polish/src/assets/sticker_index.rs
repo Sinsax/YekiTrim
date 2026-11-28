@@ -750,16 +750,24 @@ impl StickerIndex {
 
 /// 在文件列表中按 seed 确定性选一个, 返回文件 stem
 fn pick_from(files: &[PathBuf], seed: f64) -> Option<String> {
-    if files.is_empty() {
+    let idx = pick_index(files.len(), seed)?;
+    files[idx].file_stem().and_then(|s| s.to_str()).map(|s| s.to_string())
+}
+
+/// `pick_from` 的**下标**那半（同 `len` + `seed` 结果恒定）。
+///
+/// 单独抽出来是因为「按 tag 组挑」走的是**文件名字符串**（`tag_files` 给的是 `<包>.toml`
+/// 里记的名字，不是路径），两条路必须共用同一条 seed 规则 —— 各写一份的话，
+/// 同一个 tag 从不同入口进来会挑出不同的图，而症状只是"图上跟 tag 不太对"，几乎查不出来。
+fn pick_index(len: usize, seed: f64) -> Option<usize> {
+    if len == 0 {
         return None;
     }
-    let idx = if files.len() == 1 {
-        0
-    } else {
-        let frac = (seed.fract() + 1.0).abs();
-        ((frac * 1000003.0) as usize) % files.len()
-    };
-    files[idx].file_stem().and_then(|s| s.to_str()).map(|s| s.to_string())
+    if len == 1 {
+        return Some(0);
+    }
+    let frac = (seed.fract() + 1.0).abs();
+    Some(((frac * 1000003.0) as usize) % len)
 }
 
 // ============================================================
@@ -982,6 +990,55 @@ pub fn find_video_asset(root: &Path, name: &str) -> Option<VideoAsset> {
 /// 同 (package, seed) 结果恒定，不同 seed 尽量选不同文件。
 pub fn pick_package_file(packages: &[StickerPackage], package_name: &str, seed: f64) -> Option<String> {
     let pkg = packages.iter().find(|p| p.name == package_name)?;
+    pick_from(&pkg.files, seed)
+}
+
+/// 从贴纸包中选一个文件 stem，**优先落在 tag 组里**。
+///
+/// `tag` 命中 `<包名>.toml` 的某个 tag 且组内有真实文件 ⇒ 只在该组内按 seed 挑（同一个
+/// `(tag, seed)` 结果恒定）；否则**退回整包**（[`pick_package_file`]）—— 未构建包、老工程的
+/// 自由词 tag、以及"tag 属于别的包"这三种情况命中不了很正常，此时行为与以前**逐字相同**。
+///
+/// ⚠️ 为什么需要它：`process` Step 2 的包内选文件以前是 `pick_package_file(pkg, time)` ——
+/// **完全不看 tag**，于是 LLM 写了 `sticker_tag = "害怕"` 也照样随机出一张「撬棍」。
+/// 症状只是"图跟情绪不太对"，加上 `keyword` 分叉（见 `Event::set_sticker_keyword`）就
+/// 更难归因。
+///
+/// ⚠️ 组里的文件名与包内**真实路径按 stem 对齐**（不把 `tag_files` 的字符串直接当路径）：
+/// 清单里的名字可能带别的扩展名/大小写，对齐之后两条路挑出的 `name` 与
+/// `pick_package_file` 完全同源（都是 `file_stem()`）。
+pub fn pick_package_file_in_tag(
+    root: &Path,
+    packages: &[StickerPackage],
+    package_name: &str,
+    tag: &str,
+    seed: f64,
+) -> Option<String> {
+    let pkg = packages.iter().find(|p| p.name == package_name)?;
+    let want = tag.trim();
+    if !want.is_empty()
+        && let Some(meta) = load_package_meta(root, package_name)
+    {
+        let want_stems: std::collections::HashSet<String> = tag_files(&meta, want)
+            .iter()
+            .filter_map(|f| Path::new(f).file_stem().and_then(|s| s.to_str()).map(str::to_string))
+            .collect();
+        if !want_stems.is_empty() {
+            let pool: Vec<PathBuf> = pkg
+                .files
+                .iter()
+                .filter(|p| {
+                    p.file_stem()
+                        .and_then(|s| s.to_str())
+                        .is_some_and(|s| want_stems.contains(s))
+                })
+                .cloned()
+                .collect();
+            if !pool.is_empty() {
+                return pick_from(&pool, seed);
+            }
+        }
+    }
     pick_from(&pkg.files, seed)
 }
 
@@ -1755,6 +1812,60 @@ mod tests {
         assert_eq!(stem1, stem2);
         assert!(["a", "b", "c"].contains(&stem1.as_str()));
         assert!(pick_package_file(&packages, "nonexistent", 0.5).is_none());
+    }
+
+    /// `pick_package_file_in_tag`：tag 组内挑，命中不了**逐字退回整包**。
+    /// ⚠️ 两条断言各钉一个变异：① 组内也按整包挑（忘了过滤）② 未命中的 tag 也照旧整包
+    /// （把"退回"写成了"再挑一次别的组"）—— 后者会让老工程在换了 tag 词之后**换图**。
+    #[test]
+    fn pick_package_file_in_tag_prefers_tag_group() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("ysyk")).unwrap();
+        for n in ["呆_1.gif", "呆_2.gif", "害怕_1.gif", "害怕_2.gif"] {
+            std::fs::write(dir.path().join("ysyk").join(n), b"x").unwrap();
+        }
+        let meta = StickerPackageMeta {
+            name: "ysyk".into(),
+            description: String::new(),
+            tags: vec![StickerTagMeta {
+                tag: "害怕".into(),
+                files: vec!["害怕_1.gif".into(), "害怕_2.gif".into()],
+            }],
+        };
+        std::fs::write(
+            dir.path().join("ysyk.toml"),
+            package_meta_to_toml(&meta).unwrap(),
+        )
+        .unwrap();
+        let packages = scan_packages(dir.path());
+
+        // ① tag 组内：换哪个 seed 也只可能是「害怕_*」
+        for seed in [0.0, 0.13, 0.5, 0.77, 1.9, 2.4] {
+            let got = pick_package_file_in_tag(dir.path(), &packages, "ysyk", "害怕", seed)
+                .expect("tag=害怕 组内挑得出");
+            assert!(
+                got.starts_with("害怕"),
+                "tag=害怕 只许出组内文件，实得 {got}"
+            );
+        }
+        // ② 命中不了（别的包的 tag / 空白）⇒ 与整包挑逐字相同
+        for seed in [0.0, 0.13, 0.5, 0.77, 1.9] {
+            let whole = pick_package_file(&packages, "ysyk", seed);
+            assert_eq!(
+                pick_package_file_in_tag(dir.path(), &packages, "ysyk", "think", seed),
+                whole,
+                "未命中的 tag 必须退回整包（老工程零变化）"
+            );
+            assert_eq!(
+                pick_package_file_in_tag(dir.path(), &packages, "ysyk", "   ", seed),
+                whole,
+                "空白 tag 与不传 tag 同义"
+            );
+        }
+        assert!(
+            pick_package_file_in_tag(dir.path(), &packages, "nope", "害怕", 0.3).is_none(),
+            "包不存在就是 None"
+        );
     }
 
     #[test]

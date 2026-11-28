@@ -14,6 +14,24 @@ pub struct AssetDownloader {
     /// 仅测试用：把贴纸**库**根换成临时目录（见 `sticker_lib_root`）。
     #[cfg(test)]
     test_lib_root: Option<PathBuf>,
+    /// 仅测试用：把**用户音效包**根换成临时目录（见 `sfx_pack_root`）。
+    #[cfg(test)]
+    test_sfx_root: Option<PathBuf>,
+    /// **哪些 page 只存在于 `sound_os2/`**（P2，2026-11-28）。
+    ///
+    /// 实测抽样 62 条：`sound/` 直连只中 23 条、`sound_os2/` 回退 35 条 —— 即**每个**文件
+    /// 都要先打一次注定 404 的请求。按 `page` 记住"这一页在备用目录"，同一次下载里
+    /// 后续的同页音效就直接走 `sound_os2/`（源站目录结构是按 page 分的，页内一致）。
+    ///
+    /// `RefCell` 而不是 `&mut self`：`download_one_sfx` 已是 `&self`，改签名会波及
+    /// 一整串调用方，而这里只是一份"经验缓存"。
+    os2_pages: std::cell::RefCell<std::collections::HashSet<String>>,
+    /// **整页失效**的 page（这一页的文件两条目录都没有）。
+    ///
+    /// 实测 `enviroment01` / `enviroment02` / `noise01` 三个页整批 404（共 65 组）。
+    /// 替补选择时**先跳过**这些页，否则 8 次探测全撞在坏页上、换不到任何东西
+    /// （实测 `summer_streets` 就是这样：同 tag 11 组全在 `enviroment02`）。
+    dead_pages: std::cell::RefCell<std::collections::HashSet<String>>,
 }
 
 /// 下载报告
@@ -27,7 +45,29 @@ pub struct DownloadReport {
     pub video_downloaded: usize,
     /// 已经在项目里、跳过复制的视频素材份数（幂等）。
     pub video_existing: usize,
+    /// **替补映射**：原 id → 实际下载到的替补 id（2026-11-28）。
+    ///
+    /// 源站整组失效时（实测 `summer_streets` 全部 404）会换一个同 tag 的组顶上。
+    /// ⚠️ **调用方必须把事件里的 id 按这张表改掉** —— 否则文件下到了替补名下、
+    /// 而出片仍按原 id 找 ⇒ 成片依旧没声（这条是补上的真缺口，别只下不换）。
+    pub substitutions: Vec<(String, String)>,
     pub errors: Vec<String>,
+}
+
+impl DownloadReport {
+    /// 把替补映射应用到事件上（`process` 与 `render` 的下载入口都调它）。
+    ///
+    /// 判据是**完整 id 相等**：替补只可能来自"整组失效"，不会误伤同组的其他变体。
+    pub fn apply_substitutions(&self, segments: &mut [Segment]) {
+        if self.substitutions.is_empty() {
+            return;
+        }
+        for seg in segments.iter_mut() {
+            for ev in seg.events.iter_mut() {
+                crate::process::rewrite_sfx_ref(ev, &self.substitutions);
+            }
+        }
+    }
 }
 
 impl AssetDownloader {
@@ -45,6 +85,10 @@ impl AssetDownloader {
             client,
             #[cfg(test)]
             test_lib_root: None,
+            #[cfg(test)]
+            test_sfx_root: None,
+            os2_pages: std::cell::RefCell::new(std::collections::HashSet::new()),
+            dead_pages: std::cell::RefCell::new(std::collections::HashSet::new()),
         }
     }
 
@@ -56,6 +100,18 @@ impl AssetDownloader {
             return r.clone();
         }
         yekitrim_core::owner::sticker_dir_readable(yekitrim_core::owner::Owner::from_env())
+    }
+
+    /// **用户音效包**根目录（`<data>/users/<uid>/sfx/`）。生产走 owner 环境；
+    /// 测试可注入临时根（理由同 `sticker_lib_root`）。
+    ///
+    /// ⚠️ 用户包是**本地文件**，不像内建目录那样要抓源站 —— 下载其实是"复制进项目"。
+    fn sfx_pack_root(&self) -> PathBuf {
+        #[cfg(test)]
+        if let Some(r) = &self.test_sfx_root {
+            return r.clone();
+        }
+        yekitrim_core::owner::sfx_dir_readable(yekitrim_core::owner::Owner::from_env())
     }
 
     /// 统一 sticker 下载入口: 根据 source 类型分发
@@ -330,9 +386,157 @@ impl AssetDownloader {
             } else {
                 let n = self.download_one_sfx(&sfx_dir, id, &mut report, blacklist).await;
                 report.sfx_downloaded += n;
+                // **整条失败时换一个组**（2026-11-28）。
+                //
+                // 实测：源站有些组的文件整批不在（`summer_streets` 全部 404）。
+                // 那种情况下"这一条缺了"不是用户该承担的 —— 同 tag 下拉一个**不同**的组
+                // 顶上，成片照样有声。换不到就保留原来的报错（宁缺毋滥，不编一个假音效）。
+                if n == 0 && !sfx_dir.join(format!("{}.mp3", id)).exists() {
+                    if let Some(alt) = self.pick_alternate_group(id, blacklist).await {
+                        let m = self.download_one_sfx(&sfx_dir, &alt.id, &mut report, blacklist).await;
+                        if m > 0 {
+                            // 已用替补顶上 ⇒ 把原来那条"下载失败"的报错去掉，
+                            // 换成一条明确的 info（否则用户会以为成片缺了一声）。
+                            report.errors.retain(|e| !e.starts_with(&format!("sfx {id}:")));
+                            report.sfx_downloaded += m;
+                            // ⚠️ **映射的目标是实际落盘的变体键，不是组 id**：
+                            //    `download_one_sfx` 按 `variant_stem(第一个变体)` 写盘
+                            //    （实测 `cat` → `cat1a.mp3`），事件里存组 id 会让出片
+                            //    去找 `cat.mp3` —— 永远找不到，替补白换。
+                            let landed = alt
+                                .variants
+                                .first()
+                                .map(|v| super::sfx_catalog::variant_stem(v.as_str()))
+                                .unwrap_or_else(|| alt.id.clone());
+                            report.substitutions.push((id.clone(), landed.clone()));
+                            println!("  ↪ sfx {}: 整组不可用，已用「{}」的 {} 顶上", id, alt.id, landed);
+                        }
+                    }
+                }
             }
         }
         report
+    }
+
+    /// **同 tag 的替补组**：原组整批下载失败时换一个。
+    ///
+    /// 筛选顺序（严格，不做宽松匹配）：
+    /// 1. 同 catalog 里**至少有一个共同 tag**；
+    /// 2. **不是原组**、未被屏蔽；
+    /// 3. 它的**第一个变体在 `sound_os2/` 或 `sound/` 下真的存在**（HEAD 一次，别换上一个同样 404 的）。
+    ///
+    /// ⚠️ 只换**一次**：换上去的那个再失败就保留原报错（避免整片都在重试）。
+    /// ⚠️ 宁可返回 `None` 也不编一个"最像"的 —— 甲方要的是"成片有声"，
+    ///    不是"随便塞一个音效"（错音效比没音效更难查）。
+    async fn pick_alternate_group(
+        &self,
+        original_id: &str,
+        blacklist: &[String],
+    ) -> Option<&'static super::sfx_catalog::SfxEntry> {
+        use super::sfx_catalog;
+        let original = sfx_catalog::lookup(original_id)?;
+
+        // 候选分**四档**，从严到宽（每档内部再按"活页优先 → 变体多 → id 短"排）：
+        //   ① 同 tag 且**不在已知死页**   ← 最贴近原意图，且大概率能下到
+        //   ② 同类（`cat`）且不在死页      ← 同 tag 全在死页时的第一顺位（实测用到这一档）
+        //   ③ 同 tag（含死页）             ← 死页记录可能过期
+        //   ④ 同类（含死页）               ← 最后兜底
+        //
+        // ⚠️ 实测：`summer_streets`（tag「都市日常」）11 个同 tag 组**全在 `enviroment02`**，
+        //    而那一页整批 404 ⇒ ①②③ 全空，靠 ② 的同类才换到（第一次探测就中
+        //    `cat @animals01`）。只按 tag 排会 8 次探测全撞死页。
+        // ⚠️ 每档只探**第一个变体**：能下就够顶上，不为一条引用扫全组。
+        let dead = self.dead_pages.borrow().clone();
+        let all: Vec<&'static sfx_catalog::SfxEntry> = sfx_catalog::all()
+            .iter()
+            .filter(|e| e.id != original.id)
+            .filter(|e| !sfx_catalog::is_blacklisted(&e.id, blacklist))
+            .filter(|e| !e.variants.is_empty())
+            .collect();
+        let has_tag = |e: &sfx_catalog::SfxEntry| {
+            !original.tags.is_empty() && e.tags.iter().any(|t| original.tags.contains(t))
+        };
+        let alive = |e: &&sfx_catalog::SfxEntry| !dead.contains(&e.page);
+        let mut tiers: [Vec<&'static sfx_catalog::SfxEntry>; 4] = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+        for e in all {
+            let t = has_tag(e);
+            let c = e.cat == original.cat;
+            let a = alive(&e);
+            if t && a { tiers[0].push(e) } else if c && a { tiers[1].push(e) } else if t { tiers[2].push(e) } else if c { tiers[3].push(e) }
+        }
+
+        const PROBE_LIMIT: usize = 8;
+        let mut probed = 0usize;
+        for mut group in tiers {
+            group.sort_by_key(|e| (std::cmp::Reverse(e.variants.len()), e.id.len()));
+            for e in group {
+                if probed >= PROBE_LIMIT {
+                    return None;
+                }
+                probed += 1;
+                let url = sfx_catalog::variant_url(e, &e.variants[0]);
+                if self.probe_url(&url).await {
+                    return Some(e);
+                }
+                let alt = url.replace("/sound/", "/sound_os2/");
+                if alt != url && self.probe_url(&alt).await {
+                    return Some(e);
+                }
+            }
+        }
+        None
+    }
+
+    /// HEAD 一次看这个 URL 是否存在（替补组的可达性探测用）。
+    ///
+    /// ⚠️ 只有 2xx 算存在；网络错误也算"不可达"（换一个组比卡在这里好）。
+    async fn probe_url(&self, url: &str) -> bool {
+        matches!(
+            self.client.head(url).send().await.map(|r| r.status().is_success()),
+            Ok(true)
+        )
+    }
+
+    /// 把**用户音效包**里的一个文件复制进项目的 `sfx/`。
+    ///
+    /// 与内建那条的区别：不联网、不转码、不轮换变体 —— 用户包里一个文件就是一条，
+    /// 复制过来原名原样（出片侧按 `<stem>.<ext>` 找，见 `sound.rs`）。
+    ///
+    /// 返回 1 = 新复制、0 = 已存在或失败（失败进 `report.errors`）。
+    fn copy_user_sfx(&self, sfx_dir: &Path, pack: &str, stem: &str, id: &str, report: &mut DownloadReport) -> usize {
+        let root = self.sfx_pack_root();
+        let pack_dir = root.join(pack);
+        if !pack_dir.is_dir() {
+            report.errors.push(format!("sfx {}: 用户音效包「{}」不存在", id, pack));
+            println!("  ⚠ sfx {}: 用户音效包「{}」不存在", id, pack);
+            return 0;
+        }
+        // 在包里找这一条（`scan_pack` 是**唯一**的键来源，它自己套了 `stem_of`）
+        let Some(entry) = super::sfx_packs::scan_pack(&pack_dir).into_iter().find(|e| e.stem == stem) else {
+            report.errors.push(format!("sfx {}: 这个用户包里没有这一条", id));
+            println!("  ⚠ sfx {}: 这个用户包里没有这一条", id);
+            return 0;
+        };
+        let src = pack_dir.join(&entry.file_name);
+        // **保留原扩展名**（`.wav` / `.ogg` …）：出片侧按真实扩展名找，
+        // 这里若改成 `.mp3` 而内容是 wav，混音阶段会解出噪声。
+        let dst = sfx_dir.join(&entry.file_name);
+        if dst.exists() {
+            report.sfx_existing += 1;
+            return 0;
+        }
+        match std::fs::copy(&src, &dst) {
+            Ok(_) => {
+                println!("  ✓ sfx {} → {}（用户包）", id, dst.display());
+                report.sfx_downloaded += 1;
+                1
+            }
+            Err(e) => {
+                report.errors.push(format!("sfx {}: 复制失败 ({e})", id));
+                println!("  ⚠ sfx {}: 复制失败 ({e})", id);
+                0
+            }
+        }
     }
 
     /// 下载单个 SFX 文件（id 可能是组 id 或变体文件名），返回是否新下载（1=新下载, 0=已存在/跳过）
@@ -341,36 +545,74 @@ impl AssetDownloader {
             println!("  ⚠ sfx {}: 已在屏蔽列表中，跳过下载", id);
             return 0;
         }
-        // 确定 (entry, 变体文件名): 组 id 或变体名均可
+        // **用户导入的音效包**（id 形如 `<包名>/<变体键>`）—— 本地文件，复制进项目即可。
+        //
+        // ⚠️ 判据是"带 `/`"，不是"试着 lookup 一下"：预设包的变体键**永远不含 `/`**
+        //    （`variant_stem` 把分隔符拍平成 `-`），所以这个分界线是可靠的。
+        //    放在内建 `lookup` **之前**：用户包 id 不可能命中内建目录，先试一次纯属浪费。
+        if let Some((pack, stem)) = super::sfx_packs::split_entry_id(id) {
+            return self.copy_user_sfx(sfx_dir, pack, stem, id, report);
+        }
+        // 确定 (entry, 变体名): 组 id 或变体键均可。
+        //
+        // ⚠️ **写盘名走 `variant_stem`（扁平化），源 URL 走原变体名**（2026-11-27 修）：
+        //    catalog 里 56 个变体名自带子目录（`Crowds/xxx.mp3`），照原名写盘会落到
+        //    `sfx/Crowds/` 下、而出片侧按 `sfx/<name>.mp3` 找 ⇒ 只 warn 一句「文件缺失」。
         let (entry, variant) = if let Some(e) = super::sfx_catalog::lookup(id) {
             let v = e.variants.first().cloned().unwrap_or_default();
             (e, v)
         } else if let Some(e) = super::sfx_catalog::lookup_variant(id) {
-            let v = format!("{}.mp3", id);
-            (e, v)
+            // 传进来的是**已扁平化**的键（事件里存的就是它）⇒ 回到原始变体名去取 URL
+            let raw = e
+                .variants
+                .iter()
+                .find(|v| super::sfx_catalog::variant_stem(v.as_str()) == id)
+                .cloned()
+                .unwrap_or_default();
+            (e, raw)
         } else {
             report.errors.push(format!("sfx {}: 未在 catalog 中找到，请检查 sfx_catalog.json", id));
             println!("  ⚠ sfx {}: 未在 catalog 中找到", id);
             return 0;
         };
-        let stem = variant.strip_suffix(".mp3").unwrap_or(&variant);
+        if variant.is_empty() {
+            report.errors.push(format!("sfx {}: 该组没有任何变体", id));
+            return 0;
+        }
+        let stem = super::sfx_catalog::variant_stem(&variant);
         let path = sfx_dir.join(format!("{}.mp3", stem));
         if path.exists() {
             report.sfx_existing += 1;
             return 0;
         }
         let url = super::sfx_catalog::variant_url(entry, &variant);
+        let alt = url.replace("/sound/", "/sound_os2/");
+        let page_known_os2 = self.os2_pages.borrow().contains(&entry.page);
+
+        // **这一页已知在备用目录** ⇒ 直接打 sound_os2/，省掉一次注定 404 的请求。
+        // （实测抽样：56% 的文件在 sound_os2/ 下，批量下载时这能省掉一半请求。）
+        if page_known_os2 && alt != url {
+            if self.download_file(&alt, &path).await.is_ok() {
+                report.sfx_downloaded += 1;
+                return 1;
+            }
+            // 缓存过期（源站改了目录）⇒ 退回正常两段式，并把它从缓存里清掉
+            self.os2_pages.borrow_mut().remove(&entry.page);
+        }
+
         // 404 容错: 小森平站部分文件在备用目录 sound_os2/ 下 (页面引用 sound/ 但文件缺失)
         if let Err(_) = self.download_file(&url, &path).await {
-            let alt = url.replace("/sound/", "/sound_os2/");
             if alt != url {
                 match self.download_file(&alt, &path).await {
                     Ok(_) => {
+                        // 记住"这一页在备用目录"，同页后续直接走它
+                        self.os2_pages.borrow_mut().insert(entry.page.clone());
                         report.sfx_downloaded += 1;
                         return 1;
                     }
                     Err(_) => {
-                        // 双目录都失败 → 尝试同组其他变体
+                        // 双目录都失败 → 记下"这一页是死的"，再尝试同组其他变体
+                        self.dead_pages.borrow_mut().insert(entry.page.clone());
                         report.errors.push(format!("sfx {}: 下载失败 ({})", id, url));
                         println!("  ⚠ sfx {}: 下载失败, 尝试其他变体", id);
                         return 0;
@@ -446,6 +688,42 @@ impl AssetDownloader {
         std::fs::write(dest, &bytes)?;
         Ok(())
     }
+}
+
+/// **单条音效的取字节**（素材库「试听」用）—— 与 [`AssetDownloader`] 同一条源站规则，
+/// 但不绑定任何工程：音效库是**程序级**素材，试听时用户往往还没打开工程。
+///
+/// 源站要求「不要直接转载音效 URL」，所以**不让浏览器直连** `taira-komori.net`：
+/// 服务端抓下来落进 `<data>/cache/sfx/`，再按 Range 供出去。
+///
+/// # 404 容错
+///
+/// 小森平站部分文件在备用目录 `sound_os2/` 下（页面引用 `sound/` 但文件缺失）——
+/// 与 [`AssetDownloader::download_one_sfx`] 完全同一条规则，这里不另写一套判定。
+pub async fn fetch_sfx_bytes(url: &str) -> anyhow::Result<Vec<u8>> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .user_agent("yekitrim-polish/0.1")
+        .build()?;
+    match fetch_once(&client, url).await {
+        Ok(b) => Ok(b),
+        Err(first) => {
+            let alt = url.replace("/sound/", "/sound_os2/");
+            if alt == url {
+                return Err(first);
+            }
+            fetch_once(&client, &alt).await.map_err(|_| first)
+        }
+    }
+}
+
+/// [`fetch_sfx_bytes`] 的单次尝试（一次 GET + 状态码校验）。
+async fn fetch_once(client: &reqwest::Client, url: &str) -> anyhow::Result<Vec<u8>> {
+    let r = client.get(url).send().await?;
+    if !r.status().is_success() {
+        anyhow::bail!("HTTP {}", r.status());
+    }
+    Ok(r.bytes().await?.to_vec())
 }
 
 /// 从 EDL 里收集所有被引用到的**视频素材 id**（去重、保序、过滤空串）。
@@ -720,5 +998,74 @@ mod video_asset_tests {
 
         let _ = std::fs::remove_dir_all(&tmp);
         // ⚠️ **不删库里的桩包**：它是共享资源，删掉会让"单独重跑这一条"失去前提（踩过）。
+    }
+}
+
+/// **整组失效的兜底**（2026-11-28）：源站有些组的文件整批没有（实测 `summer_streets`）。
+/// 换一个同 tag 的组顶上，并**把事件里的 id 改掉** —— 只下不换等于没做。
+#[cfg(test)]
+mod fallback_tests {
+    use super::*;
+
+    fn sfx_ev(name: &str) -> crate::project::Event {
+        crate::project::Event::Sfx {
+            time: 1.0,
+            name: name.to_string(),
+            volume: Some(0.3),
+            end: None,
+        }
+    }
+
+    /// 借 `ProjectFile::example()` 拿一个合法的 Segment（字段太多，不手搓）。
+    fn seg_with(events: Vec<crate::project::Event>) -> crate::project::Segment {
+        let mut seg = crate::project::ProjectFile::example().segments.remove(0);
+        seg.events = events;
+        seg
+    }
+
+    #[test]
+    fn substitutions_rewrite_events() {
+        let mut seg = seg_with(vec![sfx_ev("summer_streets"), sfx_ev("rain_thunder"), sfx_ev("")]);
+        let report = DownloadReport {
+            substitutions: vec![("summer_streets".into(), "explosion".into())],
+            ..Default::default()
+        };
+        report.apply_substitutions(std::slice::from_mut(&mut seg));
+
+        let names: Vec<String> = seg.events.iter().filter_map(|e| match e {
+            crate::project::Event::Sfx { name, .. } => Some(name.clone()),
+            _ => None,
+        }).collect();
+        assert_eq!(names, vec!["explosion", "rain_thunder", ""],
+            "只该替换命中的那一条，别的原样（空 name 也不能被动）");
+    }
+
+    #[test]
+    fn substitutions_reach_the_effect_sfx_field_too() {
+        let mut seg = seg_with(vec![crate::project::Event::Shake {
+            time: 2.0, end: Some(2.3), intensity: 14.0,
+            sfx: Some("summer_streets".into()), sfx_volume: Some(0.2), anchor: None,
+        }]);
+        let report = DownloadReport {
+            substitutions: vec![("summer_streets".into(), "explosion".into())],
+            ..Default::default()
+        };
+        report.apply_substitutions(std::slice::from_mut(&mut seg));
+        match &seg.events[0] {
+            crate::project::Event::Shake { sfx, .. } => {
+                assert_eq!(sfx.as_deref(), Some("explosion"), "特效的 sfx 没被替换")
+            }
+            other => panic!("事件类型变了: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn empty_substitutions_are_a_noop() {
+        let mut seg = seg_with(vec![sfx_ev("a")]);
+        DownloadReport::default().apply_substitutions(std::slice::from_mut(&mut seg));
+        match &seg.events[0] {
+            crate::project::Event::Sfx { name, .. } => assert_eq!(name, "a"),
+            _ => unreachable!(),
+        }
     }
 }

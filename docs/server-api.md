@@ -77,6 +77,37 @@
   "传了却看不见"（字节落进别人的库）。改后实测 carol 上传 → `users/2/resources/fonts/`，
   admin 列表里没有它。`set_default`/`remove` 同样按 `asset_dir(owner, Fonts)`。
   ⚠️ 这三条**有意不挂 `enforce_scope`**；导入用"服务器上的路径"而非上传（同 `/api/fs/list`）。
+- **音效三件套（2026-11-27）**：`GET /polish/sfx-catalog[?include_blacklisted=1]` 是目录
+  （`assets/sfx_catalog.json` 编译期嵌入；条目带 `variants`（**扁平化后的变体键**）与 `blacklisted`，
+  顶层带 `blacklist` 与 `tags`）、`GET /polish/sfx-preview?id=&variant=` 是试听、
+  `PUT /polish/sfx-blacklist` 写屏蔽。
+  ⚠️ **四层字段**（2026-11-28）：`pack` = **音效库**（预设一律「小森平」）、
+  `group` = 一级细分（大类，7 个）、`subgroup` = 二级细分（`subcat`，147 个）、`variants` = 变体。
+  兜底各只在 Rust 一份（`sfx_catalog::pack_of/group_of/subgroup_of`）。
+  ⚠️ **顶层 `packs`** = 左侧「音效库」列表：预设 1 条（`kind:"preset"`、`deletable:false`）+
+  用户导入的各一条（`kind:"user"`、`deletable:true`）。**大类不在 `packs` 里** ——
+  左侧是库的位置，占满了新库没地方放。
+  另有一个 `user_packs`（用户包的明细，含 `entries[]`），导入/删除后前端会重拉目录。
+  ⚠️ **导入 / 删包 / 构建**：`POST /polish/sfx-packs/upload?name=`（zip 原始字节，子目录名当 `subgroup`，
+  文件拍平到包根，**尽力转 mp3**）、`DELETE /polish/sfx-packs/:name` 与
+  `POST /polish/sfx-packs/:name/build`（LLM 构建 `<包名>/pack.toml`，`JobClass::Medium` +
+  资源键 `sfx_packs`；与贴纸 `sticker_build` 的**关键差异**是音效 tag 只能取内建 84 个词）。
+  导入响应带 `{copied, skipped, transcode_failed}` —— `transcode_failed` **不是错误**：
+  那几个保留原格式，出片按真实扩展名找。**预设库名是保留名**，两个入口都拒绝。
+  ⚠️ **`entries` 现在包含用户包条目**（2026-11-28 修）：它们以前只在 `user_packs` 里，
+  而前端网格只读 `entries` ⇒ 左侧卡片写着"N 组"、点进去空白。用户包条目的形状与预设**逐个对齐**
+  （`pack` = 包名、`group` 空串、`subgroup` = 包内分组、`variants` = `[stem]`、`built` = 有无清单）。
+  ⚠️ **用户包的屏蔽**：`is_blacklisted` 只查内嵌目录 ⇒ `tag:xxx` 对用户包恒不命中；
+  `api/polish/assets.rs::user_pack_blacklisted` 补那一半（按清单里的 tag 匹配）。
+  `PUT /polish/sfx-blacklist` 的校验也认用户包 id（否则「屏蔽这一组」对导入包必 400）。
+  ⚠️ **试听不让浏览器直连源站**：`taira-komori.net` 声明音效免费可商用但要求**不转载音效 URL**
+  （见 `THIRD-PARTY-NOTICES.md`），所以服务端按需抓一次、落 `<data>/cache/sfx/<变体键>.mp3`、
+  再用 `serve_file_from_headers` 按 Range 供给（`<audio>` 能拖动）。抓不到回 **404 + JSON**（不是 500）。
+  ⚠️ **黑名单按 `owner` 读写**（`load_config_for` / `patch_config_file`）：编辑器和素材库必须看到
+  同一份，否则「素材库解除了、编辑器里还是选不到」。写是**整份覆盖** `[sfx] blacklist`
+  （前端拿目录接口回的 `blacklist` 当基线，别盲写）。
+  ⚠️ `variant` 是用户输入：必须先过 `sfx_catalog::variant_source`（**必须真属于这一组**）再拼缓存路径，
+  且 `is_safe_component` 兜一道 —— 见 handler 的说明。
 - **`POST /api/polish/cover`** 的 body 多了可选 **`renderer`**（现在**只有 `takumi`** —— `chrome` 那条截图腿 2026-10-01 整条删除，传它由 `cover.rs` **明确报错**）：服务端**只透传**成子进程的 `--renderer`，取值口径与白名单只在 `crates/yekitrim-polish/src/cover.rs`（**只此一份**，不在这一层抄第二份），认不出的值由那里**报错**。**能不能用**（编了 feature + 字体库非空）回在 `/api/health.cover_static`（`{compiled, fonts, ready}`）—— 前端据此把「生成封面」置灰并在卡片里写原因（通道弹窗已删）。⚠️ **review B6（2026-11-14）：health 公开、一律不回路径** —— `fonts_dir` 已从回包删掉，空字体的指路文案由前端给。
 
 

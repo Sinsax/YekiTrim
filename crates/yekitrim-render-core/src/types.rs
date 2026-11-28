@@ -789,6 +789,21 @@ impl Event {
         }
     }
 
+    /// 把贴纸的「关键词」改写成**实际解析到的来源**（老载体 `keyword` / 元素载体 `text`）。
+    ///
+    /// ⚠️ 与 [`Self::set_sticker_resolved`] 是一对：`process` Step 2 解析出 `source`+`name`
+    /// 之后如果让 `keyword` 留着 LLM 的**许愿词**（`emoji` / `emotion:awkward`），
+    /// 编辑器「贴纸包」那一行读的正是它 —— 症状是**图确实是 ysyk 的、标签却写着
+    /// 「emoji · 表情 · 内建」**，分类页还跟着变成 emoji 词表（2026-11-28 实测事故）。
+    /// 归一化之后 `keyword`/`source`/`name` 三个字段同口径，界面与画面不会再各说一套。
+    pub fn set_sticker_keyword(&mut self, keyword: &str) {
+        match self {
+            Event::Sticker { keyword: k, .. } => *k = keyword.to_string(),
+            Event::Element { kind, text, .. } if kind == "sticker" => *text = keyword.to_string(),
+            _ => {}
+        }
+    }
+
     pub fn sticker_name(&self) -> Option<&str> {
         match self {
             Event::Sticker { name, .. } => name.as_deref(),

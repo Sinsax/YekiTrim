@@ -50,6 +50,7 @@ pub const TASKS: &[&LlmTaskSpec] = &[
     &COVER_TITLE,
     &STICKER_PACK_TAGS,
     &STICKER_SCAN_TAGS,
+    &SFX_PACK_TAGS,
     &EMOJI_CLASSIFY,
     &CONNECTION_TEST,
     &LLM_TEST,
@@ -69,6 +70,10 @@ pub const STICKER_PACK_TAGS: LlmTaskSpec =
     spec("sticker_pack_tags", "utility", "贴纸包标签", None, true);
 pub const STICKER_SCAN_TAGS: LlmTaskSpec =
     spec("sticker_scan_tags", "utility", "贴纸扫描标签", None, true);
+/// 音效包构建：读文件名 → 从**内建 84 个 tag** 里挑（与贴纸包标签的关键差异：
+/// 音效 tag 是封闭词表，写词表外的一律丢弃）。
+pub const SFX_PACK_TAGS: LlmTaskSpec =
+    spec("sfx_pack_tags", "utility", "音效包标签", None, true);
 pub const EMOJI_CLASSIFY: LlmTaskSpec =
     spec("emoji_classify", "utility", "emoji 多维分类", None, true);
 pub const CONNECTION_TEST: LlmTaskSpec = spec("connection_test", "utility", "测试链路", None, false);

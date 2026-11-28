@@ -44,9 +44,10 @@ pub(crate) use fonts::{
     polish_fonts_import, polish_fonts_upload, FONT_UPLOAD_MAX_BYTES,
 };
 pub(crate) use assets::{
-    polish_asset_file, polish_emoji_catalog, polish_sfx_catalog, polish_sticker_file,
-    polish_sticker_frame, polish_sticker_library, polish_sticker_prewarm, polish_sticker_sources,
-    polish_video_library, polish_video_thumb,
+    polish_asset_file, polish_emoji_catalog, polish_sfx_blacklist_put, polish_sfx_catalog,
+    polish_sfx_pack_build, polish_sfx_pack_delete, polish_sfx_pack_upload,
+    polish_sfx_preview, polish_sticker_file, polish_sticker_frame, polish_sticker_library,
+    polish_sticker_prewarm, polish_sticker_sources, polish_video_library, polish_video_thumb,
 };
 pub(crate) use dhampir::{polish_dhampir_project, polish_dhampir_status, polish_dhampir_wasm};
 
@@ -345,8 +346,6 @@ pub(super) async fn polish_spawn(
     let jobs = state.jobs.clone();
     let job_id = id.clone();
     let kind = kind.to_string();
-    // 子进程日志落在服务数据目录下；data_dir 先克隆出来（spawn 的任务要 'static）
-    let data_dir = state.auth.data_dir().clone();
     // init/llm/process 都是整段同步代码（读改 polish.toml、逐段后处理），跑专用线程；
     // render/cover 是子进程 + 流式跟随，本来就不占 worker，跟着一起进去也无妨
     spawn_job(jobs.clone(), job_id.clone(), move || async move {
@@ -424,7 +423,7 @@ pub(super) async fn polish_spawn(
                         extra.push("--renderer".into());
                         extra.push(r);
                     }
-                    run_polish_child(&data_dir, &jobs, &job_id, "render", &path, &extra, owner).await
+                    run_polish_child(&jobs, &job_id, "render", &path, &extra, owner).await
                 }
                 "cover" => {
                     // 与 render 同理：封面也走外部 CLI（同样要能看进度、能取消）。
@@ -435,7 +434,7 @@ pub(super) async fn polish_spawn(
                         extra.push("--renderer".into());
                         extra.push(r);
                     }
-                    run_polish_child(&data_dir, &jobs, &job_id, "cover", &path, &extra, owner).await
+                    run_polish_child(&jobs, &job_id, "cover", &path, &extra, owner).await
                 }
                 _ => anyhow::bail!("未知 kind"),
             }

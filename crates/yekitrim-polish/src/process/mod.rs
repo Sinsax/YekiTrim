@@ -638,19 +638,31 @@ pub async fn cmd_process_with(
 
             for seg in &mut config.segments {
                 for event in &mut seg.events {
-                    let crate::project::Event::Sticker { keyword: kw, name, source, time, .. } = event else { continue };
-                    if kw.is_empty() { continue; }
-                    let needs_name = match name {
-                        Some(n) => n.is_empty() || n == "auto",
-                        None => true,
-                    };
-                    if !needs_name { continue; }
+                    // ⚠️ **只处理老载体**（`Event::Sticker`，LLM 与老工程用它的那个）。
+                    // `Element{kind:"sticker"}`（编辑器贴纸轨新建的）的 `name` 解析是另一件事 ——
+                    // 在这里顺手放开会把"用户手选的贴纸"也交给后处理重挑。见 process/AGENTS.md
+                    // 「贴纸有两个载体」：要放开就整条腿一起改（2b/cap/2c/障碍表五处）。
+                    if !matches!(event, crate::project::Event::Sticker { .. }) {
+                        continue;
+                    }
+                    // **读走访问器、写走 setter**（`render-core/src/types.rs` 一处）：
+                    // 这里先拷出几个小字段再还借用，下面才能用 `set_sticker_*` 写回。
+                    let kw = event.sticker_keyword().unwrap_or_default().to_string();
+                    if kw.is_empty() {
+                        continue;
+                    }
+                    let tag = event.sticker_tag().unwrap_or_default().to_string();
+                    let time = event.sticker_time().unwrap_or_default();
+                    let name_now = event.sticker_name().unwrap_or_default().to_string();
+                    if !name_now.is_empty() && name_now != "auto" {
+                        continue; // 已解析过：`source`/`name`/`keyword` 一律不动（幂等的根）
+                    }
 
                     let mut chosen: Option<(String, String)> = None;
                     for k in 0..sources.len() {
                         let src = sources[(rotation + k) % sources.len()].clone();
                         if let Some(name) = try_resolve_sticker(
-                            &src, kw, *time, &catalog, &sticker_dir, &client, &mut used_emojis,
+                            &src, &kw, &tag, time, &catalog, &sticker_dir, &client, &mut used_emojis,
                         ).await {
                             chosen = Some((src, name));
                             break;
@@ -660,8 +672,15 @@ pub async fn cmd_process_with(
 
                     match chosen {
                         Some((src, resolved_name)) => {
-                            *source = Some(src.clone());
-                            *name = Some(resolved_name.clone());
+                            event.set_sticker_resolved(&src, &resolved_name);
+                            // ⚠️ **关键词归一化**（2026-11-28）：解析出哪个来源，`keyword` 就写成
+                            // 哪个来源。不归一化的话它一直留着 LLM 的**许愿词**（`emoji` /
+                            // `emotion:awkward`），而编辑器「贴纸包」那一行读的正是它 ——
+                            // 症状是「图确实是 ysyk 的、标签却写着 emoji · 表情 · 内建」，
+                            // 分类页还跟着切到 emoji 词表（对不上 ⇒「选择贴纸 0 个」）。
+                            if kw != src {
+                                event.set_sticker_keyword(&src);
+                            }
                             *distribution.entry(src.clone()).or_insert(0) += 1;
                             tracing::info!("  ✓ sticker[{}] 「{}」→ {}", src, kw, resolved_name);
                         }
@@ -696,13 +715,25 @@ pub async fn cmd_process_with(
                     let mut swapped = false;
                     'swap: for seg in &mut config.segments {
                         for event in &mut seg.events {
-                            let crate::project::Event::Sticker { keyword: kw, name, source, time, .. } = event else { continue };
-                            if source.as_deref() != Some(from.as_str()) || kw.is_empty() { continue; }
+                            // 同 phase 1：只碰老载体（理由见上）
+                            if !matches!(event, crate::project::Event::Sticker { .. }) {
+                                continue;
+                            }
+                            if event.sticker_source() != Some(from.as_str()) {
+                                continue;
+                            }
+                            let kw = event.sticker_keyword().unwrap_or_default().to_string();
+                            if kw.is_empty() {
+                                continue;
+                            }
+                            let tag = event.sticker_tag().unwrap_or_default().to_string();
+                            let time = event.sticker_time().unwrap_or_default();
                             if let Some(new_name) = try_resolve_sticker(
-                                &to, kw, *time, &catalog, &sticker_dir, &client, &mut used_emojis,
+                                &to, &kw, &tag, time, &catalog, &sticker_dir, &client, &mut used_emojis,
                             ).await {
-                                *source = Some(to.clone());
-                                *name = Some(new_name.clone());
+                                event.set_sticker_resolved(&to, &new_name);
+                                // 让渡来源时关键词跟着走（否则又留下一条"包名与图不符"）
+                                event.set_sticker_keyword(&to);
                                 distribution.entry(from.clone()).and_modify(|c| *c = c.saturating_sub(1));
                                 *distribution.entry(to.clone()).or_insert(0) += 1;
                                 tracing::info!("  ⇄ sticker「{}」{} → {} ({})", kw, from, to, new_name);
@@ -732,6 +763,37 @@ pub async fn cmd_process_with(
                     .collect();
                 tracing::info!("  ✓ 贴纸分布: {}; 未解析 {} 个: {:?}", dist.join(" / "), unresolved.len(), unresolved);
             }
+        }
+    }
+
+    // Step 2 尾：**存量归一化** —— 已解析过的事件（`name` + `source` 都在）里还有
+    // `keyword` 留着 LLM 许愿词的那一类（`emoji` / `emotion:awkward`），一律改写成 `source`。
+    //
+    // ⚠️ 上面 Step 2 只处理"`name` 还空着"的事件，所以**存量工程不会再被它碰到** ——
+    //    而编辑器「贴纸包」那一行读的正是 `keyword`，于是老数据会一直显示成别的包。
+    //    这里补的那一趟只碰"三个字段各说一套"的事件：
+    //    `name`/`source` 缺一个就跳过（还没解析的交给 Step 2）、已经相等的跳过 ⇒ 幂等，
+    //    不需要任何"已迁移"标记。
+    {
+        let mut healed = 0usize;
+        for seg in &mut config.segments {
+            for event in &mut seg.events {
+                // 先拷出来再还借用（写走 setter）
+                let Some(src) = event.sticker_source().map(str::to_string) else { continue };
+                let Some(name) = event.sticker_name().map(str::to_string) else { continue };
+                if src.is_empty() || name.is_empty() {
+                    continue;
+                }
+                let kw = event.sticker_keyword().unwrap_or_default().to_string();
+                if kw.is_empty() || kw == src {
+                    continue;
+                }
+                event.set_sticker_keyword(&src);
+                healed += 1;
+            }
+        }
+        if healed > 0 {
+            tracing::info!("  · 贴纸关键词归一化 {healed} 条（keyword 改写为实际来源）");
         }
     }
 
@@ -1104,7 +1166,9 @@ pub async fn cmd_process_with(
     // Step 4: 自动下载 sticker + SFX
     note("下载贴纸 / 音效素材…");
     let downloader = assets::downloader::AssetDownloader::new(project_path);
-    download_keyword_assets(&downloader, &config, &sfx_blacklist).await;
+    // ⚠️ `&mut`：源站整组失效时下载会换替补，**事件里的 id 要跟着改**
+    //    （否则文件下到替补名下、出片按原 id 找 —— 成片依旧缺一声且日志全绿）。
+    download_keyword_assets(&downloader, &mut config, &sfx_blacklist).await;
     note("素材就绪 · 收尾写回…");
 
     // Step 5: 冷开场 / 回忆回溯意图 → `edl.clips`（第 5 批）。
@@ -2568,7 +2632,7 @@ y = "10%"
 
         let downloader = crate::assets::downloader::AssetDownloader::new(path);
         let blacklist = crate::process::sfx::load_sfx_blacklist(&cfg);
-        let errs = crate::process::download::download_keyword_assets(&downloader, &cfg, &blacklist).await;
+        let errs = crate::process::download::download_keyword_assets(&downloader, &mut cfg, &blacklist).await;
 
         // 接线通了 ⇒ 它去查了库、没查到、报出来（1 条）。没接线 ⇒ 0 条（静默什么都不做）。
         assert_eq!(
@@ -3460,6 +3524,80 @@ y = "10%"
             "显式中景仍是 1.3"
         );
     }
+    /// **Step 2 尾的关键词归一化**（2026-11-28「贴纸明明是 ysyk 的、面板写着 emoji」）：
+    /// `name` + `source` 都在、而 `keyword` 还是 LLM 许愿词的**存量**事件，必须改写成 `source`；
+    /// 已经同口径的那条**一个字节都不许动**。
+    ///
+    /// 两条贴纸都用 `manual: true`：挡住 `cap_events` 抽稀（额度只约束 LLM 生成量），
+    /// 好让这条只问归一化一件事 —— 顺带钉住「`keyword` **不在** manual 名下」，
+    /// 与 `camera.origin` 同一条口径（那是派生坐标，不是所有权字段）。
+    ///
+    /// ⚠️ 变异自证：把那段挪进 `if !sources.is_empty()`（或删掉）⇒ 这条当场红，
+    ///    而 `diagnose_process_idempotent` 照样**绿**（它的矩阵里没有这种分叉数据）。
+    #[tokio::test]
+    async fn sticker_keyword_is_normalized_to_source() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let path = dir.path();
+        std::fs::create_dir_all(path.join("data")).expect("建 data/");
+        std::fs::write(
+            path.join("data").join("subtitles.json"),
+            serde_json::json!([
+                {"index": 1, "start": 6.0, "end": 9.0, "text": "普通叙述", "html": ""},
+                {"index": 2, "start": 20.0, "end": 23.0, "text": "又一句", "html": ""},
+            ]).to_string(),
+        ).expect("写字幕");
+
+        let mut cfg = ProjectFile::example();
+        // 空来源表：Step 2 不解析、不联网 —— 这一条**只**问归一化那一趟
+        cfg.sticker_source = Vec::new();
+        cfg.segments = vec![Segment {
+            role: String::new(),
+            start: 0.0, end: 30.0, fx: "low".into(), note: String::new(),
+            events: vec![
+                // 分叉态（实测那一行的形状）
+                Event::Sticker {
+                    time: 6.84, end: Some(9.48),
+                    keyword: "emoji".into(), sticker_tag: Some("think".into()),
+                    name: Some("通知_提示_硬币".into()), source: Some("ysyk".into()),
+                    x: "28%".into(), y: "37%".into(),
+                    sfx: None, sfx_volume: None, manual_pos: None, manual: true,
+                },
+                // 同口径：不许被碰
+                Event::Sticker {
+                    time: 20.64, end: Some(22.71),
+                    keyword: "ysyk".into(), sticker_tag: Some("呆".into()),
+                    name: Some("呆_2".into()), source: Some("ysyk".into()),
+                    x: "28%".into(), y: "34%".into(),
+                    sfx: None, sfx_volume: None, manual_pos: None, manual: true,
+                },
+            ],
+            extra: Default::default(),
+        }];
+        std::fs::write(path.join("polish.toml"), cfg.to_toml_commented().expect("序列化"))
+            .expect("写 polish.toml");
+
+        cmd_process(path).await.expect("后处理");
+        let after = crate::project::load_project(path).expect("重读");
+        let rows: Vec<(String, Option<String>, Option<String>, Option<String>)> = after.segments[0]
+            .events
+            .iter()
+            .filter_map(|e| {
+                Some((
+                    e.sticker_keyword()?.to_string(),
+                    e.sticker_tag().map(str::to_string),
+                    e.sticker_name().map(str::to_string),
+                    e.sticker_source().map(str::to_string),
+                ))
+            })
+            .collect();
+        assert_eq!(rows.len(), 2, "两条贴纸都该还在：{rows:?}");
+        assert_eq!(rows[0].0, "ysyk", "keyword 必须归一化成实际来源：{rows:?}");
+        assert_eq!(rows[0].1.as_deref(), Some("think"), "tag 不动");
+        assert_eq!(rows[0].2.as_deref(), Some("通知_提示_硬币"), "name 不动");
+        assert_eq!(rows[0].3.as_deref(), Some("ysyk"), "source 不动");
+        assert_eq!(rows[1].0, "ysyk", "本来就同口径的那条原样保留");
+    }
+
     /// **空 x/y 在 Step 2b 之后必须被回填成真坐标**（P0 2026-10-20：模型漏写落点不该丢事件）。
     ///
     /// 变异自证：把 Step 2b 里写 x/y 那两行去掉 ⇒ 本条红（仍为空串）。
@@ -4008,7 +4146,7 @@ y = "10%"
         assert!(resolve_sfx_value("explosion", &empty, &mut used).is_some());
         // ② tag: 前缀
         let r = resolve_sfx_value("tag:爆笑搞笑", &empty, &mut used);
-        assert!(r.is_some(), "tag:コメディ 应解析到 id, got {:?}", r);
+        assert!(r.is_some(), "tag:爆笑搞笑 应解析到变体名, got {:?}", r);
         // ③ 模糊匹配: LLM 编造的自由描述词
         let r = resolve_sfx_value("night_ambient", &empty, &mut used);
         assert!(r.is_some(), "night_ambient 应模糊匹配到 id, got {:?}", r);
@@ -4077,37 +4215,86 @@ y = "10%"
 
     #[test]
     fn sfx_rules_match_keywords() {
-        // 场景关键词 → tag
-        assert_eq!(match_sfx_rule("然后地震了"), Some("tag:爆発"));
-        assert_eq!(match_sfx_rule("感觉大楼在塌"), Some("tag:破壊"));
-        assert_eq!(match_sfx_rule("然后摔下去了"), Some("tag:打撃"));
-        assert_eq!(match_sfx_rule("哈哈哈笑死我了"), Some("tag:コメディ"));
-        assert_eq!(match_sfx_rule("然后突然有人喊"), Some("tag:驚き"));
-        assert_eq!(match_sfx_rule("感觉做噩梦了"), Some("tag:恐怖"));
-        assert_eq!(match_sfx_rule("有人在敲门"), Some("tag:ドア"));
-        assert_eq!(match_sfx_rule("电话响了"), Some("tag:電話"));
-        assert_eq!(match_sfx_rule("私信骚扰"), Some("tag:電話"));
-        assert_eq!(match_sfx_rule("外面在下雨"), Some("tag:雨"));
-        assert_eq!(match_sfx_rule("现在不用洗澡啊"), Some("tag:雨"), "洗澡配雨声");
+        // 场景关键词 → tag（tag 一律是 catalog 真实词表，见 sfx.rs 那段注释）
+        assert_eq!(match_sfx_rule("然后地震了"), Some("tag:破坏倒塌"));
+        assert_eq!(match_sfx_rule("感觉大楼在塌"), Some("tag:破坏倒塌"));
+        assert_eq!(match_sfx_rule("然后摔下去了"), Some("tag:打击格斗"));
+        assert_eq!(match_sfx_rule("哈哈哈笑死我了"), Some("tag:爆笑搞笑"));
+        assert_eq!(match_sfx_rule("然后突然有人喊"), Some("tag:惊吓事件"));
+        assert_eq!(match_sfx_rule("感觉做噩梦了"), Some("tag:恐怖氛围"));
+        assert_eq!(match_sfx_rule("有人在敲门"), Some("tag:敲门推门"));
+        assert_eq!(match_sfx_rule("电话响了"), Some("tag:电话"));
+        assert_eq!(match_sfx_rule("私信骚扰"), Some("tag:电话"));
+        assert_eq!(match_sfx_rule("外面在下雨"), Some("tag:雨雷"));
+        assert_eq!(match_sfx_rule("现在不用洗澡啊"), Some("tag:浴室厕所"), "洗澡 → 浴室水声");
         assert_eq!(match_sfx_rule("施法了"), Some("tag:魔法"));
-        assert_eq!(match_sfx_rule("听到脚步声"), Some("tag:歩く"));
-        assert_eq!(match_sfx_rule("对吧呵呵"), Some("tag:コメディ"));
+        assert_eq!(match_sfx_rule("听到脚步声"), Some("tag:脚步"));
+        assert_eq!(match_sfx_rule("对吧呵呵"), Some("tag:爆笑搞笑"));
         // VTuber 情绪词
-        assert_eq!(match_sfx_rule("我要进入红温状态"), Some("tag:打撃"));
-        assert_eq!(match_sfx_rule("气死了"), Some("tag:打撃"));
-        assert_eq!(match_sfx_rule("太爽啦"), Some("tag:強調"));
-        assert_eq!(match_sfx_rule("我感觉我是大发明家高手啊"), Some("tag:強調"));
-        assert_eq!(match_sfx_rule("绷不住了"), Some("tag:コメディ"));
-        assert_eq!(match_sfx_rule("当当当当"), Some("tag:演出"));
+        assert_eq!(match_sfx_rule("我要进入红温状态"), Some("tag:打击格斗"));
+        assert_eq!(match_sfx_rule("气死了"), Some("tag:打击格斗"));
+        assert_eq!(match_sfx_rule("太爽啦"), Some("tag:胜负强调"));
+        assert_eq!(match_sfx_rule("我感觉我是大发明家高手啊"), Some("tag:胜负强调"));
+        assert_eq!(match_sfx_rule("绷不住了"), Some("tag:爆笑搞笑"));
+        assert_eq!(match_sfx_rule("当当当当"), Some("tag:乐器演奏"));
         // 无匹配 → None (宁缺毋滥)
         assert_eq!(match_sfx_rule("说我这都不会"), None);
-        assert_eq!(match_sfx_rule("老师就生气了"), Some("tag:打撃"), "生气→打撃 规则");
+        assert_eq!(match_sfx_rule("老师就生气了"), Some("tag:打击格斗"), "生气→打击 规则");
         assert_eq!(match_sfx_rule("apex启动"), None);
         assert_eq!(match_sfx_rule("后面就走不掉了"), None, "走不掉 不应匹配掉落");
         assert_eq!(match_sfx_rule("碰到她雷点了"), None, "雷点是比喻, 不应触发雷声");
         assert_eq!(match_sfx_rule("倒了杯水"), None, "catalog 无水声");
-        // 优先级: 吓 → 驚き 优先于 恐怖
-        assert_eq!(match_sfx_rule("好恐怖吓死我了"), Some("tag:驚き"));
+        // 优先级: 吓 → 惊吓事件 优先于 恐怖氛围
+        assert_eq!(match_sfx_rule("好恐怖吓死我了"), Some("tag:惊吓事件"));
+    }
+
+    /// **每条规则的 tag 都必须能在 catalog 里解析出变体**（2026-11-27 补的守卫）。
+    ///
+    /// 为什么要有它：这张表整片写过日文 tag（`tag:爆発` / `tag:コメディ` / `tag:ドア` …），
+    /// 而 catalog 里根本没有这些 tag ⇒ 23 条规则 **22 条静默失效**：
+    /// 自动补位一条都加不上、LLM 照抄的 tag 落地时被清空，**没有报错、没有日志、只是没声音**。
+    /// 当时没有任何测试会发现这件事 —— 上面那条 `sfx_rules_match_keywords` 只断言
+    /// "关键词 → 规则里那个字面量"，规则与字面量一起错时它照样是绿的。
+    ///
+    /// 判据落在**解析路径**（`resolve_sfx_tag`）而不是 tag 字符串比较：
+    /// 屏蔽列表为空时它返回 `Some(变体名)` 当且仅当 catalog 里真有这个 tag 且有可用变体。
+    #[test]
+    fn sfx_rules_all_resolve_against_catalog() {
+        use crate::assets::sfx_catalog;
+        let empty: Vec<String> = vec![];
+        for (keywords, tag_ref) in super::sfx::all_rules() {
+            let tag = tag_ref.strip_prefix("tag:").unwrap_or(tag_ref);
+            assert!(
+                sfx_catalog::all_tags().iter().any(|(t, _)| *t == tag),
+                "规则（关键词 {:?}）指向的 tag「{}」在 catalog 里不存在 —— \
+                 这条规则会静默失效（补位加不上、LLM 写的同款 tag 落地被清空）。\
+                 catalog 现有 tag 见 assets/sfx_catalog.json",
+                &keywords[..keywords.len().min(3)],
+                tag
+            );
+            let mut used = std::collections::HashSet::new();
+            let resolved = super::sfx::resolve_sfx_tag(tag, &empty, &mut used);
+            assert!(
+                resolved.is_some(),
+                "规则 tag「{}」在 catalog 词表里、却解析不出可用变体（变体名异常？）",
+                tag
+            );
+        }
+    }
+
+    /// 规则表不能有**重复的 tag 行**之外的退化：每条规则至少一个关键词、且关键词非空。
+    /// （规则是按顺序首个命中生效，空关键词会匹配一切 —— 那会让后面所有规则永远不可达。）
+    #[test]
+    fn sfx_rules_have_non_empty_keywords() {
+        // ⚠️ 必须用 `for &(…)` 解构：`all_rules()` 返回的是 `&[(&[&str], &str)]`，
+        //    直接 `for (keywords, tag)` 拿到的是 `&&[&str]` —— 对它 `for k in keywords` 不是
+        //    迭代器（E0277）。加一层 `&` 才是按值解构。
+        for &(keywords, tag) in super::sfx::all_rules() {
+            assert!(!keywords.is_empty(), "规则 {tag} 没有任何关键词");
+            for k in keywords {
+                assert!(!k.is_empty(), "规则 {tag} 里有空关键词（会命中一切文本）");
+            }
+        }
     }
 
     #[test]
@@ -4122,10 +4309,10 @@ y = "10%"
         let moments = find_uncovered_sfx_moments(&subs, &[], 4);
         assert_eq!(moments.len(), 4);
         assert_eq!(moments[0].0, 0.2);
-        assert_eq!(moments[0].1, "tag:ドア");
+        assert_eq!(moments[0].1, "tag:敲门推门");
         assert_eq!(moments[1].0, 5.2);
-        assert_eq!(moments[2].1, "tag:爆発");
-        assert_eq!(moments[3].1, "tag:雨");
+        assert_eq!(moments[2].1, "tag:破坏倒塌");
+        assert_eq!(moments[3].1, "tag:浴室厕所");
         // 预算截断
         let moments = find_uncovered_sfx_moments(&subs, &[], 2);
         assert_eq!(moments.len(), 2);

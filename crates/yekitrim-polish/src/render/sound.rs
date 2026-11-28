@@ -26,6 +26,33 @@ pub struct SoundEvent {
     pub duration: Option<f64>,
 }
 
+/// 音效事件引用的**文件名**：`name` → 磁盘上真实存在的那一个。
+///
+/// # 为什么不能写死 `.mp3`
+///
+/// 内建库（小森平）全是 mp3，所以历史上是 `format!("sfx/{name}.mp3")`。
+/// 但**用户导入的音效包**可以是 `.wav` / `.ogg` / `.flac` —— 复制进项目后文件名
+/// 保留原扩展名，写死 `.mp3` 就变成"文件明明在、出片说缺失"（只 warn 一句，成片少一声）。
+///
+/// 顺序：`<name>.<ext>` 里**存在的**第一个 → 都不存在时退回 `.mp3`（保持老口径，
+/// 让"真缺文件"的告警文案与以前一致）。
+///
+/// ⚠️ `name` 可能是**用户包 id**（`包名/变体键`）—— 下载/复制那一步已经把文件拍平到
+/// `sfx/<变体键>.<ext>`，所以这里只取最后一段。
+pub fn resolve_sound_file(sfx_dir: &Path, name: &str) -> String {
+    // 用户包 id → 变体键（与 `sfx_packs::split_entry_id` 同一条判据：带 `/` 就是）
+    let stem = name.rsplit_once('/').map(|(_, s)| s).unwrap_or(name);
+    // 顺序按"内建库最可能的格式"排，避免每个音效都先 stat 五下
+    const EXTS: &[&str] = &["mp3", "wav", "ogg", "m4a", "flac", "aac"];
+    for ext in EXTS {
+        let f = format!("{stem}.{ext}");
+        if sfx_dir.join(&f).is_file() {
+            return f;
+        }
+    }
+    format!("{stem}.mp3")
+}
+
 /// 后端无关地收集整片 SFX 事件，替代 Chrome 页面里的 `window.__SOUND_DATA`。
 ///
 /// 规则与 JS 一致：
@@ -33,7 +60,8 @@ pub struct SoundEvent {
 /// - 带 `sfx` 引用的事件（sticker/特效）也输出；
 /// - 事件跨度不足 1s 时按 1s 兜底；
 /// - ⚠️ **音效轨的眼睛关着 → 一条都不收**（`[stage.lanes] sfx`；缺字段时 = 竖画布下默认关）。
-pub fn collect_sound_events(config: &ProjectFile) -> Vec<SoundEvent> {
+pub fn collect_sound_events(config: &ProjectFile, project_path: &Path) -> Vec<SoundEvent> {
+    let sfx_dir = project_path.join("sfx");
     // **音效轨的显示开关**（2026-10-06：从 `[stage] portrait_sfx` 硬门改成轨道眼睛）。
     // 语义 = **按整类事件屏蔽**：只影响混音，`polish.toml` 里的事件**一个字都不动**
     // （与「屏蔽只做标记」同一条纪律：界面把眼睛点亮即完全恢复）。
@@ -52,7 +80,7 @@ pub fn collect_sound_events(config: &ProjectFile) -> Vec<SoundEvent> {
                     volume,
                     end,
                 } if !name.is_empty() => {
-                    let file = format!("sfx/{}.mp3", name);
+                    let file = format!("sfx/{}", resolve_sound_file(&sfx_dir, name));
                     let dur = end.map(|e| e - *time).unwrap_or(1.0).max(1.0);
                     (*time, file, volume, dur)
                 }
@@ -120,7 +148,7 @@ pub fn collect_sound_events(config: &ProjectFile) -> Vec<SoundEvent> {
                     end,
                     ..
                 } => {
-                    let file = format!("sfx/{}.mp3", name);
+                    let file = format!("sfx/{}", resolve_sound_file(&sfx_dir, name));
                     let dur = end.map(|e| e - *time).unwrap_or(1.0).max(1.0);
                     (*time, file, sfx_volume, dur)
                 }
@@ -253,8 +281,41 @@ pub fn sound_file_exists(project_path: &Path, event: &SoundEvent) -> bool {
 mod tests {
     use super::*;
 
+    /// 测试用的空项目目录（`resolve_sound_file` 要 stat，但这批用例只关心**收集**，
+    /// 空目录 ⇒ 一律退回 `.mp3`，与历史口径一致）。
+    fn tmpdir() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("yekitrim-sound-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos()).unwrap_or(0)))
+    }
+
     fn base_config() -> ProjectFile {
         ProjectFile::example()
+    }
+
+    /// **出片按真实扩展名找文件**：用户包可能是 `.wav` / `.ogg`，写死 `.mp3` 会让
+    /// "文件明明在"被报成"缺失"（成片少一声且只有一行 warn）。
+    #[test]
+    fn resolve_sound_file_picks_the_real_extension() {
+        let dir = tmpdir();
+        std::fs::create_dir_all(&dir).unwrap();
+        // 都放齐，验证**优先级**（mp3 第一）
+        for ext in ["mp3", "wav", "ogg", "flac"] {
+            std::fs::write(dir.join(format!("a.{ext}")), b"x").unwrap();
+        }
+        assert_eq!(resolve_sound_file(&dir, "a"), "a.mp3");
+
+        // 只有 wav（用户包的典型情形）
+        std::fs::write(dir.join("rain.wav"), b"x").unwrap();
+        assert_eq!(resolve_sound_file(&dir, "rain"), "rain.wav");
+
+        // 用户包 id（`包名/变体键`）⇒ 拍平到变体键再找
+        std::fs::write(dir.join("door.ogg"), b"x").unwrap();
+        assert_eq!(resolve_sound_file(&dir, "我的包/door"), "door.ogg");
+
+        // 一个都不存在 ⇒ 退回 .mp3（保持老的告警口径）
+        assert_eq!(resolve_sound_file(&dir, "nope"), "nope.mp3");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -266,7 +327,7 @@ mod tests {
             volume: Some(0.2),
             end: Some(2.5),
         }];
-        let events = collect_sound_events(&config);
+        let events = collect_sound_events(&config, &tmpdir());
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].file, "sfx/pop-notice.mp3");
         assert_eq!(events[0].volume, Some(0.2));
@@ -284,7 +345,7 @@ mod tests {
             sfx: Some("boom".into()),
             sfx_volume: Some(0.5),
         }];
-        let events = collect_sound_events(&config);
+        let events = collect_sound_events(&config, &tmpdir());
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].file, "sfx/boom.mp3");
         assert_eq!(events[0].r#type, "flash");
@@ -305,14 +366,14 @@ mod tests {
             end: Some(2.0),
         }];
         assert!(config.stage.lanes.is_auto(), "缺省 = 自动");
-        assert_eq!(collect_sound_events(&config).len(), 1, "横画布默认开");
+        assert_eq!(collect_sound_events(&config, &tmpdir()).len(), 1, "横画布默认开");
         config.canvas.orientation = "portrait".into();
-        assert!(collect_sound_events(&config).is_empty(), "竖画布缺字段 = 默认关");
+        assert!(collect_sound_events(&config, &tmpdir()).is_empty(), "竖画布缺字段 = 默认关");
         config.stage.lanes.sfx = Some(true);
-        assert_eq!(collect_sound_events(&config).len(), 1, "眼睛点亮即恢复");
+        assert_eq!(collect_sound_events(&config, &tmpdir()).len(), 1, "眼睛点亮即恢复");
         config.canvas.orientation = "landscape".into();
         config.stage.lanes.sfx = Some(false);
-        assert!(collect_sound_events(&config).is_empty(), "显式关 ⇒ 横画布也不出声");
+        assert!(collect_sound_events(&config, &tmpdir()).is_empty(), "显式关 ⇒ 横画布也不出声");
     }
 
     /// 源时间 → 成片时间：**一条 cue 落在多个段上就响多次**（重放）。

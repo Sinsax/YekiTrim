@@ -131,9 +131,34 @@ export const stickerFileUrl = (pid, dir, pack, name) => {
   return '/api/polish/sticker-file?' + q.toString()
 }
 
-/** 音效目录（只读）：`[{id, label, cat, tags}]`，已按全局 `[sfx] blacklist` 过滤。 */
-export const fetchSfxCatalog = (pid, dir, label = '') =>
-  api(`/api/polish/sfx-catalog?${qs(pid, dir)}`, { label })
+/** 音效目录（只读）：`[{id,label,cat,tags,variants,blacklisted}]`，默认按全局 `[sfx] blacklist` 过滤。
+ *
+ * ⚠️ 服务端**按 owner** 读黑名单（不再用进程默认账号那份）。编辑器只要"能选的"，
+ * 素材库「音效」页要**连被屏蔽的一起看**（那一页要能取消屏蔽）⇒ 传 `includeBlacklisted`。
+ * 返回值顶层还带 `blacklist`（当前那份）与 `tags`（全部 tag + 组数）。 */
+export const fetchSfxCatalog = (pid, dir, label = '', { includeBlacklisted = false } = {}) => {
+  const q = new URLSearchParams(qs(pid, dir))
+  if (includeBlacklisted) q.set('include_blacklisted', '1')
+  return api(`/api/polish/sfx-catalog?${q.toString()}`, { label })
+}
+/** 音效试听 URL（`<audio>` 直连；服务端按需抓源站并缓存到 `<data>/cache/sfx/`）。
+ *
+ * ⚠️ **不要**把 `taira-komori.net` 的地址直接写进 `<audio>` —— 站方要求不转载音效 URL，
+ * 且浏览器直连会被 Referer/网络条件坑。一律走这条。 */
+export const sfxPreviewUrl = (id, variant = '') => {
+  const q = new URLSearchParams({ id })
+  if (variant) q.set('variant', variant)
+  return `/api/polish/sfx-preview?${q.toString()}`
+}
+
+/** 写回音效屏蔽列表（**整份覆盖**当前账号的 `config.toml [sfx] blacklist`）。
+ *  传 `[]` = 全部解除屏蔽。 */
+export const putSfxBlacklist = (blacklist) =>
+  api('/api/polish/sfx-blacklist', {
+    method: 'PUT',
+    body: JSON.stringify({ blacklist }),
+    label: '保存音效屏蔽',
+  })
 
 /** 视频素材库（只读）：`[{name, file, duration}]`。
  *  `name` = **去扩展名**的素材键，就是 `[intro_outro]` 里存的那一串；

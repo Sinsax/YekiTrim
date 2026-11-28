@@ -12,7 +12,7 @@
 | `project` | 精修工程本体（`polish.toml`）、字幕、情绪轨道 |
 | `cover` | 封面：标题生成的一族纯函数 + 配置 / 背景 / 帧 |
 | `fonts` | 字体库（按 `Owner` 分库）|
-| `assets` | 素材：贴纸 / 视频库 / 音效 / emoji / 贴纸帧与预热 |
+| `assets` | 素材：贴纸 / 视频库 / 音效（目录 / 试听缓存 / 屏蔽）/ emoji / 贴纸帧与预热 |
 | `preview` | 预览端口 LRU + 两条预览入口 |
 | `dhampir` | 底座出片通道：就绪位 / 工程转译缓存 / wasm 转发 |
 | `mod` | 共享底座（成片产物清单 / `polish_spawn` / `scope_pid`）+ 给路由表的显式再导出 |
@@ -34,6 +34,9 @@
 - ⚠️ **`dir` 参数一律过 `crate::api::validated_project_dir`**（空串会在 server 进程 CWD 里写出 polish.toml）。
 - ⚠️ **`renderer` 白名单只有 `dhampir`**（`/polish/render`）与 `takumi`（`/polish/cover`，口径在 `cover.rs`）：
   认不出的值回 **400**，不静默当默认；本目录不抄第二份白名单。
+- ⚠️ **音效两件（`sfx-preview` / `sfx-blacklist`）**：试听抓源站落 `<data>/cache/sfx/` 再按 Range 供出
+  （站方要求不转载音效 URL，**别改成把 URL 直接回给浏览器**）；黑名单**按 `Owner` 读写**、
+  走 `patch_config_file` 整份覆盖，别用"读整份 Config 再写回"（会抹掉用户 config.toml 的注释）。
 - ⚠️ **子模块里的 `super::` 是 `crate::api::polish`，不是 crate 根**：跨层的写 `crate::auth` / `crate::model`
   或绝对路径 `crate::api::…`（本目录是 `api/polish/`，比 `api/*.rs` 深一层）。
 

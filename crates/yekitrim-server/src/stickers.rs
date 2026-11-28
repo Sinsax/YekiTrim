@@ -1,7 +1,7 @@
 //! 表情包（本地贴纸库）管理：列表 / 上传导入 / LLM 压缩构建 / 删除 / 预览图。
 //!
 //! 库的位置**按归属**（`yekitrim_core::owner`）：单人（托盘 / `--local-no-auth`）=
-//! `<数据目录>/resources/stickers/`；多用户 = `<数据目录>/users/<uid>/resources/stickers/`。
+//! 单人 = `<data>/users/<管理员 uid>/stickers/`；多用户 = `<data>/users/<uid>/stickers/`。
 //! 一个子文件夹 = 一个包（`<包名>/*.gif`），包名即 LLM 选贴纸时的 `keyword`。
 //!
 //! ⚠️ **2026-10-09 起这些接口在用户路由组里，登录用户都能调**（原为 `require_admin`）。

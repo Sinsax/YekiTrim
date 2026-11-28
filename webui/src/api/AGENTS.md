@@ -21,6 +21,7 @@
   `runLlmSegment` / `runProcess` / `runSilence` / `runRender` / `runCover` / `coverTitle` / `coverFrame` /
   `coverConfig` / `coverBackground` / `fetchProject` / `fetchSubtitles` / `saveSubtitles` /
   `saveProjectPatch` / `fetchStickerSources` / `fetchStickerLibrary` / `stickerFileUrl` / `fetchSfxCatalog` /
+  `sfxPreviewUrl`（试听必须走它，服务端抓源站并缓存 —— 别拼 `taira-komori.net`）/ `putSfxBlacklist` /
   `fontUrl` / `fetchFonts`；`watchJob` 从 `jobs.js` 再导出。
 - `jobs.js`：`jobsApi.{list,detail,cancel}`、`watchJob(id, {onEvent,onSummary,onDone})`（SSE 优先、
   轮询兜底）、`clipKey` / `outKey` / `idxKey` / `busyOn` / `snapshotStale` / `KIND_ZH` / `CLASS_ZH`。

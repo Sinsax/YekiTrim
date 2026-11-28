@@ -39,7 +39,9 @@ use super::polish::{
     polish_dhampir_wasm, polish_emoji_catalog, polish_emotion_get, polish_font, polish_fonts,
     polish_fonts_builtin, polish_fonts_default, polish_fonts_delete, polish_fonts_import,
     polish_fonts_upload, polish_init, polish_llm, polish_llm_segment, polish_process,
-    polish_project_get, polish_project_put, polish_render, polish_select_version, polish_sfx_catalog,
+    polish_project_get, polish_project_put, polish_render, polish_select_version,
+    polish_sfx_blacklist_put, polish_sfx_catalog, polish_sfx_pack_build,
+    polish_sfx_pack_delete, polish_sfx_pack_upload, polish_sfx_preview,
     polish_silence, polish_sticker_file, polish_sticker_frame, polish_sticker_library,
     polish_sticker_prewarm, polish_sticker_sources, polish_subtitles_get, polish_subtitles_put,
     polish_video_library, polish_video_thumb, FONT_UPLOAD_MAX_BYTES,
@@ -314,7 +316,7 @@ pub(crate) fn router_inner(state: Arc<AppState>, extra: Router<Arc<AppState>>) -
         // 内建 emoji 目录（编辑器表情面板：881 条按 tag 分组）
         .route("/polish/emoji-catalog", get(polish_emoji_catalog))
         .route("/polish/sticker-file", get(polish_sticker_file))
-        // 音效目录（编辑器里音效事件的列表选择）
+        // 音效目录（编辑器里音效事件的列表选择；`?include_blacklisted=1` 供素材库音效页）
         .route("/polish/sfx-catalog", get(polish_sfx_catalog))
         // ⚠️ `/polish/video-library` **不在这里**，它挂在 `assets` 路由上（素材库那一组）——
         // 同一路径挂两个 Router 再 merge，axum 会 panic（"Overlapping method route"），
@@ -349,6 +351,28 @@ pub(crate) fn router_inner(state: Arc<AppState>, extra: Router<Arc<AppState>>) -
         .route("/polish/video-thumb", get(polish_video_thumb))
         // 视频素材库列表
         .route("/polish/video-library", get(polish_video_library))
+        // 音效试听（素材库音效页）：服务端按需抓一次源站、落 `<data>/cache/sfx/` 再按 Range 供出。
+        // ⚠️ **不让浏览器直连源站** —— 站方要求不转载音效 URL，见 handler 的说明。
+        // ⚠️ **必须在 `assets` 这一组（不挂 `enforce_scope`）**：音效库是程序级资产、
+        //    不在任何工程里；挂进 `polish` 那组的话，"没有工程也能试听"就会被 scope 判掉。
+        .route("/polish/sfx-preview", get(polish_sfx_preview))
+        // 音效屏蔽（整份覆盖写当前 owner 的 `config.toml [sfx] blacklist`）
+        .route("/polish/sfx-blacklist", put(polish_sfx_blacklist_put))
+        // **用户音效包**（2026-11-28）：导入 / 删除。与贴纸包同一套心智 ——
+        // 上传 zip 解压成 `<data>/users/<uid>/sfx/<包名>/`，子目录名当包内细分组。
+        // ⚠️ 挂在这里（`assets` 组、不挂 `enforce_scope`）：音效库是**程序级/账号级**资产，
+        //    不属于任何工程 —— 与 `sfx-catalog` / `sfx-preview` 同一条判据。
+        .route(
+            "/polish/sfx-packs/upload",
+            post(polish_sfx_pack_upload).layer(axum::extract::DefaultBodyLimit::max(
+                crate::stickers::UPLOAD_HARD_MAX_BYTES,
+            )),
+        )
+        .route("/polish/sfx-packs/:name", axum::routing::delete(polish_sfx_pack_delete))
+        // **LLM 构建音效包清单**（写 `<包名>/pack.toml`）—— 与贴纸的
+        // `/polish/stickers/:pack/build` 对应。未构建的包能试听、能手选，
+        // 但 **LLM 生成事件时读不到它**（候选只列有清单的包）。
+        .route("/polish/sfx-packs/:name/build", post(polish_sfx_pack_build))
         // 字体库管理（2026-10-09 从 admin 层挪来）
         .route("/polish/fonts/import", post(polish_fonts_import))
         // **拖拽上传**：请求体是字体的原始字节（`application/octet-stream`，不是 multipart
