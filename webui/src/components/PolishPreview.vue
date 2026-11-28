@@ -1729,7 +1729,11 @@ async function startDhampir() {
   // fire-and-forget：不 await、不挡任何东西。
   // ⚠️ 服务端逐张串行解，所以这里**不要**按贴纸并发发多个请求。
   callPrewarmStickers()
-  // 同上：**出声**由用户声明决定（`applyAudio` 才是唯一权威，这里只是建源时的初值）。
+  // 同上：**出声**由「用户声明 ∧ 正在播放」决定（`applyAudio` 才是唯一权威，这里只是建源时的初值）。
+  // 这里 `play()` 只是**预热**（followPlayback 的跟播前提 + 提前把解码缓冲喂起来）；
+  // 加载期 `playing` 还是 false ⇒ `applyAudio` 会把它们压成静音 —— 门帘这几秒不出声。
+  // （2026-11-27 用户实测"加载 Dhampir 预览时浏览器在放视频的声音"：根因是把源压回暂停的
+  // 镜像循环要等 `toggleDhampir` 里 `await startDhampir()` 之后的第一帧 rAF 才跑。）
   // 音高保持也在这里装一次：纠偏会改 `playbackRate`，装晚了会先跑调一小段。
   for (const v of dhampirVideos) {
     dhampirPreservePitch(v)
@@ -3530,6 +3534,10 @@ function setPlaying(v) {
   const on = !!v
   if (playing.value === on) return
   playing.value = on
+  // **出声跟着播放状态走**（出声 = 用户声明 ∧ 正在播放）：起播解除引擎源的静音、
+  // 暂停立刻压回静音。没有这一句，加载期被压静音的源在起播后没人解除 —— 画面动了、
+  // 声音要等下一次恰好路过 applyAudio 的路径才回来。
+  applyAudio()
   emit('playing', on)
 }
 
@@ -3671,7 +3679,13 @@ function applyAudio() {
     dv.volume = vol
     // ⚠️ **备用那套不给它解除静音** —— 换台前后两套源指向同一段素材，
     //    备用那块若出声就会与台上那块叠成两声。判据用"是不是 twin"，不用下标。
-    dv.muted = m || dhampirIsTwin(dv)
+    // ⚠️ **没在播就不出声**（2026-11-27）：出声 = 用户声明 ∧ 正在播放，不是只按声明。
+    //    `startDhampir`/换片段会把源 `play()` 起来当**预热**（followPlayback 的跟播前提），
+    //    而把它们压回暂停的镜像循环要等 `toggleDhampir` 里 `await startDhampir()` 之后
+    //    的第一帧 rAF 才跑 —— 中间隔着动图/字幕/字体几个 await（正是"加载中"那几秒）。
+    //    只按声明铺的话，门帘还没掀、用户没按播放，视频声音已经自己放出来了（用户实测）。
+    //    起播/暂停由 `setPlaying` 翻状态后各铺一次，出声跟着播放走。
+    dv.muted = m || dhampirIsTwin(dv) || !playing.value
   }
 }
 

@@ -289,8 +289,41 @@ ok(syncUnionOk(SRC), 'syncDhampirTime 只遍历 dhampirVideos —— 换台中�
   ok(syncUnionOk(bad), '变异自证：syncDhampirTime 退回只看台上那批竟然没被识别出来', true);
 }
 
+// ---- ⑫ 出声跟着「正在播放」走：没在播的引擎源不许出声 ----
+//
+// 现场（2026-11-27 用户报"加载 Dhampir 预览时浏览器会播放视频的声音"）：出片页挂载默认进
+// Dhampir，`startDhampir` 建完源就 `play()`（预热/followPlayback），而把源压回暂停的镜像循环
+// 要等 `toggleDhampir` 里 `await startDhampir()` 之后的第一帧 rAF 才跑 —— 中间隔着动图/字幕/
+// 字体几个 await。applyAudio 若只按「用户声明」铺状态，这几秒门帘还没揪、视频声音已经出来了
+//（`play()` 当时元素还是 muted 的 ⇒ 浏览器放行，随后解除静音 ⇒ 无手势也出声）。
+const audibleOnlyWhenPlayingOk = (src) => {
+  const fn = bodyOf(src, 'applyAudio');
+  return !!fn && /dv\.muted = m \|\| dhampirIsTwin\(dv\) \|\| !playing\.value/.test(fn);
+};
+ok(audibleOnlyWhenPlayingOk(SRC), 'applyAudio 的引擎源静音条件丢了 !playing.value —— 加载/暂停态的源自己出声（加载 Dhampir 预览时视频在响）');
+{
+  const bad = mutate('    dv.muted = m || dhampirIsTwin(dv) || !playing.value',
+                     '    dv.muted = m || dhampirIsTwin(dv)');
+  ok(audibleOnlyWhenPlayingOk(bad), '变异自证：去掉 !playing.value 竟然没被识别出来', true);
+}
+
+// ---- ⑬ 播放状态翻转必须经 applyAudio 落到元素 ----
+//
+// ⑫ 有了 `!playing.value` 之后，起播/暂停各要铺一次 —— 否则加载期被压静音的源起播后没人解除
+//（画面动了、声音没回来）。`setPlaying` 是 playing 的唯一正规翻转点（换片段那次直赋值
+// 自带 applyAudio，不走这里）。
+const playLaysAudioOk = (src) => {
+  const fn = bodyOf(src, 'setPlaying');
+  return !!fn && /applyAudio\(\)/.test(fn);
+};
+ok(playLaysAudioOk(SRC), 'setPlaying 没有 applyAudio()：起播/暂停不翻源出声态 —— 加载期静音的源起播后没声音');
+{
+  const bad = mutate('  applyAudio()\n  emit(\'playing\', on)', '  emit(\'playing\', on)');
+  ok(playLaysAudioOk(bad), '变异自证：删掉 setPlaying 里的 applyAudio 竟然没被识别出来', true);
+}
+
 console.log(`✓ 预览出声契约：${checks} 项全绿（含 ${mutations} 处变异自证）`);
 console.log('  源出声(不写死 muted) / startDhampir 铺状态 / Dhampir tick 补 SFX / applyAudio 覆盖两批 / 备用恒静音 /');
 console.log('  出声时纠偏收窄 + preservesPitch / 纠偏真走那个区间 / 建源与换绑都装音高保持 /');
 console.log('  Dhampir 下台上那块闭麦 / 音量铺到 SFX / 换台补 sync /');
-console.log('  拖动后叫醒引擎源 + 落位置覆盖并集');
+console.log('  拖动后叫醒引擎源 + 落位置覆盖并集 / 出声⇔正在播放 + setPlaying 铺状态');

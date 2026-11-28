@@ -596,8 +596,10 @@ const highlightInput = ref('')
 const letterSpacing = ref(8)
 const lineHeight = ref(1.7)
 const textShadow = ref(true)
-const gradientDir = ref('left')
-const vignette = ref(0.08)
+// ⚠️ 这两个初值 = Rust `default_cover_gradient_dir()` / `default_cover_vignette()` 的镜像
+// （2026-11-28：默认**不开滤镜** —— 以前 `left` + 0.08 让每个新封面一打开就压着一层暗色斜切）。
+const gradientDir = ref('none')
+const vignette = ref(0)
 const align = ref('left')
 /** 字幕高亮色（`[style.subtitle] highlight_color`）—— 出片的渐变底色由它推导，预览要跟着它 */
 const subtitleHlColor = ref('')
@@ -1335,7 +1337,10 @@ const gradientStyle = computed(() => {
   const [r, g, b] = coverGradientRgb()
   const from = `rgba(${r},${g},${b},0.55)`
   const to = `rgba(${r},${g},${b},0.15)`
-  if (dir === 'radial') return { background: `radial-gradient(ellipse at 30% 50%, ${from} 0%, ${to} 60%, transparent 100%)` }
+  // ⚠️ **径向只做暗角**（2026-11-28 用户口径；与 Rust `cover.rs` 同源，改一边必须改另一边）：
+  // 中心透明 → 四周压暗，几何与 `.vignette-layer` 同一套。**别**把渐变起始色铺在中心 ——
+  // 那个色是由字幕高亮色推出来的暗色，铺上去就是封面正中一块黑斑。
+  if (dir === 'radial') return { background: `radial-gradient(ellipse at 55% 45%, transparent 50%, rgba(0,0,0,0.55) 100%)` }
   if (dir === 'right') return { background: `linear-gradient(270deg, ${from} 0%, ${to} 50%, transparent 100%)` }
   if (dir === 'top') return { background: `linear-gradient(180deg, ${from} 0%, ${to} 50%, transparent 100%)` }
   if (dir === 'bottom') return { background: `linear-gradient(0deg, ${from} 0%, ${to} 50%, transparent 100%)` }
@@ -1986,8 +1991,9 @@ async function loadCoverConfig(retrying = false) {
     letterSpacing.value = parseFloat(String(cfg?.cover?.letter_spacing ?? '8').replace('px', '')) || 8
     lineHeight.value = cfg?.cover?.line_height ?? 1.7
     textShadow.value = cfg?.cover?.text_shadow ?? !(cfg?.cover?.shadow_dir === 'none' || (cfg?.cover?.shadow_intensity ?? 1) <= 0)
-    gradientDir.value = cfg?.cover?.gradient_dir || 'left'
-    vignette.value = cfg?.cover?.vignette ?? 0.08
+    // 兜底值同 Rust 默认（**不开滤镜**）；`vignette` 用 `??` 而不是 `||` —— 0 是合法值。
+    gradientDir.value = cfg?.cover?.gradient_dir || 'none'
+    vignette.value = cfg?.cover?.vignette ?? 0
     // 默认左对齐 —— 与后端 `default_cover_text_align()`、默认预设「左文」保持一致
     align.value = cfg?.cover?.text_align || 'left'
     // 渐变底色的色相来自**字幕**的高亮色（`cover.rs::build_cover_html` 就是这么取的），

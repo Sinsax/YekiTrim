@@ -60,7 +60,7 @@
 - 媒体地址一律走 `utils.js::clipMediaUrl(pid, dir, 相对路径)`，别自己拼 `/api/media/...`。
 - ⚠️ **预览视频源优先 `_preview_video`**（`_proxy_720.mp4`）；拿不到回落 `source.video`。
 - 音量/静音 = **总音量，必须落到所有会出声的 `<video>` 元素**；读回 `isFinite` + clamp，**不能写 `parseFloat(...) || 1`**；**别写死 `66vh`**。
-  ⚠️ **Dhampir 模式下"台上那块"不是唯一在响的元素**：`applyAudio()` 必须覆盖 `dhampirSourceVideos` ∪ `dhampirTwins`（**不能只遍历 `dhampirVideos`** ⇒ 旧元素仍在播 = **声音翻倍**）；备用那批一直 `muted`；**`tick()` 的 Dhampir 分支不许漏 `player.sync(...)`**。详见 ②.6；判据 `node scripts/check-preview-audio.mjs`。
+  ⚠️ **Dhampir 模式下"台上那块"不是唯一在响的元素**：`applyAudio()` 必须覆盖 `dhampirSourceVideos` ∪ `dhampirTwins`（**不能只遍历 `dhampirVideos`** ⇒ 旧元素仍在播 = **声音翻倍**）；备用那批一直 `muted`；**`tick()` 的 Dhampir 分支不许漏 `player.sync(...)`**；**出声 = 用户声明 ∧ 正在播放**（2026-11-27：加载期 `startDhampir` 的预热 `play()` 不得出声 —— 引擎源静音条件带 `!playing.value`，`setPlaying` 翻状态后各 `applyAudio()` 一次）。详见 ②.6；判据 `node scripts/check-preview-audio.mjs`。
 - ⚠️ **字体栈顺序 / 字重必须与出片侧同源**（`.cap` ↔ 服务端 `fallback_stack`：透传 `fetchFonts().fallback_stack`，**不许前端写死字体名**，否则「设为默认」对预览永远无效）：漂了 = 预览雅黑、成片 Noto。
 - ⚠ 动图（GIF/动画 WebP）由底座自己解码（v6）：四条硬规矩与调用顺序陷阱见 **②.4**。
 - ⚠ **预览看着正常 ≠ 出片正常**：出片的事实来源是 `templates/index.html` 的 canvas 路径（`yekitrim-render-core/src/timeline.rs` 是平行实现）。"改完没反应"先怀疑没重建/没重启。
@@ -87,7 +87,16 @@
 ### 其他组件
 - `ProjectClipsSection`（切片页卡片墙）：⚠️ **删除不是任务（不发 job），刷新只能由前端自己驱动**。`silent` 必须真的静默；**「剪切」按钮不禁用，忙时只改文案**。
   ⚠️ 「精修」按钮（`goPolish`）：**只有老片段**才补 init，且**必须 `await waitJobDone(id)` 再跳**（否则撞 `polish.toml not found`）；`polishOpening` 防连点，`jobClosers` 在 `onUnmounted` 里关。
-- `MediaLibrary`（首页素材库，**文件夹管理器**布局；`FontLibrary`/`StickerPacks` 已并入它）：左类型导航 / 右网格，**一个网格画三种** —— ⚠️ 别再退回"三块各自实现"。规则与坑见 ⑥。
+- `MediaLibrary`（首页素材库，**文件夹管理器**布局；`FontLibrary`/`StickerPacks` 已并入它）：左类型导航 / 右网格，**一个网格画四种**（视频 / 贴纸 / 音效 / 字体）—— ⚠️ 别再退回"各块各自实现"。
+  ⚠️ 音效页与贴纸页**同一套三栏**：左 `.ml-nav`（176px）= **音效库列表**（内建「小森平」+ 用户导入包，
+  各一张卡 + 「导入音效包」虚线入口）/ 中 `.ml-main` = **两级 chips + 音效组行列表** /
+  右 `.ml-side` = 选中组的变体 + 试听。
+  ⚠️ **左侧是"库的位置"，不是分类**：大类（`group`，7 个）与小类（`subgroup`，147 个）都是中间的
+  chips。别把分类铺到左侧 —— 那会把库的位置占满，新导入的库没地方放（用户原话
+  「因为日后需要添加新的音效包，你左边直接沾满时何意味」）。
+  音效组用**行列表**不用卡片格（无画面可看，纯文字格费眼）。
+  `<audio>` 只有一只、切页/换条/卸载都要停（`stopSfx`），
+  别用 `new Audio()` 自建（会绕开错误提示）。规则与坑见 ⑥。
 - `SliderField`：⚠ **设置页的数值项走 `components/SliderField.vue`**（滑块 + 行尾可直填数字框）。
   ⚠ **滑块宽度 = 所在格子的 1/3**（`input[type=range]` 的 `width:100%` 会被 flex-basis 盖掉，**别改回 100%**）。
 - `JobList`/`jobs/JobDrawer`（任务列表与按钮门控 —— "界面哑火"的来源）：
@@ -106,7 +115,7 @@
 - `RecorderConfig`：`GET /api/admin/ingest` **绝不回 `api_pass` 明文/token_hash**，只回 `api_pass_set`；`api_base` 非空要带 scheme。⚠ 卡内只有**录制软件**与**自动入库**两块 —— **没有「两样都收」的模式切换**；敏感项在「高级」里折叠。
 - `AppModal` / `AppDialog` / `JobDrawer`：焦点圈定 / Esc / 滚动锁统一走 `composables/useOverlay.js`。
   ⚠️ **AppDialog 不再整块挂 `@keydown.enter`**：默认焦点在**取消**，只有 prompt 的输入框允许 Enter 提交。
-- 其余：`HomeClipsOverview`（自动 `polish init` 传**绝对目录**）· `SubtitleEditor`（`addSub()` 后按 `start` 排序）· `prepare/SubtitleTrack`（横排属性条）· `MaterialList`（**改一边等于改两边**）· `StickerPicker`/`SfxPicker`（`name` = **去扩展名的文件名**）。
+- 其余：`HomeClipsOverview`（自动 `polish init` 传**绝对目录**）· `SubtitleEditor`（`addSub()` 后按 `start` 排序）· `prepare/SubtitleTrack`（横排属性条）· `MaterialList`（**改一边等于改两边**）· `StickerPicker`（⚠️ **「贴纸包」那一级读 `source`、只回落 `keyword`**：`keyword` 是 LLM 的许愿词（`emoji` / `emotion:awkward`），读它会显示成别的包、分类页也跟着错 —— 判据是 `effPack`，改动理由见 `polish/src/process/AGENTS.md`「Step 2 的许愿词」）/`SfxPicker`（`name` = **去扩展名的文件名**）。
 - ⚠️ **预览的 `<canvas id="dhampir-canvas">` 一被换掉就整块黑**：底座 attach 一页只接一次、**没有 detach** ⇒ **任务完成与切片段都不许重挂** —— 见 ②.7。
 
 > 改动只允许落在本目录；跨模块改动先读对方卡，并跑两条门禁。

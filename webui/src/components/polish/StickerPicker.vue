@@ -47,7 +47,7 @@ const props = defineProps({
   pack: { type: String, default: '' },     // 事件里的来源/包名（贴纸态元素是 text）
   tag: { type: String, default: '' },      // sticker_tag
   name: { type: String, default: '' },     // 去扩展名的文件名；emoji 是码点
-  source: { type: String, default: '' },   // source（emoji / 包名）—— 只读回显用
+  source: { type: String, default: '' },   // source（emoji / 包名）—— **包名的真值**，见 effPack
 })
 const emit = defineEmits(['pick', 'retry-lib'])
 
@@ -83,8 +83,20 @@ const packs = computed(() => (props.lib || []).map((p) => {
   for (const t of tags) for (const f of (t.files || [])) if (!seen.has(f)) { seen.add(f); tagged++ }
   return { name: p.name, built: !!p.built, description: p.description || '', tags, files, tagged }
 }))
-const isEmoji = computed(() => props.pack === EMOJI)
-const activePack = computed(() => packs.value.find((p) => p.name === props.pack) || null)
+/**
+ * 「这个事件现在到底属于哪个包」——**以 `source` 为准**；`pack`（= `keyword`）只在
+ * 事件还没解析过（老工程 / 刚由 LLM 写入）时才用得上。
+ *
+ * ⚠️ 这条是 2026-11-28 那个缺陷的正手：`process` Step 2 解析出 `source`+`name` 之后
+ * **不改 `keyword`**，于是事件会长成
+ * `keyword="emoji" / sticker_tag="think" / name="通知_提示_硬币" / source="ysyk"`。
+ * 本面板原来读 `pack`（= keyword）⇒ 显示「emoji · 表情 · 内建」、分类页切去 emoji 词表
+ * （`think` 对不上 ⇒「选择贴纸 0 个」），而画面上的图是 ysyk 的 —— **三个字段不一致时，
+ * `source` 才是真的那一个**（渲染侧按 `name` 去 `sticker_map` 取图，也从来不看 keyword）。
+ */
+const effPack = computed(() => props.source || props.pack)
+const isEmoji = computed(() => effPack.value === EMOJI)
+const activePack = computed(() => packs.value.find((p) => p.name === effPack.value) || null)
 
 function packMeta(p) {
   if (!p) return ''
@@ -105,7 +117,7 @@ onMounted(async () => {
 /* ---------------- 路径区（恒 3 行） ---------------- */
 const rows = computed(() => {
   const raw = [
-    { lv: 'pack', chip: '贴纸包', val: props.pack, meta: props.pack ? (isEmoji.value ? '表情 · 内建' : packMeta(activePack.value)) : '' },
+    { lv: 'pack', chip: '贴纸包', val: effPack.value, meta: effPack.value ? (isEmoji.value ? '表情 · 内建' : packMeta(activePack.value)) : '' },
     { lv: 'tag', chip: '分类', val: tagPicked.value ? (props.tag || '全部（不限）') : '', meta: '' },
     { lv: 'sticker', chip: '贴纸', val: props.name ? (isEmoji.value ? (safeEmoji(props.name) + ' ' + props.name) : props.name) : '', meta: '' },
   ]
@@ -148,7 +160,7 @@ const allTagMeta = computed(() => {
 })
 /** 当前分类下的文件（「全部（不限）」= 包内全部图）。 */
 const currentFiles = computed(() => {
-  if (!props.pack) return []
+  if (!effPack.value) return []
   if (isEmoji.value) {
     const out = []
     for (const g of emojiGroups.value) {
@@ -170,11 +182,13 @@ const shownFiles = computed(() => {
 })
 const secCount = computed(() => {
   if (edit.value === 'pack') return packs.value.length + ' 个'
-  if (edit.value === 'tag') return props.pack ? props.pack : '先选一个包'
+  if (edit.value === 'tag') return effPack.value ? effPack.value : '先选一个包'
   return shownFiles.value.length + ' ' + (isEmoji.value ? '个' : '张')
 })
-const srcFor = (file) => stickerFileUrl(props.pid, props.dir, props.pack, file)
-const failKey = (stem) => props.pack + '/' + stem
+// 缩略图与失败键都按**实际的包**取：`keyword` 说是 emoji、`source` 说是 ysyk 时，
+// 按 keyword 拼 URL 会全部 404（面板一片占位图），而图其实就在 ysyk 里。
+const srcFor = (file) => stickerFileUrl(props.pid, props.dir, effPack.value, file)
+const failKey = (stem) => effPack.value + '/' + stem
 const isBroken = (stem) => !!imgFailed.value[failKey(stem)]
 function markFailed(stem) { imgFailed.value = { ...imgFailed.value, [failKey(stem)]: true } }
 
@@ -197,7 +211,7 @@ function resetLevel() {
   qTag.value = ''
   qSticker.value = ''
   tagPicked.value = !!props.tag
-  edit.value = !props.pack ? 'pack' : !props.tag ? 'tag' : 'sticker'
+  edit.value = !effPack.value ? 'pack' : !props.tag ? 'tag' : 'sticker'
 }
 watch(selfKey, (now) => {
   if (lastEmit && now === lastEmit) { lastEmit = null; return } // 自己刚写的那份
@@ -207,7 +221,9 @@ watch(selfKey, (now) => {
 
 function go(lv) { edit.value = lv }
 function pickPack(name) {
-  if (name === props.pack) { edit.value = 'tag'; return } // 重选同一个包：更深的选择保留
+  // ⚠️ 与**显示中的那个包**比，不是 `props.pack`：`keyword` 分叉成 `emoji` 而 `source` 是
+  // ysyk 时，点回到「ysyk」不该被当成"换包"（那会清掉 tag/name/source 三样）。
+  if (name === effPack.value) { edit.value = 'tag'; return } // 重选同一个包：更深的选择保留
   pick({ keyword: name, sticker_tag: null, name: null, source: null })
   tagPicked.value = false
   edit.value = 'tag'
@@ -219,14 +235,16 @@ function pickTag(t) {
   edit.value = 'sticker'
 }
 function pickFile(stem) {
-  pick({ keyword: props.pack, sticker_tag: props.tag || null, name: stem, source: props.pack })
+  // ⚠️ `keyword` 与 `source` 一起写**当前的包**（已显示的那个）：选中的这张图就在它里面，
+  //    顺着它写 keyword 顺便把历史上分叉的数据就地治好（下次 process 也不会再被重挑）。
+  pick({ keyword: effPack.value, sticker_tag: props.tag || null, name: stem, source: effPack.value })
 }
 function pickCodepoint(cp) {
   // emoji：keyword 固定 emoji（LLM 与 process 同一口径），source=emoji，name=码点。
   pick({ keyword: EMOJI, sticker_tag: props.tag || null, name: cp, source: EMOJI })
 }
 function autoPick() {
-  pick({ keyword: props.pack, sticker_tag: props.tag || null, name: null, source: null })
+  pick({ keyword: effPack.value, sticker_tag: props.tag || null, name: null, source: null })
 }
 /** 手填/粘贴：宽进 —— 判合法只有一份（engine.js::safeEmoji / isEmojiName），这里不判。 */
 function applyPlain() {

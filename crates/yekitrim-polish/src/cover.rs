@@ -1018,7 +1018,12 @@ fn build_cover_page_ex(
         "right" => format!("linear-gradient(270deg,{} 0%,{} 50%,transparent 100%)", grad_from, grad_to),
         "top" => format!("linear-gradient(180deg,{} 0%,{} 50%,transparent 100%)", grad_from, grad_to),
         "bottom" => format!("linear-gradient(0deg,{} 0%,{} 50%,transparent 100%)", grad_from, grad_to),
-        "radial" => format!("radial-gradient(ellipse at 30% 50%,{} 0%,{} 60%,transparent 100%)", grad_from, grad_to),
+        // ⚠️ **径向只做暗角**（2026-11-28 用户口径：「径向应该只保留暗角功能而不添加中心的黑区」）：
+        // 中心透明 → 四周压暗，几何与 `.vignette-layer` 同一套（`ellipse at 55% 45%` / 停点 50%）。
+        // ⚠️ 别退回 `radial-gradient(…, grad_from 0%, …)`：`grad_from` 是**由字幕高亮色推出的暗色**
+        // （`(1-r)*30` 那一组，亮色 ⇒ 近黑），把它铺在 0% 就是在封面正中糊一块脏斑 —— 用户报的正是它。
+        // 边缘不透明度取 0.55（= 旧渐变起点那一档），与改动前"最暗处"的强度对齐。
+        "radial" => "radial-gradient(ellipse at 55% 45%,transparent 50%,rgba(0,0,0,0.55) 100%)".into(),
         _ if cc.gradient_dir == "none" => "none".into(),
         _ => format!("linear-gradient(90deg,{} 0%,{} 50%,transparent 100%)", grad_from, grad_to),
     };

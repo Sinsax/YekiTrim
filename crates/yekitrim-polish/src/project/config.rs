@@ -863,8 +863,15 @@ fn default_cover_hl_font_scale() -> f64 { 1.0 }
 fn default_cover_text_width() -> f64 { 0.62 }
 fn default_cover_text_x() -> String { "35%".into() }
 fn default_cover_text_y() -> String { "50%".into() }
-fn default_cover_gradient_dir() -> String { "left".into() }
-fn default_cover_vignette() -> f64 { 0.08 }
+/// 默认**不开渐变**（用户口径 2026-11-28：「封面设计器默认设置不要添加滤镜」）。
+///
+/// 以前是 `"left"` ⇒ 每个新封面一打开就在画面上压一层暗色斜切，观感就是"默认自带一个滤镜"。
+/// ⚠️ 存量工程不受影响：`to_toml_commented` 是**全字段落盘**，老 `polish.toml` 里写着显式的
+/// `gradient_dir`，不会走这个默认。
+fn default_cover_gradient_dir() -> String { "none".into() }
+/// 默认**不开暗角**（同上）。滤镜层本身仍在图层栈里（`resolve_cover_stack` 的默认五块），
+/// 「渐变 = 无 + 暗角 = 0」时它就是个空层 —— 用户要用再去拖，而不是开局就替他决定。
+fn default_cover_vignette() -> f64 { 0.0 }
 fn default_cover_letter_spacing() -> String { "8px".into() }
 fn default_cover_line_height() -> f64 { 1.7 }
 /// 默认左对齐：与默认预设「左文」（`CoverDesigner.vue` 的 presets、

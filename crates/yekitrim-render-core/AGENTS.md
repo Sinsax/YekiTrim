@@ -23,6 +23,12 @@
     模板 GSAP、`webui/src/polish/engine.js` 三处都走它。改倍率改这里。
   - `Event`（`Sticker` / `Camera` / `Sfx` / `Overlay` + 九种瞬时特效）、`Segment`、`Point`；
     事件字段是 `time` + `end`（**没有 `duration`**）；`manual` / `cut` 这些标记的语义见 `polish` 各卡。
+    ⚠️ **贴纸的读写只有这一组入口**（两个载体字段不同名，散写必漏）：读
+    `is_sticker()` / `sticker_keyword()` / `sticker_tag()` / `sticker_name()` / `sticker_source()` /
+    `sticker_time()` / `sticker_span()`，写 `set_sticker_resolved()` / **`set_sticker_keyword()`** /
+    `set_sticker_position()`。`keyword` 是**许愿词**、`source`+`name` 是**解析结果** ⇒ `process` Step 2
+    解析成功后两个 setter 必须一起调（不归一化的症状：图是 ysyk 的、编辑器标签写着 emoji，
+    见 `polish/src/process/AGENTS.md` 的同名条目）。
   - 安全区读取优先级 `free_rect()`（自由选框 → grid → origin）与 `grid_rect`（必须与
     `templates/index.html` 的 `liverOrigin` 对齐）。
   - `handheld_sway` 的**固定参数表**（横纵位移各两路低频正弦）：Rust ↔ JS 的一致性由

@@ -556,6 +556,8 @@ mod translation_cache_tests {
         let t = test_app().await;
         let clip = t.root.join("output/clips/tcache");
         std::fs::create_dir_all(&clip).unwrap();
+        // 与接口一致：先 canonicalize，否则键里的分隔符是 `/` vs `\`（Windows）
+        let clip = clip.canonicalize().unwrap();
         let cfg = yekitrim_polish::project::ProjectFile::example();
         std::fs::write(clip.join("polish.toml"), cfg.to_toml_commented().unwrap()).unwrap();
         let payload = serde_json::json!({ "dir": clip.to_string_lossy() }).to_string();
@@ -577,11 +579,13 @@ mod translation_cache_tests {
             }
         };
 
+        // ⚠️ 键必须在**请求之前**算：转译过程中会写出 `clip.srt` / `clip.dm.srt` 旁写文件，
+        // 请求之后再算就是另一把键（接口缓存的是请求前那把）。
+        let key = translation_key(&clip);
         let (status, first) = ask(payload.clone()).await;
         if status != StatusCode::OK {
             panic!("转译应当成功，实际 {status}：{first}");
         }
-        let key = translation_key(&clip);
         assert!(
             translation_cache_get(&key).is_some(),
             "接口成功后必须把回包放进缓存（否则每次改配置都白跑一遍 node）"

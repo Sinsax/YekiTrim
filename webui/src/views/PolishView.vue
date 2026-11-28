@@ -686,8 +686,17 @@
               <!-- ① 标题（**没有**开关：标题永远在；字号/字重比主播名重一档，两行一眼分得开） -->
               <div class="art-field art-field-title">
                 <label class="muted small" for="pub-title-in">标题</label>
-                <input id="pub-title-in" v-model="titleBase" placeholder="标题"
-                       @change="savePublishTitle" @keydown.enter.prevent="savePublishTitle">
+                <!-- 「同步」放输入框**前面**（用户口径 2026-11-28）：封面标题在封面设计器里
+                     （`[cover] title_lines`，LLM 生成标题**只有那一处**有这个能力），而发布标题
+                     在产物卡这边只能手打 —— 这个按钮把那份标题拼成一行填进来。 -->
+                <div class="title-cell">
+                  <button type="button" class="mini-btn title-sync"
+                          :disabled="titleSyncing"
+                          title="把封面设计器里的标题（LLM 生成的那份）同步到这里"
+                          @click="syncTitleFromCover">{{ titleSyncing ? '同步中…' : '同步' }}</button>
+                  <input id="pub-title-in" v-model="titleBase" placeholder="标题"
+                         @change="savePublishTitle" @keydown.enter.prevent="savePublishTitle">
+                </div>
               </div>
               <!-- ② 主播名（2026-11-22）：**位置固定在后**（`标题【名】`），不再有前/后。
                    三级取值：片段覆盖 > 本项目「写回本项目」那个值 > 程序默认。
@@ -1541,6 +1550,7 @@ let savedStreamer = null           // 上一次落盘的主播名三态（null/'
 const publishTitleLoaded = ref(false)
 const titleClip = ref('')
 const titleSaving = ref(false)
+const titleSyncing = ref(false)   // 「同步」按钮在一次请求里（防连点）
 const titleErr = ref('')
 const titleFlash = ref('')
 let flashTimer = null
@@ -1648,6 +1658,47 @@ async function savePublishTitle() {
     titleErr.value = '保存失败：' + ((e && e.message) || e)
   } finally {
     titleSaving.value = false
+  }
+}
+
+/**
+ * **同步封面标题**（用户口径 2026-11-28）：LLM 生成标题只在封面设计器里（`[cover] title_lines`），
+ * 发布标题在产物卡这边只能手打 —— 这个按钮把封面那几行拼成一行填进来，再走与手输同一条保存链。
+ *
+ * ⚠️ **现取一次工程配置**，不读内存里的 `cfg`：封面设计器的 `@changed` 只刷新切片列表条目
+ * （`refreshClipEntry`），`cfg` 不会跟着更新 ⇒ 拿它同步会填进**上一版**标题。
+ * ⚠️ 多行是**排版断行**、不是语义分段：中文直接相接，两侧都是拉丁字母/数字时才补一个空格
+ * （否则 `Hello` + `World` 粘成 `HelloWorld`）。
+ * ⚠️ 封面没有标题时**只提示、不写空串** —— 那等于把用户手打的发布标题清掉。
+ */
+async function syncTitleFromCover() {
+  if (titleSyncing.value) return
+  if (!publishTitleLoaded.value || !clipName.value) {
+    flashTitle('标题还没加载完，稍后再试')
+    return
+  }
+  titleSyncing.value = true
+  titleErr.value = ''
+  try {
+    const c = await fetchProject(pid.value, dir.value)
+    const lines = (c?.cover?.title_lines || [])
+      .map((s) => String(s ?? '').trim())
+      .filter(Boolean)
+    if (!lines.length) {
+      flashTitle('封面还没有标题 —— 先在封面设计器里生成或填写')
+      return
+    }
+    titleBase.value = lines.reduce((acc, line) => {
+      if (!acc) return line
+      const gap = /[A-Za-z0-9]$/.test(acc) && /^[A-Za-z0-9]/.test(line) ? ' ' : ''
+      return acc + gap + line
+    }, '')
+    await savePublishTitle() // 内容与已落盘那份相同时它会直接返回（不算失败）
+    if (!titleErr.value) flashTitle('已同步封面标题')
+  } catch (e) {
+    titleErr.value = '同步失败：' + ((e && e.message) || e)
+  } finally {
+    titleSyncing.value = false
   }
 }
 
@@ -3640,6 +3691,11 @@ onUnmounted(() => {
   gap:8px; flex:none; }
 .artifact-bar .art-field > label { white-space:nowrap; text-align:right; }
 .artifact-bar .art-field > input { min-width:0; }
+/* 标题那一行 = `[同步] + 输入框`：第二列改成 flex，**44px 的 label 列一格都不动**
+   （按钮若直接塞进 grid，会占掉 label 那一列、把「标题」挤到输入框位置）。 */
+.artifact-bar .title-cell { display:flex; align-items:center; gap:8px; min-width:0; }
+.artifact-bar .title-cell > input { flex:1 1 auto; min-width:0; }
+.artifact-bar .title-sync { flex:none; }
 /* 标题 vs 主播名**要有区分**：标题是主文案（字重高一档、常规字号），主播名是附加信息
    （小一号、弱色 + 浅底）；主播名打开后才升到正常色。 */
 .artifact-bar .art-field-title input { font-weight:var(--fw-medium); color:var(--ink); }

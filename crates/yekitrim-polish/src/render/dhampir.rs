@@ -102,7 +102,9 @@ fn tracing_like_log(msg: &str) {
     }
 }
 
-/// 预览包目录：`VTEDIT_DHAMPIR_PREVIEW` 优先，其次 `<程序目录>/dhampir/preview`。
+/// 预览包目录：`VTEDIT_DHAMPIR_PREVIEW` 优先，其次 `<程序目录>/app/dhampir/preview`。
+///
+/// 老包（0.5 及更早）的 `<程序目录>/dhampir/preview` 仍作回落。
 ///
 /// 这里**找不到不报错**：那说明当前是"指着源码树"的开发形态，交给 `wasm_dirs` 的
 /// 老路去试；两条都不行时，那里的错误信息会把两边都列出来。
@@ -113,15 +115,20 @@ fn preview_dir() -> Option<PathBuf> {
             return Some(dir);
         }
     }
-    let exe = std::env::current_exe().ok()?;
-    let dir = exe.parent()?.join("dhampir").join("preview");
-    if dir.is_dir() {
-        return Some(dir);
+    let program = yekitrim_core::path::program_dir();
+    for dir in [
+        yekitrim_core::path::dhampir_dir_in(&program).join("preview"),
+        yekitrim_core::path::legacy_dhampir_dir_in(&program).join("preview"),
+    ] {
+        if dir.is_dir() {
+            return Some(dir);
+        }
     }
     None
 }
 
-/// 出片用的 CLI：`VTEDIT_DHAMPIR_CLI` 优先，其次 `<程序目录>/dhampir/bin/<exe>`。
+/// 出片用的 CLI：`VTEDIT_DHAMPIR_CLI` 优先，其次 `<程序>/app/dhampir/bin/<exe>`
+/// 与老包的 `<程序>/dhampir/bin/<exe>`。
 ///
 /// 两个都没有才走 [`find_binary`] 的老路（同层 `Dhampir/target/{release,debug}`）。
 /// 这样"发布包"不需要任何环境变量，"开发"仍然可以指向源码树。
@@ -130,11 +137,11 @@ fn find_binary() -> Result<PathBuf> {
     let mut tried: Vec<String> = Vec::new();
 
     // **定版产物优先**：`VTEDIT_DHAMPIR_CLI`（直接给一个文件），
-    // 其次 `<程序目录>/dhampir/bin/<exe>`（发布包解压后的形状）。
+    // 其次 `app/dhampir/bin/<exe>`（v2 发布包形状），老包位置再兜底。
     //
     // ⚠️ 两者的**失败含义不同**（2026-09-30 修）：
     //   * `VTEDIT_DHAMPIR_CLI` 是**显式指定** —— 指到不存在的文件就报错，不给"猜一个别的"；
-    //   * `<程序目录>/dhampir/bin/` 只是**约定位置** —— 开发时它本来就不在，
+    //   * `app/dhampir/bin/` 只是**约定位置** —— 开发时它本来就不在，
     //     这时必须继续往下试（同层 `Dhampir/target/{release,debug}`、PATH）。
     // 早先两种混成一条 `bail!`，后果是**源码树下永远找不到底座**：
     // `current_exe()` 总能算出那个约定路径，于是它一 bail，后面的回退链一次都没跑到。
@@ -145,10 +152,11 @@ fn find_binary() -> Result<PathBuf> {
         }
         bail!("VTEDIT_DHAMPIR_CLI={explicit} 不是文件");
     }
-    if let Some(p) = std::env::current_exe()
-        .ok()
-        .and_then(|c| c.parent().map(|d| d.join("dhampir").join("bin").join(exe)))
-    {
+    let program = yekitrim_core::path::program_dir();
+    for p in [
+        yekitrim_core::path::dhampir_dir_in(&program).join("bin").join(exe),
+        yekitrim_core::path::legacy_dhampir_dir_in(&program).join("bin").join(exe),
+    ] {
         if p.is_file() {
             return Ok(p);
         }
@@ -247,16 +255,15 @@ fn fmt_mtime(t: std::time::SystemTime) -> String {
     format!("mtime={secs}s(UTC)")
 }
 
-/// 候选顺序（**纯函数，可单测**）：开发构建里仓库那份排第一，发布包里 `<程序目录>/runtime` 排第一。
+/// 候选顺序（**纯函数，可单测**）：开发构建里仓库那份排第一，
+/// 发布包里 `<程序>/app/runtime` 排第一。
 ///
 /// ⚠️ 顺序就是这条 bug 的全部：`<exe 目录>/tools/` 里可能躺着一份**打包时拷进来的旧副本**，
 /// 它排第一就静默生效（本机实测四天），所有转译器修复都被误判成"没生效"。
 /// 判据：`dev_build_candidates_put_repo_first`。
 ///
-/// ⚠️ **2026-10-09：发布包里的落点由 `tools/` 改成 `runtime/`**（与词汇表合并成一个目录）。
-/// 老 `<程序目录>/tools/` 仍留在候选里当**回落** —— 存量安装升级时那个目录还在，
-/// 不给回落就会"升级后找不到转译器、出片直接报错"。
-/// 新位必须排在老位**之前**：两个都在时（用户手动拷过一份）要优先用新的那个。
+/// ⚠️ **2026-11-27：发布包落点由 `<程序>/runtime` 改成 `<程序>/app/runtime`**（转译器 + 词汇表）。
+/// `<程序>/runtime` 与 `<程序>/tools` 仍作**回落** —— 裸换 exe 的存量安装还要能出片。
 fn translator_candidates_for(exe: &Path) -> Vec<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
     let under_target = exe.components().any(|c| c.as_os_str() == "target");
@@ -270,10 +277,16 @@ fn translator_candidates_for(exe: &Path) -> Vec<PathBuf> {
         }
     }
     if let Some(dir) = exe.parent() {
-        // 新位（`<程序目录>/runtime/`）优先，老位（`<程序目录>/tools/`）兜底
+        // v2（`<程序>/app/runtime`）优先，老位 `runtime/` 与 `tools/` 兜底
+        candidates.push(
+            yekitrim_core::path::runtime_dir_in(dir).join("polish-to-dhampir.mjs"),
+        );
         candidates.push(dir.join("runtime").join("polish-to-dhampir.mjs"));
         candidates.push(dir.join("tools").join("polish-to-dhampir.mjs"));
         if let Some(up2) = dir.parent().and_then(Path::parent) {
+            candidates.push(
+                yekitrim_core::path::runtime_dir_in(up2).join("polish-to-dhampir.mjs"),
+            );
             candidates.push(up2.join("runtime").join("polish-to-dhampir.mjs"));
             candidates.push(up2.join("tools").join("polish-to-dhampir.mjs"));
         }

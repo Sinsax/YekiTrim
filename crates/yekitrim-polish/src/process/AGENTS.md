@@ -36,6 +36,24 @@
 - ⚠️⚠️ **贴纸有两个载体，凡"按贴纸处理"处必须同时认**（2026-10-15 用户报「加表情后不显示」）：`Event::Sticker`（老，**LLM/老工程**）与 `Event::Element{kind:"sticker"}`（**编辑器「贴纸轨」点＋新建的**，`addElementAt` 有意一律产 `element`）。字段名不同：关键词 `keyword` vs **`text`**、`x`/`y` `String` vs **`Option<String>`**。**读走** `Event::is_sticker()/sticker_keyword()/sticker_name()/sticker_source()/sticker_span()`（`render-core/src/types.rs` 一处），**写走** `set_sticker_resolved()/set_sticker_position()`。
   ⚠️ **别在每个消费点各写一遍 `match`** —— 这次正是那样漏的：Step 2、2b、`cap_events`、2c、`sticker_obstacles` **五处全只认老载体** ⇒ 手动贴纸拿不到落点/`name` 永不解析/不互斥/逃过上限，**而 LLM 放的老载体一切正常**（两边各自看都正常，故极难归因）。
   ⚠️ `sticker_span()` 坐标是 `Option`：落点是**写**，不能 `continue` 掉"还没落点"的条目；障碍表相反。回归 `element_sticker_goes_through_the_same_pipeline_as_legacy_sticker`（跑**真** `cmd_process`，变异自证：退回只认老载体 ⇒ 当场红）。
+- **Step 2 的「许愿词」与「解析结果」必须同口径**（2026-11-28 修）：`keyword` / `sticker_tag` 是
+  **LLM 的愿望**（可能是包名 `emoji`、emoji 维度查询串 `emotion:awkward`、或自由词），
+  `source` + `name` 才是**解析结果**。解析成功必须 `set_sticker_resolved` **和** `set_sticker_keyword`
+  一起写（解析到哪个来源，`keyword` 就写成哪个）。
+  不归一化的话事件会永久停在 `keyword="emoji" / sticker_tag="think" / name="通知_提示_硬币" / source="ysyk"`，
+  而编辑器「贴纸包」那一行读的正是 `keyword` ⇒ 界面显示「emoji · 表情 · 内建」+「选择贴纸 0 个」，
+  画面却是 ysyk 的图（用户报的就是这一条）。
+  `try_resolve_sticker` 的**两条支都要吃 `tag`**：emoji 档 keyword 落空时用 tag 再查一次
+  （`think` 能对上词表的 `action:think`），包档走 `pick_package_file_in_tag`（**命中 tag 组就只在组内挑**；
+  以前是整包按 `time` 随机挑，LLM 写 `sticker_tag="害怕"` 也照样出「撬棍」）。
+  回归：`assets::sticker_index::tests::pick_package_file_in_tag_prefers_tag_group`（组内 / 退回整包两条断言）
+  + `process::tests::sticker_keyword_is_normalized_to_source`（存量归一化；两条都用 `manual: true`
+  只为挡住抽稀 —— **`keyword` 不在 manual 名下**，与 `camera.origin` 同一条口径：派生值、归程序改）
+  + `diagnose_process_idempotent`（**已解析的事件一个字节都不动**）。
+  ⚠️ 归一化有**两处**，缺一个就有一半数据治不好：① Step 2 解析成功时（只对 `name` 还空着的）；
+  ② **Step 2 尾的存量那一趟**（`name`+`source` 都在而 `keyword` 不一致 ⇒ 改写成 `source`）——
+  没有 ② 的话老工程永远显示错的包，因为 Step 2 从不去看已解析的事件。
+  ② 自带幂等（改完就相等，不需要"已迁移"标记）。
 - **落点规则**（`placement.rs`，Step 2b）：帧坐标固定 1920×1080，贴纸固定 280×280，`ev.x/ev.y` 是**盒子左上角**百分比（模板 DOM/canvas 与 `engine.js` 都按左上角消费，模板再钳制到 `[32,1608]×[32,768]`）。障碍 = ①人物 `layout.liver`；②弹幕区域 `layout.danmaku_area`（都在**源帧**坐标里框选，出片时按该贴纸可见窗口的相机状态投到输出帧）；③字幕带（Canvas `cy=960` 与 DOM `bottom:80px` 两条路径取并集）；④真实弹幕带（只有 `data/danmaku.json` 非空时才是障碍）；⑤同刻已落位的其他贴纸。
   ⚠️ **2026-10-15 起字幕带还读 `[style.subtitle].position_pct`** —— 此前只有出片模板与转译器读它，落点求解器读的是写死的历史带位，于是"用户把字幕拖到中部 ⇒ 文字压上字幕"。三处必须同口径；`None`（老工程没写过）走历史公式 = 零回归。
   候选网格、clearance 分档、seed 挑选与退化告警见 §3。
@@ -65,8 +83,9 @@
   ⚠️ **幂等靠"意图是一次性触发条件"**：落实时把两个认得的 `anchor` **就地清掉**（`clear_anchor`，别的 anchor 一律不碰），所以第二趟没有任何候补。**别改成"看 EDL 里有没有这一段"去判重** —— 用户删掉重放段之后再跑 process 就会把它复活（`intro_fade_seeded` 那条教训一模一样的形状）。
   ⚠️ **触发条件 = 老工程零回归的判据本身**：`edl.clips` 非空 ⇒ `mute_ranges` **整个被忽略**（`resolve_edl`、规格 §2.3）⇒ 落实前必须先把**补集**种进空 EDL（`edl_clips_from_mute_complement`），否则正片消失、屏蔽段全回来；所以只在**真的落实了**时才写（`writeback_edl(edl_intent_done, clips)`），没意图的工程**一个字节都不碰** `cfg.edl`。
   ⚠️ **这一条是两层挡的、两层各有各的观察点**：把 `writeback_edl` 改成无条件 `Some` 之后，端到端那条 `process_without_edl_intent_never_writes_edl` **照样绿** —— 空 `Edl` 会被 `ProjectFile::edl` 的 `skip_serializing_if = "Edl::is_empty"` 静默吃掉，症状完全相同 ⇒ 写回门必须有**纯谓词**判据（`process_writeback_gate_only_touches_edl_when_materialized`）。
-  ⚠️ 改内建 prompt 对**已有配置无效**（`.yekitrim/config.toml` 里是 `config init` 填的副本）。回归清单（9 条）见 §5。
+  ⚠️ 改内建 prompt 对**已有配置无效**（`<data>/users/<uid>/config.toml` 里是 `config init` 填的副本）。回归清单（9 条）见 §5。
 - `resolve_event_sfx` 未命中规则的事件按"宁缺毋滥"清空音效；`Step 3b` 对"字幕命中规则但 LLM 没放事件"的时刻在预算内补建 sfx 事件。屏蔽列表条目的语义见 `assets/sfx_catalog.rs::is_blacklisted`。
+- ⚠️ **`SFX_RULES` 右边的 tag 必须逐字存在于 catalog 词表**（2026-11-27 修的那族失效）：这张表整片写过日文 tag（`爆発`/`コメディ`/`ドア`…），catalog 84 个 tag 全是中文 ⇒ 23 条里 22 条静默失效（补位加不上、LLM 写的同款 tag 落地被清空，**零报错、只是没声音**）。常驻判据 `sfx_rules_all_resolve_against_catalog`（遍历规则走 `resolve_sfx_tag`），新增规则**必须**过了它。
 - 真工程诊断命令（`diagnose_sticker_placement` / `diagnose_camera_anchors` / `diagnose_pip_and_silence`）见 §10。
 
 > 改动只允许落在本目录；跨模块改动先读对方卡，并跑两条门禁。

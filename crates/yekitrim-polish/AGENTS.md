@@ -50,6 +50,20 @@
 - ⚠️ **消费侧纵深防御**：渲染封面时对 `cover.image` 再做一次 `tenant::ensure_within`
   （`yekitrim-polish/src/cover.rs`）。handler 层的校验只覆盖"走 API 的那些入口"，别删这道。
 - 公式与净化都在 `cover.rs` 且**只此一份**：`cover_blur_css(scale)`（基准 28px、`1+px/150` 推出画面）、`sanitize_hex_color`（**颜色直接进 HTML/CSS，必须净化**，非法值退 `#000000`）、`cover_bg_mode`（只有 `blur` 走模糊，其余 `color`）。前端 `CoverDesigner.vue` 的 `coverBlurCss` 是镜像，改一边要改另一边。
+- ⚠️ **封面「滤镜」层默认是关的，径向只做暗角**（用户口径 2026-11-28）：
+  `default_cover_gradient_dir() = "none"`、`default_cover_vignette() = 0.0`（原来是 `"left"` + `0.08`
+  ⇒ 每个新封面一打开就压着一层暗色斜切，被当成"默认自带滤镜"）。滤镜层本身仍在默认图层栈里，
+  两项都关时它就是个**空层** —— 别为了这条去删栈里那一条（`is_default_stack` 的零迁移靠它）。
+  `gradient_dir = "radial"` 的 CSS **只画暗角**：
+  `radial-gradient(ellipse at 55% 45%,transparent 50%,rgba(0,0,0,0.55) 100%)`。
+  ⚠️ **不许**把 `grad_from`（由字幕高亮色推出来的**暗色**）铺在 0% —— 那会在封面正中糊一块黑斑，
+  正是用户报的"径向添加了中心的黑区"。镜像三处：`CoverDesigner.vue::gradientStyle`、
+  `ref('none')` / `ref(0)` 的初值、`cfg?.cover?.gradient_dir || 'none'` 与 `vignette ?? 0` 的兜底。
+- ⚠️ **`polish init` 写出的工程初始状态不带任何内容**（用户口径 2026-11-28）：`cmd_init_with` 里
+  `example.segments.clear()` —— `example()` 自带的那段 `0~10s` / `note="开场"` 是**测试夹具**，
+  落盘到新片段会让时间轴上多一块不存在的内容。段表只归 LLM / 剪辑 / 编辑产出。
+  判据 `tests/init_font_default.rs::init_leaves_an_empty_timeline_and_no_cover_filter`
+  （真跑 `cmd_init` 再读回 `polish.toml`；变异自证：删掉 `clear()` 或把两个默认值改回去当场红）。
 - ⚠️ **导入背景图片写的是 `_cover_bg.jpg`**（`/api/polish/cover-background` 同时把 `bg_mode` 设成 `image`）。**别再写回 `_cover_frame.jpg`** —— 那是"背景替换关键帧"的老 bug（用户报过「又把关键帧那一层给我删了」）。`cover.image` 也**不要**在导入时清空（它是关键帧的来源之一）。
 - ⚠️ **出片不再删 `_cover_frame.jpg`**（`cmd_cover` 末尾那句 `remove_file` 已删）：它就是关键帧层的图源，删了等于①用户导出的那一帧白导、②下次出片又按 `frame_pos` 重新截、同一份封面每次换脸。
 - **图层栈（`[cover] layers`，2026-09 起）**：封面是真图层栈（顺序 + 可见性都落盘）。`resolve_cover_stack(&CoverConfig)` 是**唯一推导**（id = `bg`/`frame`/`filter`/`title`/`fx:<CoverEffect::id>`），`plan_cover_layers()` 折成每块 `z-index`，`cover_layer_css()` + `cover_fx_html()` 注入；**三层各有各的图源，谁也不许覆盖谁**。

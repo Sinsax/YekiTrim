@@ -399,13 +399,18 @@ const OTHERS: &[Case] = &[
 /// 七个 fx 的 id 由 `fx_type_list()` 从 `spec/effects.json` 生成，提示词里出现在
 /// `- 视觉特效: shake/flash/…` 那一行；这里钉的是"照那一行写的事件能解析回同名变体 + 字段不丢"。
 const FX_SFX_OVERLAY: &[Case] = &[
-    // shake —— 提示词: `{"type":"shake","time":8.0,"end":8.3,"intensity":14,"sfx":"tag:爆発"}`
+    // shake —— 提示词: `{"type":"shake","time":8.0,"end":8.3,"intensity":14,"sfx":"tag:打击格斗"}`
+    //
+    // ⚠️ 这里的 tag 必须是 **catalog 真实词表**（2026-11-27 修）：原来写的是 `tag:爆発`，
+    //    而 `assets/sfx_catalog.json` 的 84 个 tag 全是中文、**没有 `爆発`** ——
+    //    提示词教 LLM 写一个落地时必然被清空的 tag，成片静默少一声、全链路零报错。
+    //    真实词表见 `sfx_catalog::all_tags()`；改这里时连同 `process/sfx.rs::SFX_RULES` 一起看。
     Case {
-        quote: "视觉特效例: shake + intensity(像素) + sfx:tag:爆発",
+        quote: "视觉特效例: shake + intensity(像素) + sfx:tag:打击格斗",
         needles: &["shake", "intensity", "sfx"],
-        json: r##"{"type":"shake","time":8.0,"end":8.3,"intensity":14,"sfx":"tag:爆発"}"##,
+        json: r##"{"type":"shake","time":8.0,"end":8.3,"intensity":14,"sfx":"tag:打击格斗"}"##,
         tag: "shake",
-        fields: &[("intensity", "14.0"), ("sfx", "\"tag:爆発\"")],
+        fields: &[("intensity", "14.0"), ("sfx", "\"tag:打击格斗\"")],
     },
     Case {
         quote: "音效 name/sfx 只能从候选里选具体 id, 或写 tag:xxx 由系统匹配",
@@ -468,9 +473,9 @@ const FX_SFX_OVERLAY: &[Case] = &[
     Case {
         quote: "音效也能写 tag:xxx（漏 type 时按 name 兜底）",
         needles: &["tag:"],
-        json: r##"{"time":3.0,"end":4.0,"name":"tag:爆発"}"##,
+        json: r##"{"time":3.0,"end":4.0,"name":"tag:爆笑搞笑"}"##,
         tag: "sfx",
-        fields: &[("name", "\"tag:爆発\"")],
+        fields: &[("name", "\"tag:爆笑搞笑\"")],
     },
     // 覆盖层：colors 数组（踩过的坑 #1 —— 提示词曾只教 color，四处求值器只认 colors，实测 8/8 没画出来）
     Case {

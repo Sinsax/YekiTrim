@@ -32,7 +32,7 @@
   精修侧现有五处挂点（四个文件）：`精修分段` / `精修关键词`（`llm/mod.rs`）、贴纸批量精挑（`events.rs`）、
   `贴纸包标签` / `贴纸扫描标签`（`commands.rs`）。Agent 系任务走 `AgentTask::usage_context()`。
   **不挂 context，统计里就是空 label —— 别让用量静默消失。**
-- **并发只有一个旋钮**：`.yekitrim/llm.toml` 的 `[llm] max_concurrent`（默认 3），事件检测 / 精修事件生成 /
+- **并发只有一个旋钮**：`<data>/users/<uid>/llm.toml` 的 `[llm] max_concurrent`（默认 3），事件检测 / 精修事件生成 /
   字幕订正共用，解析统一走 `concurrency_for(link)`（`[llm.links.<link>.run] max_concurrent`，留空跟随全局）。精修**没有自己的并发配置项**，
   `Agent::new(llm_cfg).with_max_concurrent(llm_cfg.concurrency(None))`。别再在代码里写死 `3`。
 - ⚠️ **精修的 `max_tokens` / `temperature` / `thinking` 走 `[llm.overrides.polish]`**：
@@ -112,7 +112,7 @@
 - ⚠️ **冷开场/回忆回溯的意图写在 `anchor` 上**（`segment.rs::build_events_system_prompt` 那一段）：
   `anchor = "cold_open"` = 爆点提前播一次、`"recall"` = 爆点后面重提。**不是景别**，`process` 会收走它。
   配额在 `process` 侧（整片冷开场 1 条、回忆回溯 2 条）—— LLM 只是表达意图。
-- ⚠️ **改内建 prompt 要同步用户配置**：`.yekitrim/config.toml` / `.yekitrim/llm.toml` 里的是
+- ⚠️ **改内建 prompt 要同步用户配置**：`<data>/users/<uid>/config.toml` / `llm.toml` 里的是
   `config init` 填进去的**副本**，改代码默认值对它无效；**每个程序目录各有一份**（debug / release 互不相干）。
 - 用了贴纸包来源时 `run_llm_pipeline` 才拼 `local_sticker_candidates_text`（**只列已构建的包**，
   见 `assets/` 卡）；`has_local` 为假就整段不注入 —— 贴纸来源改了要重跑，别指望旧 checkpoint。

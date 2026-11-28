@@ -41,6 +41,18 @@
 **精修页 `PolishView`：右栏按钮行有宽度预算**
 
 - 右栏定稿（一块卡、三页签、行排版、任务栏折叠、出片通道已删）见 **`docs/polish-right-column.md`**；几何/多轮口径/踩过的坑都在那里，改右栏前先读。判据 ⑰ 钉着"块数/页签/无链接"。
+- ⚠️ **发布标题 ≠ 封面标题，两者只靠一颗「同步」按钮连通**（用户口径 2026-11-28）：产物卡那行写的是
+  `output/publish_config.json` 的 `clips[].title`；封面标题是 `[cover] title_lines`，而
+  **LLM 生成标题只存在封面设计器里**（`CoverDesigner` 的「LLM 生成标题」）。所以标题框**前面**有
+  「同步」按钮（`syncTitleFromCover`）：点它**现取一次** `/polish/project`，把 `title_lines` 拼成一行
+  写进 `titleBase`，再走与手输同一条 `savePublishTitle`。
+  ⚠️ **别改成读内存里的 `cfg`** —— 封面设计器的 `@changed` 只刷切片列表条目（`refreshClipEntry`），
+  `cfg` 不会跟着更新，读它会填进上一版标题。
+  ⚠️ 多行是**排版断行**不是语义分段：中文直接相接，两侧都是拉丁字母/数字才补一个空格
+  （否则 `Hello`+`World` 粘成 `HelloWorld`）。
+  ⚠️ 封面**没有**标题时只提示、**不写空串** —— 那等于把用户手打的发布标题清掉。
+  ⚠️ 布局：按钮**不能直接塞进 `.art-field` 的 grid**（会占掉 44px 的 label 列、把「标题」挤到输入框位置），
+  第二列用 `.title-cell`（flex）包住「按钮 + 输入框」。
 
 **预处理页 `PrepareView`（一个按钮、两段任务）**
 

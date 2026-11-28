@@ -123,3 +123,38 @@ async fn init_keeps_factory_font_when_library_has_no_default() {
         "库里没人设默认位时，应当保持出厂值不动"
     );
 }
+
+/// **初始状态不带任何内容** + **封面默认不开滤镜**（用户口径 2026-11-28）。
+///
+/// 以前 `cmd_init` 把 `ProjectFile::example()` 原样落盘：段表里带着一段 `0~10s`、
+/// `note = "开场"` 的示例段 —— 新片段一打开，时间轴上就多出一块**不存在的内容**
+/// （视频 100s，那块只到 10s）；封面还默认 `gradient_dir = "left"` + `vignette = 0.08`，
+/// 等于一打开就替用户压着一层滤镜。
+///
+/// 变异自证：删掉 `cmd_init_with` 里那句 `example.segments.clear()` ⇒ 第一条红；
+/// 两个封面默认值改回 `"left"` / `0.08` ⇒ 后两条红。
+#[tokio::test]
+async fn init_leaves_an_empty_timeline_and_no_cover_filter() {
+    let data = DataDir::new("empty");
+    let project = data.root.join("clip");
+    std::fs::create_dir_all(&project).expect("建工程目录");
+    // 摆一份 clip.json ⇒ 走"探测到素材"那条真实路径（切片段时就是这样）
+    std::fs::write(project.join("clip.json"), r#"{"title":"t","duration":100.0}"#)
+        .expect("写 clip.json");
+
+    yekitrim_polish::commands::cmd_init(&project)
+        .await
+        .expect("init 应当成功");
+    let cfg = yekitrim_polish::project::load_project(&project).expect("读回 polish.toml");
+
+    assert!(
+        cfg.segments.is_empty(),
+        "初始段表必须为空（用户口径「精修不要在初始状态添加任何东西」）；实得 {:?}",
+        cfg.segments
+            .iter()
+            .map(|s| (s.start, s.end, s.note.clone()))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(cfg.cover.gradient_dir, "none", "封面默认不开渐变（滤镜默认关）");
+    assert_eq!(cfg.cover.vignette, 0.0, "封面默认不开暗角（滤镜默认关）");
+}

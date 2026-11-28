@@ -133,7 +133,7 @@ pub(crate) fn build_events_system_prompt(
   写了的在读时会被丢弃。要"点名一句话"就用贴纸/特效，那两样是活的。
 
 - 视觉特效: {}
-  {{"type":"shake","time":8.0,"end":8.3,"intensity":14,"sfx":"tag:爆発"}}
+  {{"type":"shake","time":8.0,"end":8.3,"intensity":14,"sfx":"tag:打击格斗"}}
   intensity 是**像素**位移(默认 14, 常用 10~30), 0 = 不抖; **别写 0.5 这种亚像素值 —— 那等于看不出来**
 - overlay: 覆盖层(氛围色). 渐变写 colors(两档起步色/终色), 纯色写 color
   {{"type":"overlay","time":0.0,"end":5.0,"overlay_type":"gradient","colors":["#ff0000","#000000"],"shape":"linear","opacity":0.3}}
@@ -724,7 +724,7 @@ mod tests {
         let raw = r#"[
           {"start":0.0,"end":8.6,"fx":"low","note":"t","events":[
             {"time":0.5,"end":3.5,"zoom":"中","origin":"center"},
-            {"time":8.0,"end":8.5,"intensity":0.3,"sfx":"tag:爆発"},
+            {"time":8.0,"end":8.5,"intensity":0.3,"sfx":"tag:打击格斗"},
             {"type":"camera","time":2.0,"end":3.0,"zoom":"近","origin":"50% 50%"},
             {"time":10.0,"end":12.0,"keyword":"laugh","x":"auto","y":"auto"},
             {"time":3.0,"name":"pop","volume":0.5},

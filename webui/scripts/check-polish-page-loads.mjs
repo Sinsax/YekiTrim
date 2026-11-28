@@ -199,7 +199,7 @@ const out = join(ROOT, '.workbuddy', 'check-polish-page-loads.png')
 writeFileSync(out, Buffer.from(shot.result.data, 'base64'))
 
 // ---------------------------------------------------------------------------
-// **工位页 + 素材库三个页签**（2026-10-18 加）
+// **工位页 + 素材库四个页签**（2026-10-18 加；2026-11-27 补「音效」）
 //
 // 抓的是一类**静态门禁全都看不见**的错：`<script setup>` 里用了**没 import** 的标识符，
 // 而且落在 `computed` / render 路径上 ⇒ 渲染期 `ReferenceError` ⇒ **Vue 卸掉整块子树**
@@ -217,7 +217,9 @@ writeFileSync(out, Buffer.from(shot.result.data, 'base64'))
   if (!libOk) {
     problems.push('工位页的素材库没挂起来（等 20s 没等到 .ml-nav）')
   } else {
-    for (const sheet of ['视频', '贴纸', '字体']) {
+    // ⚠️ 四个页签都要点（2026-11-27 加「音效」）：这一条抓的正是 `<script setup>` 里
+    //    未 import 的标识符（渲染期 ReferenceError ⇒ Vue 卸掉整块子树），新页签最容易带进来。
+    for (const sheet of ['视频', '贴纸', '音效', '字体']) {
       const mark = exceptions.length + consoleErrors.length
       const clicked = await ev(
         "(function(){var b=Array.from(document.querySelectorAll('.ml-tab')).find(function(x){return x.innerText.indexOf('" + sheet + "')>=0});if(!b)return false;b.click();return true})()",
@@ -237,7 +239,7 @@ writeFileSync(out, Buffer.from(shot.result.data, 'base64'))
     }
     const p2 = await send('Page.captureScreenshot', { format: 'png' })
     writeFileSync(join(ROOT, '.workbuddy', 'check-media-library-tabs.png'), Buffer.from(p2.result.data, 'base64'))
-    console.log('· 素材库三个页签都点过（截图：.workbuddy/check-media-library-tabs.png）')
+    console.log('· 素材库四个页签都点过（截图：.workbuddy/check-media-library-tabs.png）')
   }
 }
 
@@ -476,7 +478,10 @@ if (diagUp.ok) {
     const beforeVar = await a4Read()
     await ev("location.hash='#/workbench'")
     await sleep(900)
-    await ev("(function(){location.hash='" + proHash + "';return true})()")
+    // 回到精修页那一条 hash：**从 `proUrl` 取**（脚本里只有它是那段地址的真源）——
+    // 这里以前写的是从未声明过的 `proHash`，于是整条判据在 ⑦ 变异自证处
+    // `ReferenceError` 崩掉：前六段全绿、看起来"跑过了"，其实 ⑦ 之后一条都没验。
+    await ev("(function(){location.hash='" + new URL(proUrl).hash + "';return true})()")
     let maxGen = 0
     const tv = Date.now()
     while (Date.now() - tv < 3000) {
